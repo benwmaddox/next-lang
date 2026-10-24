@@ -1,0 +1,10 @@
+# T17: per-entry-point reservations and inspect stacks (milestone M3, part 5)
+
+Depends on T16. Same rules. Read DESIGN.md "N stacks per job" (reservations sized per entry point) and "Loops can't quietly fill a stack" ("The compiler adds it up", "Tests can pin it").
+
+- **Worst case per stack, per entry point:** from the bounds the checker already has (maxima, counted loops, append contracts, the two-value peak of copy-down reassignments, fixed scratch), compute for each entry point (`main`, each `test`) the worst-case bytes on each of its N data stacks and on the native stack (frame sizes from LLVM, the deepest call chain; recursion isn't supported yet). An entry point with something it can't bound is reported as unbounded and gets the 64 MB default.
+- **Reservations follow:** the runtime reserves each stack at its computed worst case, rounded up to a page, instead of 64 MB, so most programs reserve far less.
+- **`nlc inspect stacks <package>`:** per entry point, N, each stack's worst case in bytes and the source lines that drive it, each loop's growth per iteration, the native-stack worst case, and anything unbounded.
+- **`expect stack_peak(f) < 2 MB`** in tests: the computed worst case of entry or function `f`, so a change that raises it past a budget fails a test.
+- Acceptance cases: the worked example's numbers (stack 0 holds 40,000 bytes plus page rounding; stack 1 holds 60 bytes); a program whose reservation shrinks from 64 MB to a few pages; an unbounded entry point reported as such; `stack_peak` passing and failing; a test-only shrunken reservation below the computed worst case refused at startup with a clear message (the computed bound must never be smaller than real use: run the step 2 acceptance programs and compare measured peaks with the computed worst cases, each measured ≤ computed).
+- Report: docs/tasks/T17-report.md, including `inspect stacks` output for the worked example and the measured-versus-computed table.
