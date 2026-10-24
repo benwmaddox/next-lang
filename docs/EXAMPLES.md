@@ -10,23 +10,23 @@ An arcade game: a ship that turns, thrusts and fires, and rocks that split when 
 
 ```
 // rocks/state.nl
-const SCREEN = Vector2(960.0f, 540.0f)
-const TAU: float = 6.2831855f                // 2π, one full turn
+const SCREEN = Vector2(960.0, 540.0)
+const TAU: float = 6.2831855                // 2π, one full turn
 
-type Size = int 1..3                         // 3 is a big rock, 1 the smallest
-type Lives = int 0..3
+type Size = int 1..=3                         // 3 is a big rock, 1 the smallest
+type Lives = int 0..=3
 
 struct Ship {
-    pos: Vector2 = SCREEN * 0.5f
+    pos: Vector2 = SCREEN * 0.5
     vel: Vector2 = Vector2.zero
-    angle: float 0.0f..TAU wrap = 0.0f       // radians; turning past 2π wraps to 0
-    cooldown: int 0..15 clamp = 0            // ticks until the next shot; counting down stops at 0
-    safe: int 0..120 clamp = 0               // ticks of invulnerability after a respawn (2 s)
+    angle: float 0.0..TAU wrap = 0.0       // radians; turning past 2π wraps to 0
+    cooldown: int 0..=15 clamp = 0            // ticks until the next shot; counting down stops at 0
+    invulnerable_ticks: int 0..=120 clamp = 0 // after a respawn: 120 ticks, 2 s
     lives: Lives = 3
 }
 
 struct Rock { pos: Vector2, vel: Vector2, size: Size }
-struct Bullet { pos: Vector2, vel: Vector2, ttl: int 0..60 }
+struct Bullet { pos: Vector2, vel: Vector2, ttl: int 0..=60 }
 
 struct Game {
     ship: Ship = Ship {}
@@ -60,19 +60,19 @@ fn step(g: write Game, input: Input) {
 }
 
 fn steer(ship: write Ship, input: Input) {
-    if input.held(Key.Left)  { ship.angle -= 0.07f }
-    if input.held(Key.Right) { ship.angle += 0.07f }
-    if input.held(Key.Up)    { ship.vel += direction(ship.angle) * 0.15f }
-    ship.vel *= 0.99f                        // drag
+    if input.held(Key.Left)  { ship.angle -= 0.07 }
+    if input.held(Key.Right) { ship.angle += 0.07 }
+    if input.held(Key.Up)    { ship.vel += direction(ship.angle) * 0.15 }
+    ship.vel *= 0.99                        // drag
     ship.pos = wrap_screen(ship.pos + ship.vel)
     ship.cooldown -= 1                       // clamp: stops at 0
-    ship.safe -= 1
+    ship.invulnerable_ticks -= 1
 }
 
 fn fire(g: write Game) {
     let shot = Bullet {
         pos: g.ship.pos,
-        vel: g.ship.vel + direction(g.ship.angle) * 6.0f,
+        vel: g.ship.vel + direction(g.ship.angle) * 6.0,
         ttl: 60,
     }
     match g.bullets.add(shot) {
@@ -103,24 +103,24 @@ fn move_rocks(g: write Game) {
 fn hit_rocks(g: write Game) {
     // Find every hit first, then remove all the hit rocks, then split them: that way the
     // fragments get every slot the hit rocks freed.
-    var hit: list<g.rocks.Id, 64> = list {}
-    var spent: set<g.bullets.Id, 32> = set {}
+    var hit_rock_ids: list<g.rocks.Id, 64> = list {}
+    var spent_bullet_ids: set<g.bullets.Id, 32> = set {}
     for r, rid in g.rocks {
         for b, bid in g.bullets {
-            if !spent.contains(bid) && distance(r.pos, b.pos) < radius(r.size) {
-                hit.push(rid)                // each rock once: we break below
-                spent.add(bid)               // each bullet once: skipped above
+            if !spent_bullet_ids.contains(bid) && distance(r.pos, b.pos) < radius(r.size) {
+                hit_rock_ids.push(rid)       // each rock once: we break below
+                spent_bullet_ids.add(bid)    // each bullet once: skipped above
                 break
             }
         }
     }
     var broken: list<Rock, 64> = list {}     // copies of the hit rocks
-    for rid in hit {
+    for rid in hit_rock_ids {
         let r = g.rocks.get(rid) ?? continue
         broken.push(r)
         g.rocks.remove(rid)
     }
-    for bid in spent { g.bullets.remove(bid) }
+    for bid in spent_bullet_ids { g.bullets.remove(bid) }
     for r in broken {
         g.score += points(r.size).to_long()
         split(g, r)
@@ -128,14 +128,14 @@ fn hit_rocks(g: write Game) {
 }
 
 fn hit_ship(g: write Game) {
-    if g.ship.safe > 0 { return }            // just respawned: can't be hit yet
+    if g.ship.invulnerable_ticks > 0 { return }   // just respawned: can't be hit yet
     for r in g.rocks {
-        if distance(r.pos, g.ship.pos) < radius(r.size) + 8.0f {
+        if distance(r.pos, g.ship.pos) < radius(r.size) + 8.0 {
             if g.ship.lives <= 1 {
                 g.ship.lives = 0
                 g.over = true
             } else {
-                g.ship = Ship { lives: g.ship.lives - 1, safe: 120 }   // back to the centre, one life fewer
+                g.ship = Ship { lives: g.ship.lives - 1, invulnerable_ticks: 120 }   // back to the centre, one life fewer
             }
             return
         }
@@ -146,21 +146,21 @@ fn split(g: write Game, r: Rock) {
     if r.size == 1 { return }                // the smallest rocks just vanish
     let smaller = (Size)(r.size - 1)         // proved to fit: r.size is 2 or 3 here
     for k in 0..2 {
-        let turn = g.rng.next_float(-1.0f, 1.0f)
-        discard g.rocks.add(Rock { pos: r.pos, vel: rotate(r.vel, turn) * 1.3f, size: smaller })
+        let turn = g.rng.next_float(-1.0, 1.0)
+        discard g.rocks.add(Rock { pos: r.pos, vel: rotate(r.vel, turn) * 1.3, size: smaller })
     }                                        // discard: a full field just drops the fragment
 }
 
-fn spawn_wave(g: write Game, n: int 1..8) {
+fn spawn_wave(g: write Game, n: int 1..=8) {
     for k in 0..n {
-        let start = Vector2(g.rng.next_float(0.0f, SCREEN.x), 0.0f)   // along the top edge
-        let vel = direction(g.rng.next_float(0.0f, TAU)) * 1.2f
+        let start = Vector2(g.rng.next_float(0.0, SCREEN.x), 0.0)   // along the top edge
+        let vel = direction(g.rng.next_float(0.0, TAU)) * 1.2
         discard g.rocks.add(Rock { pos: start, vel, size: 3 })
     }
 }
 
 fn direction(angle: float) -> Vector2 { Vector2(cos(angle), sin(angle)) }   // the language's own cos and sin: repeatable on the same build and platform
-fn radius(size: Size) -> float { size.to_float() * 12.0f }
+fn radius(size: Size) -> float { size.to_float() * 12.0 }
 fn points(size: Size) -> int { 400 / size }
 fn wrap_screen(p: Vector2) -> Vector2 { Vector2(modulo(p.x, SCREEN.x), modulo(p.y, SCREEN.y)) }
 ```
@@ -172,8 +172,8 @@ fn draw(frame: Frame max 100) {              // may only read game; the compiler
     frame.clear(Color.black)
     for r in game.rocks { frame.circle(r.pos, radius(r.size), Color.gray) }
     for b in game.bullets { frame.dot(b.pos, Color.white) }
-    frame.triangle(game.ship.pos, game.ship.angle, 10.0f, Color.white)
-    frame.text(Vector2(12.0f, 12.0f), score_line(game.score, game.ship.lives), Color.white)
+    frame.triangle(game.ship.pos, game.ship.angle, 10.0, Color.white)
+    frame.text(Vector2(12.0, 12.0), score_line(game.score, game.ship.lives), Color.white)
 }
 
 // "Score " (6) + up to 20 for a long + "  Lives " (8) + 1 digit = at most 35.
@@ -186,8 +186,8 @@ fn score_line(score: long, lives: Lives) -> Ascii max 40 {
 // rocks/tests.nl
 test "a bullet splits a big rock in two" {
     var g = Game {}
-    g.rocks.add(Rock { pos: Vector2(100.0f, 100.0f), vel: Vector2.zero, size: 3 }).unwrap()
-    g.bullets.add(Bullet { pos: Vector2(100.0f, 100.0f), vel: Vector2.zero, ttl: 10 }).unwrap()
+    g.rocks.add(Rock { pos: Vector2(100.0, 100.0), vel: Vector2.zero, size: 3 }).unwrap()
+    g.bullets.add(Bullet { pos: Vector2(100.0, 100.0), vel: Vector2.zero, ttl: 10 }).unwrap()
     hit_rocks(g)
     expect g.rocks.count() == 2
     expect g.bullets.count() == 0
@@ -196,11 +196,11 @@ test "a bullet splits a big rock in two" {
 
 test "fragments use the slots of every rock hit in the same tick" {
     var g = Game {}
-    for i in 0..62 { g.rocks.add(Rock { pos: Vector2(500.0f, 500.0f), vel: Vector2.zero, size: 1 }).unwrap() }
-    g.rocks.add(Rock { pos: Vector2(100.0f, 100.0f), vel: Vector2.zero, size: 3 }).unwrap()
-    g.rocks.add(Rock { pos: Vector2(300.0f, 100.0f), vel: Vector2.zero, size: 1 }).unwrap()
-    g.bullets.add(Bullet { pos: Vector2(100.0f, 100.0f), vel: Vector2.zero, ttl: 10 }).unwrap()
-    g.bullets.add(Bullet { pos: Vector2(300.0f, 100.0f), vel: Vector2.zero, ttl: 10 }).unwrap()
+    for i in 0..62 { g.rocks.add(Rock { pos: Vector2(500.0, 500.0), vel: Vector2.zero, size: 1 }).unwrap() }
+    g.rocks.add(Rock { pos: Vector2(100.0, 100.0), vel: Vector2.zero, size: 3 }).unwrap()
+    g.rocks.add(Rock { pos: Vector2(300.0, 100.0), vel: Vector2.zero, size: 1 }).unwrap()
+    g.bullets.add(Bullet { pos: Vector2(100.0, 100.0), vel: Vector2.zero, ttl: 10 }).unwrap()
+    g.bullets.add(Bullet { pos: Vector2(300.0, 100.0), vel: Vector2.zero, ttl: 10 }).unwrap()
     hit_rocks(g)
     expect g.rocks.count() == 64              // 62 untouched + both fragments of the big one
 }
@@ -223,12 +223,12 @@ test "the bullet limit holds" {
 }
 ```
 
-**What it exercises:** named refinements (`Size`, `Lives`) and a cast to one (`(Size)(r.size - 1)`); a wrapping range on the angle and clamping ones on the timers, with `+=` and `-=` applying them; removing every hit rock before adding fragments; expiring bullets before they move; a respawn grace period; `?? continue`; `discard` where dropping a value is intended; `Full` handled where it matters (`fire`); pools with typed ids; removing after a loop, not during it; a widening method (`.to_long()`); random state in the game state; a read-only `draw` with a declared draw-list capacity; tests on a local `Game`.
+**What it exercises:** Rust-style ranges (`int 1..=3`, `for k in 0..2`); float literals with no `f`, taking `float` from context; named refinements (`Size`, `Lives`) and a cast to one (`(Size)(r.size - 1)`); a wrapping range on the angle and clamping ones on the timers, with `+=` and `-=` applying them; removing every hit rock before adding fragments; expiring bullets before they move; a respawn grace period; `?? continue`; `discard` where dropping a value is intended; `Full` handled where it matters (`fire`); pools with typed ids; removing after a loop, not during it; a widening method (`.to_long()`); random state in the game state; a read-only `draw` with a declared draw-list capacity; tests on a local `Game`.
 
 **Open points it raised:**
 
 - *Restarting:* resetting the whole game (`g = Game {}`) replaces pools, which the design's Later list says needs a rule for generations.
-- *Two meanings of `..`:* in a plain refinement (`int 0..100`) the range includes its end, a wrapping float range excludes it, and in a loop (`for k in 0..2`) it stops before it. Still open in DESIGN.md.
+- *Ranges:* resolved (2026-10-24): `..` excludes its end and `..=` includes it, everywhere, so `Size = int 1..=3` and `for k in 0..2` (two iterations) no longer use one spelling for two meanings.
 - *`Frame max 100`* is a guess at how `draw` declares its draw-list capacity.
 
 ## 2. A tool: logsum
@@ -238,6 +238,7 @@ A command-line tool that reads a directory of web-server access logs and prints 
 ```
 // logsum/main.nl
 type UrlPath = Ascii max 200
+type HttpStatus = int 100..=599
 
 enum ToolError { Usage, Io(IoError), TooManyFiles }
 
@@ -245,66 +246,78 @@ struct Counts {
     lines: long = 0
     responses: long = 0                      // lines that parsed
     errors: long = 0                         // responses with status 500 to 599
-    paths: map<UrlPath, long, 20_000>        // the first 20,000 distinct paths; later new ones go to skipped
-    skipped: long = 0                        // lines that didn't parse, or new paths once the map is full
+    paths: map<UrlPath, long, 20_000>        // the first 20,000 distinct paths
+    unparsed: long = 0                       // lines that didn't parse
+    untracked: long = 0                      // responses whose path came after the map filled
 }
 
 fn main(env: Env) -> Result<(), ToolError> {
     let dir = env.args().get(1) ?? return err(ToolError.Usage)
     let files = match env.fs.list(dir, max 500) {
-        ok(f) => f
+        ok(found) => found
         err(Full) => return err(ToolError.TooManyFiles)
         err(e) => return err(ToolError.Io(e))
     }
-    var total = Counts {}
-    for path in files { count_file(env.fs, path, total)? }
-    report(env.out, total)
+    var totals = Counts {}
+    for path in files { count_file(env.fs, path, totals)? }
+    report(env.out, totals)
     ok(())
 }
 
-fn count_file(fs: Fs, path: Path, c: write Counts) -> Result<(), ToolError> {
-    let file = io(fs.open(path))?
-    for line in file.lines(max 4096) {       // each line is a temporary, freed every iteration
-        let line = io(line)?                 // a read error ends the run with the error
-        c.lines += 1
+fn count_file(fs: Fs, path: Path, counts: write Counts) -> Result<(), ToolError> {
+    let file = tool_result(fs.open(path))?
+    for read in file.lines(max 4096) {       // each line is a temporary, freed every iteration
+        let line = tool_result(read)?        // a read error ends the run with the error
+        counts.lines += 1
         match parse(line) {
-            some(entry) => { c.responses += 1; count(c, entry) }
-            none => { c.skipped += 1 }
+            some(entry) => count(counts, entry)
+            none => { counts.unparsed += 1 }
         }
     }
     ok(())
 }
 
-// The one place an IoError becomes a ToolError.
-fn io<T>(r: Result<T, IoError>) -> Result<T, ToolError> {
-    match r { ok(v) => ok(v), err(e) => err(ToolError.Io(e)) }
+// The one place an I/O error becomes a ToolError.
+fn tool_result<T>(r: Result<T, IoError>) -> Result<T, ToolError> {
+    match r {
+        ok(value) => ok(value)
+        err(e) => err(ToolError.Io(e))
+    }
 }
 
-struct Entry { path: UrlPath, status: int 100..599 }
+struct Entry { path: UrlPath, status: HttpStatus }
 
 // A line looks like: 203.0.113.9 - - [24/Oct/2026:10:12:01 +0000] "GET /r/12 HTTP/1.1" 200 512
+// Anything that doesn't fit the format, or a path that isn't ASCII or is over 200 bytes,
+// makes the line unparsed.
 fn parse(line: Bytes max 4096) -> Option<Entry> {
-    let request = line.between('"', '"') ?? return none
-    let raw_path = request.word(1) ?? return none          // "GET /r/12 HTTP/1.1" -> "/r/12"
-    let ascii = raw_path.to_ascii().ok() ?? return none     // not ASCII: skipped
-    let path = ascii.fit<UrlPath>() ?? return none          // over 200 bytes: skipped
-    let status = line.after_last('"')?.word(0)?.parse_int() ?? return none
-    let code = status.fit<int 100..599>() ?? return none    // fit: the Option form of a checked cast
-    some(Entry { path, status: code })
+    let request = line.between('"', '"') ?? return none     // GET /r/12 HTTP/1.1
+    let raw_path = request.word(1) ?? return none            // /r/12
+    let ascii_path = raw_path.to_ascii().ok() ?? return none
+    let path = ascii_path.fit<UrlPath>() ?? return none      // fit: a checked cast that gives an Option
+
+    let response = line.after_last('"') ?? return none       //  200 512
+    let status_word = response.word(0) ?? return none        // 200
+    let status_number = status_word.parse_int() ?? return none
+    let status = status_number.fit<HttpStatus>() ?? return none
+    some(Entry { path, status })
 }
 
-fn count(c: write Counts, e: Entry) {
-    if e.status >= 500 { c.errors += 1 }
-    let n = c.paths.get(e.path) ?? 0
-    if c.paths.set(e.path, n + 1).is_err() { c.skipped += 1 }    // fails only for a new path in a full map
+fn count(counts: write Counts, entry: Entry) {
+    counts.responses += 1
+    if entry.status >= 500 { counts.errors += 1 }
+    let seen = counts.paths.get(entry.path) ?? 0
+    // set fails only for a new path once the map holds 20,000
+    if counts.paths.set(entry.path, seen + 1).is_err() { counts.untracked += 1 }
 }
 
-fn report(out: Out, c: Counts) {
-    out.line("lines   " + str(c.lines))
-    out.line("errors  " + percent(c.errors, c.responses))
-    out.line("skipped " + str(c.skipped))
-    for p, i in c.paths.top_by_value(20) {   // the 20 biggest counts, as {key, value} pairs
-        out.line(pad(str(i + 1), 3) + " " + pad(str(p.value), 10) + " " + p.key)
+fn report(out: Out, counts: Counts) {
+    out.line("lines      " + str(counts.lines))
+    out.line("errors     " + percent(counts.errors, counts.responses))
+    out.line("unparsed   " + str(counts.unparsed))
+    out.line("untracked  " + str(counts.untracked))
+    for top, rank in counts.paths.top_by_value(20) {   // the 20 biggest counts, as {key, value} pairs
+        out.line(pad(str(rank + 1), 3) + " " + pad(str(top.value), 10) + " " + top.key)
     }
 }
 
@@ -318,37 +331,49 @@ fn percent(part: long, whole: long) -> Ascii max 32 {
 ```
 // logsum/tests.nl
 test "parses a normal line" {
-    let e = parse("203.0.113.9 - - [24/Oct/2026:10:12:01 +0000] \"GET /r/12 HTTP/1.1\" 200 512".bytes())
-    expect e == some(Entry { path: "/r/12", status: 200 })
+    let entry = parse("203.0.113.9 - - [24/Oct/2026:10:12:01 +0000] \"GET /r/12 HTTP/1.1\" 200 512".bytes())
+    expect entry == some(Entry { path: "/r/12", status: 200 })
 }
 
 test "skips a line without a request" {
     expect parse("garbage".bytes()) == none
 }
 
-test "a full path map counts what it drops" {
-    var c = Counts {}
-    for i in 0..20_001 { count(c, Entry { path: "/p/" + str(i), status: 200 }) }
-    expect c.paths.count() == 20_000
-    expect c.skipped == 1
+test "a full path map counts what it can't track" {
+    var counts = Counts {}
+    for i in 0..20_001 { count(counts, Entry { path: "/p/" + str(i), status: 200 }) }
+    expect counts.paths.count() == 20_000
+    expect counts.untracked == 1
 }
 
+// The bug this guards against: counting each file in its own map and merging after,
+// which drops a path that a file meets only after its own map is full.
 test "a path's count is exact across files" {
-    var c = Counts {}
-    count(c, Entry { path: "/shared", status: 200 })                     // file A
-    for i in 0..19_999 { count(c, Entry { path: "/b/" + str(i), status: 200 }) }   // file B fills the map
-    for i in 0..1_000 { count(c, Entry { path: "/shared", status: 200 }) }
-    expect c.paths.get("/shared") == some(1_001)
-    expect c.skipped == 0
+    let fs = Fs.memory()
+    fs.write("a.log", log_line("/shared"))
+    var b = Text.builder(max 2 MB)
+    for i in 0..20_000 { b.append(log_line("/b/" + str(i))) }      // file B fills a map on its own
+    for i in 0..1_000 { b.append(log_line("/shared")) }
+    fs.write("b.log", b.text())
+    var counts = Counts {}
+    count_file(fs, "a.log", counts).unwrap()
+    count_file(fs, "b.log", counts).unwrap()
+    expect counts.paths.get("/shared") == some(1_001)
+    expect counts.untracked == 1                    // the last /b/ path: one shared map has 20,001 distinct paths
+}
+
+fn log_line(path: Ascii max 200) -> Ascii max 300 {
+    "203.0.113.9 - - [24/Oct/2026:10:12:01 +0000] \"GET " + path + " HTTP/1.1\" 200 512\n"
 }
 ```
 
-**What it exercises:** a named refinement (`UrlPath`); a bounded directory listing; line-by-line reading with each line freed per iteration; one set of totals passed down in `write` mode; one small generic function (`io`) for the single error conversion; `?.` chained into `??`; `fit`, the `Option` form of a checked cast; a bounded `map` with its overflow counted, not lost; `+=` on `long` counters with no literal suffixes; widening methods (`.to_double()`).
+**What it exercises:** named refinements (`UrlPath`, `HttpStatus`); a bounded directory listing; line-by-line reading with each line freed per iteration; one set of totals passed down in `write` mode; a small generic function (`tool_result`) for the single error conversion; a parser that takes one step per line, each ending in `?? return none`; `fit`, the `Option` form of a checked cast; a bounded `map` whose overflow is counted separately (`untracked`) from bad input (`unparsed`); `+=` on `long` counters with no literal suffixes; widening methods (`.to_double()`); a regression test that reads real (in-memory) files.
 
 **Open points it raised:**
 
-- *Error conversion:* `io(...)?` converts an `IoError` by hand; Rust does this automatically with `From`. One explicit helper per program reads fine here, but a larger program would want the rule in the language.
-- *Reading files in parallel:* this version reads the files one after another, which keeps every count exact and uses one map. Counting in parallel (one spawned job per file) would need either a first pass to choose the 20,000 paths and a second to count them, or a merge that accepts some loss; `parallel for` bodies can't do I/O, so it would use `spawn` and `join`. Worth doing only if measurements say reading is the bottleneck.
+- *Error conversion:* `tool_result(...)?` converts an `IoError` by hand; Rust does this automatically with `From`. One explicit helper per program reads fine here, but a larger program would want the rule in the language.
+- *`?.` on a method that already returns an `Option`:* `line.after_last('"')?.word(0)` would give an `Option` inside an `Option`, since `?.` wraps its result. The parser avoids it by taking one step per line; the design should say whether `?.` flattens such results (most languages with `?.` do).
+- *Reading files in parallel:* this version reads the files one after another, which keeps every count exact and uses one map. Counting in parallel (one spawned job per file) would need a first pass to choose the 20,000 paths and a second to count them; `parallel for` bodies can't do I/O, so it would use `spawn` and `join`. Worth doing only if measurements say reading is the bottleneck.
 - *The busiest paths, really:* keeping the first 20,000 distinct paths can miss one that becomes popular late; a bounded "heavy hitters" structure (approximate counts for the most frequent keys, in fixed space) would fix it, and the standard library could provide one.
 
 ## 3. A server API: messages with a rate limit
@@ -357,13 +382,15 @@ A JSON API over the chat server's database: list a room's messages a page at a t
 
 ```
 // chat-api/limits.nl
+// Uses the chat server's data (Room, Message, Name, Body) from DESIGN.md's overview.
+//
 // One token a second, up to 60 saved up. Exact: every request goes through the
 // writer (decided 2026-10-24 for v1; measured on the server benchmark).
 type Address = Ascii max 45                  // IPv6 text is at most 45 characters
 
 struct Bucket {
-    tokens: int 0..60 clamp = 60
-    since: Instant                           // the monotonic clock's time when tokens were last topped up
+    tokens: int 0..=60 = 60
+    refilled_through: Instant                // tokens have been added for all time up to here
 }
 
 struct Limits { by_address: map<Address, Bucket, 100_000> }
@@ -371,12 +398,15 @@ struct Limits { by_address: map<Address, Bucket, 100_000> }
 shared global limits: Limits = Limits {}
 
 // The refill rule, on its own: pure, so it's easy to test. One token per whole second
-// waited; `since` moves on by those whole seconds only, so a part-second already
-// waited still counts next time.
-fn refill(b: Bucket, now: Instant) -> Bucket {
-    let secs = (now - b.since).whole_seconds()
-    if secs >= 60 { return Bucket { tokens: 60, since: now } }
-    Bucket { tokens: b.tokens + (int)secs, since: b.since + Duration.seconds(secs) }   // stored, so clamped to 60
+// since refilled_through, at most 60 in all. refilled_through moves on by whole seconds
+// only, so a part-second already waited still counts next time.
+fn refill(bucket: Bucket, now: Instant) -> Bucket {
+    let elapsed_seconds = (now - bucket.refilled_through).whole_seconds()
+    let added_tokens = (int)min(elapsed_seconds, 60)
+    Bucket {
+        tokens: min(60, bucket.tokens + added_tokens),
+        refilled_through: bucket.refilled_through + Duration.seconds(elapsed_seconds),
+    }
 }
 
 // May this address make a call now? Runs on the writer, against the latest version.
@@ -385,13 +415,17 @@ fn refill(b: Bucket, now: Instant) -> Bucket {
 fn take_token(address: Address, clock: Clock) -> bool {
     let result = transaction {
         let now = clock.monotonic()
-        var b = refill(limits.by_address.get(address) ?? Bucket { since: now }, now)
-        let allowed = b.tokens > 0
-        if allowed { b.tokens -= 1 }
-        limits.by_address.set(address, b)?   // a full map ends the transaction with err(Full)
+        let known = limits.by_address.get(address) ?? Bucket { refilled_through: now }   // a new address starts full
+        var bucket = refill(known, now)
+        let allowed = bucket.tokens > 0
+        if allowed { bucket.tokens -= 1 }
+        limits.by_address.set(address, bucket)?   // a full map ends the transaction with err(Full)
         ok(allowed)
     }
-    result.ok() ?? false                     // 100,000 addresses tracked: fail closed until pruned
+    match result {
+        ok(allowed) => allowed
+        err(Full) => false                   // 100,000 addresses tracked: refuse until pruned
+    }
 }
 
 // Every minute, forget addresses that have been quiet for a minute (their bucket
@@ -399,7 +433,7 @@ fn take_token(address: Address, clock: Clock) -> bool {
 task every 60s prune_limits(clock: Clock) {
     transaction {
         let cutoff = clock.monotonic() - Duration.seconds(60)
-        limits.by_address.remove_where(.since < cutoff)
+        limits.by_address.remove_where(.refilled_through < cutoff)
     }
 }
 ```
@@ -441,11 +475,19 @@ fn respond(e: ApiError) -> Response {
 
 test "refill tops up one token a second and keeps the fraction" {
     let t0 = Instant.at_ms(0)
-    let b = Bucket { tokens: 0, since: t0 }
-    let later = refill(b, t0 + Duration.ms(2500))
+    let empty = Bucket { tokens: 0, refilled_through: t0 }
+    let later = refill(empty, t0 + Duration.ms(2_500))
     expect later.tokens == 2
-    expect later.since == t0 + Duration.seconds(2)   // the half second carries over
-    expect refill(b, t0 + Duration.seconds(90)).tokens == 60
+    expect later.refilled_through == t0 + Duration.seconds(2)    // the half second carries over
+    expect refill(empty, t0 + Duration.seconds(90)).tokens == 60
+}
+
+test "the fraction survives a long wait too" {
+    let t0 = Instant.at_ms(0)
+    let full = refill(Bucket { tokens: 0, refilled_through: t0 }, t0 + Duration.ms(60_500))
+    expect full.tokens == 60
+    let drained = Bucket { tokens: 0, refilled_through: full.refilled_through }   // 60 calls at once
+    expect refill(drained, t0 + Duration.ms(61_000)).tokens == 1   // refilled through 60 s, so at 61 s a whole second has passed
 }
 
 scenario "a reader pages back through history" {
@@ -471,13 +513,12 @@ scenario "one address is slowed down, another isn't, and recovers" {
 }
 ```
 
-**What it exercises:** a pure helper (`refill`) split out of a transaction so it can be tested directly; a `shared global` updated in a transaction on its writer; the clock as a capability, read inside the transaction from its monotonic side; `Instant` and `Duration`; a `clamp` range on the token count; a scheduled task that prunes quiet addresses; a bounded `map` that fails closed when full; a database read bounded by `limit(100)` and paging by key; a JSON result type generated from a struct; one function mapping errors to responses, headers included; scenarios that start fresh, with a frozen, advanceable clock.
+**What it exercises:** a pure helper (`refill`) split out of a transaction so it can be tested directly; a `shared global` updated in a transaction on its writer; the clock as a capability, read inside the transaction from its monotonic side; `Instant` and `Duration`; the 60-token cap written where it's computed (`min`), not left to a range far away; a scheduled task that prunes quiet addresses; a bounded `map` that fails closed when full; a database read bounded by `limit(100)` and paging by key; a JSON result type generated from a struct; one function mapping errors to responses, headers included; scenarios that start fresh, with a frozen, advanceable clock.
 
 **Open points it raised:**
 
 - *Clocks:* `clock.monotonic()`, `Instant` and a scenario's `advance 3s` are new; DESIGN.md's Later list has the monotonic clock, and this suggests its shape. Reading a capability inside a writer transaction should be allowed explicitly for the clock (it doesn't wait), even though other I/O isn't.
 - *Scheduled tasks:* `task every 60s` is new syntax for a recurring job; the design has jobs but not how they're scheduled.
-- *`result.ok() ?? false`:* turning a `Result` into an `Option` to use `??` reads well here because the only error is `Full`; with several errors a `match` says more.
 - *`call … from … with db`:* the scenario syntax for calling an `api` as a client would is a guess.
 
 ## 4. Compute: CRC-32
@@ -493,15 +534,15 @@ const POLY: uint = 0xEDB88320u
 const TABLE: uint[256] = make_table()
 
 fn make_table() -> uint[256] {
-    var t: uint[256] = fill(0u)
+    var table: uint[256] = fill(0)
     for i in 0..256 {                        // an index: a long, from its use below
-        var c = (uint)i
+        var remainder = (uint)i
         for k in 0..8 {
-            c = if (c & 1) != 0 { POLY ^ (c >> 1) } else { c >> 1 }
+            remainder = if (remainder & 1) != 0 { POLY ^ (remainder >> 1) } else { remainder >> 1 }
         }
-        t[i] = c
+        table[i] = remainder
     }
-    t
+    table
 }
 
 pub fn crc32(data: Bytes) -> uint {
@@ -535,5 +576,5 @@ test "the standard check value" {
 
 **Open points it raised:**
 
-- *Loop counter types:* `for i in 0..256` is used as an index, so it should be a `long`; this example assumes a loop's counter type comes from how it's used, which DESIGN.md doesn't say yet.
-- *The last expression of a block is its value* (`t`, `crc ^ 0xFFFFFFFF`), while other examples use `return`; DESIGN.md lists this as open.
+- *Loop counter types:* resolved (2026-10-24): a counter takes its type from its bounds and use, so `i` in `for i in 0..256` is a `long` because it indexes `table`.
+- *The last expression of a block is its value* (`table`, `crc ^ 0xFFFFFFFF`), while other examples use `return`; DESIGN.md lists this as open.
