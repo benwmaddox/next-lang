@@ -55,13 +55,13 @@ docs/tasks/T15-report.md.
       out
   }
   fn line(i: int 0..=499) -> Ascii max 80 {
-      let name = ascii_upper(label(i))        // a real temporary on stack 1, as in DESIGN.md
+      let name = label(i)                     // one real temporary on stack 1, as in DESIGN.md
       name + ": " + str(i * 7)
   }
-  fn label(i: int 0..=499) -> Ascii max 60 { "row" + str(i) }
+  fn label(i: int 0..=499) -> Ascii max 60 { ascii_upper("row") + str(i) }   // built straight into its destination
   ```
 
-  Keep DESIGN.md's explicit `let name = ascii_upper(...)` so the temporary exists and `k = 1`; the collection version of the example is T16's.
+  Keep the explicit `let name = ...` so the temporary exists and `line`'s window is `k = 1` (`label` writes into the destination `line` gives it, needing no scratch of its own, and `ascii_upper` of a literal needs none). Wrapping one call in another (`ascii_upper(label(i))`) would add a second temporary and make `k = 2`. The collection version of the example is T16's.
 - Append-mode failure: a fallible producer returns its error to the caller as an `err`, distinct from `Full`; in both cases the builder is rolled back even after a prefix was written. Test both.
 - `s = s + piece` becomes an in-place append only when `piece` doesn't read `s`; otherwise T14's overlap handling applies.
 - Function types carry each function's byte bounds per stack (not only its window and append flag), and calls through function values take the maximum over every function that fits; T17 relies on this.
