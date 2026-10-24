@@ -48,14 +48,14 @@ database Chat: sqlite {
 
 struct Viewer { name: Name }       // put in place by the server from the session, never from a form
 
-enum PostError { Empty, Full }     // Full: the database's disk quota is used up
+enum PostError { Empty, Full }     // Full: the disk quota is used up, or the record's keys have run out
 
 struct Presence { who: map<Room.Key, set<Name, 200>, 1000> }
 shared global online: Presence = Presence {}   // small, live, read by every request
 
 // chat/pages.nl: what people see
 page room(room_key: Room.Key, db: Db<Chat>) -> Html {
-    let found = db.read {                      // one read transaction: both queries see one version
+    let found = db.read {                      // reads only the room; Messages may see a newer version
         Room.get(room_key)
     }
     let r = found ?? return not_found()        // no such room: answer 404 and stop
@@ -84,7 +84,7 @@ action post(room_key: Room.Key, body: Body, me: Viewer, db: Db<Chat>) -> Result<
     if body.trim() == "" { return err(PostError.Empty) }
     db.transaction {
         Message.add(Message { room: room_key, author: me.name, body })
-    }.map_err(|e| PostError.Full)?             // the only way this insert fails is the quota
+    }.map_err(|e| PostError.Full)?             // an insert fails only when full (quota or keys)
     signal Messages(room_key)                  // open pages showing this room's messages refresh
     ok(())
 }
@@ -112,7 +112,7 @@ fn main(env: Env) -> Result<(), StartError> {
 
 What the compiler knows from this, without being told more:
 
-- **Effects:** `room` and `Messages` read the `Chat` database and the `online` snapshot; `post` reads and writes `Chat` and sends a live signal. The change review flags any new effect.
+- **Effects** (what a function may do outside itself, tracked by the compiler) and **capabilities** (the values that grant them): `room` reads the `Chat` database and the `online` snapshot; `Messages` reads `Chat`; `post` reads and writes `Chat` and sends a live signal (the `signal` effect, granted by `serve` to the pages and actions it routes). The change review flags any new effect.
 - **Bounds:** every query is bounded (`limit(50)`), so each request's memory is too, and a rendered page's size is bounded by its inputs plus its markup and escaping.
 - **One declaration:** `Body`'s 2,000 code points are the form's counter, the server's check and the database's CHECK. The browser's own `maxlength` isn't used for `Text`, since it counts something else (UTF-16 units).
 - **Trust:** `Viewer` comes from the session, which `main` set up, so a form can't claim to be someone else; `room_key` comes from the URL and is checked like any input.
@@ -484,7 +484,7 @@ Refinement types are the design's best lever: one declaration serves correctness
 
 **The base:** values with no null; `Option` and `Result`; records; enums with payloads and exhaustive `match`; generics with static traits; newtypes (a `UserId` is not an `Int`). Arithmetic is checked: an overflow is a failure, and wrapping is spelled `+%`.
 
-**Failures** that aren't values: an overflow, a divisor of 0, an index the compiler couldn't prove in range and that turns out not to be, a data stack or the native-stack budget exhausted, the step budget spent (an unbounded loop's limit), a time limit passed. Each fails the job, as a stack limit does (see Memory): the job ends with an error carrying the source line. A function returning plain `T` therefore never returns a half-made value.
+**Failures** that aren't values: an overflow, an integer divisor of 0 (float division by zero gives infinity; see Numbers), an index the compiler couldn't prove in range and that turns out not to be, a data stack or the native-stack budget exhausted, the step budget spent (an unbounded loop's limit), a time limit passed. Each fails the job, as a stack limit does (see Memory): the job ends with an error carrying the source line. A function returning plain `T` therefore never returns a half-made value.
 
 **What failing a job does,** in this order, so nothing can touch memory after it's reused:
 
@@ -570,7 +570,7 @@ This is also where refinement types pay twice: the same `Int 0..100` that a form
 
 What a function may touch is part of its type, inferred across calls, and granted only by the program's entry point (Hobthrush's model).
 
-- A closed effect set: `db.read`, `db.write`, `fs.read`, `fs.write`, `net`, `clock`, `random`, `env`, `secret`, `log`, `spawn`. No effects means pure.
+- A closed effect set: `db.read`, `db.write`, `fs.read`, `fs.write`, `net`, `clock`, `random`, `env`, `secret`, `log`, `spawn`, `signal` (telling open pages to refresh a live piece; `serve` grants it to the pages and actions it routes, and the manifest lists it). No effects means pure.
 - **Pure** means deterministic (the same inputs give the same result) with no effects. A pure function may still change or grow what it's handed through a write or grow parameter; those modes are part of its type, so callers and the compiler see them.
 - **Cacheable** is narrower than pure: no effects, every parameter read-only, and a result the function owns. Only cacheable functions may be cached, evaluated at compile time or used by cached page pieces, since skipping a call to one changes nothing but the time taken. A pure function that appends to its caller's list isn't cacheable: reusing a saved result would skip the append.
 - **Reading a snapshot is pure,** because the snapshot is an input: a function that reads shared state takes the pinned snapshot as a read-only parameter (passed implicitly, like the context pointer), and its result depends on that version. Reading program or job state isn't: it's the owner's current state, which can change between two calls, so a function that reads it isn't cacheable in v1 (a test checks that changing a row between calls can't reuse an old cached result). Database reads are effects (`db.read`). Parallel loop bodies and cached pieces may read the snapshot; a cache keys its entries by the snapshot's version, so a cached result never outlives the data it came from.
@@ -638,7 +638,7 @@ How code is organised, how servers produce pages, and how games talk to the scre
 - **Defaults follow HTML:** plain lowercase tags are HTML elements; a capitalised tag is a page piece declared in the language (`<MessageList room={id}/>`).
 - **Forms are bound to actions:** `<form action={post(id)}>` generates the route, the field names and the checks. Field limits come from the action's parameter types (One declaration, every layer), so the form and the server can't disagree.
 - **Caching:** a page piece that is cacheable (no effects, read-only inputs; Effects and capabilities) is rendered once and kept, keyed by its inputs and their snapshot version; per-request pieces are rendered once per page (Burin's render-once).
-- **Live updates:** a page piece used with `live` (`<Messages room_key={k} db={db} live/>`) re-runs when it's signalled: `signal Messages(k)` tells open pages showing that piece with that argument to refresh it. The re-run is a new job that loads current data itself, through the piece's own parameters, so nothing from the original request (no stack value, no view, no snapshot pin) survives to the refresh. Each piece reads in its own read transaction, so two pieces on one page may see different versions; a page that needs them consistent reads once and passes the result down. Updates go over one stream per open page (Burin's server-sent events). Notices are numbered, repeats for the same piece are combined, and a page that reconnects reloads its live pieces, so a lost notice (a commit that succeeded before the signal was sent, a dropped connection) costs at most a stale view until the next notice or reconnect. Each open page's queue of notices is bounded; when it's full, its oldest notices are combined into "reload everything". A piece's rendered size is bounded by its inputs plus its markup and escaping, and request bodies are checked against their byte limits before any decoding.
+- **Live updates:** a page piece used with `live` (`<Messages room_key={k} db={db} live/>`) re-runs when it's signalled: `signal Messages(k)` tells open pages showing that piece with that argument to refresh it. The re-run is a new job that loads current data itself, through the piece's own parameters, so nothing from the original request (no stack value, no view, no snapshot pin) survives to the refresh. An open page's subscription keeps only bounded copies of the piece's plain arguments (`room_key`); capabilities such as `Db` are supplied again by `serve` for the new job, never stored with the page. Each piece reads in its own read transaction, so two pieces on one page may see different versions; a page that needs them consistent reads once and passes the result down. Updates go over one stream per open page (Burin's server-sent events). Notices are numbered, repeats for the same piece are combined, and a page that reconnects reloads its live pieces, so a lost notice (a commit that succeeded before the signal was sent, a dropped connection) costs at most a stale view until the next notice or reconnect. Each open page's queue of notices is bounded; when it's full, its oldest notices are combined into "reload everything". A piece's rendered size is bounded by its inputs plus its markup and escaping, and request bodies are checked against their byte limits before any decoding.
 - **Pages and actions are entry points:** each is a job (Threads and data stacks); a route table in `main` connects URLs to them.
 
 ### The game host (games)
@@ -649,7 +649,7 @@ Games run as StasisLang games do: the host owns the window, input, audio and tim
 - **Input is a value:** keys, pointer, touch and gamepad for this step, plus the step's time. Nothing else in a game reads the clock or randomness except through capabilities (`Random` seeded at start, its state kept in the game state so saves and replays include it; `draw` gets a separate random source, so how often frames are drawn can't change what later ticks do), so a recording of the inputs replays the game exactly (Correctness tools, Determinism).
 - **Drawing goes through a capability:** `frame.sprite(...)`, `frame.text(...)`, `frame.rect(...)`, recorded into a draw list that the host renders. The list's capacity is declared (`frame max 20000`), and a draw past it is dropped and counted, with the count shown in development builds. Assets (images, sounds, fonts) are declared in the package and loaded at startup into frozen pools that live for the whole run, so play never loads or allocates.
 - **Saves:** a save is the program state tree, written by path, including the simulation's random state; loading checks it like any initial value (Static allocation).
-- **A failed tick stops the game** (decided 2026-10-24): an overflow, a full collection the code didn't handle, or any other failure in `tick` ends the game with the error and the recorded inputs, so it can be replayed to the failing line. There's no staging, so ticks cost nothing extra; a game that wants to survive a failure handles the `Result` itself.
+- **A failed tick stops the game** (decided 2026-10-24): an overflow, a full collection the code didn't handle, or any other failure in `tick` ends the game with the error and the recorded inputs, so it can be replayed to the failing line. There's no staging, so ticks cost nothing extra. A failure can't be caught and continued from, since the tick's state may be partly changed; a game that wants to survive a condition checks for it first, with the forms that return a value instead of failing: handling a collection's `Full` result (ignoring it is a build error anyway) or using `checked_add` and the other `Option`-returning operations.
 - **Replays are exact on the same build and platform** (decided 2026-10-24): a recording stores the build's identity, the initial state and assets, the random seed and the random generator's version, and the inputs. Replaying on another build or machine is best effort.
 - **Tools for free:** because the whole game's state is one tree, `inspect` reads any path between ticks, and a recorded run replays tick by tick and stops at the first tick whose state hash differs (as `stasis replay` does).
 
