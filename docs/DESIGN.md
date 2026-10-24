@@ -567,6 +567,13 @@ Refinement types are the design's best lever: one declaration serves correctness
 
 **Named refinements** (decided 2026-10-24): a refinement used in more than one place gets a name, `type Size = int 1..=3` or `type UrlPath = Ascii max 200`, and code uses the name; it's the same type, not a new one, so a `Size` is an `int` with that range wherever it goes. Casting to a refinement uses its name like any other cast: `(Size)(r.size - 1)`, checked unless the compiler proves it fits. (A `newtype`, by contrast, makes a distinct type: a `UserId` isn't an `int`.)
 
+**The refinement contract** (decided 2026-10-24, before M1). When a value goes into a refined type, whether assigned, passed as an argument, returned or stored in a field:
+- if the compiler proves it fits (from ranges, earlier checks or control flow: `r.size - 1` after `if r.size == 1 { return }` fits `Size`), it costs nothing and nothing is written;
+- if it can't prove it, that's a build error asking for one of two explicit forms: a cast, `(Size)(x)`, checked at run time (a value that doesn't fit fails the job), or `x.fit<Size>()`, which returns an `Option`. There's never a hidden check on a line that doesn't show one;
+- a `wrap` or `clamp` type accepts any value of its base type, since wrapping or clamping is what it's for;
+- literals and constants are checked at compile time;
+- arithmetic on refined values produces the plain base type (`int`), with the range the compiler worked out kept for later proofs.
+
 **How they are checked:**
 
 - Values enter a refined type at a boundary only: parsing input, reading a column, or an explicit `check`, which returns `Result`. Inside, operations keep or prove the refinement. Parse, don't validate.
