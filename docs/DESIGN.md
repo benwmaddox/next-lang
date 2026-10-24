@@ -34,57 +34,90 @@ A summary of the whole design, with a small complete program. Each piece points 
 - **One declaration, every layer:** a field's `max 80` is also the database's check, the form's limit and the API's schema (One declaration, every layer).
 - **Tests in the language:** `test` blocks with `expect`, scenarios, `check fast == reference` (Correctness tools).
 
-**A small program: a chat server.** A package is a directory; every file in it sees every other, with no imports.
+**A small program: a chat server.** A package is a directory; every file in it sees every other, with no imports. Each line here is meant to be one the compiler, as designed, would accept; comments say what it relies on.
 
 ```
 // chat/model.nl: the data
+type Body = Text max 2000          // one declaration, used by the record, the action and the form
+type Name = Ascii max 32
+
 database Chat: sqlite {
     record Room { name: Text max 80 }
-    record Message { room: Room.Key, author: Ascii max 32, body: Text max 2000 }
+    record Message { room: Room.Key, author: Name, body: Body }
 }
 
-struct Presence { who: map<Room.Key, set<Ascii max 32, 200>, 1000> }
+struct Viewer { name: Name }       // put in place by the server from the session, never from a form
+
+enum PostError { Empty, Full }     // Full: the database's disk quota is used up
+
+struct Presence { who: map<Room.Key, set<Name, 200>, 1000> }
 shared global online: Presence = Presence {}   // small, live, read by every request
 
 // chat/pages.nl: what people see
-page room(id: Room.Key, db: Db) -> Html {
-    let r = db.read { Room.get(id) } ?? not_found()
-    let recent = db.read { Message.where(.room == id).newest(50) }   // limit 50: a bounded list
+page room(room_key: Room.Key, db: Db<Chat>) -> Html {
+    let found = db.read {                      // one read transaction: both queries see one version
+        Room.get(room_key)
+    }
+    let r = found ?? return not_found()        // no such room: answer 404 and stop
+    let here = online.who.get(room_key).map(.count()) ?? 0
     <h1>{r.name}</h1>
-    <p>{online.who.get(id).count()} here</p>
-    <ul live>
-        for m in recent { <li><b>{m.author}</b> {m.body}</li> }
-    </ul>
-    <form action={post(id)}>
-        <input name="body">        // maxlength and the server check come from Message.body
+    <p>{here} here</p>
+    <Messages room_key={room_key} db={db} live/>
+    <form action={post(room_key)}>
+        <input name="body">        // a code-point counter and the server check come from Body
     </form>
 }
 
+// A page piece. `live` on its use above means: when this room is signalled,
+// open pages re-run this piece, which loads the current rows itself.
+piece Messages(room_key: Room.Key, db: Db<Chat>) -> Html {
+    let recent = db.read {
+        Message.where(.room == room_key).order(.key desc).limit(50)   // newest 50, by key
+    }
+    <ul>
+        for m in recent { <li><b>{m.author}</b> {m.body}</li> }
+    </ul>
+}
+
 // chat/actions.nl: what changes data
-action post(room: Room.Key, body: Text max 2000, me: Viewer, db: Db) -> Result<(), PostError> {
-    require body.trim() != "" else PostError.Empty
-    db.transaction { Message.add(Message { room, author: me.name, body }) }?
-    signal room(room)                                                  // open pages update
+action post(room_key: Room.Key, body: Body, me: Viewer, db: Db<Chat>) -> Result<(), PostError> {
+    if body.trim() == "" { return err(PostError.Empty) }
+    db.transaction {
+        Message.add(Message { room: room_key, author: me.name, body })
+    }.map_err(|e| PostError.Full)?             // the only way this insert fails is the quota
+    signal Messages(room_key)                  // open pages showing this room's messages refresh
+    ok(())
 }
 
 // chat/tests.nl
 test "a post shows up for others" {
-    let db = Db.memory()
-    let room = db.transaction { Room.add(Room { name: "General" }) }
-    expect post(room, "hello", Viewer.named("ann"), db).ok()
-    let page = room(room, db)
-    expect page.contains("hello")
-    expect post(room, "   ", Viewer.named("ann"), db) == err(PostError.Empty)
+    let db = Db.memory(Chat)
+    let room_key = db.transaction { Room.add(Room { name: "General" }) }.unwrap()
+    let ann = Viewer { name: "ann" }
+    expect post(room_key, "hello", ann, db) == ok(())
+    expect room(room_key, db).contains("hello")
+    expect post(room_key, "   ", ann, db) == err(PostError.Empty)
 }
 
 // chat/main.nl: the entry point grants capabilities
-fn main(env: Env) {
-    let db = env.open(Chat, "chat.db")
-    serve(env.http(8080), routes { "/r/{id}" => room, "/r/{id}/post" => post }, db)
+fn main(env: Env) -> Result<(), StartError> {
+    let db = env.open(Chat, "chat.db")?        // fails startup, not a request
+    let http = env.http(8080)?
+    serve(http, sessions: env.sessions(Viewer), routes {
+        get  "/r/{room_key}"      => room(room_key, db)
+        post "/r/{room_key}/post" => post(room_key, form.body, session.viewer, db)
+    })
 }
 ```
 
-What the compiler knows from this, without being told more: `room` and `post` read and write only `Chat`, so the change review flags any new effect; every query is bounded (`newest(50)`), so each request's memory is too; `body`'s 2,000 code points become the form's limit, the server's check and the database's CHECK; `online` is shared, so its reads come from a snapshot and its writes go through its writer; the test runs against an in-memory database with the same declarations.
+What the compiler knows from this, without being told more:
+
+- **Effects:** `room` and `Messages` read the `Chat` database and the `online` snapshot; `post` reads and writes `Chat` and sends a live signal. The change review flags any new effect.
+- **Bounds:** every query is bounded (`limit(50)`), so each request's memory is too, and a rendered page's size is bounded by its inputs plus its markup and escaping.
+- **One declaration:** `Body`'s 2,000 code points are the form's counter, the server's check and the database's CHECK. The browser's own `maxlength` isn't used for `Text`, since it counts something else (UTF-16 units).
+- **Trust:** `Viewer` comes from the session, which `main` set up, so a form can't claim to be someone else; `room_key` comes from the URL and is checked like any input.
+- **Shared state:** `online` is shared, so its reads come from a snapshot and its writes go through its writer.
+- **Tests:** the test runs against an in-memory database with the same declarations.
 
 ## Evidence from the six languages
 
@@ -464,13 +497,13 @@ Refinement types are the design's best lever: one declaration serves correctness
 
 **Numbers** (proposed 2026-10-24, except where marked decided)
 
-- **Integers:** `Int` is 64-bit and signed, the default. Sized forms exist for storage and C: `Int8`, `Int16`, `Int32`, `Int64`, and unsigned `UInt8` to `UInt64`; `Byte` is `UInt8`. A range refinement picks the storage: a field declared `hp: Int 0..1000` is stored in 16 bits in state's arrays (one array per field, so this halves or quarters the memory a loop streams through), while arithmetic on it happens at 64 bits and is narrowed, checked, on the way back.
-- **Arithmetic is checked:** an overflow fails the job (Failures). Wrapping is spelled `+%`, `-%`, `*%`, as hashes and checksums need; `checked_add` and friends return `Option`. Bit operations (`&`, `|`, `^`, `<<`, `>>`) work on any integer; a shift outside 0 to its width fails. Division truncates toward zero; dividing by zero fails.
+- **Integers:** `Int` is 64-bit and signed, the default. Sized forms exist for storage and C: `Int8`, `Int16`, `Int32`, `Int64`, and unsigned `UInt8` to `UInt64`; `Byte` is `UInt8`. A range refinement picks the storage: a field declared `hp: Int 0..1000` is stored in 16 bits in state's arrays (one array per field, so this halves or quarters the memory a loop streams through), while arithmetic on it follows its logical type, here 64-bit `Int` (its overflow and shift rules included), and is narrowed, checked, on the way back. Storage width never changes what a calculation means: `UInt64` keeps unsigned 64-bit arithmetic wherever it's stored.
+- **Arithmetic is checked:** an overflow fails the job (Failures). Wrapping is spelled `+%`, `-%`, `*%`, as hashes and checksums need; `checked_add` and friends return `Option`. Bit operations (`&`, `|`, `^`, `<<`, `>>`) work on any integer; a shift by n needs `0 <= n < width` (shifting a 64-bit value by 64 fails). Integer division truncates toward zero; dividing by zero fails, and so does the one division that overflows, the most negative value divided by −1.
 - **No implicit conversions:** `Int32` to `Int` is free and spelled `.to_int()`; narrowing (`Int` to `UInt8`) is `to_u8()`, checked, or `wrap_u8()`, wrapping. A range refinement that proves the value fits makes the checked form free.
-- **Floats:** `Float` is 64-bit IEEE, `Float32` 32-bit, for games and measurement. Ranges apply (`Float 0.0..1.0`). A plain `Float` never holds NaN (the "not a number" value from `0.0 / 0.0` or `sqrt(-1.0)`; decided 2026-10-24): an operation that would produce one fails the job at that line, as an integer overflow does, so the bug shows up where it was made, not frames later. `FloatNaN` (and `Float32NaN`) allows it for code that wants IEEE behaviour, and a `fast { }` block may produce it inside; converting back to `Float` is checked. Infinities are allowed unless a range excludes them.
-- **Deterministic by default:** float code compiles without fast-math, so the same binary gives the same results on every run, which game replays and `check fast == reference` rely on. A `fast { }` block allows reordering for speed (LLVM's fast-math flags) where exact repeatability doesn't matter, and its results are excluded from replay checks.
+- **Floats:** `Float` is 64-bit IEEE, `Float32` 32-bit, for games and measurement. Ranges apply (`Float 0.0..1.0`). A plain `Float` never holds NaN (the "not a number" value from `0.0 / 0.0` or `sqrt(-1.0)`; decided 2026-10-24): an operation that would produce one fails the job at that line, as an integer overflow does, so the bug shows up where it was made, not frames later. `FloatNaN` (and `Float32NaN`) allows it for code that wants IEEE behaviour, and a `fast { }` block may produce it inside; converting back to `Float` is checked. Infinities are allowed unless a range excludes them, so `1.0 / 0.0` is infinity, and only a result that would be NaN fails; the "dividing by zero fails" rule is for integers. `FloatNaN` follows IEEE exactly: nothing about it fails.
+- **Deterministic by default:** float code compiles without fast-math, so the same binary gives the same results on every run, which game replays and `check fast == reference` rely on. A `fast { }` block allows reordering for speed where exact repeatability doesn't matter. It uses only the fast-math permissions that keep NaN and infinity meaningful (LLVM's `reassoc`, `contract` and `arcp`: reorder, fuse a multiply and add, use a reciprocal), never the ones that assume no NaN or infinity. Its results are typed `FloatNaN` and checked on the way back to `Float`. A game's `fast` results may be used for drawing but not stored in the state `tick` changes or used to decide what it does, which the compiler checks, since replay compares that state exactly.
 - **Vectors:** `Vec2`, `Vec3`, `Vec4` (of `Float32` by default) with operators, for games. Loops over state's arrays are where most speed comes from: one array per field means LLVM's auto-vectorizer (which turns a loop into instructions working on 4 or 8 values at once) usually applies on its own. An explicit `simd<Float32, 8>` type exists for code that needs to control it.
-- **Fixed-point:** `Fixed<2>` is an integer counting hundredths, for money and other exact decimals; it never rounds silently.
+- **Fixed-point:** `Fixed<2>` is an integer counting hundredths, for money and other exact decimals; it never rounds silently. Adding two `Fixed<2>` gives a `Fixed<2>`; multiplying gives an exact `Fixed<4>` (1.23 × 1.23 = 1.5129), computed in 128 bits; getting back to hundredths takes an explicit rounding (`.round_to<2>(half_even)`). Division needs a rounding mode too.
 - **Literals:** `1_000_000`, `0xFF`, `0b1010`, `1.5`, `2.0f32`; a literal takes the type its context needs, and one that doesn't fit is a build error.
 
 **Text, ASCII and bytes** (decided 2026-10-24): `Text` is always valid UTF-8; `Ascii` is text known to hold only ASCII characters (bytes 0 to 127), the compact form, one byte per character; and `Bytes` is raw data (DEFLATE's output, files, the network). An `Ascii` value is a valid `Text` too, so passing one to a *read* parameter of type `Text` costs nothing. A write or grow parameter is different: the function could store a non-ASCII character, or need up to 4 bytes for a character where `Ascii max N` owns exactly N, so passing `Ascii` there needs an `Ascii` parameter, a proof that the function writes only ASCII within the bound, or an explicit checked conversion into `Text` storage of the right size; going from `Text` or `Bytes` to `Ascii`, or from `Bytes` to `Text`, is a checked step that returns `Result`. For `Ascii`, a character, a code point and a byte are the same thing, so `Ascii max N` is exactly N bytes, its length is O(1) and indexing by character is direct; operations like `ascii_upper` and comparisons skip UTF-8 decoding. Text lengths count Unicode code points (what a person would call characters, roughly); byte lengths are written on `Bytes`, or as `Text bytes max N` when a byte budget is what matters.
@@ -595,27 +628,29 @@ How code is organised, how servers produce pages, and how games talk to the scre
 
 - **A package is a directory.** Every file in it sees every other's declarations, with no imports (crudspec's rule); files are read in name order only for error messages.
 - **Using another package:** a package lists its dependencies in its manifest (`package.toml`: name, version, dependencies, and the capabilities it may be granted). Their declarations are reached by package name, `chat.Room`, never by file.
-- **Visibility:** a declaration is private to its package unless marked `pub`. A `pub` declaration's whole interface (types, effects, refinements, the stack contract) is what other packages compile against, and what a module's cache key hashes (Development experience).
+- **Visibility:** a declaration is private to its package unless marked `pub`. A `pub` declaration's whole interface (types, effects, refinements, the stack contract) is what other packages compile against, and what a module's cache key hashes (Development experience). A module, the unit the build compiles and caches, is a file; its cache key includes the interfaces of the private declarations it uses from sibling files (and their stack contracts, effects and refinements), so changing a private declaration in one file rebuilds the files that use it, along with the generic copies and compile-time inputs already in the key (Development experience).
 - **The standard library** is a package written in the language where possible (`std`), with C bindings for crypto, compression and SQLite (no home-made crypto).
 - **Versions:** v1 resolves exact versions from a lock file; no package registry yet (a non-goal).
 
 ### Pages and live updates (servers)
 
-- **Pages are functions that return `Html`** (decided 2026-10-24). Their body is HTML with `{expression}` holes, as in crudspec: `<p>Hello {name}!</p>`. Holes are escaped for where they appear (text, an attribute, a URL), so a value can't inject markup. `for` and `if` work inside the HTML.
+- **Pages are functions that return `Html`** (decided 2026-10-24). Their body is HTML with `{expression}` holes, as in crudspec: `<p>Hello {name}!</p>`. Holes are escaped for where they appear (text, an attribute, a URL), so a value can't inject markup. Escaping alone doesn't make a link safe (a `javascript:` address escapes cleanly), so `href` and `src` holes take a `Url` value, whose parsing allows only `http`, `https`, `mailto` and relative addresses unless a page declares more. `for` and `if` work inside the HTML.
 - **Defaults follow HTML:** plain lowercase tags are HTML elements; a capitalised tag is a page piece declared in the language (`<MessageList room={id}/>`).
 - **Forms are bound to actions:** `<form action={post(id)}>` generates the route, the field names and the checks. Field limits come from the action's parameter types (One declaration, every layer), so the form and the server can't disagree.
 - **Caching:** a page piece that is cacheable (no effects, read-only inputs; Effects and capabilities) is rendered once and kept, keyed by its inputs and their snapshot version; per-request pieces are rendered once per page (Burin's render-once).
-- **Live updates:** an element marked `live` re-renders when the data it reads changes; `signal room(id)` tells open pages showing `room(id)` to refresh it, sent over one stream per open page (Burin's server-sent events). A page's live pieces are the same functions as its first render, so there's one way to draw each thing.
+- **Live updates:** a page piece used with `live` (`<Messages room_key={k} db={db} live/>`) re-runs when it's signalled: `signal Messages(k)` tells open pages showing that piece with that argument to refresh it. The re-run is a new job that loads current data itself, through the piece's own parameters, so nothing from the original request (no stack value, no view, no snapshot pin) survives to the refresh. Each piece reads in its own read transaction, so two pieces on one page may see different versions; a page that needs them consistent reads once and passes the result down. Updates go over one stream per open page (Burin's server-sent events). Notices are numbered, repeats for the same piece are combined, and a page that reconnects reloads its live pieces, so a lost notice (a commit that succeeded before the signal was sent, a dropped connection) costs at most a stale view until the next notice or reconnect. Each open page's queue of notices is bounded; when it's full, its oldest notices are combined into "reload everything". A piece's rendered size is bounded by its inputs plus its markup and escaping, and request bodies are checked against their byte limits before any decoding.
 - **Pages and actions are entry points:** each is a job (Threads and data stacks); a route table in `main` connects URLs to them.
 
 ### The game host (games)
 
 Games run as StasisLang games do: the host owns the window, input, audio and timing, and calls the game.
 
-- **Two entry points** (decided 2026-10-24, StasisLang's model): `tick(input: Input)` advances the simulation by one fixed step (60 per second by default); `draw(frame: Frame)` reads state and draws. `tick` may change program state; `draw` may only read it, which the effect system checks.
-- **Input is a value:** keys, pointer, touch and gamepad for this step, plus the step's time. Nothing else in a game reads the clock or randomness except through capabilities (`Random` seeded at start), so a recording of the inputs replays the game exactly (Correctness tools, Determinism).
-- **Drawing goes through a capability:** `frame.sprite(...)`, `frame.text(...)`, `frame.rect(...)`, recorded into a bounded draw list that the host renders. Assets (images, sounds, fonts) are declared in the package and loaded at startup into frozen pools, so play never loads or allocates.
-- **Saves:** a save is the program state tree, written by path; loading checks it like any initial value (Static allocation).
+- **Two entry points** (decided 2026-10-24, StasisLang's model): `tick(input: Input)` advances the simulation by one fixed step (60 per second by default); `draw(frame: Frame)` reads state and draws. `tick` may change program state; `draw` may only read it, which the effect system checks. Both run on the game state's home worker, one at a time, so a draw never sees a tick half done. `tick` can't call anything that may suspend (no I/O, no waits), and `draw` is an entry point of its own with its own stack reservation.
+- **Input is a value:** keys, pointer, touch and gamepad for this step, plus the step's time. Nothing else in a game reads the clock or randomness except through capabilities (`Random` seeded at start, its state kept in the game state so saves and replays include it; `draw` gets a separate random source, so how often frames are drawn can't change what later ticks do), so a recording of the inputs replays the game exactly (Correctness tools, Determinism).
+- **Drawing goes through a capability:** `frame.sprite(...)`, `frame.text(...)`, `frame.rect(...)`, recorded into a draw list that the host renders. The list's capacity is declared (`frame max 20000`), and a draw past it is dropped and counted, with the count shown in development builds. Assets (images, sounds, fonts) are declared in the package and loaded at startup into frozen pools that live for the whole run, so play never loads or allocates.
+- **Saves:** a save is the program state tree, written by path, including the simulation's random state; loading checks it like any initial value (Static allocation).
+- **A failed tick stops the game** (decided 2026-10-24): an overflow, a full collection the code didn't handle, or any other failure in `tick` ends the game with the error and the recorded inputs, so it can be replayed to the failing line. There's no staging, so ticks cost nothing extra; a game that wants to survive a failure handles the `Result` itself.
+- **Replays are exact on the same build and platform** (decided 2026-10-24): a recording stores the build's identity, the initial state and assets, the random seed and the random generator's version, and the inputs. Replaying on another build or machine is best effort.
 - **Tools for free:** because the whole game's state is one tree, `inspect` reads any path between ticks, and a recorded run replays tick by tick and stops at the first tick whose state hash differs (as `stasis replay` does).
 
 ## Concurrency and interop
@@ -683,7 +718,8 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - A value a loop keeps growing must have a bound the compiler knows, and each iteration's temporaries are freed when it ends.
 - A failed job discards only its uncommitted batch; committed batches stay, and `transaction { }` groups changes that must succeed together.
 - A transaction's checks and writes run on the writer against its latest version, with no waits inside.
-- A plain `Float` never holds NaN; an operation that would produce one fails the job (`FloatNaN` allows it). Pages are HTML with `{…}` holes, `live` elements and `signal`; games have a fixed-step `tick(input)` and a read-only `draw(frame)`, as in StasisLang.
+- A plain `Float` never holds NaN; an operation that would produce one fails the job (`FloatNaN` allows it).
+- Game replays are exact on the same build and platform; a failed tick stops the game with its recorded inputs. Pages are HTML with `{…}` holes, `live` elements and `signal`; games have a fixed-step `tick(input)` and a read-only `draw(frame)`, as in StasisLang.
 - Static state is meant to be used lightly: most data lives in locals on stacks (bounded collections are ordinary values), in databases or in frozen pools; `inspect memory` warns past a globals budget.
 - Full static allocation of state: globals (program and shared) are sized at build time and allocated in full at startup, never allocating after; data stacks, job state and frozen batches stay per job, reserved and committed as used.
 - All state is bounded: every collection declares its capacity and each variable-size field its maximum; adding to a full collection returns `Result`.
