@@ -135,9 +135,40 @@ impl TType {
 pub struct TProgram {
     pub functions: Vec<TFunction>,
     pub tests: Vec<TTest>,
+    pub constants: Vec<TConstant>,
     pub files: Vec<String>,
     pub call_graph: Vec<Vec<TCallEdge>>,
     pub types: Vec<TType>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TConstant {
+    pub id: usize,
+    pub name: String,
+    pub ty: Ty,
+    pub value: ConstValue,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct TConstExpr {
+    pub id: usize,
+    pub name: String,
+    pub ty: Ty,
+    pub expr: TExpr,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConstValue {
+    Unit,
+    Integer(i128),
+    Bool(bool),
+    Struct(Vec<ConstValue>),
+    Enum {
+        case_index: usize,
+        payload: Vec<ConstValue>,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -307,6 +338,7 @@ pub enum TExprKind {
     Integer(i128),
     Bool(bool),
     Local(usize),
+    Constant(usize),
     Call {
         target: CallTarget,
         args: Vec<TExpr>,

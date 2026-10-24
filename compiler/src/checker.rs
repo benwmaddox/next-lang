@@ -61,6 +61,10 @@ struct Checker {
     generic_ids: HashMap<(u8, Ty, Ty), Ty>,
     ast_functions: Vec<Function>,
     ast_tests: Vec<Test>,
+    ast_constants: Vec<ConstDecl>,
+    constant_ids: HashMap<String, usize>,
+    constant_types: Vec<Ty>,
+    checking_constant: bool,
     edges: Vec<Edge>,
     locals: Vec<HashMap<String, Binding>>,
     scope_ids: Vec<usize>,
@@ -115,6 +119,10 @@ impl Checker {
             generic_ids: HashMap::new(),
             ast_functions: Vec::new(),
             ast_tests: Vec::new(),
+            ast_constants: Vec::new(),
+            constant_ids: HashMap::new(),
+            constant_types: Vec::new(),
+            checking_constant: false,
             edges: Vec::new(),
             locals: Vec::new(),
             scope_ids: Vec::new(),
@@ -135,6 +143,21 @@ impl Checker {
         self.fill_enum_cases()?;
         self.fill_struct_fields()?;
         self.check_recursive_value_types()?;
+        for program in self.programs.clone() {
+            for constant in program.constants {
+                if self.constant_ids.contains_key(&constant.name) {
+                    return Err(CheckError {
+                        span: constant.span,
+                        message: format!("constant '{}' is declared more than once", constant.name),
+                    });
+                }
+                let id = self.ast_constants.len();
+                let ty = self.parse_type(&constant.ty)?;
+                self.constant_ids.insert(constant.name.clone(), id);
+                self.constant_types.push(ty);
+                self.ast_constants.push(constant);
+            }
+        }
         let mut test_names = HashMap::<String, Span>::new();
         for p in self.programs.clone() {
             for function in p.functions {
@@ -202,6 +225,10 @@ impl Checker {
             tests.push(test);
             functions.push(function);
         }
+        let mut constant_exprs = Vec::with_capacity(self.ast_constants.len());
+        for id in 0..self.ast_constants.len() {
+            constant_exprs.push(self.check_constant_expr(id)?);
+        }
         self.check_recursion()?;
         let mut call_graph = vec![Vec::new(); functions.len()];
         for edge in self.edges {
@@ -210,12 +237,47 @@ impl Checker {
                 span: edge.span,
             });
         }
-        Ok(TProgram {
+        let mut typed = TProgram {
             functions,
             tests,
+            constants: Vec::new(),
             files: self.files,
             call_graph,
             types: self.types,
+        };
+        typed.constants = crate::const_eval::evaluate_constants(
+            &constant_exprs,
+            &typed.functions,
+            &typed.call_graph,
+            &typed.types,
+        )?;
+        Ok(typed)
+    }
+
+    fn check_constant_expr(&mut self, id: usize) -> Result<TConstExpr, CheckError> {
+        let declaration = self.ast_constants[id].clone();
+        self.current_function = 0;
+        self.current_return = self.constant_types[id];
+        self.current_is_test = false;
+        self.checking_constant = true;
+        self.loop_depth = 0;
+        self.facts.clear();
+        self.next_local = 0;
+        self.locals.clear();
+        self.locals.push(HashMap::new());
+        self.scope_ids.clear();
+        self.scope_ids.push(0);
+        self.next_scope = 1;
+        let expr = self.check_store(&declaration.value, self.constant_types[id]);
+        self.checking_constant = false;
+        self.locals.clear();
+        let expr = expr?;
+        Ok(TConstExpr {
+            id,
+            name: declaration.name,
+            ty: self.constant_types[id],
+            expr,
+            span: declaration.span,
         })
     }
 
@@ -1857,6 +1919,12 @@ impl Checker {
                         self.type_mismatch(binding.ty, want, expr.span)?;
                     }
                     (TExprKind::Local(binding.id), binding.ty)
+                } else if let Some(id) = self.constant_ids.get(name).copied() {
+                    let ty = self.constant_types[id];
+                    if let Some(want) = expected {
+                        self.type_mismatch(ty, want, expr.span)?;
+                    }
+                    (TExprKind::Constant(id), ty)
                 } else if let Some(want) = expected {
                     if self.types[want.0].is_sum() {
                         if let Some((index, _case)) = self.find_case_in_type(want, name) {
@@ -2234,11 +2302,13 @@ impl Checker {
                     if let Some(want) = expected {
                         self.type_mismatch(signature.result, want, *call_span)?;
                     }
-                    self.edges.push(Edge {
-                        from: self.current_function,
-                        to: signature.id,
-                        span: *call_span,
-                    });
+                    if !self.checking_constant {
+                        self.edges.push(Edge {
+                            from: self.current_function,
+                            to: signature.id,
+                            span: *call_span,
+                        });
+                    }
                     (
                         TExprKind::Call {
                             target: CallTarget::Function(signature.id),
@@ -2344,11 +2414,13 @@ impl Checker {
                     if let Some(want) = expected {
                         self.type_mismatch(result_ty, want, expr.span)?;
                     }
-                    self.edges.push(Edge {
-                        from: self.current_function,
-                        to: signature.id,
-                        span: *method_span,
-                    });
+                    if !self.checking_constant {
+                        self.edges.push(Edge {
+                            from: self.current_function,
+                            to: signature.id,
+                            span: *method_span,
+                        });
+                    }
                     (
                         TExprKind::OptionalCall {
                             receiver: Box::new(typed_receiver),
@@ -2420,6 +2492,12 @@ impl Checker {
                 )
             }
             ExprKind::Return(value) => {
+                if self.checking_constant {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "return is not allowed in a constant initializer".to_owned(),
+                    });
+                }
                 if self.current_is_test {
                     return Err(CheckError {
                         span: expr.span,

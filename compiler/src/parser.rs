@@ -29,6 +29,7 @@ impl Parser<'_> {
         let mut enums = Vec::new();
         let mut structs = Vec::new();
         let mut aliases = Vec::new();
+        let mut constants = Vec::new();
         let mut functions = Vec::new();
         let mut tests = Vec::new();
         self.skip_separators();
@@ -39,6 +40,8 @@ impl Parser<'_> {
                 structs.push(self.struct_decl()?);
             } else if self.word_is("type") {
                 aliases.push(self.type_alias_decl()?);
+            } else if self.word_is("const") {
+                constants.push(self.const_decl()?);
             } else if self.word_is("test") {
                 tests.push(self.test()?);
             } else {
@@ -51,6 +54,7 @@ impl Parser<'_> {
             enums,
             structs,
             aliases,
+            constants,
             functions,
             tests,
         })
@@ -101,6 +105,21 @@ impl Parser<'_> {
         Ok(TypeAliasDecl {
             name,
             ty,
+            span: start,
+        })
+    }
+
+    fn const_decl(&mut self) -> Result<ConstDecl, ParseError> {
+        let start = self.expect_word("const", "expected 'const'")?.span;
+        let (name, _) = self.expect_ident("expected a constant name")?;
+        self.expect(&TokenKind::Colon, "expected ':' after the constant name")?;
+        let ty = self.type_name()?;
+        self.expect(&TokenKind::Eq, "expected '=' in a constant declaration")?;
+        let value = self.expression(0)?;
+        Ok(ConstDecl {
+            name,
+            ty,
+            value,
             span: start,
         })
     }

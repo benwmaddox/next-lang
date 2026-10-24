@@ -1,5 +1,6 @@
 mod ast;
 mod checker;
+mod const_eval;
 mod driver;
 mod emit;
 mod lexer;

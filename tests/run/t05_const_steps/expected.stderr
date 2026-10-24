@@ -1,0 +1,1 @@
+main.nl:6:1: error: constant 'NEVER' exceeded the compile-time evaluation limit of 10000000 steps

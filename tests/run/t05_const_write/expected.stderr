@@ -1,0 +1,1 @@
+main.nl:7:23: error: constant 'REJECTED' is not cacheable: cacheable functions cannot have write parameters; call chain: constant REJECTED -> wrapper -> mutate -> write parameter

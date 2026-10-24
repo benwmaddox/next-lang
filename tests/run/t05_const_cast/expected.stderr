@@ -1,0 +1,1 @@
+main.nl:2:36: error: constant 'BAD' evaluation failed: failed cast during constant evaluation; call chain: constant BAD -> to_small

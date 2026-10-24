@@ -34,8 +34,17 @@ pub struct Program {
     pub enums: Vec<EnumDecl>,
     pub structs: Vec<StructDecl>,
     pub aliases: Vec<TypeAliasDecl>,
+    pub constants: Vec<ConstDecl>,
     pub functions: Vec<Function>,
     pub tests: Vec<Test>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConstDecl {
+    pub name: String,
+    pub ty: TypeAst,
+    pub value: Expr,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]

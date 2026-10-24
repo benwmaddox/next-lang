@@ -63,6 +63,22 @@ pub fn emit(program: &TProgram) -> String {
             encoded
         ));
     }
+    for constant in &program.constants {
+        if base_type(constant.ty, &program.types) == Ty::Unit {
+            continue;
+        }
+        let initializer = llvm_constant(constant.ty, &constant.value, &program.types);
+        out.push_str(&format!(
+            "@nl.const.{} = private constant {} {}, align 1 ; {} declared at {}:{}:{}\n",
+            constant.id,
+            llvm_type(constant.ty, &program.types),
+            initializer,
+            constant.name,
+            constant.span.file,
+            constant.span.line,
+            constant.span.col
+        ));
+    }
     let mut expect_sources = Vec::<String>::new();
     for function in &program.functions {
         collect_expect_sources(&function.body, &mut expect_sources);
@@ -268,6 +284,7 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         | TExprKind::Bool(_)
         | TExprKind::Unit
         | TExprKind::Local(_)
+        | TExprKind::Constant(_)
         | TExprKind::LoopExit(_) => {}
     }
 }
@@ -321,6 +338,138 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
             };
             cache[id] = Some(size);
             size
+        }
+    }
+}
+
+fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
+    match &types[ty.0].kind {
+        TTypeKind::Refinement { base, .. } => llvm_constant(*base, value, types),
+        TTypeKind::Int | TTypeKind::Long => match value {
+            ConstValue::Integer(value) => value.to_string(),
+            _ => unreachable!("integer constant has an aggregate value"),
+        },
+        TTypeKind::Bool => match value {
+            ConstValue::Bool(value) => value.to_string(),
+            _ => unreachable!("bool constant has a non-bool value"),
+        },
+        TTypeKind::Unit => "zeroinitializer".to_owned(),
+        TTypeKind::Struct(fields) => {
+            let ConstValue::Struct(values) = value else {
+                unreachable!("struct constant has a non-struct value")
+            };
+            let fields = fields
+                .iter()
+                .zip(values)
+                .map(|(field, value)| {
+                    format!(
+                        "{} {}",
+                        llvm_type(field.ty, types),
+                        llvm_constant(field.ty, value, types)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("<{{ {fields} }}>")
+        }
+        TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
+            let ConstValue::Enum {
+                case_index,
+                payload,
+            } = value
+            else {
+                unreachable!("enum constant has a non-enum value")
+            };
+            let mut cache = vec![None; types.len()];
+            let payload_size = enum_payload_size(ty, types, &mut cache);
+            let bytes = enum_payload_bytes(ty, *case_index, payload, types, payload_size);
+            let bytes = bytes
+                .iter()
+                .map(|byte| format!("i8 {byte}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ i32 {}, [{payload_size} x i8] [{bytes}] }}", case_index)
+        }
+        TTypeKind::Never => unreachable!("never cannot be stored as a constant"),
+    }
+}
+
+fn enum_payload_bytes(
+    ty: Ty,
+    case_index: usize,
+    values: &[ConstValue],
+    types: &[TType],
+    payload_size: usize,
+) -> Vec<u8> {
+    let case = types[ty.0].cases()[case_index].clone();
+    let mut bytes = Vec::with_capacity(payload_size);
+    let mut cache = vec![None; types.len()];
+    for (field_ty, value) in case.payload.iter().zip(values) {
+        serialize_constant(*field_ty, value, types, &mut bytes, &mut cache);
+    }
+    bytes.resize(payload_size, 0);
+    bytes
+}
+
+fn serialize_constant(
+    ty: Ty,
+    value: &ConstValue,
+    types: &[TType],
+    bytes: &mut Vec<u8>,
+    cache: &mut [Option<usize>],
+) {
+    match &types[ty.0].kind {
+        TTypeKind::Refinement { base, .. } => serialize_constant(*base, value, types, bytes, cache),
+        TTypeKind::Int => {
+            let ConstValue::Integer(value) = value else {
+                unreachable!("int constant has a non-int value")
+            };
+            bytes.extend_from_slice(&(*value as i32).to_le_bytes());
+        }
+        TTypeKind::Long => {
+            let ConstValue::Integer(value) = value else {
+                unreachable!("long constant has a non-long value")
+            };
+            bytes.extend_from_slice(&(*value as i64).to_le_bytes());
+        }
+        TTypeKind::Bool => {
+            let ConstValue::Bool(value) = value else {
+                unreachable!("bool constant has a non-bool value")
+            };
+            bytes.push(u8::from(*value));
+        }
+        TTypeKind::Unit | TTypeKind::Never => {}
+        TTypeKind::Struct(fields) => {
+            let ConstValue::Struct(values) = value else {
+                unreachable!("struct constant has a non-struct value")
+            };
+            for (field, value) in fields.iter().zip(values) {
+                serialize_constant(field.ty, value, types, bytes, cache);
+            }
+        }
+        TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
+            let ConstValue::Enum {
+                case_index,
+                payload,
+            } = value
+            else {
+                unreachable!("enum constant has a non-enum value")
+            };
+            bytes.extend_from_slice(&(*case_index as i32).to_le_bytes());
+            let payload_size = enum_payload_size(ty, types, cache);
+            bytes.extend(enum_payload_bytes(
+                ty,
+                *case_index,
+                payload,
+                types,
+                payload_size,
+            ));
+            let size = type_size(ty, types, cache);
+            let start = bytes.len().saturating_sub(4 + payload_size);
+            let actual = bytes.len() - start;
+            if actual < size {
+                bytes.resize(bytes.len() + size - actual, 0);
+            }
         }
     }
 }
@@ -596,6 +745,7 @@ impl<'a> FunctionEmitter<'a> {
             TExprKind::Integer(_)
             | TExprKind::Bool(_)
             | TExprKind::Unit
+            | TExprKind::Constant(_)
             | TExprKind::LoopExit(_) => {}
         }
     }
@@ -1700,6 +1850,18 @@ impl<'a> FunctionEmitter<'a> {
                     self.local_pointer(*id)
                 ));
                 tmp
+            }
+            TExprKind::Constant(id) => {
+                if base_type(expr.ty, &self.program.types) == Ty::Unit {
+                    String::new()
+                } else {
+                    let tmp = self.temp();
+                    self.instruction(format!(
+                        "{tmp} = load {}, ptr @nl.const.{id}, align 1",
+                        self.lltype(expr.ty)
+                    ));
+                    tmp
+                }
             }
             TExprKind::Call {
                 target,
