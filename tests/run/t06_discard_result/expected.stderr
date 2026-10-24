@@ -1,0 +1,1 @@
+main.nl:2:21: error: discard accepts only a collection push or insert result with error type Full

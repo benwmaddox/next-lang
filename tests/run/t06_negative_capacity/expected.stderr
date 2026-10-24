@@ -1,0 +1,1 @@
+main.nl:1:30: error: array capacity cannot be negative; use zero or a positive constant

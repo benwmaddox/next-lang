@@ -1,0 +1,5 @@
+ok   collection equality compares active elements and evaluates once
+some(2)
+1
+2
+1 passed, 0 failed

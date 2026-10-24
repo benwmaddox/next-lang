@@ -47,6 +47,14 @@ pub enum TTypeKind {
     Enum(Vec<TCase>),
     Option(Ty),
     Result(Ty, Ty),
+    Array {
+        element: Ty,
+        capacity: usize,
+    },
+    List {
+        element: Ty,
+        capacity: usize,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -165,6 +173,8 @@ pub enum ConstValue {
     Integer(i128),
     Bool(bool),
     Struct(Vec<ConstValue>),
+    Array(Vec<ConstValue>),
+    List(Vec<ConstValue>),
     Enum {
         case_index: usize,
         payload: Vec<ConstValue>,
@@ -256,6 +266,16 @@ pub enum TStmtKind {
         inclusive: bool,
         body: TBlock,
     },
+    ForEach {
+        id: usize,
+        index_id: Option<usize>,
+        counter_id: usize,
+        collection: TExpr,
+        source: TPlace,
+        is_list: bool,
+        body: TBlock,
+    },
+    Discard(TExpr),
     Break,
     Continue,
     Expect {
@@ -265,11 +285,25 @@ pub enum TStmtKind {
     Block(TBlock),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub struct TPlace {
     pub root: usize,
+    /// Struct-only projections retained for the refinement fact map.
     pub fields: Vec<usize>,
+    pub path: Vec<TProjection>,
     pub ty: Ty,
+}
+
+#[derive(Clone, Debug)]
+pub enum TProjection {
+    Field(usize),
+    Index {
+        index: TExpr,
+        constant: Option<i128>,
+        capacity: usize,
+        is_list: bool,
+        proven: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -312,6 +346,17 @@ pub enum MethodKind {
     ResultOk,
     UnwrapOption,
     UnwrapResult,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollectionOp {
+    Push,
+    Pop,
+    Insert,
+    Remove,
+    Count,
+    Len,
+    Clear,
 }
 
 #[derive(Clone, Debug)]
@@ -362,6 +407,26 @@ pub enum TExprKind {
     Field {
         receiver: Box<TExpr>,
         field_index: usize,
+    },
+    Index {
+        receiver: Box<TExpr>,
+        index: Box<TExpr>,
+        capacity: usize,
+        is_list: bool,
+        proven: bool,
+    },
+    Fill {
+        value: Box<TExpr>,
+        capacity: usize,
+    },
+    EmptyArray,
+    EmptyList,
+    CollectionOp {
+        op: CollectionOp,
+        receiver: Box<TExpr>,
+        args: Vec<TExpr>,
+        capacity: usize,
+        proven_success: bool,
     },
     StructConstruct {
         fields: Vec<(usize, TExpr)>,

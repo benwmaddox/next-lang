@@ -1,6 +1,7 @@
 use crate::ast::{AssignOp, BinaryOp, ParamMode, RefinePolicy, Span, UnaryOp};
 use crate::checker::CheckError;
 use crate::typed::*;
+use std::collections::HashMap;
 
 const STEP_LIMIT: u64 = 10_000_000;
 
@@ -45,6 +46,7 @@ pub fn evaluate_constants(
         values: vec![None; declarations.len()],
         states: vec![0; declarations.len()],
         active_constants: Vec::new(),
+        views: HashMap::new(),
         steps: 0,
     };
     for declaration in declarations {
@@ -184,6 +186,13 @@ fn collect_constant_references_block(block: &TBlock, references: &mut Vec<(usize
                 collect_constant_references_expr(end, references);
                 collect_constant_references_block(body, references);
             }
+            TStmtKind::ForEach {
+                collection, body, ..
+            } => {
+                collect_constant_references_expr(collection, references);
+                collect_constant_references_block(body, references);
+            }
+            TStmtKind::Discard(value) => collect_constant_references_expr(value, references),
             TStmtKind::Expect { kind, .. } => match kind {
                 TExpectKind::Bool(value) => collect_constant_references_expr(value, references),
                 TExpectKind::Compare { left, right, .. } => {
@@ -233,6 +242,19 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
                 collect_constant_references_expr(arg, references);
             }
         }
+        TExprKind::Index {
+            receiver, index, ..
+        } => {
+            collect_constant_references_expr(receiver, references);
+            collect_constant_references_expr(index, references);
+        }
+        TExprKind::Fill { value, .. } => collect_constant_references_expr(value, references),
+        TExprKind::CollectionOp { receiver, args, .. } => {
+            collect_constant_references_expr(receiver, references);
+            for arg in args {
+                collect_constant_references_expr(arg, references);
+            }
+        }
         TExprKind::StructConstruct { fields } => {
             for (_, value) in fields {
                 collect_constant_references_expr(value, references);
@@ -272,6 +294,8 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
         | TExprKind::Local(_)
+        | TExprKind::EmptyArray
+        | TExprKind::EmptyList
         | TExprKind::LoopExit(_) => {}
     }
 }
@@ -402,6 +426,13 @@ fn collect_calls_block(block: &TBlock, calls: &mut Vec<(usize, Span)>, effects: 
                 collect_calls_expr(end, calls, effects);
                 collect_calls_block(body, calls, effects);
             }
+            TStmtKind::ForEach {
+                collection, body, ..
+            } => {
+                collect_calls_expr(collection, calls, effects);
+                collect_calls_block(body, calls, effects);
+            }
+            TStmtKind::Discard(value) => collect_calls_expr(value, calls, effects),
             TStmtKind::Expect { kind, .. } => match kind {
                 TExpectKind::Bool(value) => collect_calls_expr(value, calls, effects),
                 TExpectKind::Compare { left, right, .. } => {
@@ -446,6 +477,19 @@ fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mu
             ..
         } => {
             calls.push((*function_id, expr.span));
+            collect_calls_expr(receiver, calls, effects);
+            for arg in args {
+                collect_calls_expr(arg, calls, effects);
+            }
+        }
+        TExprKind::Index {
+            receiver, index, ..
+        } => {
+            collect_calls_expr(receiver, calls, effects);
+            collect_calls_expr(index, calls, effects);
+        }
+        TExprKind::Fill { value, .. } => collect_calls_expr(value, calls, effects),
+        TExprKind::CollectionOp { receiver, args, .. } => {
             collect_calls_expr(receiver, calls, effects);
             for arg in args {
                 collect_calls_expr(arg, calls, effects);
@@ -496,6 +540,8 @@ fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mu
         | TExprKind::Bool(_)
         | TExprKind::Local(_)
         | TExprKind::Constant(_)
+        | TExprKind::EmptyArray
+        | TExprKind::EmptyList
         | TExprKind::LoopExit(_) => {}
     }
 }
@@ -532,10 +578,247 @@ struct Evaluator<'a> {
     values: Vec<Option<ConstValue>>,
     states: Vec<u8>,
     active_constants: Vec<usize>,
+    views: HashMap<usize, TPlace>,
     steps: u64,
 }
 
+#[derive(Clone, Copy)]
+enum ResolvedProjection {
+    Field(usize),
+    Index(usize),
+}
+
 impl Evaluator<'_> {
+    fn canonical_place(&self, place: &TPlace) -> TPlace {
+        let mut canonical = place.clone();
+        let mut seen = Vec::new();
+        while let Some(alias) = self.views.get(&canonical.root) {
+            if seen.contains(&canonical.root) {
+                break;
+            }
+            seen.push(canonical.root);
+            let mut expanded = alias.clone();
+            expanded.path.extend(canonical.path.iter().cloned());
+            expanded.fields.extend(canonical.fields.iter().copied());
+            expanded.ty = canonical.ty;
+            canonical = expanded;
+        }
+        canonical
+    }
+
+    fn place_from_expr(&self, expr: &TExpr) -> Option<TPlace> {
+        match &expr.kind {
+            TExprKind::Local(id) => Some(self.canonical_place(&TPlace {
+                root: *id,
+                fields: Vec::new(),
+                path: Vec::new(),
+                ty: expr.ty,
+            })),
+            TExprKind::Field {
+                receiver,
+                field_index,
+            } => {
+                let mut place = self.place_from_expr(receiver)?;
+                place.fields.push(*field_index);
+                place.path.push(TProjection::Field(*field_index));
+                place.ty = expr.ty;
+                Some(place)
+            }
+            TExprKind::Index {
+                receiver,
+                index,
+                capacity,
+                is_list,
+                proven,
+            } => {
+                let mut place = self.place_from_expr(receiver)?;
+                let constant = if let TExprKind::Integer(value) = index.kind {
+                    Some(value)
+                } else {
+                    None
+                };
+                place.path.push(TProjection::Index {
+                    index: (**index).clone(),
+                    constant,
+                    capacity: *capacity,
+                    is_list: *is_list,
+                    proven: *proven,
+                });
+                place.ty = expr.ty;
+                Some(place)
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_place_indices(
+        &mut self,
+        place: &TPlace,
+        locals: &mut Vec<Option<ConstValue>>,
+    ) -> Result<(usize, Vec<ResolvedProjection>), EvalFailure> {
+        let canonical = self.canonical_place(place);
+        let mut resolved = Vec::with_capacity(canonical.path.len());
+        for projection in &canonical.path {
+            match projection {
+                TProjection::Field(index) => resolved.push(ResolvedProjection::Field(*index)),
+                TProjection::Index { index, .. } => {
+                    let value = match self.eval_expr(index, locals)? {
+                        Outcome::Value(value) => value,
+                        _ => {
+                            return Err(self.failure(
+                                index.span,
+                                "control flow is not valid in a collection index",
+                            ));
+                        }
+                    };
+                    let value = as_integer(&value);
+                    if value < 0 || value > usize::MAX as i128 {
+                        return Err(self.failure(index.span, "index out of range"));
+                    }
+                    resolved.push(ResolvedProjection::Index(value as usize));
+                }
+            }
+        }
+        Ok((canonical.root, resolved))
+    }
+
+    fn get_resolved_place(
+        &self,
+        locals: &[Option<ConstValue>],
+        root: usize,
+        path: &[ResolvedProjection],
+    ) -> Option<ConstValue> {
+        let mut value = get_local(locals, root)?;
+        for projection in path {
+            value = match (projection, value) {
+                (ResolvedProjection::Field(index), ConstValue::Struct(fields)) => {
+                    fields.get(*index)?.clone()
+                }
+                (ResolvedProjection::Index(index), ConstValue::Array(values)) => {
+                    values.get(*index)?.clone()
+                }
+                (ResolvedProjection::Index(index), ConstValue::List(values)) => {
+                    values.get(*index)?.clone()
+                }
+                _ => return None,
+            };
+        }
+        Some(value)
+    }
+
+    fn set_resolved_place(
+        &self,
+        locals: &mut Vec<Option<ConstValue>>,
+        root: usize,
+        path: &[ResolvedProjection],
+        replacement: ConstValue,
+    ) -> Result<(), String> {
+        let Some(mut value) = get_local(locals, root) else {
+            return Err("constant evaluator could not write an uninitialised local".to_owned());
+        };
+        fn set(
+            value: &mut ConstValue,
+            path: &[ResolvedProjection],
+            replacement: ConstValue,
+        ) -> Result<(), String> {
+            let Some((head, tail)) = path.split_first() else {
+                *value = replacement;
+                return Ok(());
+            };
+            let child = match (head, value) {
+                (ResolvedProjection::Field(index), ConstValue::Struct(fields)) => {
+                    fields.get_mut(*index)
+                }
+                (ResolvedProjection::Index(index), ConstValue::Array(values)) => {
+                    values.get_mut(*index)
+                }
+                (ResolvedProjection::Index(index), ConstValue::List(values)) => {
+                    values.get_mut(*index)
+                }
+                _ => None,
+            }
+            .ok_or_else(|| "constant evaluator assignment path was invalid".to_owned())?;
+            set(child, tail, replacement)
+        }
+        set(&mut value, path, replacement)?;
+        set_local(locals, root, value);
+        Ok(())
+    }
+
+    fn eval_collection_op(
+        &self,
+        op: CollectionOp,
+        collection: &mut ConstValue,
+        args: Vec<ConstValue>,
+        capacity: usize,
+        span: Span,
+        _result_ty: Ty,
+    ) -> Result<ConstValue, EvalFailure> {
+        let success = || ConstValue::Enum {
+            case_index: 0,
+            payload: vec![ConstValue::Unit],
+        };
+        let full = || ConstValue::Enum {
+            case_index: 1,
+            payload: vec![ConstValue::Enum {
+                case_index: 0,
+                payload: Vec::new(),
+            }],
+        };
+        Ok(match (op, collection) {
+            (CollectionOp::Len, ConstValue::Array(values)) => {
+                ConstValue::Integer(values.len() as i128)
+            }
+            (CollectionOp::Count, ConstValue::List(values)) => {
+                ConstValue::Integer(values.len() as i128)
+            }
+            (CollectionOp::Push, ConstValue::List(values)) => {
+                if values.len() >= capacity {
+                    full()
+                } else {
+                    values.push(args[0].clone());
+                    success()
+                }
+            }
+            (CollectionOp::Insert, ConstValue::List(values)) => {
+                let index = as_integer(&args[0]);
+                if index < 0 || index as u128 > values.len() as u128 {
+                    return Err(self.failure(span, "index out of range"));
+                }
+                if values.len() >= capacity {
+                    full()
+                } else {
+                    values.insert(index as usize, args[1].clone());
+                    success()
+                }
+            }
+            (CollectionOp::Pop, ConstValue::List(values)) => match values.pop() {
+                Some(value) => ConstValue::Enum {
+                    case_index: 0,
+                    payload: vec![value],
+                },
+                None => ConstValue::Enum {
+                    case_index: 1,
+                    payload: Vec::new(),
+                },
+            },
+            (CollectionOp::Remove, ConstValue::List(values)) => {
+                let index = as_integer(&args[0]);
+                if index < 0 || index as u128 >= values.len() as u128 {
+                    return Err(self.failure(span, "index out of range"));
+                }
+                values.remove(index as usize)
+            }
+            (CollectionOp::Clear, ConstValue::List(values)) => {
+                values.clear();
+                ConstValue::Unit
+            }
+            _ => {
+                return Err(self.failure(span, "collection operation receiver had the wrong value"));
+            }
+        })
+    }
+
     fn eval_constant(&mut self, id: usize, reference_span: Span) -> Result<ConstValue, CheckError> {
         if self.states[id] == 2 {
             return Ok(self.values[id].as_ref().unwrap().clone());
@@ -561,7 +844,9 @@ impl Evaluator<'_> {
         let previous_steps = std::mem::replace(&mut self.steps, 0);
         self.states[id] = 1;
         self.active_constants.push(id);
+        let saved_views = std::mem::take(&mut self.views);
         let evaluated = self.eval_expr(&declaration.expr, &mut Vec::new());
+        self.views = saved_views;
         self.active_constants.pop();
         self.steps = previous_steps;
         let value = match evaluated {
@@ -656,16 +941,19 @@ impl Evaluator<'_> {
                     operator_span,
                     value,
                 } => {
+                    let (place_root, place_path) = self.resolve_place_indices(place, locals)?;
                     let rhs = value_or_flow!(self.eval_expr(value, locals));
                     let new_value = if *op == AssignOp::Set {
                         rhs
                     } else {
-                        let old = get_place(locals, place).ok_or_else(|| {
-                            self.failure(
-                                stmt.span,
-                                "constant evaluator could not read an assignment target",
-                            )
-                        })?;
+                        let old = self
+                            .get_resolved_place(locals, place_root, &place_path)
+                            .ok_or_else(|| {
+                                self.failure(
+                                    stmt.span,
+                                    "constant evaluator could not read an assignment target",
+                                )
+                            })?;
                         let binary_op = match op {
                             AssignOp::Add => BinaryOp::Add,
                             AssignOp::Sub => BinaryOp::Sub,
@@ -688,7 +976,7 @@ impl Evaluator<'_> {
                     } else {
                         new_value
                     };
-                    set_place(locals, place, new_value)
+                    self.set_resolved_place(locals, place_root, &place_path, new_value)
                         .map_err(|message| self.failure(stmt.span, message))?;
                 }
                 TStmtKind::Return(value) => {
@@ -763,6 +1051,81 @@ impl Evaluator<'_> {
                         index += 1;
                     }
                 }
+                TStmtKind::ForEach {
+                    id,
+                    index_id,
+                    counter_id,
+                    source,
+                    is_list,
+                    body,
+                    ..
+                } => {
+                    let (root, path) = self.resolve_place_indices(source, locals)?;
+                    let collection =
+                        self.get_resolved_place(locals, root, &path)
+                            .ok_or_else(|| {
+                                self.failure(
+                                    stmt.span,
+                                    "constant evaluator could not read a collection loop source",
+                                )
+                            })?;
+                    let length = match (&collection, *is_list) {
+                        (ConstValue::List(values), true) => values.len(),
+                        (ConstValue::Array(values), false) => values.len(),
+                        _ => {
+                            return Err(self
+                                .failure(stmt.span, "collection loop source had the wrong value"));
+                        }
+                    };
+                    let collection_ty = source.ty;
+                    let (capacity, element) = match self.types[collection_ty.0].kind {
+                        TTypeKind::Array { element, capacity }
+                        | TTypeKind::List { element, capacity } => (capacity, element),
+                        _ => {
+                            return Err(self.failure(
+                                stmt.span,
+                                "collection loop source was not a collection",
+                            ));
+                        }
+                    };
+                    for index in 0..length {
+                        self.step(stmt.span)?;
+                        set_local(locals, *counter_id, ConstValue::Integer(index as i128));
+                        if let Some(index_id) = index_id {
+                            set_local(locals, *index_id, ConstValue::Integer(index as i128));
+                        }
+                        let index_expr = TExpr {
+                            kind: TExprKind::Local(*counter_id),
+                            ty: Ty::Long,
+                            span: stmt.span,
+                        };
+                        let mut element_place = source.clone();
+                        element_place.path.push(TProjection::Index {
+                            index: index_expr,
+                            constant: None,
+                            capacity,
+                            is_list: *is_list,
+                            proven: true,
+                        });
+                        element_place.ty = element;
+                        let previous = self.views.insert(*id, element_place);
+                        let outcome = self.eval_block(body, locals);
+                        if let Some(previous) = previous {
+                            self.views.insert(*id, previous);
+                        } else {
+                            self.views.remove(id);
+                        }
+                        match outcome? {
+                            Outcome::Value(_) | Outcome::Continue => {}
+                            Outcome::Break => break,
+                            flow @ Outcome::Return(_) => return Ok(flow),
+                        }
+                    }
+                }
+                TStmtKind::Discard(value) => match self.eval_expr(value, locals)? {
+                    Outcome::Value(_) => {}
+                    flow => return Ok(flow),
+                },
                 TStmtKind::Break => return Ok(Outcome::Break),
                 TStmtKind::Continue => return Ok(Outcome::Continue),
                 TStmtKind::Expect { kind, .. } => {
@@ -813,9 +1176,22 @@ impl Evaluator<'_> {
             TExprKind::Unit => ConstValue::Unit,
             TExprKind::Integer(value) => ConstValue::Integer(*value),
             TExprKind::Bool(value) => ConstValue::Bool(*value),
-            TExprKind::Local(id) => get_local(locals, *id).ok_or_else(|| {
-                self.failure(expr.span, "constant evaluator could not read a local")
-            })?,
+            TExprKind::Local(id) => {
+                if let Some(view) = self.views.get(id).cloned() {
+                    let (root, path) = self.resolve_place_indices(&view, locals)?;
+                    self.get_resolved_place(locals, root, &path)
+                        .ok_or_else(|| {
+                            self.failure(
+                                expr.span,
+                                "constant evaluator could not read a collection view",
+                            )
+                        })?
+                } else {
+                    get_local(locals, *id).ok_or_else(|| {
+                        self.failure(expr.span, "constant evaluator could not read a local")
+                    })?
+                }
+            }
             TExprKind::Constant(id) => {
                 return self
                     .eval_constant(*id, expr.span)
@@ -932,6 +1308,89 @@ impl Evaluator<'_> {
                     .ok_or_else(|| self.failure(expr.span, "struct field index was invalid"))?,
                 _ => return Err(self.failure(expr.span, "field access receiver was not a struct")),
             },
+            TExprKind::Index {
+                receiver, index, ..
+            } => {
+                let collection = value_or_flow!(self.eval_expr(receiver, locals));
+                let index_value = as_integer(&value_or_flow!(self.eval_expr(index, locals)));
+                if index_value < 0 {
+                    return Err(self.failure(index.span, "index out of range"));
+                }
+                let index_value = usize::try_from(index_value)
+                    .map_err(|_| self.failure(index.span, "index out of range"))?;
+                match collection {
+                    ConstValue::Array(values) | ConstValue::List(values) => values
+                        .get(index_value)
+                        .cloned()
+                        .ok_or_else(|| self.failure(index.span, "index out of range"))?,
+                    _ => return Err(self.failure(expr.span, "index receiver was not a collection")),
+                }
+            }
+            TExprKind::Fill { value, capacity } => {
+                let item = value_or_flow!(self.eval_expr(value, locals));
+                let items = vec![item; *capacity];
+                if matches!(self.types[expr.ty.0].kind, TTypeKind::Array { .. }) {
+                    ConstValue::Array(items)
+                } else {
+                    return Err(self.failure(expr.span, "fill target was not an array"));
+                }
+            }
+            TExprKind::EmptyArray => ConstValue::Array(Vec::new()),
+            TExprKind::EmptyList => ConstValue::List(Vec::new()),
+            TExprKind::CollectionOp {
+                op,
+                receiver,
+                args,
+                capacity,
+                proven_success: _,
+            } => {
+                if matches!(op, CollectionOp::Count | CollectionOp::Len) {
+                    let value = value_or_flow!(self.eval_expr(receiver, locals));
+                    let count = match value {
+                        ConstValue::Array(items) if *op == CollectionOp::Len => items.len(),
+                        ConstValue::List(items) if *op == CollectionOp::Count => items.len(),
+                        _ => {
+                            return Err(self.failure(
+                                expr.span,
+                                "collection count receiver had the wrong value",
+                            ));
+                        }
+                    };
+                    return Ok(Outcome::Value(ConstValue::Integer(count as i128)));
+                }
+                let place = self.place_from_expr(receiver);
+                let resolved = if let Some(place) = place.as_ref() {
+                    Some(self.resolve_place_indices(place, locals)?)
+                } else {
+                    None
+                };
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    values.push(value_or_flow!(self.eval_expr(arg, locals)));
+                }
+                let (root, path) = resolved.ok_or_else(|| {
+                    self.failure(expr.span, "collection operation requires a place")
+                })?;
+                let mut collection =
+                    self.get_resolved_place(locals, root, &path)
+                        .ok_or_else(|| {
+                            self.failure(
+                                expr.span,
+                                "constant evaluator could not read a collection",
+                            )
+                        })?;
+                let result = self.eval_collection_op(
+                    *op,
+                    &mut collection,
+                    values,
+                    *capacity,
+                    expr.span,
+                    expr.ty,
+                )?;
+                self.set_resolved_place(locals, root, &path, collection)
+                    .map_err(|message| self.failure(expr.span, message))?;
+                result
+            }
             TExprKind::StructConstruct { fields } => {
                 let count = match &self.types[expr.ty.0].kind {
                     TTypeKind::Struct(fields) => fields.len(),
@@ -1155,7 +1614,9 @@ impl Evaluator<'_> {
             }
             set_local(&mut locals, param.id, value);
         }
+        let saved_views = std::mem::take(&mut self.views);
         let outcome = self.eval_block(&function.body, &mut locals);
+        self.views = saved_views;
         outcome
             .map_err(|mut failure| {
                 failure.chain.insert(0, function.name.clone());
@@ -1356,52 +1817,6 @@ fn set_local(locals: &mut Vec<Option<ConstValue>>, id: usize, value: ConstValue)
 
 fn get_local(locals: &[Option<ConstValue>], id: usize) -> Option<ConstValue> {
     locals.get(id).and_then(Clone::clone)
-}
-
-fn get_place(locals: &[Option<ConstValue>], place: &TPlace) -> Option<ConstValue> {
-    let mut value = get_local(locals, place.root)?;
-    for field in &place.fields {
-        let ConstValue::Struct(fields) = value else {
-            return None;
-        };
-        value = fields.get(*field)?.clone();
-    }
-    Some(value)
-}
-
-fn set_place(
-    locals: &mut Vec<Option<ConstValue>>,
-    place: &TPlace,
-    value: ConstValue,
-) -> Result<(), String> {
-    if place.fields.is_empty() {
-        set_local(locals, place.root, value);
-        return Ok(());
-    }
-    let Some(mut root) = get_local(locals, place.root) else {
-        return Err("constant evaluator could not write an uninitialised local".to_owned());
-    };
-    set_nested_field(&mut root, &place.fields, value)?;
-    set_local(locals, place.root, root);
-    Ok(())
-}
-
-fn set_nested_field(
-    value: &mut ConstValue,
-    path: &[usize],
-    replacement: ConstValue,
-) -> Result<(), String> {
-    let Some((field, tail)) = path.split_first() else {
-        *value = replacement;
-        return Ok(());
-    };
-    let ConstValue::Struct(fields) = value else {
-        return Err("constant evaluator assignment path crossed a non-struct".to_owned());
-    };
-    let child = fields
-        .get_mut(*field)
-        .ok_or_else(|| "constant evaluator assignment field was invalid".to_owned())?;
-    set_nested_field(child, tail, replacement)
 }
 
 fn pattern_matches(pattern: &TPattern, value: &ConstValue) -> bool {

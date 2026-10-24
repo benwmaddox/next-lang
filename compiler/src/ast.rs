@@ -9,6 +9,10 @@ pub struct Span {
 pub struct TypeAst {
     pub name: String,
     pub args: Vec<TypeAst>,
+    /// Constant arguments for bounded collections (`list<T, N>`).
+    pub const_args: Vec<Expr>,
+    /// Array suffixes, applied from left to right (`T[A][B]`).
+    pub array_caps: Vec<Expr>,
     pub range: Option<TypeRangeAst>,
     pub policy: RefinePolicy,
     pub span: Span,
@@ -150,6 +154,13 @@ pub enum StmtKind {
         inclusive: bool,
         body: Block,
     },
+    ForEach {
+        name: String,
+        index_name: Option<String>,
+        collection: Expr,
+        body: Block,
+    },
+    Discard(Expr),
     Break,
     Continue,
     Expect {
@@ -202,6 +213,11 @@ pub enum ExprKind {
         method_span: Span,
         args: Vec<Expr>,
     },
+    Index {
+        receiver: Box<Expr>,
+        index: Box<Expr>,
+        index_span: Span,
+    },
     OptionalCall {
         receiver: Box<Expr>,
         name: String,
@@ -217,6 +233,7 @@ pub enum ExprKind {
         name: String,
         fields: Vec<StructInitField>,
     },
+    ListLiteral,
     Fit {
         value: Box<Expr>,
         ty: TypeAst,

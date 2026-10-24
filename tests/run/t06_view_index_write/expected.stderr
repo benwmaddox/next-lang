@@ -1,0 +1,1 @@
+main.nl:4:33: error: cannot assign to loop counter 'index'; loop counters are immutable

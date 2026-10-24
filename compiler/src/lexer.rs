@@ -10,6 +10,8 @@ pub enum TokenKind {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     Comma,
     Colon,
     Semicolon,
@@ -71,7 +73,7 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
     let mut pos = 0;
     let mut line = 1;
     let mut col = 1;
-    let mut parens = 0usize;
+    let mut delimiters = Vec::<(u8, Span)>::new();
     let mut out = Vec::new();
 
     while pos < bytes.len() {
@@ -86,7 +88,7 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             pos += 1;
             line += 1;
             col = 1;
-            if parens == 0 {
+            if delimiters.is_empty() {
                 push_newline(&mut out, span, pos - 1);
             }
             continue;
@@ -211,16 +213,28 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
                 b as char
             ),
         })?;
-        if matches!(kind, TokenKind::LParen) {
-            parens += 1;
-        } else if matches!(kind, TokenKind::RParen) {
-            if parens == 0 {
+        if matches!(kind, TokenKind::LParen | TokenKind::LBracket) {
+            delimiters.push((
+                if kind == TokenKind::LParen {
+                    b'('
+                } else {
+                    b'['
+                },
+                span,
+            ));
+        } else if matches!(kind, TokenKind::RParen | TokenKind::RBracket) {
+            let expected = if kind == TokenKind::RParen {
+                b'('
+            } else {
+                b'['
+            };
+            if delimiters.last().is_none_or(|(open, _)| *open != expected) {
                 return Err(LexError {
                     span,
-                    message: "unmatched ')'; add a matching '('".to_owned(),
+                    message: "unmatched closing delimiter; add a matching opener".to_owned(),
                 });
             }
-            parens -= 1;
+            delimiters.pop();
         }
         let start_offset = pos;
         pos += width;
@@ -232,10 +246,14 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             end_offset: pos,
         });
     }
-    if parens != 0 {
+    if let Some((open, _)) = delimiters.last() {
         return Err(LexError {
             span: Span { file, line, col },
-            message: "unclosed '('; add a matching ')'".to_owned(),
+            message: if *open == b'(' {
+                "unclosed '('; add a matching ')'".to_owned()
+            } else {
+                "unclosed '['; add a matching ']'".to_owned()
+            },
         });
     }
     out.push(Token {
@@ -304,6 +322,8 @@ fn match_two_or_one(b: &[u8], p: usize) -> Option<(TokenKind, usize)> {
         b')' => TokenKind::RParen,
         b'{' => TokenKind::LBrace,
         b'}' => TokenKind::RBrace,
+        b'[' => TokenKind::LBracket,
+        b']' => TokenKind::RBracket,
         b',' => TokenKind::Comma,
         b':' => TokenKind::Colon,
         b';' => TokenKind::Semicolon,

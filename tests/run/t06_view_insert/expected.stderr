@@ -1,0 +1,1 @@
+main.nl:1:103: error: cannot call 'list<long, 2>.insert' while a collection view is live; move the operation after the loop

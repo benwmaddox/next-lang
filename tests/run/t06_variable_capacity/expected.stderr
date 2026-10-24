@@ -1,0 +1,1 @@
+main.nl:1:44: error: collection capacity must be a constant integer expression; use a literal or const value

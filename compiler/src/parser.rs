@@ -258,6 +258,8 @@ impl Parser<'_> {
             return Ok(TypeAst {
                 name: "()".to_owned(),
                 args: Vec::new(),
+                const_args: Vec::new(),
+                array_caps: Vec::new(),
                 range: None,
                 policy: RefinePolicy::Checked,
                 span: self.tokens[self.pos.saturating_sub(2)].span,
@@ -265,14 +267,16 @@ impl Parser<'_> {
         }
         let (name, span) = self.expect_ident("expected a type name")?;
         let mut args = Vec::new();
+        let mut const_args = Vec::new();
         if self.take(&TokenKind::Lt) {
-            loop {
-                args.push(self.type_name()?);
-                self.skip_newlines();
-                if !self.take(&TokenKind::Comma) {
-                    break;
+            args.push(self.type_name()?);
+            if name == "list" && self.take(&TokenKind::Comma) {
+                const_args.push(self.expression(8)?);
+            } else {
+                while self.take(&TokenKind::Comma) {
+                    self.skip_newlines();
+                    args.push(self.type_name()?);
                 }
-                self.skip_newlines();
             }
             if self.pending_type_gt {
                 self.pending_type_gt = false;
@@ -316,9 +320,19 @@ impl Parser<'_> {
                 message: "'wrap' and 'clamp' need an integer range type".to_owned(),
             });
         }
+        let mut array_caps = Vec::new();
+        while self.take(&TokenKind::LBracket) {
+            array_caps.push(self.expression(8)?);
+            self.expect(
+                &TokenKind::RBracket,
+                "expected ']' after the array capacity",
+            )?;
+        }
         Ok(TypeAst {
             name,
             args,
+            const_args,
+            array_caps,
             range,
             policy,
             span,
@@ -434,6 +448,14 @@ impl Parser<'_> {
                 },
             }));
         }
+        if self.word_is("discard") {
+            let start = self.next().span;
+            let value = self.expression(0)?;
+            return Ok(Candidate::Statement(Stmt {
+                span: start,
+                kind: StmtKind::Discard(value),
+            }));
+        }
         if self.at(&TokenKind::LBrace) {
             return Ok(Candidate::Statement(Stmt {
                 span: self.peek().span,
@@ -449,11 +471,26 @@ impl Parser<'_> {
             } else {
                 None
             };
-            self.expect(
-                &TokenKind::Eq,
-                "expected '=' and an initial value for this binding",
-            )?;
-            let value = self.expression(0)?;
+            let value = if self.take(&TokenKind::Eq) {
+                self.expression(0)?
+            } else if annotation.is_some()
+                && (self.at(&TokenKind::Newline)
+                    || self.at(&TokenKind::Semicolon)
+                    || self.at(&TokenKind::RBrace))
+            {
+                Expr {
+                    kind: ExprKind::Call {
+                        name: "default".to_owned(),
+                        call_span: start,
+                        args: Vec::new(),
+                    },
+                    span: start,
+                }
+            } else {
+                return Err(self.error_here(
+                    "expected '=' and an initial value; an omitted value needs an explicit type with a valid default",
+                ));
+            };
             return Ok(Candidate::Statement(Stmt {
                 span: start,
                 kind: StmtKind::Let {
@@ -493,7 +530,7 @@ impl Parser<'_> {
         if let Some(op) = assignment {
             let span = expression.span;
             let target = match &expression.kind {
-                ExprKind::Name(_) | ExprKind::Field { .. } => expression,
+                ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => expression,
                 _ => {
                     return Err(ParseError {
                         span,
@@ -533,6 +570,11 @@ impl Parser<'_> {
     fn for_statement(&mut self) -> Result<Stmt, ParseError> {
         let start = self.expect_word("for", "expected 'for'")?.span;
         let (name, _) = self.expect_ident("expected a counter name after 'for'")?;
+        let index_name = if self.take(&TokenKind::Comma) {
+            Some(self.expect_ident("expected an index name after ','")?.0)
+        } else {
+            None
+        };
         let annotation = if self.take(&TokenKind::Colon) {
             Some(self.type_name()?)
         } else {
@@ -540,27 +582,48 @@ impl Parser<'_> {
         };
         self.expect_word("in", "expected 'in' after the loop counter")?;
         let first = self.expression(0)?;
-        let inclusive = if self.take(&TokenKind::RangeInclusive) {
-            true
-        } else if self.take(&TokenKind::Range) {
-            false
-        } else {
-            return Err(self.error_here("expected '..' or '..=' after the loop start"));
-        };
-        let end = self.expression(0)?;
         self.skip_newlines();
-        let body = self.block()?;
-        Ok(Stmt {
-            kind: StmtKind::For {
-                name,
-                annotation,
-                start: first,
-                end,
-                inclusive,
-                body,
-            },
-            span: start,
-        })
+        let inclusive = self.take(&TokenKind::RangeInclusive);
+        let is_range = inclusive || self.take(&TokenKind::Range);
+        if is_range {
+            if index_name.is_some() {
+                return Err(ParseError {
+                    span: start,
+                    message: "range loops have one counter; use 'for value, index in collection' for collection iteration".to_owned(),
+                });
+            }
+            let end = self.expression(0)?;
+            self.skip_newlines();
+            let body = self.block()?;
+            Ok(Stmt {
+                kind: StmtKind::For {
+                    name,
+                    annotation,
+                    start: first,
+                    end,
+                    inclusive,
+                    body,
+                },
+                span: start,
+            })
+        } else {
+            if annotation.is_some() {
+                return Err(ParseError {
+                    span: start,
+                    message: "collection loop bindings take their element type from the collection; remove the annotation".to_owned(),
+                });
+            }
+            let body = self.block()?;
+            Ok(Stmt {
+                kind: StmtKind::ForEach {
+                    name,
+                    index_name,
+                    collection: first,
+                    body,
+                },
+                span: start,
+            })
+        }
     }
 
     fn expression(&mut self, min_precedence: u8) -> Result<Expr, ParseError> {
@@ -711,6 +774,21 @@ impl Parser<'_> {
         };
 
         loop {
+            if self.take(&TokenKind::LBracket) {
+                let index = self.expression(0)?;
+                let index_span = index.span;
+                self.expect(&TokenKind::RBracket, "expected ']' after the index")?;
+                let span = expr.span;
+                expr = Expr {
+                    kind: ExprKind::Index {
+                        receiver: Box::new(expr),
+                        index: Box::new(index),
+                        index_span,
+                    },
+                    span,
+                };
+                continue;
+            }
             if self.take(&TokenKind::LParen) {
                 let args = self.arguments_after_lparen()?;
                 let old = expr;
@@ -748,17 +826,36 @@ impl Parser<'_> {
             }
             if self.at(&TokenKind::LBrace) {
                 let name = match &expr.kind {
+                    ExprKind::Name(name) if name == "list" => Some(name.clone()),
                     ExprKind::Name(name) if name.chars().next().is_some_and(char::is_uppercase) => {
                         Some(name.clone())
                     }
                     _ => None,
                 };
                 if let Some(name) = name {
-                    let fields = self.struct_init_fields()?;
-                    expr = Expr {
-                        kind: ExprKind::StructInit { name, fields },
-                        span: expr.span,
-                    };
+                    if name == "list" {
+                        self.expect(&TokenKind::LBrace, "expected '{' after 'list'")?;
+                        self.skip_separators();
+                        if !self.at(&TokenKind::RBrace) {
+                            return Err(self.error_here(
+                                "list literals start empty; push values after construction",
+                            ));
+                        }
+                        self.expect(
+                            &TokenKind::RBrace,
+                            "expected '}' after the empty list literal",
+                        )?;
+                        expr = Expr {
+                            kind: ExprKind::ListLiteral,
+                            span: expr.span,
+                        };
+                    } else {
+                        let fields = self.struct_init_fields()?;
+                        expr = Expr {
+                            kind: ExprKind::StructInit { name, fields },
+                            span: expr.span,
+                        };
+                    }
                     continue;
                 }
             }
@@ -820,7 +917,20 @@ impl Parser<'_> {
                     let span = expr.span;
                     let is_builtin_method = matches!(
                         method.as_str(),
-                        "to_long" | "ok" | "unwrap" | "is_none" | "is_some" | "is_ok" | "is_err"
+                        "to_long"
+                            | "ok"
+                            | "unwrap"
+                            | "is_none"
+                            | "is_some"
+                            | "is_ok"
+                            | "is_err"
+                            | "len"
+                            | "count"
+                            | "push"
+                            | "pop"
+                            | "insert"
+                            | "remove"
+                            | "clear"
                     );
                     if let Some(enum_name) = qualifier.filter(|_| !is_builtin_method) {
                         expr = Expr {

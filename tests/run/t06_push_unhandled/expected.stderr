@@ -1,0 +1,1 @@
+main.nl:1:40: error: this collection operation returns Result<(), Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended

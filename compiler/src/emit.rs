@@ -45,6 +45,32 @@ pub fn emit(program: &TProgram) -> String {
                     ty.name
                 ));
             }
+            TTypeKind::Array { element, capacity } => {
+                let lanes = collection_lane_types(*element, &program.types)
+                    .iter()
+                    .map(|lane| format!("[{} x {}]", capacity, llvm_type(*lane, &program.types)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push_str(&format!(
+                    "%nl.ty.{id} = type <{{ {lanes} }}> ; {}\n",
+                    ty.name
+                ));
+            }
+            TTypeKind::List { element, capacity } => {
+                let mut lanes = vec!["i64".to_owned()];
+                lanes.extend(
+                    collection_lane_types(*element, &program.types)
+                        .iter()
+                        .map(|lane| {
+                            format!("[{} x {}]", capacity, llvm_type(*lane, &program.types))
+                        }),
+                );
+                out.push_str(&format!(
+                    "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
+                    lanes.join(", "),
+                    ty.name
+                ));
+            }
             _ => {
                 let payload = enum_payload_size(Ty(id), &program.types, &mut size_cache);
                 out.push_str(&format!(
@@ -106,6 +132,8 @@ pub fn emit(program: &TProgram) -> String {
         " { ".to_owned(),
         ": ".to_owned(),
         " }".to_owned(),
+        "[".to_owned(),
+        "]".to_owned(),
     ];
     for ty in program.types.iter().skip(5) {
         print_texts.extend(ty.cases().into_iter().map(|case| case.name));
@@ -206,6 +234,13 @@ fn collect_expect_sources(block: &TBlock, sources: &mut Vec<String>) {
                 collect_expect_sources_expr(end, sources);
                 collect_expect_sources(body, sources)
             }
+            TStmtKind::ForEach {
+                collection, body, ..
+            } => {
+                collect_expect_sources_expr(collection, sources);
+                collect_expect_sources(body, sources);
+            }
+            TStmtKind::Discard(value) => collect_expect_sources_expr(value, sources),
             TStmtKind::Block(body) => collect_expect_sources(body, sources),
             TStmtKind::Break | TStmtKind::Continue => {}
         }
@@ -228,6 +263,19 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
             }
         }
         TExprKind::Method { receiver, .. } => collect_expect_sources_expr(receiver, sources),
+        TExprKind::Index {
+            receiver, index, ..
+        } => {
+            collect_expect_sources_expr(receiver, sources);
+            collect_expect_sources_expr(index, sources);
+        }
+        TExprKind::Fill { value, .. } => collect_expect_sources_expr(value, sources),
+        TExprKind::CollectionOp { receiver, args, .. } => {
+            collect_expect_sources_expr(receiver, sources);
+            for arg in args {
+                collect_expect_sources_expr(arg, sources);
+            }
+        }
         TExprKind::OptionalToLong(receiver) => collect_expect_sources_expr(receiver, sources),
         TExprKind::Field { receiver, .. } => collect_expect_sources_expr(receiver, sources),
         TExprKind::StructConstruct { fields } => {
@@ -285,7 +333,9 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         | TExprKind::Unit
         | TExprKind::Local(_)
         | TExprKind::Constant(_)
-        | TExprKind::LoopExit(_) => {}
+        | TExprKind::LoopExit(_)
+        | TExprKind::EmptyArray
+        | TExprKind::EmptyList => {}
     }
 }
 
@@ -315,6 +365,13 @@ fn enum_payload_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> us
         .unwrap_or(0)
 }
 
+fn collection_lane_types(element: Ty, types: &[TType]) -> Vec<Ty> {
+    match &types[element.0].kind {
+        TTypeKind::Struct(fields) => fields.iter().map(|field| field.ty).collect(),
+        _ => vec![element],
+    }
+}
+
 fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
     match ty {
         Ty::Int => 4,
@@ -331,6 +388,16 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
                     .iter()
                     .map(|field| type_size(field.ty, types, cache))
                     .sum(),
+                TTypeKind::Array { element, capacity } => collection_lane_types(*element, types)
+                    .iter()
+                    .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
+                    .sum(),
+                TTypeKind::List { element, capacity } => 8usize.saturating_add(
+                    collection_lane_types(*element, types)
+                        .iter()
+                        .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
+                        .sum::<usize>(),
+                ),
                 _ => {
                     let payload = enum_payload_size(ty, types, cache);
                     (4 + payload + 3) & !3
@@ -372,6 +439,18 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
                 .join(", ");
             format!("<{{ {fields} }}>")
         }
+        TTypeKind::Array { element, capacity } => {
+            let ConstValue::Array(values) = value else {
+                unreachable!("array constant has a non-array value")
+            };
+            collection_constant(*element, *capacity, values, false, types)
+        }
+        TTypeKind::List { element, capacity } => {
+            let ConstValue::List(values) = value else {
+                unreachable!("list constant has a non-list value")
+            };
+            collection_constant(*element, *capacity, values, true, types)
+        }
         TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
             let ConstValue::Enum {
                 case_index,
@@ -392,6 +471,67 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
         }
         TTypeKind::Never => unreachable!("never cannot be stored as a constant"),
     }
+}
+
+fn collection_constant(
+    element: Ty,
+    capacity: usize,
+    values: &[ConstValue],
+    is_list: bool,
+    types: &[TType],
+) -> String {
+    let lanes = collection_lane_types(element, types);
+    let mut fields = Vec::new();
+    if is_list {
+        fields.push(format!("i64 {}", values.len()));
+    }
+    for lane in lanes {
+        let lane_values = values
+            .iter()
+            .map(|value| match (&types[element.0].kind, value) {
+                (TTypeKind::Struct(_), ConstValue::Struct(fields)) => {
+                    fields.first().cloned().unwrap_or(ConstValue::Unit)
+                }
+                _ => value.clone(),
+            })
+            .collect::<Vec<_>>();
+        let lane_index = fields.len() - usize::from(is_list);
+        let lane_ty = lane;
+        let values_text = (0..capacity)
+            .map(|index| {
+                let value = if index < lane_values.len() {
+                    if matches!(types[element.0].kind, TTypeKind::Struct(_)) {
+                        match &values[index] {
+                            ConstValue::Struct(fields) => {
+                                fields.get(lane_index).cloned().unwrap_or(ConstValue::Unit)
+                            }
+                            _ => ConstValue::Unit,
+                        }
+                    } else {
+                        lane_values[index].clone()
+                    }
+                } else {
+                    ConstValue::Unit
+                };
+                let inner = if index < values.len() {
+                    llvm_constant(lane_ty, &value, types)
+                } else {
+                    "zeroinitializer".to_owned()
+                };
+                format!("{} {}", llvm_type(lane_ty, types), inner)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        fields.push(format!(
+            "[{} x {}] [{}]",
+            capacity,
+            llvm_type(lane_ty, types),
+            values_text
+        ));
+    }
+    format!("<{{ {} }}> ", fields.join(", "))
+        .trim_end()
+        .to_owned()
 }
 
 fn enum_payload_bytes(
@@ -447,6 +587,19 @@ fn serialize_constant(
                 serialize_constant(field.ty, value, types, bytes, cache);
             }
         }
+        TTypeKind::Array { element, capacity } => {
+            let ConstValue::Array(values) = value else {
+                unreachable!("array constant has a non-array value")
+            };
+            serialize_collection(*element, *capacity, values, false, types, bytes, cache);
+        }
+        TTypeKind::List { element, capacity } => {
+            let ConstValue::List(values) = value else {
+                unreachable!("list constant has a non-list value")
+            };
+            bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
+            serialize_collection(*element, *capacity, values, true, types, bytes, cache);
+        }
         TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
             let ConstValue::Enum {
                 case_index,
@@ -474,6 +627,39 @@ fn serialize_constant(
     }
 }
 
+fn serialize_collection(
+    element: Ty,
+    capacity: usize,
+    values: &[ConstValue],
+    _is_list: bool,
+    types: &[TType],
+    bytes: &mut Vec<u8>,
+    cache: &mut [Option<usize>],
+) {
+    let lanes = collection_lane_types(element, types);
+    for (lane_index, lane) in lanes.iter().copied().enumerate() {
+        for index in 0..capacity {
+            let field_value = if index < values.len() {
+                if matches!(types[element.0].kind, TTypeKind::Struct(_)) {
+                    match &values[index] {
+                        ConstValue::Struct(fields) => fields.get(lane_index).cloned(),
+                        _ => None,
+                    }
+                } else {
+                    Some(values[index].clone())
+                }
+            } else {
+                None
+            };
+            if let Some(value) = field_value {
+                serialize_constant(lane, &value, types, bytes, cache);
+            } else {
+                bytes.resize(bytes.len().saturating_add(type_size(lane, types, cache)), 0);
+            }
+        }
+    }
+}
+
 struct FunctionEmitter<'a> {
     program: &'a TProgram,
     function: &'a TFunction,
@@ -486,6 +672,15 @@ struct FunctionEmitter<'a> {
     terminated: bool,
     slots: Vec<Option<Ty>>,
     loops: Vec<LoopTargets>,
+    views: HashMap<usize, ViewInfo>,
+    prologue_end: usize,
+}
+
+#[derive(Clone)]
+struct ViewInfo {
+    collection_ty: Ty,
+    collection_ptr: String,
+    counter_id: usize,
 }
 
 struct LoopTargets {
@@ -512,6 +707,8 @@ impl<'a> FunctionEmitter<'a> {
             terminated: false,
             slots: Vec::new(),
             loops: Vec::new(),
+            views: HashMap::new(),
+            prologue_end: 0,
         };
         for param in &function.params {
             this.record_slot(param.id, param.ty);
@@ -556,6 +753,7 @@ impl<'a> FunctionEmitter<'a> {
                     .push(format!("  %local.{id} = alloca {}", self.lltype(ty)));
             }
         }
+        self.prologue_end = self.lines.len();
         for param in &self.function.params {
             if param.mode == ParamMode::Read {
                 self.lines.push(format!(
@@ -602,6 +800,16 @@ impl<'a> FunctionEmitter<'a> {
         out
     }
 
+    fn entry_alloca(&mut self, ty: Ty) -> String {
+        let ptr = self.temp();
+        self.lines.insert(
+            self.prologue_end,
+            format!("  {ptr} = alloca {}", self.lltype(ty)),
+        );
+        self.prologue_end += 1;
+        ptr
+    }
+
     fn collect_block(&mut self, block: &TBlock) {
         for stmt in &block.statements {
             self.collect_stmt(stmt);
@@ -617,7 +825,9 @@ impl<'a> FunctionEmitter<'a> {
                 self.record_slot(*id, *ty);
                 self.collect_expr(value);
             }
-            TStmtKind::Assign { value, .. } | TStmtKind::Expr(value) => self.collect_expr(value),
+            TStmtKind::Assign { value, .. }
+            | TStmtKind::Expr(value)
+            | TStmtKind::Discard(value) => self.collect_expr(value),
             TStmtKind::Return(value) => {
                 if let Some(value) = value {
                     self.collect_expr(value);
@@ -645,6 +855,26 @@ impl<'a> FunctionEmitter<'a> {
                 self.record_slot(*id, *ty);
                 self.collect_expr(start);
                 self.collect_expr(end);
+                self.collect_block(body);
+            }
+            TStmtKind::ForEach {
+                id,
+                index_id,
+                counter_id,
+                collection,
+                body,
+                ..
+            } => {
+                let element = match self.program.types[collection.ty.0].kind {
+                    TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+                    _ => unreachable!("typed collection loop has a collection source"),
+                };
+                self.record_slot(*id, element);
+                if let Some(index_id) = index_id {
+                    self.record_slot(*index_id, Ty::Long);
+                }
+                self.record_slot(*counter_id, Ty::Long);
+                self.collect_expr(collection);
                 self.collect_block(body);
             }
             TStmtKind::Expect { kind, .. } => match kind {
@@ -677,6 +907,19 @@ impl<'a> FunctionEmitter<'a> {
                 }
             }
             TExprKind::Method { receiver, .. } => self.collect_expr(receiver),
+            TExprKind::Index {
+                receiver, index, ..
+            } => {
+                self.collect_expr(receiver);
+                self.collect_expr(index);
+            }
+            TExprKind::Fill { value, .. } => self.collect_expr(value),
+            TExprKind::CollectionOp { receiver, args, .. } => {
+                self.collect_expr(receiver);
+                for arg in args {
+                    self.collect_expr(arg);
+                }
+            }
             TExprKind::OptionalToLong(receiver) => self.collect_expr(receiver),
             TExprKind::Field { receiver, .. } => self.collect_expr(receiver),
             TExprKind::StructConstruct { fields } => {
@@ -746,7 +989,9 @@ impl<'a> FunctionEmitter<'a> {
             | TExprKind::Bool(_)
             | TExprKind::Unit
             | TExprKind::Constant(_)
-            | TExprKind::LoopExit(_) => {}
+            | TExprKind::LoopExit(_)
+            | TExprKind::EmptyArray
+            | TExprKind::EmptyList => {}
         }
     }
 
@@ -767,44 +1012,672 @@ impl<'a> FunctionEmitter<'a> {
             .expect("local slot type recorded")
     }
 
-    fn emit_place_pointer(&mut self, root: usize, fields: &[usize]) -> String {
-        let mut pointer = self.local_pointer(root);
-        let mut current_ty = self.root_type(root);
-        for index in fields {
-            let field_ty = match &self.program.types[current_ty.0].kind {
-                TTypeKind::Struct(defs) => defs[*index].ty,
-                _ => unreachable!("typed place path crosses only struct fields"),
-            };
-            let next = self.temp();
+    fn emit_collection_lane_pointer(
+        &mut self,
+        collection_ty: Ty,
+        pointer: &str,
+        index: &str,
+        lane: usize,
+    ) -> String {
+        let is_list = matches!(
+            self.program.types[collection_ty.0].kind,
+            TTypeKind::List { .. }
+        );
+        let capacity = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Array { capacity, .. } | TTypeKind::List { capacity, .. } => capacity,
+            _ => unreachable!("collection lane pointer requires an array or list"),
+        };
+        let element = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            _ => unreachable!(),
+        };
+        let lane_ty = collection_lane_types(element, &self.program.types)[lane];
+        let lane_ptr = self.temp();
+        self.instruction(format!(
+            "{lane_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 {}",
+            self.lltype(collection_ty),
+            lane + usize::from(is_list)
+        ));
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = getelementptr inbounds [{} x {}], ptr {lane_ptr}, i32 0, i64 {index}",
+            capacity,
+            self.lltype(lane_ty)
+        ));
+        result
+    }
+
+    fn emit_collection_element(&mut self, collection_ty: Ty, pointer: &str, index: &str) -> String {
+        let element = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            _ => unreachable!(),
+        };
+        if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
+            let mut value = "zeroinitializer".to_owned();
+            for (lane, field) in fields.iter().enumerate() {
+                let ptr = self.emit_collection_lane_pointer(collection_ty, pointer, index, lane);
+                let loaded = self.temp();
+                self.instruction(format!(
+                    "{loaded} = load {}, ptr {ptr}, align 1",
+                    self.lltype(field.ty)
+                ));
+                let next = self.temp();
+                self.instruction(format!(
+                    "{next} = insertvalue {} {value}, {} {loaded}, {lane}",
+                    self.lltype(element),
+                    self.lltype(field.ty)
+                ));
+                value = next;
+            }
+            value
+        } else {
+            let ptr = self.emit_collection_lane_pointer(collection_ty, pointer, index, 0);
+            let value = self.temp();
             self.instruction(format!(
-                "{next} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 {index}",
-                self.lltype(current_ty)
+                "{value} = load {}, ptr {ptr}, align 1",
+                self.lltype(element)
             ));
-            pointer = next;
-            current_ty = field_ty;
+            value
+        }
+    }
+
+    fn emit_store_collection_element(
+        &mut self,
+        collection_ty: Ty,
+        pointer: &str,
+        index: &str,
+        value: &str,
+    ) {
+        let element = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            _ => unreachable!(),
+        };
+        if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
+            for (lane, field) in fields.iter().enumerate() {
+                let lane_value = self.temp();
+                self.instruction(format!(
+                    "{lane_value} = extractvalue {} {value}, {lane}",
+                    self.lltype(element)
+                ));
+                let ptr = self.emit_collection_lane_pointer(collection_ty, pointer, index, lane);
+                self.instruction(format!(
+                    "store {} {lane_value}, ptr {ptr}, align 1",
+                    self.lltype(field.ty)
+                ));
+            }
+        } else {
+            let ptr = self.emit_collection_lane_pointer(collection_ty, pointer, index, 0);
+            self.instruction(format!(
+                "store {} {value}, ptr {ptr}, align 1",
+                self.lltype(element)
+            ));
+        }
+    }
+
+    fn emit_collection_count(&mut self, collection_ty: Ty, pointer: &str) -> String {
+        if matches!(
+            self.program.types[collection_ty.0].kind,
+            TTypeKind::Array { .. }
+        ) {
+            return "0".to_owned();
+        }
+        let ptr = self.temp();
+        self.instruction(format!(
+            "{ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
+            self.lltype(collection_ty)
+        ));
+        let count = self.temp();
+        self.instruction(format!("{count} = load i64, ptr {ptr}, align 1"));
+        count
+    }
+
+    fn emit_fill(&mut self, collection_ty: Ty, value: &TExpr, capacity: usize) -> String {
+        debug_assert!(matches!(
+            self.program.types[collection_ty.0].kind,
+            TTypeKind::Array { .. }
+        ));
+        let value = self.emit_expr(value);
+        if self.terminated {
+            return String::new();
+        }
+        let place = self.entry_alloca(collection_ty);
+        self.instruction(format!(
+            "store {} zeroinitializer, ptr {place}, align 1",
+            self.lltype(collection_ty)
+        ));
+        if capacity != 0 {
+            let counter_ty = Ty::Long;
+            let counter = self.entry_alloca(counter_ty);
+            self.instruction(format!("store i64 0, ptr {counter}, align 1"));
+            let cond = self.new_label("fill.cond");
+            let body = self.new_label("fill.body");
+            let done = self.new_label("fill.done");
+            self.terminate(format!("br label %{cond}"));
+            self.start_block(&cond);
+            let index = self.temp();
+            self.instruction(format!("{index} = load i64, ptr {counter}, align 1"));
+            let more = self.temp();
+            self.instruction(format!("{more} = icmp ult i64 {index}, {capacity}"));
+            self.terminate(format!("br i1 {more}, label %{body}, label %{done}"));
+            self.start_block(&body);
+            self.emit_store_collection_element(collection_ty, &place, &index, &value);
+            let next = self.temp();
+            self.instruction(format!("{next} = add i64 {index}, 1"));
+            self.instruction(format!("store i64 {next}, ptr {counter}, align 1"));
+            self.terminate(format!("br label %{cond}"));
+            self.start_block(&done);
+        }
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = load {}, ptr {place}, align 1",
+            self.lltype(collection_ty)
+        ));
+        result
+    }
+
+    fn emit_collection_op(
+        &mut self,
+        expr: &TExpr,
+        op: CollectionOp,
+        receiver: &TExpr,
+        args: &[TExpr],
+        capacity: usize,
+        proven_success: bool,
+    ) -> String {
+        let collection_ty = receiver.ty;
+        let element = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            _ => unreachable!("typed collection operation"),
+        };
+        if op == CollectionOp::Len {
+            let _ = self.emit_expr(receiver);
+            if self.terminated {
+                return String::new();
+            }
+            return capacity.to_string();
+        }
+        if op == CollectionOp::Count {
+            let pointer = if Self::expr_place(receiver).is_some() {
+                self.emit_place_pointer_expr(receiver)
+            } else {
+                let value = self.emit_expr(receiver);
+                if self.terminated {
+                    return String::new();
+                }
+                let pointer = self.entry_alloca(collection_ty);
+                self.instruction(format!(
+                    "store {} {value}, ptr {pointer}, align 1",
+                    self.lltype(collection_ty)
+                ));
+                pointer
+            };
+            return self.emit_collection_count(collection_ty, &pointer);
+        }
+        let pointer = self.emit_place_pointer_expr(receiver);
+        if op == CollectionOp::Clear {
+            let count_ptr = self.temp();
+            self.instruction(format!(
+                "{count_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
+                self.lltype(collection_ty)
+            ));
+            self.instruction(format!("store i64 0, ptr {count_ptr}, align 1"));
+            return String::new();
+        }
+        let mut values = Vec::with_capacity(args.len());
+        for arg in args {
+            values.push(self.emit_expr(arg));
+            if self.terminated {
+                return String::new();
+            }
+        }
+        match op {
+            CollectionOp::Push => {
+                let count = self.emit_collection_count(collection_ty, &pointer);
+                let result_ty = expr.ty;
+                if proven_success {
+                    self.emit_store_collection_element(collection_ty, &pointer, &count, &values[0]);
+                    let next = self.temp();
+                    self.instruction(format!("{next} = add i64 {count}, 1"));
+                    let count_ptr = self.temp();
+                    self.instruction(format!(
+                        "{count_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
+                        self.lltype(collection_ty)
+                    ));
+                    self.instruction(format!("store i64 {next}, ptr {count_ptr}, align 1"));
+                    return self.emit_construct_values(
+                        result_ty,
+                        0,
+                        vec![(Ty::Unit, String::new())],
+                    );
+                }
+                let full = self.temp();
+                self.instruction(format!("{full} = icmp uge i64 {count}, {capacity}"));
+                let fail_label = self.new_label("push.full");
+                let success_label = self.new_label("push.ok");
+                let merge = self.new_label("push.end");
+                self.terminate(format!(
+                    "br i1 {full}, label %{fail_label}, label %{success_label}"
+                ));
+                self.start_block(&fail_label);
+                let full_ty = self.program.types[result_ty.0].cases()[1].payload[0];
+                let full = self.emit_construct_values(full_ty, 0, Vec::new());
+                let failure = self.emit_construct_values(result_ty, 1, vec![(full_ty, full)]);
+                let fail_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&success_label);
+                self.emit_store_collection_element(collection_ty, &pointer, &count, &values[0]);
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {count}, 1"));
+                let count_ptr = self.temp();
+                self.instruction(format!(
+                    "{count_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
+                    self.lltype(collection_ty)
+                ));
+                self.instruction(format!("store i64 {next}, ptr {count_ptr}, align 1"));
+                let success =
+                    self.emit_construct_values(result_ty, 0, vec![(Ty::Unit, String::new())]);
+                let success_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&merge);
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = phi {} [ {failure}, %{fail_pred} ], [ {success}, %{success_pred} ]",
+                    self.lltype(result_ty)
+                ));
+                result
+            }
+            CollectionOp::Insert => {
+                let index = values[0].clone();
+                self.emit_index_guard(collection_ty, &pointer, &index, true, args[0].span);
+                let count = self.emit_collection_count(collection_ty, &pointer);
+                let full = self.temp();
+                self.instruction(format!("{full} = icmp uge i64 {count}, {capacity}"));
+                let fail_label = self.new_label("insert.full");
+                let success_label = self.new_label("insert.ok");
+                let merge = self.new_label("insert.end");
+                self.terminate(format!(
+                    "br i1 {full}, label %{fail_label}, label %{success_label}"
+                ));
+                self.start_block(&fail_label);
+                let err_ty = self.program.types[expr.ty.0].cases()[1].payload[0];
+                let full = self.emit_construct_values(err_ty, 0, Vec::new());
+                let failure = self.emit_construct_values(expr.ty, 1, vec![(err_ty, full)]);
+                let fail_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&success_label);
+                let cursor = self.entry_alloca(Ty::Long);
+                self.instruction(format!("store i64 {count}, ptr {cursor}, align 1"));
+                let cond = self.new_label("insert.shift.cond");
+                let body = self.new_label("insert.shift.body");
+                let shifted = self.new_label("insert.shift.done");
+                self.terminate(format!("br label %{cond}"));
+                self.start_block(&cond);
+                let current = self.temp();
+                self.instruction(format!("{current} = load i64, ptr {cursor}, align 1"));
+                let more = self.temp();
+                self.instruction(format!("{more} = icmp ugt i64 {current}, {index}"));
+                self.terminate(format!("br i1 {more}, label %{body}, label %{shifted}"));
+                self.start_block(&body);
+                let previous = self.temp();
+                self.instruction(format!("{previous} = sub i64 {current}, 1"));
+                let item = self.emit_collection_element(collection_ty, &pointer, &previous);
+                self.emit_store_collection_element(collection_ty, &pointer, &current, &item);
+                self.instruction(format!("store i64 {previous}, ptr {cursor}, align 1"));
+                self.terminate(format!("br label %{cond}"));
+                self.start_block(&shifted);
+                self.emit_store_collection_element(collection_ty, &pointer, &index, &values[1]);
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {count}, 1"));
+                let count_ptr = self.temp();
+                self.instruction(format!(
+                    "{count_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
+                    self.lltype(collection_ty)
+                ));
+                self.instruction(format!("store i64 {next}, ptr {count_ptr}, align 1"));
+                let success =
+                    self.emit_construct_values(expr.ty, 0, vec![(Ty::Unit, String::new())]);
+                let success_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&merge);
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = phi {} [ {failure}, %{fail_pred} ], [ {success}, %{success_pred} ]",
+                    self.lltype(expr.ty)
+                ));
+                result
+            }
+            CollectionOp::Pop => {
+                let count = self.emit_collection_count(collection_ty, &pointer);
+                let empty = self.temp();
+                self.instruction(format!("{empty} = icmp eq i64 {count}, 0"));
+                let none_label = self.new_label("pop.none");
+                let some_label = self.new_label("pop.some");
+                let merge = self.new_label("pop.end");
+                self.terminate(format!(
+                    "br i1 {empty}, label %{none_label}, label %{some_label}"
+                ));
+                self.start_block(&none_label);
+                let none = self.emit_construct_values(expr.ty, 1, Vec::new());
+                let none_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&some_label);
+                let index = self.temp();
+                self.instruction(format!("{index} = sub i64 {count}, 1"));
+                let value = self.emit_collection_element(collection_ty, &pointer, &index);
+                let count_ptr = self.temp();
+                self.instruction(format!(
+                    "{count_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
+                    self.lltype(collection_ty)
+                ));
+                self.instruction(format!("store i64 {index}, ptr {count_ptr}, align 1"));
+                let some = self.emit_construct_values(expr.ty, 0, vec![(element, value)]);
+                let some_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&merge);
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = phi {} [ {none}, %{none_pred} ], [ {some}, %{some_pred} ]",
+                    self.lltype(expr.ty)
+                ));
+                result
+            }
+            CollectionOp::Remove => {
+                let index = values[0].clone();
+                self.emit_index_guard(collection_ty, &pointer, &index, false, args[0].span);
+                let count = self.emit_collection_count(collection_ty, &pointer);
+                let removed = self.emit_collection_element(collection_ty, &pointer, &index);
+                let cursor = self.entry_alloca(Ty::Long);
+                self.instruction(format!("store i64 {index}, ptr {cursor}, align 1"));
+                let cond = self.new_label("remove.shift.cond");
+                let body = self.new_label("remove.shift.body");
+                let done = self.new_label("remove.shift.done");
+                self.terminate(format!("br label %{cond}"));
+                self.start_block(&cond);
+                let current = self.temp();
+                self.instruction(format!("{current} = load i64, ptr {cursor}, align 1"));
+                let last = self.temp();
+                self.instruction(format!("{last} = sub i64 {count}, 1"));
+                let more = self.temp();
+                self.instruction(format!("{more} = icmp ult i64 {current}, {last}"));
+                self.terminate(format!("br i1 {more}, label %{body}, label %{done}"));
+                self.start_block(&body);
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {current}, 1"));
+                let item = self.emit_collection_element(collection_ty, &pointer, &next);
+                self.emit_store_collection_element(collection_ty, &pointer, &current, &item);
+                self.instruction(format!("store i64 {next}, ptr {cursor}, align 1"));
+                self.terminate(format!("br label %{cond}"));
+                self.start_block(&done);
+                let new_count = self.temp();
+                self.instruction(format!("{new_count} = sub i64 {count}, 1"));
+                let count_ptr = self.temp();
+                self.instruction(format!(
+                    "{count_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
+                    self.lltype(collection_ty)
+                ));
+                self.instruction(format!("store i64 {new_count}, ptr {count_ptr}, align 1"));
+                removed
+            }
+            CollectionOp::Count | CollectionOp::Len | CollectionOp::Clear => unreachable!(),
+        }
+    }
+
+    fn emit_index_guard(
+        &mut self,
+        collection_ty: Ty,
+        pointer: &str,
+        index: &str,
+        allow_end: bool,
+        span: Span,
+    ) {
+        let is_list = matches!(
+            self.program.types[collection_ty.0].kind,
+            TTypeKind::List { .. }
+        );
+        let capacity = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Array { capacity, .. } | TTypeKind::List { capacity, .. } => capacity,
+            _ => unreachable!(),
+        };
+        let limit = if is_list {
+            self.emit_collection_count(collection_ty, pointer)
+        } else {
+            capacity.to_string()
+        };
+        let negative = self.temp();
+        self.instruction(format!("{negative} = icmp slt i64 {index}, 0"));
+        let upper = self.temp();
+        self.instruction(format!(
+            "{upper} = icmp {} i64 {index}, {limit}",
+            if allow_end { "sgt" } else { "sge" }
+        ));
+        let bad = self.temp();
+        self.instruction(format!("{bad} = or i1 {negative}, {upper}"));
+        self.guard(bad, Failure::IndexOutOfRange, span);
+    }
+
+    fn emit_place_pointer(&mut self, place: &TPlace) -> String {
+        let mut pointer = self.local_pointer(place.root);
+        let mut current_ty = self.root_type(place.root);
+        let mut soa: Option<(Ty, String, String)> = None;
+        if let Some(view) = self.views.get(&place.root).cloned() {
+            let idx = self.temp();
+            self.instruction(format!(
+                "{idx} = load i64, ptr %local.{}, align 1",
+                view.counter_id
+            ));
+            let element = match self.program.types[view.collection_ty.0].kind {
+                TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+                _ => unreachable!(),
+            };
+            current_ty = element;
+            if matches!(self.program.types[element.0].kind, TTypeKind::Struct(_)) {
+                soa = Some((view.collection_ty, view.collection_ptr, idx));
+            } else {
+                pointer = self.emit_collection_lane_pointer(
+                    view.collection_ty,
+                    &view.collection_ptr,
+                    &idx,
+                    0,
+                );
+            }
+        }
+        for projection in &place.path {
+            match projection {
+                TProjection::Field(index) => {
+                    let field_ty = match &self.program.types[current_ty.0].kind {
+                        TTypeKind::Struct(fields) => fields[*index].ty,
+                        _ => unreachable!("typed place field crosses only struct storage"),
+                    };
+                    if let Some((collection_ty, base, idx)) = soa.take() {
+                        pointer =
+                            self.emit_collection_lane_pointer(collection_ty, &base, &idx, *index);
+                    } else {
+                        let next = self.temp();
+                        self.instruction(format!(
+                            "{next} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 {index}",
+                            self.lltype(current_ty)
+                        ));
+                        pointer = next;
+                    }
+                    current_ty = field_ty;
+                }
+                TProjection::Index { index, proven, .. } => {
+                    let index_value = self.emit_expr(index);
+                    if !*proven {
+                        self.emit_index_guard(
+                            current_ty,
+                            &pointer,
+                            &index_value,
+                            false,
+                            index.span,
+                        );
+                    }
+                    let element = match self.program.types[current_ty.0].kind {
+                        TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
+                            element
+                        }
+                        _ => unreachable!("typed place index crosses only collection storage"),
+                    };
+                    if matches!(self.program.types[element.0].kind, TTypeKind::Struct(_)) {
+                        soa = Some((current_ty, pointer.clone(), index_value));
+                    } else {
+                        pointer = self.emit_collection_lane_pointer(
+                            current_ty,
+                            &pointer,
+                            &index_value,
+                            0,
+                        );
+                    }
+                    current_ty = element;
+                }
+            }
+        }
+        if soa.is_some() {
+            panic!("a whole structure-of-arrays element has no single address");
         }
         pointer
     }
 
-    fn place_path(expr: &TExpr, fields: &mut Vec<usize>) -> Option<usize> {
+    fn expr_place(expr: &TExpr) -> Option<TPlace> {
         match &expr.kind {
-            TExprKind::Local(id) => Some(*id),
+            TExprKind::Local(id) => Some(TPlace {
+                root: *id,
+                fields: Vec::new(),
+                path: Vec::new(),
+                ty: expr.ty,
+            }),
             TExprKind::Field {
                 receiver,
                 field_index,
             } => {
-                let root = Self::place_path(receiver, fields)?;
-                fields.push(*field_index);
-                Some(root)
+                let mut place = Self::expr_place(receiver)?;
+                place.fields.push(*field_index);
+                place.path.push(TProjection::Field(*field_index));
+                place.ty = expr.ty;
+                Some(place)
+            }
+            TExprKind::Index {
+                receiver,
+                index,
+                capacity,
+                is_list,
+                proven,
+            } => {
+                let mut place = Self::expr_place(receiver)?;
+                let constant = if let TExprKind::Integer(value) = index.kind {
+                    Some(value)
+                } else {
+                    None
+                };
+                place.path.push(TProjection::Index {
+                    index: (**index).clone(),
+                    constant,
+                    capacity: *capacity,
+                    is_list: *is_list,
+                    proven: *proven,
+                });
+                place.ty = expr.ty;
+                Some(place)
             }
             _ => None,
         }
     }
 
     fn emit_place_pointer_expr(&mut self, expr: &TExpr) -> String {
-        let mut fields = Vec::new();
-        let root = Self::place_path(expr, &mut fields).expect("checker validated writable place");
-        self.emit_place_pointer(root, &fields)
+        let place = Self::expr_place(expr).expect("checker validated writable place");
+        self.emit_place_pointer(&place)
+    }
+
+    fn place_struct_element(&self, place: &TPlace) -> Option<(Ty, TExpr, String)> {
+        if place
+            .path
+            .last()
+            .is_some_and(|p| matches!(p, TProjection::Index { .. }))
+        {
+            let mut current_ty = self.root_type(place.root);
+            for projection in &place.path[..place.path.len() - 1] {
+                current_ty = match projection {
+                    TProjection::Field(index) => match &self.program.types[current_ty.0].kind {
+                        TTypeKind::Struct(fields) => fields[*index].ty,
+                        _ => return None,
+                    },
+                    TProjection::Index { .. } => match self.program.types[current_ty.0].kind {
+                        TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
+                            element
+                        }
+                        _ => return None,
+                    },
+                };
+            }
+            let TProjection::Index { index, .. } = place.path.last()? else {
+                unreachable!()
+            };
+            let element = match self.program.types[current_ty.0].kind {
+                TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+                _ => return None,
+            };
+            if matches!(self.program.types[element.0].kind, TTypeKind::Struct(_)) {
+                return Some((current_ty, index.clone(), String::new()));
+            }
+        }
+        if let Some(view) = self.views.get(&place.root) {
+            if place.path.is_empty()
+                && matches!(self.program.types[place.ty.0].kind, TTypeKind::Struct(_))
+            {
+                let index = TExpr {
+                    kind: TExprKind::Local(view.counter_id),
+                    ty: Ty::Long,
+                    span: Span::default(),
+                };
+                return Some((view.collection_ty, index, view.collection_ptr.clone()));
+            }
+        }
+        None
+    }
+
+    fn emit_struct_element_address(&mut self, place: &TPlace) -> Option<(Ty, String, String)> {
+        let (collection_ty, index, explicit_ptr) = self.place_struct_element(place)?;
+        let has_explicit_pointer = !explicit_ptr.is_empty();
+        let pointer = if has_explicit_pointer {
+            explicit_ptr
+        } else {
+            let mut collection_place = place.clone();
+            collection_place.path.pop();
+            collection_place.ty = collection_ty;
+            self.emit_place_pointer(&collection_place)
+        };
+        let index_value = self.emit_expr(&index);
+        if !has_explicit_pointer {
+            if let Some(TProjection::Index { proven: false, .. }) = place.path.last() {
+                self.emit_index_guard(collection_ty, &pointer, &index_value, false, index.span);
+            }
+        }
+        Some((collection_ty, pointer, index_value))
+    }
+
+    fn emit_load_place(&mut self, place: &TPlace) -> String {
+        if let Some((collection_ty, pointer, index)) = self.emit_struct_element_address(place) {
+            return self.emit_collection_element(collection_ty, &pointer, &index);
+        }
+        let pointer = self.emit_place_pointer(place);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = load {}, ptr {pointer}, align 1",
+            self.lltype(place.ty)
+        ));
+        result
+    }
+
+    fn emit_store_place(&mut self, place: &TPlace, value: &str) {
+        if let Some((collection_ty, pointer, index)) = self.emit_struct_element_address(place) {
+            self.emit_store_collection_element(collection_ty, &pointer, &index, value);
+            return;
+        }
+        let pointer = self.emit_place_pointer(place);
+        self.instruction(format!(
+            "store {} {value}, ptr {pointer}, align 1",
+            self.lltype(place.ty)
+        ));
     }
 
     fn emit_block_contents(&mut self, block: &TBlock) {
@@ -834,23 +1707,43 @@ impl<'a> FunctionEmitter<'a> {
                 operator_span,
                 value,
             } => {
+                let struct_address = self.emit_struct_element_address(place);
+                let pointer = if struct_address.is_some() {
+                    None
+                } else {
+                    Some(self.emit_place_pointer(place))
+                };
+                let lhs = if *op != AssignOp::Set {
+                    Some(if let Some(pointer) = &pointer {
+                        let lhs = self.temp();
+                        self.instruction(format!(
+                            "{lhs} = load {}, ptr {pointer}, align 1",
+                            self.lltype(*ty)
+                        ));
+                        lhs
+                    } else {
+                        self.emit_load_place(place)
+                    })
+                } else {
+                    None
+                };
                 let rhs = self.emit_expr(value);
                 if self.terminated {
                     return;
                 }
                 if *op == AssignOp::Set {
-                    let pointer = self.emit_place_pointer(place.root, &place.fields);
-                    self.instruction(format!(
-                        "store {} {rhs}, ptr {pointer}, align 1",
-                        self.lltype(*ty)
-                    ));
+                    if let Some(pointer) = pointer {
+                        self.instruction(format!(
+                            "store {} {rhs}, ptr {pointer}, align 1",
+                            self.lltype(*ty)
+                        ));
+                    } else if let Some((collection_ty, pointer, index)) = struct_address {
+                        self.emit_store_collection_element(collection_ty, &pointer, &index, &rhs);
+                    } else {
+                        self.emit_store_place(place, &rhs);
+                    }
                 } else {
-                    let pointer = self.emit_place_pointer(place.root, &place.fields);
-                    let lhs = self.temp();
-                    self.instruction(format!(
-                        "{lhs} = load {}, ptr {pointer}, align 1",
-                        self.lltype(*ty)
-                    ));
+                    let lhs = lhs.unwrap();
                     let bop = assign_binary(*op);
                     let result = self.emit_binary(
                         bop,
@@ -861,10 +1754,21 @@ impl<'a> FunctionEmitter<'a> {
                     );
                     if !self.terminated {
                         let result = self.emit_policy_conversion(result, *ty, *operator_span);
-                        self.instruction(format!(
-                            "store {} {result}, ptr {pointer}, align 1",
-                            self.lltype(*ty)
-                        ));
+                        if let Some(pointer) = pointer {
+                            self.instruction(format!(
+                                "store {} {result}, ptr {pointer}, align 1",
+                                self.lltype(*ty)
+                            ));
+                        } else if let Some((collection_ty, pointer, index)) = struct_address {
+                            self.emit_store_collection_element(
+                                collection_ty,
+                                &pointer,
+                                &index,
+                                &result,
+                            );
+                        } else {
+                            self.emit_store_place(place, &result);
+                        }
                     }
                 }
             }
@@ -905,6 +1809,26 @@ impl<'a> FunctionEmitter<'a> {
                 inclusive,
                 body,
             } => self.emit_for(*id, *ty, start, end, *inclusive, body),
+            TStmtKind::ForEach {
+                id,
+                index_id,
+                counter_id,
+                collection,
+                source,
+                is_list,
+                body,
+            } => self.emit_for_each(
+                *id,
+                *index_id,
+                *counter_id,
+                collection,
+                source,
+                *is_list,
+                body,
+            ),
+            TStmtKind::Discard(value) => {
+                self.emit_expr(value);
+            }
             TStmtKind::Break => {
                 self.emit_iteration_cleanup();
                 let exit = self
@@ -1012,6 +1936,85 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!("store {} {next}, ptr %local.{id}", self.lltype(ty)));
         self.terminate(format!("br label %{condition}"));
         self.start_block(&exit);
+    }
+
+    fn emit_for_each(
+        &mut self,
+        id: usize,
+        index_id: Option<usize>,
+        counter_id: usize,
+        collection: &TExpr,
+        source: &TPlace,
+        is_list: bool,
+        body: &TBlock,
+    ) {
+        let collection_ptr = self.emit_place_pointer(source);
+        let collection_ty = collection.ty;
+        let capacity = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Array { capacity, .. } | TTypeKind::List { capacity, .. } => capacity,
+            _ => unreachable!("typed foreach collection"),
+        };
+        let snapshot = if is_list {
+            self.emit_collection_count(collection_ty, &collection_ptr)
+        } else {
+            capacity.to_string()
+        };
+        self.instruction(format!("store i64 0, ptr %local.{counter_id}, align 1"));
+        let condition = self.new_label("foreach.cond");
+        let body_label = self.new_label("foreach.body");
+        let latch = self.new_label("foreach.latch");
+        let exit = self.new_label("foreach.exit");
+        self.terminate(format!("br label %{condition}"));
+        self.start_block(&condition);
+        let current = self.temp();
+        self.instruction(format!(
+            "{current} = load i64, ptr %local.{counter_id}, align 1"
+        ));
+        let within = self.temp();
+        self.instruction(format!("{within} = icmp ult i64 {current}, {snapshot}"));
+        self.terminate(format!(
+            "br i1 {within}, label %{body_label}, label %{exit}"
+        ));
+        self.start_block(&body_label);
+        if let Some(index_id) = index_id {
+            let index = self.temp();
+            self.instruction(format!(
+                "{index} = load i64, ptr %local.{counter_id}, align 1"
+            ));
+            self.instruction(format!("store i64 {index}, ptr %local.{index_id}, align 1"));
+        }
+        self.views.insert(
+            id,
+            ViewInfo {
+                collection_ty,
+                collection_ptr,
+                counter_id,
+            },
+        );
+        self.loops.push(LoopTargets {
+            latch: latch.clone(),
+            exit: exit.clone(),
+        });
+        self.emit_block(body);
+        if !self.terminated {
+            self.emit_iteration_cleanup();
+            self.terminate(format!("br label %{latch}"));
+        }
+        self.loops.pop();
+        self.views.remove(&id);
+        self.start_block(&latch);
+        let current = self.temp();
+        self.instruction(format!(
+            "{current} = load i64, ptr %local.{counter_id}, align 1"
+        ));
+        let next = self.temp();
+        self.instruction(format!("{next} = add i64 {current}, 1"));
+        self.instruction(format!(
+            "store i64 {next}, ptr %local.{counter_id}, align 1"
+        ));
+        self.terminate(format!("br label %{condition}"));
+        self.start_block(&exit);
+        let _ = collection;
     }
 
     fn emit_iteration_cleanup(&mut self) {
@@ -1300,8 +2303,7 @@ impl<'a> FunctionEmitter<'a> {
         values: Vec<(Ty, String)>,
     ) -> String {
         let llvm_ty = self.lltype(ty);
-        let place = self.temp();
-        self.instruction(format!("{place} = alloca {llvm_ty}"));
+        let place = self.entry_alloca(ty);
         self.instruction(format!(
             "store {llvm_ty} zeroinitializer, ptr {place}, align 1"
         ));
@@ -1349,8 +2351,7 @@ impl<'a> FunctionEmitter<'a> {
             return (payload_ty, String::new());
         }
         let llvm_ty = self.lltype(ty);
-        let place = self.temp();
-        self.instruction(format!("{place} = alloca {llvm_ty}"));
+        let place = self.entry_alloca(ty);
         self.instruction(format!("store {llvm_ty} {value}, ptr {place}, align 1"));
         let payload = self.temp();
         self.instruction(format!(
@@ -1378,6 +2379,13 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_print_value(&mut self, ty: Ty, value: &str) {
         let ty = base_type(ty, &self.program.types);
+        if matches!(
+            self.program.types[ty.0].kind,
+            TTypeKind::Array { .. } | TTypeKind::List { .. }
+        ) {
+            self.emit_print_collection(ty, value);
+            return;
+        }
         match ty {
             Ty::Int => self.instruction(format!("call void @nl_print_int_raw(i32 {value})")),
             Ty::Long => self.instruction(format!("call void @nl_print_long_raw(i64 {value})")),
@@ -1441,6 +2449,56 @@ impl<'a> FunctionEmitter<'a> {
                 self.start_block(&merge);
             }
         }
+    }
+
+    fn emit_print_collection(&mut self, ty: Ty, value: &str) {
+        let pointer = self.entry_alloca(ty);
+        self.instruction(format!(
+            "store {} {value}, ptr {pointer}, align 1",
+            self.lltype(ty)
+        ));
+        let length = match self.program.types[ty.0].kind {
+            TTypeKind::Array { capacity, .. } => capacity.to_string(),
+            TTypeKind::List { .. } => self.emit_collection_count(ty, &pointer),
+            _ => unreachable!(),
+        };
+        let element = match self.program.types[ty.0].kind {
+            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            _ => unreachable!(),
+        };
+        self.print_text("[");
+        let counter = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {counter}, align 1"));
+        let cond = self.new_label("print.collection.cond");
+        let body = self.new_label("print.collection.body");
+        let done = self.new_label("print.collection.done");
+        self.terminate(format!("br label %{cond}"));
+        self.start_block(&cond);
+        let index = self.temp();
+        self.instruction(format!("{index} = load i64, ptr {counter}, align 1"));
+        let more = self.temp();
+        self.instruction(format!("{more} = icmp ult i64 {index}, {length}"));
+        self.terminate(format!("br i1 {more}, label %{body}, label %{done}"));
+        self.start_block(&body);
+        let first = self.temp();
+        self.instruction(format!("{first} = icmp eq i64 {index}, 0"));
+        let separator = self.new_label("print.collection.separator");
+        let value_label = self.new_label("print.collection.value");
+        self.terminate(format!(
+            "br i1 {first}, label %{value_label}, label %{separator}"
+        ));
+        self.start_block(&separator);
+        self.print_text(", ");
+        self.terminate(format!("br label %{value_label}"));
+        self.start_block(&value_label);
+        let item = self.emit_collection_element(ty, &pointer, &index);
+        self.emit_print_value(element, &item);
+        let next = self.temp();
+        self.instruction(format!("{next} = add i64 {index}, 1"));
+        self.instruction(format!("store i64 {next}, ptr {counter}, align 1"));
+        self.terminate(format!("br label %{cond}"));
+        self.start_block(&done);
+        self.print_text("]");
     }
 
     fn emit_method(&mut self, expr: &TExpr, kind: MethodKind, receiver: &TExpr) -> String {
@@ -1740,6 +2798,12 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_structural_equal(&mut self, ty: Ty, left: &str, right: &str) -> String {
+        if matches!(
+            self.program.types[ty.0].kind,
+            TTypeKind::Array { .. } | TTypeKind::List { .. }
+        ) {
+            return self.emit_collection_equal(ty, left, right);
+        }
         if let TTypeKind::Struct(fields) = &self.program.types[ty.0].kind {
             let fields = fields.clone();
             let mut equal = "true".to_owned();
@@ -1834,6 +2898,81 @@ impl<'a> FunctionEmitter<'a> {
         result
     }
 
+    fn emit_collection_equal(&mut self, ty: Ty, left: &str, right: &str) -> String {
+        let left_ptr = self.entry_alloca(ty);
+        let right_ptr = self.entry_alloca(ty);
+        self.instruction(format!(
+            "store {} {left}, ptr {left_ptr}, align 1",
+            self.lltype(ty)
+        ));
+        self.instruction(format!(
+            "store {} {right}, ptr {right_ptr}, align 1",
+            self.lltype(ty)
+        ));
+        let (length, is_list) = match self.program.types[ty.0].kind {
+            TTypeKind::Array { capacity, .. } => (capacity.to_string(), false),
+            TTypeKind::List { .. } => {
+                let left_count = self.emit_collection_count(ty, &left_ptr);
+                let right_count = self.emit_collection_count(ty, &right_ptr);
+                let same = self.temp();
+                self.instruction(format!("{same} = icmp eq i64 {left_count}, {right_count}"));
+                (left_count, true)
+            }
+            _ => unreachable!(),
+        };
+        let element = match self.program.types[ty.0].kind {
+            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            _ => unreachable!(),
+        };
+        let counter = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {counter}, align 1"));
+        let cond = self.new_label("eq.collection.cond");
+        let body = self.new_label("eq.collection.body");
+        let increment = self.new_label("eq.collection.increment");
+        let true_label = self.new_label("eq.collection.true");
+        let false_label = self.new_label("eq.collection.false");
+        let merge = self.new_label("eq.collection.end");
+        if is_list {
+            let left_count = self.emit_collection_count(ty, &left_ptr);
+            let right_count = self.emit_collection_count(ty, &right_ptr);
+            let same = self.temp();
+            self.instruction(format!("{same} = icmp eq i64 {left_count}, {right_count}"));
+            self.terminate(format!("br i1 {same}, label %{cond}, label %{false_label}"));
+        } else {
+            self.terminate(format!("br label %{cond}"));
+        }
+        self.start_block(&cond);
+        let index = self.temp();
+        self.instruction(format!("{index} = load i64, ptr {counter}, align 1"));
+        let more = self.temp();
+        self.instruction(format!("{more} = icmp ult i64 {index}, {length}"));
+        self.terminate(format!("br i1 {more}, label %{body}, label %{true_label}"));
+        self.start_block(&body);
+        let lhs = self.emit_collection_element(ty, &left_ptr, &index);
+        let rhs = self.emit_collection_element(ty, &right_ptr, &index);
+        let equal = self.emit_binary(BinaryOp::Eq, element, &lhs, &rhs, Span::default());
+        self.terminate(format!(
+            "br i1 {equal}, label %{increment}, label %{false_label}"
+        ));
+        self.start_block(&increment);
+        let next = self.temp();
+        self.instruction(format!("{next} = add i64 {index}, 1"));
+        self.instruction(format!("store i64 {next}, ptr {counter}, align 1"));
+        self.terminate(format!("br label %{cond}"));
+        self.start_block(&true_label);
+        let true_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&false_label);
+        let false_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&merge);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi i1 [ true, %{true_pred} ], [ false, %{false_pred} ]"
+        ));
+        result
+    }
+
     fn emit_expr(&mut self, expr: &TExpr) -> String {
         if self.terminated {
             return String::new();
@@ -1843,6 +2982,18 @@ impl<'a> FunctionEmitter<'a> {
             TExprKind::Integer(value) => value.to_string(),
             TExprKind::Bool(value) => if *value { "true" } else { "false" }.to_owned(),
             TExprKind::Local(id) => {
+                if let Some(view) = self.views.get(id).cloned() {
+                    let index = self.temp();
+                    self.instruction(format!(
+                        "{index} = load i64, ptr %local.{}, align 1",
+                        view.counter_id
+                    ));
+                    return self.emit_collection_element(
+                        view.collection_ty,
+                        &view.collection_ptr,
+                        &index,
+                    );
+                }
                 let tmp = self.temp();
                 self.instruction(format!(
                     "{tmp} = load {}, ptr {}, align 1",
@@ -1953,6 +3104,51 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_construct(expr.ty, *case_index, args)
             }
             TExprKind::Method { kind, receiver } => self.emit_method(expr, *kind, receiver),
+            TExprKind::Index {
+                receiver,
+                index,
+                proven,
+                ..
+            } => {
+                if let Some(place) = Self::expr_place(expr) {
+                    self.emit_load_place(&place)
+                } else {
+                    // A returned or otherwise temporary collection can be indexed for reading.
+                    // Capture it once before evaluating the index, preserving left-to-right order.
+                    let collection = self.emit_expr(receiver);
+                    if self.terminated {
+                        return String::new();
+                    }
+                    let pointer = self.entry_alloca(receiver.ty);
+                    self.instruction(format!(
+                        "store {} {collection}, ptr {pointer}, align 1",
+                        self.lltype(receiver.ty)
+                    ));
+                    let index_value = self.emit_expr(index);
+                    if self.terminated {
+                        return String::new();
+                    }
+                    if !*proven {
+                        self.emit_index_guard(
+                            receiver.ty,
+                            &pointer,
+                            &index_value,
+                            false,
+                            index.span,
+                        );
+                    }
+                    self.emit_collection_element(receiver.ty, &pointer, &index_value)
+                }
+            }
+            TExprKind::Fill { value, capacity } => self.emit_fill(expr.ty, value, *capacity),
+            TExprKind::EmptyArray | TExprKind::EmptyList => "zeroinitializer".to_owned(),
+            TExprKind::CollectionOp {
+                op,
+                receiver,
+                args,
+                capacity,
+                proven_success,
+            } => self.emit_collection_op(expr, *op, receiver, args, *capacity, *proven_success),
             TExprKind::OptionalToLong(receiver) => self.emit_optional_to_long(expr, receiver),
             TExprKind::Field {
                 receiver,
@@ -2494,6 +3690,7 @@ enum Failure {
     OverflowLongDiv = 13,
     UnwrapNone = 14,
     UnwrapErr = 15,
+    IndexOutOfRange = 16,
 }
 
 fn failure_for(ty: Ty, op: BinaryOp, unary: bool) -> Failure {
