@@ -693,7 +693,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 **Open questions**
 
 - How far past medium-sized programs the 3 s aim holds with per-module caching alone, and what to add when it doesn't (a faster code generator for `-O0`, LLVM's FastISel, or splitting modules finer). Measured, not promised: larger programs may simply take longer.
-- Floats and NaN ("not a number", what `0.0 / 0.0` gives): should a plain `Float` exclude it, so an operation that would produce it fails the job, with a separate type that allows it, or allow it as IEEE does?- Passing errors up: the example uses `?` after a call (Rust's form: return the error to the caller) and `??` for a default; functions, closures and error handling still need their own section.- Syntax in general: the overview's program is a first proposal, written to make the design concrete.
+- Floats and NaN ("not a number", what `0.0 / 0.0` gives): should a plain `Float` exclude it, so an operation that would produce it fails the job, with a separate type that allows it, or allow it as IEEE does?
 - Passing errors up: the example uses `?` after a call (Rust's form: return the error to the caller) and `??` for a default; functions, closures and error handling still need their own section.
 - Syntax in general: the overview's program is a first proposal, written to make the design concrete.
 - The language's name (the folder's is a working one).
