@@ -37,3 +37,26 @@ Each is small enough to review in one sitting, ends with passing tests, and maps
 - No dependency on Burin; code may be copied from it (D:\code\burin, Apache 2.0) with a note in the file.
 - No new external Rust crates without saying why in the report.
 - Keep it simple: no optimisation passes of our own; LLVM does that.
+
+## Self-hosting track (decided 2026-10-24)
+
+Ben adopted the recommendation both reviews reached (docs/reviews/claude-selfhost.md, docs/reviews/sol-selfhost-r1.md): self-host the compiler in stages, starting after M3, as DESIGN.md's planned "parallel tool" validation program. The Rust `nlc` stays the reference throughout.
+
+- **S1, after M3: lexer, parser and diagnostic formatter in next-lang.** It parses every package under `tests/` in parallel into frozen pools and prints the trees; the result must match the Rust parser's trees and diagnostics exactly. This doubles as the validation plan's parallel-tool program (frozen pools, builders, parallel loops and bounds on a real workload), measured against the Rust parser.
+- **S2: the checker,** compared with the Rust checker's typed output and errors on every test package.
+- **S3: code generation,** compared by behaviour on every test program at development and release optimisation levels.
+- **Bootstrapping, at S3:** the pinned Rust `nlc` (stage 0) builds the next-lang compiler (stage 1), which builds stage 2, which builds stage 3; stages 2 and 3 must be byte-identical (fixed clang, runtime, target, flags, paths, no timestamps, no hash-order output). Identical stages show stability, not correctness, so the cross-compiler comparison on valid, invalid, generated and limit-boundary inputs stays.
+- **Retiring the Rust compiler** is a later decision, only after the validation programs pass and the next-lang compiler has proved cheaper to maintain.
+
+**Prerequisites to schedule before S1** (gaps both reviews found; each goes into the milestone named):
+
+| Gap | Milestone |
+| --- | --- |
+| Generic constraints (traits or interfaces), equality and hashing requirements | before M2's collections need them (M1 follow-up) |
+| How a reusable `Node` or `Type` definition names ids belonging to a particular local pool or frozen batch, including self-links, helper parameters, copies and returns (raw integer links would bypass the safety ids give) | M2 |
+| `map`, `set`, `queue`, hashing and sorting, firmly scheduled rather than on the Later list | M2 (collections) |
+| Byte slicing, UTF-8 validation, number parsing and formatting, bounded writers that flush to a file in chunks | M3 |
+| A process capability and its effect (run clang with arguments, bounded stdout and stderr, exit status), file handles, paths, temporary files, cleanup on cancellation | effects step (M5-ish), with a small C binding as a bridge |
+| Builder handoff to chunks, batch-dependent helper types, aggregate budgets | builders and parallel loops step |
+| Limits for a compiler's own inputs: files, source bytes, tokens, nodes, child edges, interned names, types, generic copies, pending work, diagnostics, recursion bytes, steps, concurrent jobs; reported by name when exhausted, never a truncated success | S1 design |
+| Generic expansion bounded by its own count and work limits, not source size | generics milestone |
