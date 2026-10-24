@@ -70,7 +70,7 @@ There are two lifetimes and no garbage collector: long-lived data in declared ta
 
 - `let b = a` copies `a`'s bytes; both stay usable. `let b = take a` moves it instead: no copy, and `a` can't be used after. Passing a growing value to a read parameter neither copies nor moves.
 - Returning a local moves it. When the local was built on the caller's destination (the usual case, which the compiler arranges when it can prove it safe) the move costs nothing; otherwise the result is copied from scratch onto the destination, and the bounds count both while the copy runs.
-- Returning a read-only parameter, or anything read from a table, copies it, since the function doesn't own those bytes. A function that wants to avoid the copy returns a view instead, where the type allows.
+- Returning a read-only parameter, or anything read from a table, copies it, since the function doesn't own those bytes. Views can be passed in but, like any reference, not returned in v1; returning a view would need a lifetime rule, which is left for later.
 - Three cases the first implementation tests: `fn f(s: Text) -> Text { s }` copies; `fn f() -> Text { let t = build(); t }` builds `t` on the destination, no copy; and `acc = merge(acc, x)` in a loop copies down over `acc` (Loops can't quietly fill a stack).
 
 Between the two: a value moves from a stack into a table by copy (`create Item { … }`), and from a table onto a stack by reading fields. Reading a large field needn't copy: a function can take a read-only view of it (see Frozen tables). A view of a SQLite set's row is read into the stack, since its bytes live in the database.
@@ -454,3 +454,12 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 5. Effects inferred on helpers, with the call path in errors.
 6. Builders, `freeze` and parallel loops, measured on the parallel tool.
 7. The four-program validation above; then decide on widening.
+
+**Acceptance cases for steps 1 and 2** (from review 5; both steps use explicit `Text max` and counted-loop bounds, so they don't wait for step 3's inference)
+
+- *Step 1, fixed-size in-memory rows only* (no payload blocks, no snapshots yet): a live lookup succeeds; out-of-range and stale ids return `none`; deleting a row and reusing its slot doesn't change which row any other id names, and no row ever moves between slots; a slot set up near the maximum generation is retired, not reused; an id of another table's type is a build error.
+- *Step 2, copies and moves:* `fn f(s: Text) -> Text { s }` returns equal bytes and `s` stays usable; returning a local after reading it; a forced copy from scratch to the destination, with the peak counted while old and new coexist; `take` makes the source unusable, hands its stack slot and cleanup to the destination, and keeps the bytes alive until the destination's scope ends (a move that can't keep those rules is refused at first).
+- *Step 2, append and bounds:* exact output in fresh-result and append modes, including a four-byte UTF-8 character at the declared maximum; capacity checked before any store; a failed append leaves no partial result in the builder; in `render`, `str` appends while `name` is live without a second growing temporary on its stack, and N and the reported peak match the worked example; a nested call while live values occupy separated stacks gets a window that avoids them, and N is one more than the highest index used.
+- *Step 2, overlap and iteration cleanup:* `s = s + s` takes a safe fallback (or is refused); `out.append(f(out))` evaluates `f(out)` into separate scratch and finishes reading `out` before the append starts, or is refused; `continue` and `break` discard the iteration's scratch and keep the outer builder; a failed job's scratch is reset before its stack set is reused.
+
+**Later** (each needs acceptance cases before its own step; none blocks steps 1 and 2): snapshot reclamation and payload compaction; SQLite read pins and transaction staging; native-stack admission and foreign-call margins; returned views with a lifetime rule; nested growing values; several published instances of one table set.
