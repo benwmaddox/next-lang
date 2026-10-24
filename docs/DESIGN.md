@@ -47,7 +47,7 @@ There are two lifetimes and no garbage collector: long-lived data in declared ta
 - A table is rows of one record type, stored as one array per field (structure of arrays, as Stasis lowers it).
 - **Fixed-size fields** (numbers, ids, enums, small records) sit in their column directly.
 - **Variable-size fields** (text, bytes, a list inside a row) can't sit in a fixed-width column. The column holds `{offset, length}` into the table's own payload blocks: large append-only byte blocks that the table owns. Changing a text field writes the new bytes at the end of the current payload block and updates the row's `{offset, length}`; the old bytes become garbage inside the block. The writer compacts a block (copies its live bytes to a fresh one) when more than half of it is garbage. Payload blocks are shared between snapshots like row blocks (see Tables across threads).
-- **Typed ids:** rows refer to each other by `Item.Id`, 64 bits: a 32-bit slot and a 32-bit generation counter. The table it belongs to is part of the type, not stored in the id. Deleting a row bumps its slot's generation, so an old id no longer matches. Looking up an id returns `Option`: `none` for a stale id, never a dangling pointer. A slot whose generation reaches its maximum is retired, never reused, so wraparound can't make a stale id match again.
+- **Typed ids:** rows refer to each other by `Item.Id`, 64 bits: a 32-bit slot and a 32-bit generation counter. The table it belongs to is part of the type, not stored in the id. In v1 each declared table set exists once per program, so the type alone names the table; several instances of one table set (one per tenant, say) would need an instance field and are left for later. Frozen tables have ids of their own (see Frozen tables). Deleting a row bumps its slot's generation, so an old id no longer matches. Looking up an id returns `Option`: `none` for a stale id, never a dangling pointer. A slot whose generation reaches its maximum is retired, never reused, so wraparound can't make a stale id match again.
 - A table is in memory or backed by SQLite with the same syntax; queries on a SQLite table compile to SQL.
 - Invariants are declared on tables and checked on every write (see Correctness).
 - One writer per table set changes it. Readers on other threads read an immutable snapshot, pinned once per job, never per row (Burin's model; details in Tables across threads).
@@ -58,9 +58,12 @@ There are two lifetimes and no garbage collector: long-lived data in declared ta
 - At most one growing value per stack, always on top of it (Goose's rule). The compiler picks each growing value's stack (see How the compiler assigns stacks). So growth is a pointer moving up, nothing moves, and positions stay valid.
 - Fixed-size values sit in registers or the native stack; small arrays too (up to 4 KB, as Burin's helpers do).
 - A scope's memory is freed by setting its stacks back: one store each. Kept pages stay mapped for the next job (time over memory).
-- **Growing past a stack's reservation fails the job** (decided 2026-10-24): the request, tick or task ends with an error, its stacks are reset and its table changes aren't committed. The program keeps running. Code doesn't handle a `Result` on every push; the check is one predictable compare.
+- **Growth is bounded by design** (see Loops can't quietly fill a stack): every value a loop keeps growing has a maximum the compiler knows, so most entry points have a worst-case stack size computed at build time.
+- **Growing past a stack's reservation fails the job** (decided 2026-10-24), which bounded growth makes rare: the request, tick or task ends with an error and goes through the job-failure steps (see Types, Failures). The program keeps running. Code doesn't handle a `Result` on every push; the check is one predictable compare.
 
-**References** exist only as parameters: a function may read, write or grow what it is handed, but cannot store or return a reference. So no lifetime annotations are needed, and Goose's "roots" check reduces to a call-graph rule. A call may not pass the same value twice when either use writes or grows it (the compiler checks this at the call), so two parameters never overlap when one changes. That rule is what lets the compiler give LLVM `noalias` (a promise that two pointers never refer to the same memory).
+**References** exist only as parameters: a function may read, write or grow what it is handed, but cannot store or return a reference. So no lifetime annotations are needed, and Goose's "roots" check reduces to a call-graph rule.
+
+**No overlapping arguments:** a call may not pass two arguments whose memory could overlap when either is written or grown. The check works on what each argument is part of (its owner: a local, a parameter, a row) and the fields or index ranges it covers, not on how the expressions look: passing a record for reading and one of its own fields for writing is refused, while two different fields of one record, or `a[0..n]` and `a[n..m]`, are allowed because they're provably apart. Where the compiler can't prove two arguments apart it refuses the call and says so. That proof, and only that proof, is what lets it give LLVM `noalias` (a promise that two pointers never refer to the same memory).
 
 Between the two: a value moves from a stack into a table by copy (`create Item { … }`), and from a table onto a stack by reading fields. Reading a large field needn't copy: a function can take a read-only view of it (see Frozen tables).
 
@@ -79,28 +82,61 @@ A fixed set of threads, one per core. Each job owns N data stacks that only it t
   - Only calls with an I/O effect (`net`, `fs`, `clock` sleeps, `spawn` joins) can suspend, and the effect system knows which those are. Before such a call a function writes its cached stack tops back to memory, as it does before any call that can reach those stacks.
   - Each worker keeps a pool of free stack sets, so starting a job takes one from the pool, not a system call. The pool is sized by load, and a set's touched pages stay mapped when it goes back (time over memory).
   - A job doesn't move between workers in v1. That keeps every stack single-threaded, with no locks.
-  - A pinned snapshot stays pinned while the job waits; a job that waits long holds old table versions alive (see Tables across threads for the limit).
+  - **A snapshot pin never spans a wait.** Before a call that can suspend, the job's views of the snapshot must have ended (the compiler refuses a view live across such a call) and the runtime releases its pin. After the wait the job pins the then-current snapshot, so what follows is a new read phase that may see newer data. A waiting job therefore never holds old table versions alive, and can't stall the writer.
+  - **Time limits are enforced on waiting jobs too:** a job past its deadline is cancelled by the runtime, whether running (at its next step-budget check) or suspended (its pending I/O is cancelled), and goes through the job-failure steps.
+  - **Admission:** a worker starts a new job only while committed memory and reserved address space stay under the configured limits; past them, a request gets a "busy, retry" response (HTTP 503 with `Retry-After` for servers) and other jobs wait in a bounded queue.
 - **The writer,** one per table set. It applies change batches in order and publishes snapshots (Burin's model). Workers send it change requests on a queue and wait (suspended) for the reply.
+- **Transactions** (decided 2026-10-24): each change request is one batch, applied all or nothing. Changes that must succeed together go in one `transaction { … }`, which is sent as a single batch. Once the writer has committed a batch it stays committed: a job that fails later doesn't undo it, just as an email it sent can't be unsent.
 - **Parallel loops** borrow the workers (fork and join) rather than starting threads.
 - The thread count is fixed at start (configured; the number of cores by default).
 
 ### N stacks per job
 
-- N is computed at build time: the most growing values live at once along any call chain from any entry point (a request handler, a job, a tick, a parallel loop's body), plus one stack for fixed scratch over 4 KB.
+- N is computed at build time per entry point (a request handler, a job, a tick, a parallel loop's body): the highest stack index any call chain from it can use, counting each function's window, the destinations of returned values and the fixed-scratch stack. Counting only how many growing values are live at once isn't enough, since windows are consecutive and can leave gaps.
 - Each stack is a reserved address range with a guard page (an unmapped page that traps if touched) at its end. Pages are committed on first touch and kept between jobs (time over memory). They're given back only when a stack's high-water mark stays far above its use, or on request.
-- Address space is plentiful on 64-bit, so reservations are generous: by default 256 MB per data stack. 10,000 suspended jobs × 16 stacks × 256 MB is 40 TB of the 128 TB a process can address on Windows and Linux, and only touched pages use memory (a waiting job that touched one page per stack holds 64 KB). The reservation is configurable per entry point for programs that need more.
+- **Reservations are sized per entry point, per stack.** Because growth is bounded (Loops can't quietly fill a stack), the compiler computes each stack's worst case for an entry point and reserves that, rounded up to a page. Only an entry point with an unbounded source left (see that section) gets the default reservation, 64 MB per stack, configurable.
+- **Address space and memory, worked out:** a process can address 128 TiB on 64-bit Windows and Linux. A request handler whose stacks are bounded at 1 MB each, with N = 8, reserves 8 MB per job: 100,000 waiting jobs reserve 0.8 TB. With the 64 MB default instead, 100,000 jobs would reserve 51 TB, so admission control (Thread kinds and jobs) caps how many jobs with default reservations may exist at once. Committed memory is separate: a waiting job that touched one 4 KiB page on each of 8 stacks holds 32 KiB plus its native stack, so 10,000 such jobs hold over 312 MiB before their native stacks. These are estimates; the server validation measures them.
 
 ### How the compiler assigns stacks
 
 The compiler gives every function a **stack contract**, computed from its body and its callees, the way a type is:
 
-- **Window:** how many consecutive stacks the function needs for its own growing locals and its callees', `k`. A caller passes the index of the first free stack, the *base*; the callee uses stacks base to base + k − 1, and nothing below base.
-- **Inputs:** each reference parameter's mode, read, write or grow. A growing parameter is a value on one of the caller's stacks, at that stack's top; the callee grows it in place.
-- **Output:** a function that returns a growing value builds it on a destination stack the caller names (usually the caller's next free one), so returning it is no copy.
+- **Window:** how many consecutive stacks the function needs for its own growing locals and its callees', `k`. A caller passes the index of the first free stack, the *base*; the callee's own scratch uses stacks base to base + k − 1.
+- **Inputs:** each reference parameter's mode, read, write or grow. A growing parameter is a value at the top of one of the caller's stacks, below base; the callee grows it in place. That named stack is the one exception to "nothing below base": the callee may grow it and may not touch any other stack below base.
+- **Output:** a function that returns a growing value builds it on a destination stack the caller names. The destination belongs to the caller: it's below the callee's base, and the caller keeps it out of scratch assignment for as long as the result is live. So returning a growing value is no copy.
 - **Assignment:** inside a function, each growing local takes the lowest stack in its window that's free at that point, and gives it back at its scope's end (Goose's recipe). Two live growing values never share a stack, so neither is ever trapped under the other.
+- **A worked example.** `render(rows)` returns a `Text` and calls `line(r)`, which also returns a `Text`:
+
+  ```
+  fn render(rows: List<Row>) -> Text {   // its result goes on the caller's destination stack, D
+      var out = Text.empty()             // out is the result, built on D directly
+      for r in rows {
+          out.append(line(r))            // line's result is built on top of out, on D
+      }
+      return out
+  }
+  fn line(r: Row) -> Text {              // window k = 1: one scratch stack
+      let name = upper(r.name)           // a temporary Text on base + 0
+      return name + ": " + str(r.count)  // built on its destination (D, at out's top)
+  }
+  ```
+
+  A request handler with its first free stack at 0 calls `render` with destination 0 and base 1. `render` passes `line` destination 0, meaning "out's growth area": `line` writes its result just past `out`'s current end, and the append only moves `out`'s end over it, so `out` stays the one growing value on stack 0 and nothing is copied. It passes base 1, so `upper`'s temporary goes on stack 1. When `line` returns, stack 1 is reset: one store. This entry point uses stacks 0 and 1, so N = 2, and `render`'s window is k = 1 (its callee's scratch), with D outside it.
 - **Passing the base:** a hidden argument by default. A function is also compiled for a constant base (its stack addresses fixed offsets from the context pointer) only when it's small or hot and called with that base; at most two copies of any function, and the compiler reports code-size growth from copies.
 - **Recursion** (opt-in, on functions marked `recursive`, decided 2026-10-24): a recursive cycle may not hold a growing value across its recursive call, since that would need a stack per call; the compiler refuses it and names the value. Each recursive function's native frame size is known at build time, and every recursive call checks the native stack against a byte budget (one compare, like the data stacks); passing it fails the job. That bounds bytes, not just depth.
 - Fixed values over 4 KB go on the fixed-scratch stack, never on top of a growing one.
+
+### Loops can't quietly fill a stack
+
+A bump stack frees nothing until its scope ends, so a careless loop can fill one: a temporary per iteration that piles up, rebuilding an outer value (`s = s + piece`) so each old copy is trapped under the new one (memory that grows with the square of the size), or appending to an outer value with no limit. The language rules out all three (decided 2026-10-24):
+
+- **Every iteration is a scope.** Temporaries made in a loop body are freed when the iteration ends, including on `continue` and `break`: the stack tops go back to where the iteration started, which costs a register move. Nothing made in an iteration survives it unless it's written into a value that lives outside the loop.
+- **Results go straight to where they're kept.** `out.append(f(x))` builds `f`'s result directly at the top of `out` (its destination, as in the worked example), so keeping a result costs no copy and leaves no temporary to collapse.
+- **Rebuilding an outer value never traps the old one.** `s = s + piece` compiles to an append in place. Any other reassignment of an outer growing value (`acc = merge(acc, x)`) builds the new value on a scratch stack and copies it down over the old one, so the memory used is the largest value, not the sum of all of them. The compiler reports that copy in `inspect stacks`, since it costs time per iteration.
+- **A value a loop keeps growing must have a bound.** Either its type says so (`List<Hit> max 10000`, `Bytes max 1 MB`, `Text max 4000`), or the loop is counted over a bounded input and each iteration's growth is bounded (`for r in rows` with `rows: List<Row> max 500`, appending a `Text max 80` each time, is 500 × 80 code points). Without either, it's a build error that names the value and the loop, and offers both fixes. At run time, an append past a declared maximum returns a `Result` the code must handle (`out.try_append(x)`), or is proved impossible.
+- **Bounds come from where data enters.** Request bodies, files, and table text fields have declared maxima (`Text max N`, `Bytes max N` on the input or column), so a bound found at the edge carries through the code. A table field declared without a maximum can still be read through a view, but copying it onto a stack inside a loop needs a bound.
+- **The compiler adds it up.** From the bounds it computes each stack's worst case per entry point, which sizes reservations (N stacks per job). `inspect stacks` lists, per entry point, each stack's worst case and the lines that drive it, and every loop's growth per iteration. An entry point with something still unbounded (an untyped external call, say) is listed as such and gets the default reservation.
+- **Tests can pin it:** `expect stack_peak(handler) < 2 MB` fails a test when a change raises the worst case past a budget.
 
 ### Keeping it fast
 
@@ -125,7 +161,7 @@ A typed id means a row in a table set, not a memory address, so it stays valid i
 
 - `parallel for t in texts { … } collect`, or `parallel for i in 0..n reduce sum`: the runtime splits the work into chunks that idle workers take (work stealing: an idle worker takes chunks from a busy one's queue). Each chunk runs on stacks of its own.
 - **Inputs:** the loop is scoped (the caller waits until every chunk is done), so the caller's stacks stay alive and unchanged for the whole loop. Chunks get read-only views of what the body reads from the caller (`texts` here), with no copy; the views end at the join, before the caller can change anything again. Chunks may also read the caller's pinned snapshot.
-- **The body** must be pure except for its own result (see Effects). The effect system checks this, so there are no data races.
+- **The body** may have no effects, and may write only what it owns: its own scratch and its slot of the result. Reads of captured caller values are read-only views; a body that tries to write or grow a captured value is refused, whatever its effects. So there are no data races.
 - **Outputs:** `collect` writes into a result buffer the caller owns, on its destination stack. When the output sizes are known up front (one value per item, fixed size) each chunk writes its slice directly. Otherwise each chunk builds its output on its own stack and the join copies the pieces in index order before those stacks are reset. `reduce` combines chunk results in a fixed tree order, whatever the scheduling, so floating-point sums come out the same on every run.
 - **No nesting in v1:** a `parallel for` reached from inside another runs sequentially, so workers can't all end up waiting for work nobody can run. A worker waiting at a join runs other chunks of the same loop meanwhile.
 - Small loops run sequentially below a cost threshold, so a fork never costs more than it saves.
@@ -135,9 +171,9 @@ A typed id means a row in a table set, not a memory address, so it stays valid i
 - **One writer per table set.** Workers send change requests on a queue and get a reply (Burin's model); writes are batched.
 - **Snapshot cost proportional to what changed:** a table's columns and payload are stored in fixed blocks (4,096 rows, say). The blocks hang off a small tree (a radix tree: each level indexes into the next by part of the row number). A write copies the blocks it touches and the tree nodes on the path to them, and shares everything else with the previous version. Publishing is proportional to the blocks changed, not the table size.
 - **One version per table set:** every table in a set is published together under one root, so a reader never mixes one table's new rows with another's old ones. For a SQLite-backed set the writer publishes a version only after SQLite's commit succeeds; after a crash the tables are rebuilt from SQLite. In-memory tables are lost on a crash unless the program saves them.
-- **Publishing safely:** the writer finishes writing a version's blocks before it swaps the root pointer (one atomic store with release ordering, so readers that see the new root see its blocks too).
-- **Pinning:** a job pins the current root once, when it starts reading, and unpins it when it ends: one atomic count per job, never per row or block. A version's blocks are freed when no job pins it any more.
-- **Slow readers:** if pinned old versions hold more memory than a budget, the writer pauses applying writes until they're released. A live view is never invalidated; jobs have time limits anyway.
+- **Publishing and pinning safely:** the writer finishes writing a version's blocks before publishing it. Taking a pin (reading the current root and counting it) and publishing a new root happen under one short runtime lock, so a reader can never pin a root the writer is freeing; the lock covers only those few instructions, never row reads. v1 uses this lock because it's simple and obviously right; a lock-free scheme can replace it if measurements show contention.
+- **Pinning:** a job pins the current root when it starts reading and unpins it when it ends or before it waits (Thread kinds and jobs): one pin per read phase, never per row or block. A version's blocks are freed when no job pins it any more.
+- **Slow readers:** a pin lives only for a stretch of computing with no waits, and that is bounded by the job's time limit. If pinned old versions still hold more memory than a budget, the writer pauses applying writes until they're released. A live view is never invalidated.
 - A table used by one thread only (a game's simulation) skips snapshots: plain arrays, no counting.
 
 ### Frozen tables: big shared data built in parallel
@@ -146,7 +182,8 @@ Many programs build a large structure once and then read it from many threads: a
 
 - **Build:** a job creates a *builder* table that only it owns: no writer, no snapshot, plain arrays. One file's syntax-tree nodes, for example, with child links as typed ids and source text as `{offset, length}` into the builder's payload blocks. Data-oriented compilers (Zig, Carbon) already store trees this way: compact and fast to walk.
 - **Freeze:** `freeze b` ends the builder and turns its blocks into a read-only partition, published as one pointer, with no copy. The type system then refuses writes to it, and the old builder name is gone.
-- **Group:** a batch root lists the partitions (one per file), and ids are partition-qualified, so a node in file 3 can refer to a declaration in file 7.
+- **Group:** a batch root lists the partitions (one per file). A frozen id is 64 bits: a 32-bit partition number and a 32-bit row. Frozen rows are never deleted, so no generation is needed. A node in file 3 can refer to a declaration in file 7.
+- **Ids can't cross batches:** the id's type names its batch (`b.Node.Id` for batch `b`), so mixing ids from two batches alive at once is a build error, and ids can't outlive their batch's scope. A lookup still checks the partition and row against the batch's sizes (one compare each).
 - **Read:** jobs pin the batch root once, as with snapshots; functions take read-only views of rows, text and lists as parameters, with no copying and no counting per node.
 - **Lifetime:** a frozen batch lives until the scope that created it ends (for example "check this project") and no job pins it; then its blocks are freed in bulk.
 - **Per-thread caches:** each reading job keeps its own mutable tables for what it computes (the TypeScript checkers each keep their own type caches the same way).
@@ -185,7 +222,16 @@ Refinement types are the design's best lever: one declaration serves correctness
 
 **The base:** values with no null; `Option` and `Result`; records; enums with payloads and exhaustive `match`; generics with static traits; newtypes (a `UserId` is not an `Int`). Arithmetic is checked: an overflow is a failure, and wrapping is spelled `+%`.
 
-**Failures** that aren't values: an overflow, a divisor of 0, an index the compiler couldn't prove in range and that turns out not to be, a data stack or the native-stack budget exhausted, the step budget spent (an unbounded loop's limit). Each fails the job, as a stack limit does (see Memory): the job ends with an error carrying the source line, its stacks are reset, and its table changes aren't committed. A function returning plain `T` therefore never returns a half-made value. Code that wants to handle one of these locally uses the checked form that returns `Option` (`checked_add(a, b)`, `a.get(i)`), or a refinement that proves the failure can't happen.
+**Failures** that aren't values: an overflow, a divisor of 0, an index the compiler couldn't prove in range and that turns out not to be, a data stack or the native-stack budget exhausted, the step budget spent (an unbounded loop's limit), a time limit passed. Each fails the job, as a stack limit does (see Memory): the job ends with an error carrying the source line. A function returning plain `T` therefore never returns a half-made value.
+
+**What failing a job does,** in this order, so nothing can touch memory after it's reused:
+
+1. Stop scheduling the job: no more of its code runs.
+2. Cancel its pending I/O and its unstarted parallel-loop chunks; wait until running chunks have stopped (a chunk checks for cancellation at its step-budget checks) and the event loop has confirmed no I/O will write into the job's buffers.
+3. Discard its uncommitted work: a change batch not yet sent, or sent and not yet applied (the writer drops batches from failed jobs). Batches the writer already committed stay committed (decided 2026-10-24, see Transactions).
+4. Release its snapshot pin and any frozen batches or builders it owns.
+5. Reset its stacks and return the stack set to the worker's pool.
+6. Report the failure: to the client (a 500 for a request), to the log, and to the parent if it was a parallel-loop chunk, which fails the parent job with the chunk's error. Code that wants to handle one of these locally uses the checked form that returns `Option` (`checked_add(a, b)`, `a.get(i)`), or a refinement that proves the failure can't happen.
 
 **Text and bytes** (decided 2026-10-24): `Text` is always valid UTF-8, and `Bytes` is raw data (DEFLATE's output, files, the network). Going from `Bytes` to `Text` is a checked step that returns `Result`. Text lengths count Unicode code points (what a person would call characters, roughly); byte lengths are written on `Bytes`, or as `Text bytes max N` when a byte budget is what matters.
 
@@ -224,8 +270,8 @@ In crudspec today a field's size carries through: `title: Text max 80` is a CHEC
 
 | Declaration | Storage | Wire (JSON, CLI, forms) | UI | Agent API | Tests | Compiler |
 | --- | --- | --- | --- | --- | --- | --- |
-| `Text max 80` (code points) | CHECK on `length()`, which counts code points in SQLite | rejected on parse | a code-point counter that blocks submit (not `maxlength`, which counts UTF-16 units) | `maxLength` (JSON Schema counts code points) | boundary cases 0, 80, 81, with characters outside the basic plane | buffer bound known (at most 4 bytes per code point) |
-| `Bytes max 4096` | CHECK on `length()` of a blob | rejected on parse | a file-size check | `maxLength` on base64, scaled | 0, 4096, 4097 bytes | buffer size known |
+| `Text max 80` (code points) | CHECK with the runtime's own SQLite function that counts every code point (SQLite's `length()` stops at the first zero character, which is valid text) | rejected on parse | a code-point counter that blocks submit (not `maxlength`, which counts UTF-16 units) | `maxLength` (JSON Schema counts code points) | boundary cases 0, 80, 81, with characters outside the basic plane and a zero character | buffer bound known (at most 4 bytes per code point) |
+| `Bytes max 4096` | CHECK on `length()` of a blob (exact for blobs) | the decoded byte count is checked | a file-size check | `maxLength` on the base64 text, only as a first filter (4,096 and 4,098 bytes encode to the same length); the server checks decoded bytes | 0, 4096, 4097 bytes | buffer size known |
 | `Int 0..100` | CHECK range | rejected on parse | `min`/`max` input | `minimum`/`maximum` | -1, 0, 100, 101 | no overflow check |
 | enum `State` | CHECK IN | one of the names | a select | `enum` | every case | exhaustive `match` |
 | `invariant start <= end` | CHECK on the row | rejected on parse | the form's error | described in the schema | generated pairs | solver proof per writer |
@@ -248,11 +294,12 @@ This is also where refinement types pay twice: the same `Int 0..100` that a form
 What a function may touch is part of its type, inferred across calls, and granted only by the program's entry point (Hobthrush's model).
 
 - A closed effect set: `db.read`, `db.write`, `fs.read`, `fs.write`, `net`, `clock`, `random`, `env`, `secret`, `log`, `spawn`. No effects means pure.
-- **Pure** means deterministic (the same inputs give the same result) with no writes anyone else can see. A pure function may still change or grow what it's handed through a write or grow parameter; those modes are part of its type, so callers and the compiler see them.
+- **Pure** means deterministic (the same inputs give the same result) with no effects. A pure function may still change or grow what it's handed through a write or grow parameter; those modes are part of its type, so callers and the compiler see them.
+- **Cacheable** is narrower than pure: no effects, every parameter read-only, and a result the function owns. Only cacheable functions may be cached, evaluated at compile time or used by cached page pieces, since skipping a call to one changes nothing but the time taken. A pure function that appends to its caller's list isn't cacheable: reusing a saved result would skip the append.
 - **Reading a snapshot is pure,** because the snapshot is an input: a function that reads tables takes the pinned snapshot as a read-only parameter (passed implicitly, like the context pointer), and its result depends on that version. `db.read` is the effect of reading the live database outside a snapshot (a SQLite query that sees the latest commit). Parallel loop bodies and cached pieces may read the snapshot; a cache keys its entries by the snapshot's version, so a cached result never outlives the data it came from.
 - Effects are inferred. A function may state an upper bound; exceeding it is an error that shows the shortest call path to the effect.
 - Capabilities are values the entry point hands down (`Clock`, `Db`, `Http`), granted in the package manifest. A library can't reach the network unless a caller passes it a capability.
-- Pure functions are what caches, compile-time evaluation and cached page pieces may use. Burin's rule "pages call only pure functions" falls out of this.
+- Burin's rule "pages call only pure functions" falls out of cacheability.
 - Time and randomness come only through capabilities, so tests and replays can supply fixed ones.
 - C functions declare their effects at the binding (`fn crc(b: Bytes) -> Int = c "crc32_z" from "z" effects none`). The declaration is trusted, and the audit report lists it as such.
 - `inspect effects` and the change review report effect widening, like permission widening.
@@ -277,7 +324,7 @@ The compiler doesn't try to out-optimize LLVM; it tells LLVM what the language k
 - **Facts for LLVM:** refinements and inferred ranges as `assume` and `range` attributes, non-negative values, `noalias` where it's proved (distinct stacks, parameters the call-site rule keeps apart), `smin`/`smax` for `min`/`max`, plain `add nsw` (an add LLVM may assume doesn't overflow) where overflow is ruled out. Every fact comes from a proof; none is assumed. In Burin these took DEFLATE from 0.70x to 0.85x of C (0.89x after later work).
 - **Loops that provably end** carry no step budget: counted up or down, or any counted part of an `and`.
 - **Compile-time evaluation:** statements that depend only on constants run in the compiler; their tables become read-only data.
-- **Layout:** tables as one array per field; fixed-size data inline in its column, variable-size data in the table's payload blocks; enums sized to their largest case; typed ids packed smaller than 64 bits where a table's declared bound allows.
+- **Layout:** tables as one array per field; fixed-size data inline in its column, variable-size data in the table's payload blocks; enums sized to their largest case; typed ids 64 bits in v1 (narrower ids would weaken the generation check, so they wait for measurements).
 - **No steady-state allocation:** stacks and table storage are reused; a test asserts zero allocations on chosen paths, as Burin's hot-path test does.
 - **Load what is used:** queries and loads guarded by the conditions around their uses; a per-request piece rendered once per page. Burin's +27% to +50%.
 - **Work at write time where reads dominate:** derived values and rendered pieces kept up to date by the writer, behind the same purity rules (a library, as Burin's caching becomes).
@@ -328,6 +375,7 @@ The core is proved on four narrow programs, one per use plus compute, before any
 | DEFLATE and CRC-32 (compute) | a C version with precomputed tables, clang -O2, on Silesia's dickens (10.2 MB), one core, median of 9 | throughput 0.9x of C or better | under 0.75x after the facts work |
 | Parallel tool: parse and check a source corpus (builders, frozen tables, parallel loops) | a Rust version with the same algorithm and thread count | 0.9x of Rust's time or better, and 3x or more on 4 cores over 1 | under 0.7x of Rust, or under 2.5x scaling on 4 cores |
 | Campfire-class server (tables in SQLite, pages, live updates) | Burin today; the optimized Rust port | Burin's pages/s within 10%, memory within 1.2x | under 0.7x of Burin, or over 2x its memory |
+| Waiting jobs (the same server with 10,000 requests suspended on a slow outside call, from fresh and from previously busy stack sets, with snapshots pinned by the running ones) | the Rust port with the same load | stated ceilings met: committed memory under 1 GB for the 10,000, address reservations within admission limits, excess requests answered with 503 | over 2x the Rust port's memory, or any crash or unbounded growth |
 | Game simulation (tables in memory, ticks) | Stasis ahead-of-time | equal speed; a small edit running again in 3 s | slower than 0.8x |
 | Seeded slips (mutation harness) | crudspec's numbers | 99% of misspelled names caught at their line | under 95% |
 | Refinements on the four programs | the same programs without them | at least half of bounds and overflow checks gone; no slower build than 1.2x | builds over 2x slower, or no checks removed |
@@ -356,6 +404,8 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - Running out of a data stack (or another runtime failure) fails the job, not the program; no `Result` on every push.
 - v1 targets 64-bit platforms only; WebAssembly and 32-bit come later.
 - Build-then-freeze tables for large data shared read-only across threads.
+- A value a loop keeps growing must have a bound the compiler knows, and each iteration's temporaries are freed when it ends.
+- A failed job discards only its uncommitted batch; committed batches stay, and `transaction { }` groups changes that must succeed together.
 
 **Open questions**
 
