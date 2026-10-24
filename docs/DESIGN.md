@@ -508,7 +508,7 @@ Refinement types are the design's best lever: one declaration serves correctness
 
 **`?.` and `??`** (proposed 2026-10-24)
 
-- `x?.f()` evaluates `x` once; if it's `none` the call is skipped and the result is `none`, otherwise it's `some(f(x))`. The result is an `Option`.
+- `x?.f()` evaluates `x` once; if it's `none` the call is skipped and the result is `none`, otherwise it's the call's result, wrapped in `some` unless it's already an `Option` (decided 2026-10-24: `?.` flattens, as in C#, Swift and Kotlin, so `line.after_last('"')?.word(0)` is one `Option`). The result is an `Option`; `x?.f(a)` calls `f(value, a)`.
 - `x ?? d` gives `x`'s value if it's present, and evaluates `d` only if it isn't. `d` may be a default value, `return …` (leave the function), or `continue` or `break` in a loop (decided 2026-10-24): `let r = g.rocks.get(rid) ?? continue`. Both work on `Option` only; a `Result` is handled with `match`, or passed up with `?`, so an error can't be silently replaced by a default.
 
 **Numbers** (names decided 2026-10-24: C#'s, exactly; the rest proposed except where marked decided)
@@ -555,7 +555,7 @@ Refinement types are the design's best lever: one declaration serves correctness
 | Index | `Index(a)`, a `long` with `0 <= i < len(a)` | array positions with no bounds check |
 | Linear relation between fields | `invariant start <= end` | intervals, budgets |
 
-**Wrapping and clamping ranges** (decided 2026-10-24). A plain range fails the job when a value outside it is stored, which is what catches bugs. Two written options change that, for values where going past an end is expected:
+**Wrapping and clamping ranges** (decided 2026-10-24). A plain range never takes a value outside it: storing one the compiler can't prove fits needs a checked cast or `fit` (The refinement contract), and a checked cast that meets an out-of-range value fails the job, which is what catches bugs. Two written options change that, for values where going past an end is expected:
 
 - **`wrap`** reduces the value into the range when it's stored (assigned to a variable or field, passed as an argument, or returned): for integers `lo + (x - lo) mod (hi - lo + 1)`, so `heading: int 0..=359 wrap` takes 365 to 5 and −10 to 350; for floats the same with the exact float `modulo`. A wrapping float range is half-open, `0.0f..TAU wrap` meaning 0 ≤ angle < 2π, as suits a cycle (2π is the same direction as 0), and a result that rounds to exactly `TAU` becomes `0.0f`. Arithmetic in between happens normally (`ship.angle = ship.angle + 0.07f`), and since float `modulo` is exact, replays stay deterministic. It's the refinement form of `+%`, which wraps over a whole type's range.
 - **`clamp`** pins a stored value to the nearest end instead: `hp: int 0..=100 clamp` makes healing past 100 stop at 100 and damage below 0 stop at 0.
