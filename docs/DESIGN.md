@@ -90,7 +90,7 @@ A fixed set of threads, one per core, each owning N data stacks that only it tou
 
 - Goose's recipe: walk the call graph from each entry point. Each growing value takes the lowest stack index free at that point, and gives it back at its scope's end. A growing value a function returns is built directly on the stack its caller chose.
 - A callee learns which stacks it may use in one of two ways: specialized per base index (constant offsets, for small or hot functions), or a hidden base argument (for the rest, so code doesn't multiply). At most two copies of any function.
-- Recursion, if allowed: a recursive cycle can't hold a growing value across a recursive call, since that would need a stack per call. Such values go on the native stack, or the cycle is refused.
+- Recursion (opt-in, on functions marked `recursive`): a recursive cycle can't hold a growing value across a recursive call, since that would need a stack per call. Such values go on the native stack, or the cycle is refused.
 - Fixed values over 4 KB go on the fixed-scratch stack, never on top of a growing one.
 
 ### Keeping it fast
