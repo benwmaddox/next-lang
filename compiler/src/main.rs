@@ -1,7 +1,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use next_lang::{PackageError, build_package, inspect_memory, run_package_args, test_package};
+use next_lang::{
+    PackageError, build_package, inspect_contracts, inspect_memory, run_package_args, test_package,
+};
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os();
@@ -37,6 +39,12 @@ fn main() -> ExitCode {
                 Err(error) => report_error(error),
             }
         }
+        "inspect" if rest.len() == 2 && rest[0] == "contracts" => {
+            match inspect_contracts(Path::new(&rest[1])) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => report_error(error),
+            }
+        }
         _ => {
             usage();
             ExitCode::from(3)
@@ -59,6 +67,6 @@ fn report_error(error: PackageError) -> ExitCode {
 
 fn usage() {
     eprintln!(
-        "usage: nlc run <package-dir> [--allow-overcommit] | nlc build <package-dir> -o <file> | nlc test <package-dir> | nlc inspect memory <package-dir> [--allow-overcommit]"
+        "usage: nlc run <package-dir> [--allow-overcommit] | nlc build <package-dir> -o <file> | nlc test <package-dir> | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir>"
     );
 }

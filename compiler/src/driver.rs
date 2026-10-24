@@ -5,6 +5,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::ast::Span;
+use crate::emit::StackContract;
 use crate::{checker, emit, lexer, parser};
 
 static TEMP_ID: AtomicUsize = AtomicUsize::new(0);
@@ -32,6 +33,7 @@ pub struct CompileOutput {
     pub files: Vec<String>,
     pub tests: Vec<String>,
     pub memory: MemoryReport,
+    pub contracts: Vec<StackContract>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -149,6 +151,9 @@ fn compile_package_internal(
     })?;
     typed.job_headroom_bytes = memory_config.job_headroom_bytes;
     typed.globals_budget_bytes = memory_config.globals_budget_bytes;
+    let function_contracts = emit::stack_contracts(&typed);
+    emit::apply_function_type_stack_contracts(&mut typed, &function_contracts);
+    let contracts = emit::stack_contracts(&typed);
     let memory = MemoryReport {
         globals: typed
             .globals
@@ -168,6 +173,7 @@ fn compile_package_internal(
         files,
         tests: typed.tests.iter().map(|test| test.name.clone()).collect(),
         memory,
+        contracts,
     })
 }
 
@@ -292,6 +298,23 @@ pub fn inspect_memory(package: &Path, allow_overcommit: bool) -> Result<(), Pack
             "warning: globals use {} bytes, above globals_budget of {} bytes",
             compiled.memory.startup_claim_bytes, compiled.memory.globals_budget_bytes
         );
+    }
+    Ok(())
+}
+
+pub fn inspect_contracts(package: &Path) -> Result<(), PackageError> {
+    let compiled = compile_package_internal(package, false)?;
+    for contract in &compiled.contracts {
+        println!("function {}", contract.function);
+        println!("  byte requirement: {}", contract.byte_requirement);
+        if contract.parameters.is_empty() {
+            println!("  parameters: none");
+        } else {
+            for parameter in &contract.parameters {
+                println!("  parameter: {parameter}");
+            }
+        }
+        println!("  result placement: {}", contract.result_placement);
     }
     Ok(())
 }

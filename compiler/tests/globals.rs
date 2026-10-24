@@ -12,18 +12,29 @@ fn global_initializers_are_static_or_run_once_in_dependency_order() {
     let package = root.join("tests/run/t08_globals");
     let compiled = compile_package(&package).expect("T08 globals package compiles");
     assert!(compiled.llvm_ir.contains("@nl.globals = global"));
-    assert!(compiled.llvm_ir.contains("call void @nl_fn_1()"));
+    assert!(
+        compiled
+            .llvm_ir
+            .contains("call void @nl_fn_1(ptr %nl.ctx, ptr %nl.top)")
+    );
     assert_eq!(compiled.memory.globals.len(), 3);
     assert!(compiled.memory.startup_claim_bytes >= 24);
     assert_eq!(
-        compiled.llvm_ir.matches("call void @nl_fn_1()").count(),
+        compiled
+            .llvm_ir
+            .matches("call void @nl_fn_1(ptr %nl.ctx, ptr %nl.top)")
+            .count(),
         1,
         "the runtime initializer is called once before main"
     );
 
     let static_only = root.join("tests/run/t08_memory");
     let static_ir = compile_package(&static_only).expect("static global package compiles");
-    assert!(!static_ir.llvm_ir.contains("call void @nl_fn_1()"));
+    assert!(
+        !static_ir
+            .llvm_ir
+            .contains("call void @nl_fn_1(ptr %nl.ctx, ptr %nl.top)")
+    );
     assert!(static_ir.llvm_ir.contains("i32 7"));
 }
 

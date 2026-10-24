@@ -126,7 +126,6 @@ struct Checker {
     next_indirect_call: usize,
     sort_specializations: std::collections::HashSet<(Ty, usize)>,
     sort_scratch_specializations: std::collections::HashSet<(usize, Ty)>,
-    sort_scratch_use: HashMap<usize, u128>,
     suppress_function_value_effect_check: bool,
     locals: Vec<HashMap<String, Binding>>,
     scope_ids: Vec<usize>,
@@ -226,7 +225,6 @@ impl Checker {
             next_indirect_call: 0,
             sort_specializations: std::collections::HashSet::new(),
             sort_scratch_specializations: std::collections::HashSet::new(),
-            sort_scratch_use: HashMap::new(),
             suppress_function_value_effect_check: false,
             locals: Vec::new(),
             scope_ids: Vec::new(),
@@ -390,7 +388,6 @@ impl Checker {
             tests.push(test);
             functions.push(function);
         }
-        self.check_large_local_types(&functions)?;
         let mut constant_exprs = Vec::with_capacity(self.ast_constants.len());
         for id in 0..self.ast_constants.len() {
             constant_exprs.push(self.check_constant_expr(id)?);
@@ -418,6 +415,23 @@ impl Checker {
             self.global_initialization_order(&globals, &functions, &call_graph)?;
         self.check_global_access_contracts(&functions, &call_graph, &indirect_targets)?;
         let (globals, global_state_bytes) = self.layout_globals(globals)?;
+        let mut function_type_targets = vec![Vec::new(); self.types.len()];
+        for usage in &self.function_value_uses {
+            let targets = &mut function_type_targets[usage.function_ty.0];
+            if !targets.contains(&usage.function) {
+                targets.push(usage.function);
+            }
+        }
+        for site in &self.indirect_calls {
+            if let Some(candidates) = indirect_targets.get(&site.id) {
+                let targets = &mut function_type_targets[site.function_ty.0];
+                for candidate in candidates {
+                    if !targets.contains(candidate) {
+                        targets.push(*candidate);
+                    }
+                }
+            }
+        }
         let typed = TProgram {
             functions,
             tests,
@@ -429,6 +443,7 @@ impl Checker {
             globals_budget_bytes: 64 * 1024 * 1024,
             files: self.files,
             call_graph,
+            function_type_targets,
             types: self.types,
         };
         Ok(typed)
@@ -1183,6 +1198,7 @@ impl Checker {
                 params,
                 result,
                 effects,
+                data_stack_requirement: 0,
             },
             span,
         });
@@ -2168,65 +2184,6 @@ impl Checker {
             if size > i64::MAX as u128 {
                 return Err(CheckError { span: definition.span, message: "collection size overflows long; reduce a capacity or the nested element size".to_owned() });
             }
-        }
-        Ok(())
-    }
-
-    fn check_large_local_types(&self, functions: &[TFunction]) -> Result<(), CheckError> {
-        const NATIVE_LOCAL_LIMIT: u128 = 65_536;
-        fn check(checker: &Checker, ty: Ty, span: Span, label: &str) -> Result<(), CheckError> {
-            let mut cache = vec![None; checker.types.len()];
-            if checker.type_size_checked(ty, &mut cache, span)? > NATIVE_LOCAL_LIMIT {
-                return Err(CheckError {
-                    span,
-                    message: format!(
-                        "{} exceeds the temporary 64 KB native-stack limit; this value needs M3 data-stack lowering",
-                        label
-                    ),
-                });
-            }
-            Ok(())
-        }
-        fn block(checker: &Checker, body: &TBlock) -> Result<(), CheckError> {
-            for stmt in &body.statements {
-                match &stmt.kind {
-                    TStmtKind::Let { ty, name, .. } => {
-                        check(checker, *ty, stmt.span, &format!("local '{}'", name))?
-                    }
-                    TStmtKind::If {
-                        then_block,
-                        else_block,
-                        ..
-                    } => {
-                        block(checker, then_block)?;
-                        if let Some(other) = else_block {
-                            block(checker, other)?;
-                        }
-                    }
-                    TStmtKind::For { body, .. }
-                    | TStmtKind::ForEach { body, .. }
-                    | TStmtKind::Block(body) => block(checker, body)?,
-                    _ => {}
-                }
-            }
-            Ok(())
-        }
-        for function in functions {
-            for param in &function.params {
-                check(
-                    self,
-                    param.ty,
-                    param.span,
-                    &format!("parameter '{}'", param.name),
-                )?;
-            }
-            check(
-                self,
-                function.result,
-                function.span,
-                &format!("return value of '{}'", function.name),
-            )?;
-            block(self, &function.body)?;
         }
         Ok(())
     }
@@ -6086,47 +6043,11 @@ impl Checker {
     fn check_sort_scratch(
         &mut self,
         storage_ty: Ty,
-        input_place: &TPlace,
-        span: Span,
+        _input_place: &TPlace,
+        _span: Span,
     ) -> Result<(), CheckError> {
-        const SORT_SCRATCH_LIMIT: u128 = 65_536;
-        let mut cache = vec![None; self.types.len()];
-        let bytes = self.type_size_checked(storage_ty, &mut cache, span)?;
-        if bytes > SORT_SCRATCH_LIMIT {
-            return Err(CheckError {
-                span,
-                message: format!(
-                    "sort scratch buffer for {} exceeds the temporary 64 KB native-stack limit; this specialization needs M3 data-stack lowering",
-                    self.type_name(storage_ty)
-                ),
-            });
-        }
-        if let Some(binding) = self.binding_by_id(input_place.root) {
-            let input_bytes = self.type_size_checked(binding.ty, &mut cache, span)?;
-            if input_bytes.saturating_add(bytes) > SORT_SCRATCH_LIMIT {
-                return Err(CheckError {
-                    span,
-                    message: "sorting input and scratch buffer exceed the temporary 64 KB native-stack limit; use a smaller collection or wait for M3 data-stack lowering".to_owned(),
-                });
-            }
-        }
-        if self
-            .sort_scratch_specializations
-            .insert((self.current_function, storage_ty))
-        {
-            let used = self
-                .sort_scratch_use
-                .entry(self.current_function)
-                .or_default();
-            let total = used.saturating_add(bytes);
-            if total > SORT_SCRATCH_LIMIT {
-                return Err(CheckError {
-                    span,
-                    message: "sorting scratch buffers in this function exceed the temporary 64 KB native-stack limit; reduce the number or capacity of sorted collection types".to_owned(),
-                });
-            }
-            *used = total;
-        }
+        self.sort_scratch_specializations
+            .insert((self.current_function, storage_ty));
         Ok(())
     }
 
@@ -9226,11 +9147,13 @@ impl Checker {
                 params: actual_params,
                 result: actual_result,
                 effects: actual_effects,
+                ..
             }),
             Some(TTypeKind::Function {
                 params: expected_params,
                 result: expected_result,
                 effects: expected_effects,
+                ..
             }),
         ) = (
             self.types.get(actual.0).map(|t| &t.kind),
@@ -9274,11 +9197,13 @@ impl Checker {
                 params: actual_params,
                 result: actual_result,
                 effects: actual_effects,
+                ..
             },
             TTypeKind::Function {
                 params: expected_params,
                 result: expected_result,
                 effects: expected_effects,
+                ..
             },
         ) = (
             &self.types.get(actual.0)?.kind,
@@ -9688,6 +9613,7 @@ impl Checker {
                     params,
                     result,
                     effects: allowed,
+                    ..
                 } = &self.types[site.function_ty.0].kind
                 else {
                     continue;

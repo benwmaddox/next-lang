@@ -1,0 +1,3 @@
+ok   bounded local fits the normal stack reservation
+ok   iteration region is released each time
+2 passed, 0 failed

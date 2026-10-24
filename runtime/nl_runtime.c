@@ -7,12 +7,133 @@
 #include <unistd.h>
 
 #if defined(__linux__)
+#include <sys/mman.h>
 #include <sys/types.h>
 #endif
 
 static const char **nl_files;
 static size_t nl_file_capacity;
 static int nl_test_mode;
+
+typedef struct {
+    void *mapping;
+    size_t mapping_bytes;
+    unsigned char *base;
+    unsigned char *top;
+    unsigned char *limit;
+} nl_data_stack_context;
+
+_Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col);
+
+static void nl_stack_startup_failure(const char *message) {
+    fprintf(stderr, "nlc: data stack startup failure: %s\n", message);
+    exit(1);
+}
+
+static uint64_t nl_data_stack_reservation(void) {
+#if defined(NLC_TEST_BUILD)
+    const char *override = getenv("NLC_TEST_DATA_STACK_BYTES");
+    if (override && *override) {
+        errno = 0;
+        char *end = NULL;
+        unsigned long long value = strtoull(override, &end, 10);
+        if (errno || end == override || *end || value == 0) {
+            nl_stack_startup_failure("NLC_TEST_DATA_STACK_BYTES must be a positive byte count");
+        }
+        return (uint64_t)value;
+    }
+#endif
+    return UINT64_C(67108864);
+}
+
+void *nl_context_create(uint64_t requested_bytes) {
+#if defined(__linux__)
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) nl_stack_startup_failure("could not determine the system page size");
+    uint64_t bytes = requested_bytes ? requested_bytes : nl_data_stack_reservation();
+    uint64_t page_size = (uint64_t)page;
+    if (bytes > UINT64_MAX - (page_size - 1)) {
+        nl_stack_startup_failure("requested reservation is too large");
+    }
+    bytes = ((bytes + page_size - 1) / page_size) * page_size;
+    if (bytes > SIZE_MAX - page_size) {
+        nl_stack_startup_failure("requested reservation is too large");
+    }
+    size_t total = (size_t)bytes + (size_t)page_size;
+    void *mapping = mmap(NULL, total, PROT_NONE,
+                         MAP_PRIVATE | MAP_ANONYMOUS
+#ifdef MAP_NORESERVE
+                             | MAP_NORESERVE
+#endif
+                         , -1, 0);
+    if (mapping == MAP_FAILED) {
+        nl_stack_startup_failure("could not reserve the requested address range");
+    }
+    if (mprotect(mapping, (size_t)bytes, PROT_READ | PROT_WRITE) != 0) {
+        munmap(mapping, total);
+        nl_stack_startup_failure("could not enable writable data stack pages");
+    }
+    nl_data_stack_context *context = calloc(1, sizeof(*context));
+    if (!context) {
+        munmap(mapping, total);
+        nl_stack_startup_failure("could not allocate stack context");
+    }
+    context->mapping = mapping;
+    context->mapping_bytes = total;
+    context->base = (unsigned char *)mapping;
+    context->top = context->base;
+    context->limit = context->base + bytes;
+    return context;
+#else
+    (void)requested_bytes;
+    nl_stack_startup_failure("data stack reservation requires Linux in this build");
+    return NULL;
+#endif
+}
+
+void *nl_context_base(void *opaque) {
+    nl_data_stack_context *context = opaque;
+    return context ? context->base : NULL;
+}
+
+void nl_context_set_top(void *opaque, void *top) {
+    nl_data_stack_context *context = opaque;
+    if (!context) return;
+    uintptr_t address = (uintptr_t)top;
+    if (address < (uintptr_t)context->base || address > (uintptr_t)context->limit) {
+        nl_stack_startup_failure("invalid data stack top");
+    }
+    context->top = top;
+}
+
+void nl_context_destroy(void *opaque) {
+    nl_data_stack_context *context = opaque;
+    if (!context) return;
+#if defined(__linux__)
+    munmap(context->mapping, context->mapping_bytes);
+#endif
+    free(context);
+}
+
+void *nl_stack_alloc(void *opaque, void *top, uint64_t bytes, uint64_t alignment,
+                     int32_t file_id, int32_t line, int32_t col) {
+    nl_data_stack_context *context = opaque;
+    if (!context || alignment == 0 || (alignment & (alignment - 1)) != 0) {
+        nl_stack_startup_failure("invalid region allocation request");
+    }
+    uintptr_t base = (uintptr_t)context->base;
+    uintptr_t limit = (uintptr_t)context->limit;
+    uintptr_t current = (uintptr_t)top;
+    if (current < base || current > limit || current > UINTPTR_MAX - (alignment - 1)) {
+        nl_fail(18, file_id, line, col);
+    }
+    uintptr_t aligned = (current + (uintptr_t)alignment - 1) & ~((uintptr_t)alignment - 1);
+    if (bytes > UINTPTR_MAX - aligned || aligned + (uintptr_t)bytes > limit) {
+        nl_fail(18, file_id, line, col);
+    }
+    context->top = (void *)(aligned + (uintptr_t)bytes);
+    return (void *)aligned;
+}
 
 void nl_register_file(int32_t file_id, const char *name) {
     if (file_id < 0) return;
@@ -347,6 +468,7 @@ _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col)
         case 15: message = "unwrap called on err"; break;
         case 16: message = "index out of range"; break;
         case 17: message = "binary_search requires sorted input"; break;
+        case 18: message = "data stack exhausted"; break;
     }
     fprintf(stderr, "%s:%d:%d: %s\n", file, line, col, message);
     exit(nl_test_mode ? 70 : 1);

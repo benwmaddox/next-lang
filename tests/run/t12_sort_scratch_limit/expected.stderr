@@ -1,1 +1,0 @@
-main.nl:4:5: error: sort scratch buffer for list<long, 8192> exceeds the temporary 64 KB native-stack limit; this specialization needs M3 data-stack lowering

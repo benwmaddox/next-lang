@@ -82,6 +82,7 @@ pub enum TTypeKind {
         params: Vec<TFunctionTypeParam>,
         result: Ty,
         effects: TFunctionEffects,
+        data_stack_requirement: u64,
     },
     Id {
         owner: usize,
@@ -200,6 +201,7 @@ pub struct TProgram {
     pub globals_budget_bytes: u64,
     pub files: Vec<String>,
     pub call_graph: Vec<Vec<TCallEdge>>,
+    pub function_type_targets: Vec<Vec<usize>>,
     pub types: Vec<TType>,
 }
 
