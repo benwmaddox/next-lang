@@ -1,0 +1,1 @@
+main.nl:10:60: error: function 'update' has extra effect 'writes app.score'; add it to the function type's effects bound

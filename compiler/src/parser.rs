@@ -290,17 +290,53 @@ impl Parser<'_> {
     }
 
     fn type_name(&mut self) -> Result<TypeAst, ParseError> {
-        if self.take(&TokenKind::LParen) {
-            self.expect(&TokenKind::RParen, "expected ')' in unit type '()'")?;
+        if self.word_is("fn") {
+            let function = self.function_type()?;
+            let span = function.span;
+            let mut array_caps = Vec::new();
+            while self.take(&TokenKind::LBracket) {
+                array_caps.push(self.expression(8)?);
+                self.expect(
+                    &TokenKind::RBracket,
+                    "expected ']' after the array capacity",
+                )?;
+            }
             return Ok(TypeAst {
-                name: "()".to_owned(),
+                name: "fn".to_owned(),
                 args: Vec::new(),
                 const_args: Vec::new(),
-                array_caps: Vec::new(),
+                array_caps,
                 range: None,
                 policy: RefinePolicy::Checked,
-                span: self.tokens[self.pos.saturating_sub(2)].span,
+                function: Some(function),
+                span,
             });
+        }
+        if self.take(&TokenKind::LParen) {
+            let span = self.tokens[self.pos.saturating_sub(1)].span;
+            if self.take(&TokenKind::RParen) {
+                return Ok(TypeAst {
+                    name: "()".to_owned(),
+                    args: Vec::new(),
+                    const_args: Vec::new(),
+                    array_caps: Vec::new(),
+                    range: None,
+                    policy: RefinePolicy::Checked,
+                    function: None,
+                    span,
+                });
+            }
+            let mut inner = self.type_name()?;
+            self.expect(&TokenKind::RParen, "expected ')' after the grouped type")?;
+            while self.take(&TokenKind::LBracket) {
+                inner.array_caps.push(self.expression(8)?);
+                self.expect(
+                    &TokenKind::RBracket,
+                    "expected ']' after the array capacity",
+                )?;
+            }
+            inner.span = span;
+            return Ok(inner);
         }
         let (mut name, span) = self.expect_ident("expected a type name")?;
         while self.take(&TokenKind::Dot) {
@@ -406,7 +442,114 @@ impl Parser<'_> {
             array_caps,
             range,
             policy,
+            function: None,
             span,
+        })
+    }
+
+    fn function_type(&mut self) -> Result<FunctionTypeAst, ParseError> {
+        let start = self.expect_word("fn", "expected 'fn'")?.span;
+        if self.take(&TokenKind::Lt) {
+            return Err(ParseError {
+                span: start,
+                message: "owner- or capacity-generic function values are not supported yet; use a concrete signature".to_owned(),
+            });
+        }
+        self.expect(&TokenKind::LParen, "expected '(' after 'fn'")?;
+        let mut params = Vec::new();
+        self.skip_newlines();
+        if !self.at(&TokenKind::RParen) {
+            loop {
+                self.skip_newlines();
+                let mode = if self.word_is("write") {
+                    self.next();
+                    ParamMode::Write
+                } else {
+                    ParamMode::Read
+                };
+                let ty = self.type_name()?;
+                params.push(FunctionTypeParamAst { mode, ty });
+                self.skip_newlines();
+                if !self.take(&TokenKind::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+                if self.at(&TokenKind::RParen) {
+                    break;
+                }
+            }
+        }
+        self.expect(
+            &TokenKind::RParen,
+            "expected ')' after function type parameters",
+        )?;
+        self.skip_newlines();
+        let result = if self.take(&TokenKind::Arrow) {
+            self.skip_newlines();
+            Some(Box::new(self.type_name()?))
+        } else {
+            None
+        };
+        let mut effects = Vec::new();
+        if self.word_is("effects") {
+            self.next();
+            loop {
+                let (effect, effect_span) =
+                    self.expect_ident("expected an effect after 'effects'")?;
+                match effect.as_str() {
+                    "print" => effects.push(FunctionEffectAst::Print),
+                    "reads" | "writes" => {
+                        let (root, root_span) = self.expect_ident(if effect == "reads" {
+                            "expected a global path after 'reads'"
+                        } else {
+                            "expected a global path after 'writes'"
+                        })?;
+                        let mut path = root;
+                        while self.take(&TokenKind::Dot) {
+                            let (part, _) = self.expect_ident("expected a field name after '.'")?;
+                            path.push('.');
+                            path.push_str(&part);
+                        }
+                        effects.push(if effect == "reads" {
+                            FunctionEffectAst::Reads {
+                                path,
+                                span: root_span,
+                            }
+                        } else {
+                            FunctionEffectAst::Writes {
+                                path,
+                                span: root_span,
+                            }
+                        });
+                    }
+                    _ => {
+                        return Err(ParseError {
+                            span: effect_span,
+                            message: format!(
+                                "unknown function effect '{}'; use print, reads global, or writes global",
+                                effect
+                            ),
+                        });
+                    }
+                }
+                if !matches!(self.peek().kind, TokenKind::Comma) {
+                    break;
+                }
+                let next = match &self.peek_n(1).kind {
+                    TokenKind::Ident(name) => name.as_str(),
+                    _ => break,
+                };
+                if !matches!(next, "print" | "reads" | "writes") {
+                    break;
+                }
+                self.next();
+            }
+        }
+        Ok(FunctionTypeAst {
+            params,
+            result,
+            effects,
+            span: start,
         })
     }
 
@@ -853,6 +996,14 @@ impl Parser<'_> {
                 kind: ExprKind::Bool(false),
                 span,
             },
+            TokenKind::Ident(name) if name == "fn" => {
+                return Err(ParseError {
+                    span,
+                    message:
+                        "anonymous functions are not supported; use a named top-level function"
+                            .to_owned(),
+                });
+            }
             TokenKind::Ident(name) if name == "if" => self.if_expression(span)?,
             TokenKind::Ident(name) if name == "match" => self.match_expression(span)?,
             TokenKind::Ident(name) if name == "return" => {
@@ -943,12 +1094,16 @@ impl Parser<'_> {
                         },
                         span: old.span,
                     },
-                    _ => {
-                        return Err(ParseError {
-                            span: old.span,
-                            message: "only a named function or enum case can be called".to_owned(),
-                        });
-                    }
+                    callee => Expr {
+                        kind: ExprKind::IndirectCall {
+                            callee: Box::new(Expr {
+                                kind: callee,
+                                span: old.span,
+                            }),
+                            args,
+                        },
+                        span: old.span,
+                    },
                 };
                 continue;
             }
@@ -1109,6 +1264,10 @@ impl Parser<'_> {
                     ExprKind::Name(name) => Some(name.clone()),
                     _ => None,
                 };
+                let is_type_qualifier = qualifier
+                    .as_deref()
+                    .and_then(|name| name.chars().next())
+                    .is_some_and(char::is_uppercase);
                 if method == "fit" && self.take(&TokenKind::Lt) {
                     let ty = self.type_name()?;
                     self.expect_type_gt("expected '>' after the fit type")?;
@@ -1150,7 +1309,9 @@ impl Parser<'_> {
                             | "remove"
                             | "clear"
                     );
-                    if let Some(enum_name) = qualifier.filter(|_| !is_builtin_method) {
+                    if let Some(enum_name) =
+                        qualifier.filter(|_| !is_builtin_method && is_type_qualifier)
+                    {
                         expr = Expr {
                             kind: ExprKind::QualifiedCase {
                                 enum_name,

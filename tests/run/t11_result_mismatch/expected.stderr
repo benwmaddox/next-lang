@@ -1,0 +1,1 @@
+main.nl:4:34: error: expected fn() -> bool, found fn() -> int; cast explicitly with (fn() -> bool)value

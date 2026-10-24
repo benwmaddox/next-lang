@@ -1,0 +1,1 @@
+main.nl:4:20: error: owner- or capacity-generic functions cannot be stored as values yet; use a concrete wrapper function

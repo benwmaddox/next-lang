@@ -78,6 +78,11 @@ pub enum TTypeKind {
         key: Ty,
         capacity: usize,
     },
+    Function {
+        params: Vec<TFunctionTypeParam>,
+        result: Ty,
+        effects: TFunctionEffects,
+    },
     Id {
         owner: usize,
     },
@@ -86,6 +91,19 @@ pub enum TTypeKind {
         capacity: usize,
         owner: usize,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TFunctionTypeParam {
+    pub ty: Ty,
+    pub mode: ParamMode,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TFunctionEffects {
+    pub print: bool,
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -248,6 +266,7 @@ pub enum ConstValue {
         generations: Vec<u32>,
         free: Vec<u32>,
     },
+    Function(usize),
     Enum {
         case_index: usize,
         payload: Vec<ConstValue>,
@@ -506,10 +525,17 @@ pub enum TExprKind {
     Local(usize),
     Global(usize),
     Constant(usize),
+    FunctionValue(usize),
     Call {
         target: CallTarget,
         args: Vec<TExpr>,
         effect: Effect,
+    },
+    IndirectCall {
+        callsite_id: usize,
+        callee: Box<TExpr>,
+        args: Vec<TExpr>,
+        params: Vec<TFunctionTypeParam>,
     },
     Construct {
         case_index: usize,
@@ -642,6 +668,7 @@ pub fn llvm_type(ty: Ty, types: &[TType]) -> String {
         Ty::Long => "i64".to_owned(),
         Ty::Bool => "i1".to_owned(),
         Ty::Unit | Ty::Never => "void".to_owned(),
+        _ if matches!(types[ty.0].kind, TTypeKind::Function { .. }) => "ptr".to_owned(),
         Ty(id) => {
             debug_assert!(id < types.len());
             format!("%nl.ty.{id}")

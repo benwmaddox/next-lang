@@ -280,6 +280,12 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
                 collect_constant_references_expr(arg, references);
             }
         }
+        TExprKind::IndirectCall { callee, args, .. } => {
+            collect_constant_references_expr(callee, references);
+            for arg in args {
+                collect_constant_references_expr(arg, references);
+            }
+        }
         TExprKind::Method { receiver, .. }
         | TExprKind::OptionalToLong(receiver)
         | TExprKind::Field { receiver, .. }
@@ -373,6 +379,7 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::Bool(_)
         | TExprKind::Local(_)
         | TExprKind::Global(_)
+        | TExprKind::FunctionValue(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
         | TExprKind::EmptyPool
@@ -475,6 +482,9 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         TExprKind::Call { args, .. } | TExprKind::Construct { args, .. } => {
             args.iter().any(expression_reads_global)
         }
+        TExprKind::IndirectCall { callee, args, .. } => {
+            expression_reads_global(callee) || args.iter().any(expression_reads_global)
+        }
         TExprKind::Method { receiver, .. }
         | TExprKind::OptionalToLong(receiver)
         | TExprKind::Field { receiver, .. }
@@ -543,6 +553,7 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         | TExprKind::Bool(_)
         | TExprKind::Local(_)
         | TExprKind::Constant(_)
+        | TExprKind::FunctionValue(_)
         | TExprKind::LoopExit(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
@@ -728,6 +739,12 @@ fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mu
                 collect_calls_expr(arg, calls, effects);
             }
         }
+        TExprKind::IndirectCall { callee, args, .. } => {
+            collect_calls_expr(callee, calls, effects);
+            for arg in args {
+                collect_calls_expr(arg, calls, effects);
+            }
+        }
         TExprKind::Construct { args, .. } => {
             for arg in args {
                 collect_calls_expr(arg, calls, effects);
@@ -823,6 +840,7 @@ fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mu
         | TExprKind::Local(_)
         | TExprKind::Global(_)
         | TExprKind::Constant(_)
+        | TExprKind::FunctionValue(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
         | TExprKind::EmptyPool
@@ -1946,6 +1964,7 @@ impl Evaluator<'_> {
             TExprKind::Unit => ConstValue::Unit,
             TExprKind::Integer(value) => ConstValue::Integer(*value),
             TExprKind::Bool(value) => ConstValue::Bool(*value),
+            TExprKind::FunctionValue(id) => ConstValue::Function(*id),
             TExprKind::Local(id) => {
                 if let Some(view) = self.views.get(id).cloned() {
                     let (root, path) = self.resolve_place_indices(&view, locals)?;
@@ -2013,6 +2032,20 @@ impl Evaluator<'_> {
                     })
                 }
             },
+            TExprKind::IndirectCall { callee, args, .. } => {
+                let function_value = value_or_flow!(self.eval_expr(callee, locals));
+                let ConstValue::Function(id) = function_value else {
+                    return Err(self.failure(
+                        expr.span,
+                        "constant evaluator expected a named function value",
+                    ));
+                };
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    values.push(value_or_flow!(self.eval_expr(arg, locals)));
+                }
+                self.call_function(id, values, expr.span)?
+            }
             TExprKind::Construct { case_index, args } => {
                 let mut payload = Vec::with_capacity(args.len());
                 for arg in args {
@@ -2824,6 +2857,11 @@ impl Evaluator<'_> {
     fn values_equal(&self, ty: Ty, left: &ConstValue, right: &ConstValue) -> bool {
         match (&self.types[ty.0].kind, left, right) {
             (TTypeKind::Refinement { base, .. }, _, _) => self.values_equal(*base, left, right),
+            (
+                TTypeKind::Function { .. },
+                ConstValue::Function(left),
+                ConstValue::Function(right),
+            ) => left == right,
             (
                 TTypeKind::Pool {
                     element, capacity, ..

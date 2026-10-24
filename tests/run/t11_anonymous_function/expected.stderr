@@ -1,0 +1,1 @@
+main.nl:2:20: error: anonymous functions are not supported; use a named top-level function

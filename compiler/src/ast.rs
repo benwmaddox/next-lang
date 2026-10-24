@@ -15,7 +15,29 @@ pub struct TypeAst {
     pub array_caps: Vec<Expr>,
     pub range: Option<TypeRangeAst>,
     pub policy: RefinePolicy,
+    pub function: Option<FunctionTypeAst>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct FunctionTypeAst {
+    pub params: Vec<FunctionTypeParamAst>,
+    pub result: Option<Box<TypeAst>>,
+    pub effects: Vec<FunctionEffectAst>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct FunctionTypeParamAst {
+    pub mode: ParamMode,
+    pub ty: TypeAst,
+}
+
+#[derive(Clone, Debug)]
+pub enum FunctionEffectAst {
+    Print,
+    Reads { path: String, span: Span },
+    Writes { path: String, span: Span },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -122,7 +144,7 @@ pub struct Param {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ParamMode {
     Read,
     Write,
@@ -212,6 +234,10 @@ pub enum ExprKind {
     Call {
         name: String,
         call_span: Span,
+        args: Vec<Expr>,
+    },
+    IndirectCall {
+        callee: Box<Expr>,
         args: Vec<Expr>,
     },
     QualifiedCase {

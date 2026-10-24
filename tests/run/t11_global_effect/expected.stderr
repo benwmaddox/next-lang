@@ -1,0 +1,1 @@
+main.nl:13:44: error: function 'compare' has extra effect 'writes app'; add it to the function type's effects bound

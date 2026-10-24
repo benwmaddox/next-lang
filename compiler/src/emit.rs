@@ -35,7 +35,7 @@ pub fn emit(program: &TProgram) -> String {
     let mut size_cache = vec![None; program.types.len()];
     for (id, ty) in program.types.iter().enumerate().skip(5) {
         match &ty.kind {
-            TTypeKind::Refinement { .. } | TTypeKind::Id { .. } => {}
+            TTypeKind::Refinement { .. } | TTypeKind::Id { .. } | TTypeKind::Function { .. } => {}
             TTypeKind::Struct(fields) => {
                 let fields = fields
                     .iter()
@@ -179,7 +179,12 @@ pub fn emit(program: &TProgram) -> String {
         if base_type(constant.ty, &program.types) == Ty::Unit {
             continue;
         }
-        let initializer = llvm_constant(constant.ty, &constant.value, &program.types);
+        let initializer = llvm_constant(
+            constant.ty,
+            &constant.value,
+            &program.types,
+            &program.functions,
+        );
         out.push_str(&format!(
             "@nl.const.{} = private constant {} {}, align 1 ; {} declared at {}:{}:{}\n",
             constant.id,
@@ -207,7 +212,7 @@ pub fn emit(program: &TProgram) -> String {
             members.push(ty.clone());
             let initializer = match &global.initializer {
                 TGlobalInitializer::Constant(value) => {
-                    llvm_constant(global.ty, value, &program.types)
+                    llvm_constant(global.ty, value, &program.types, &program.functions)
                 }
                 TGlobalInitializer::Runtime(_) => "zeroinitializer".to_owned(),
             };
@@ -270,6 +275,13 @@ pub fn emit(program: &TProgram) -> String {
             print_texts.extend(fields.iter().map(|field| field.name.clone()));
         }
     }
+    print_texts.extend(
+        program
+            .functions
+            .iter()
+            .map(|function| function.name.clone()),
+    );
+    print_texts.push("<unknown function>".to_owned());
     print_texts.sort();
     print_texts.dedup();
     let print_ids = print_texts
@@ -446,6 +458,12 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
                 collect_expect_sources_expr(arg, sources);
             }
         }
+        TExprKind::IndirectCall { callee, args, .. } => {
+            collect_expect_sources_expr(callee, sources);
+            for arg in args {
+                collect_expect_sources_expr(arg, sources);
+            }
+        }
         TExprKind::Construct { args, .. } => {
             for arg in args {
                 collect_expect_sources_expr(arg, sources);
@@ -534,6 +552,7 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         | TExprKind::Local(_)
         | TExprKind::Global(_)
         | TExprKind::Constant(_)
+        | TExprKind::FunctionValue(_)
         | TExprKind::LoopExit(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
@@ -644,6 +663,7 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
                             .sum::<usize>(),
                     ),
                 TTypeKind::Id { .. } => 8,
+                TTypeKind::Function { .. } => 8,
                 _ => {
                     let payload = enum_payload_size(ty, types, cache);
                     (4 + payload + 3) & !3
@@ -655,9 +675,9 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
     }
 }
 
-fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
+fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType], functions: &[TFunction]) -> String {
     match &types[ty.0].kind {
-        TTypeKind::Refinement { base, .. } => llvm_constant(*base, value, types),
+        TTypeKind::Refinement { base, .. } => llvm_constant(*base, value, types, functions),
         TTypeKind::Int | TTypeKind::Long => match value {
             ConstValue::Integer(value) => value.to_string(),
             _ => unreachable!("integer constant has an aggregate value"),
@@ -671,6 +691,10 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
             ConstValue::Integer(value) => value.to_string(),
             _ => unreachable!("id constant has a non-integer value"),
         },
+        TTypeKind::Function { .. } => match value {
+            ConstValue::Function(id) => format!("@nl_fn_{id}"),
+            _ => unreachable!("function value constant has a non-function value"),
+        },
         TTypeKind::Struct(fields) => {
             let ConstValue::Struct(values) = value else {
                 unreachable!("struct constant has a non-struct value")
@@ -682,7 +706,7 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
                     format!(
                         "{} {}",
                         llvm_type(field.ty, types),
-                        llvm_constant(field.ty, value, types)
+                        llvm_constant(field.ty, value, types, functions)
                     )
                 })
                 .collect::<Vec<_>>()
@@ -693,25 +717,25 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
             let ConstValue::Array(values) = value else {
                 unreachable!("array constant has a non-array value")
             };
-            collection_constant(*element, *capacity, values, 0, types)
+            collection_constant(*element, *capacity, values, 0, types, functions)
         }
         TTypeKind::List { element, capacity } => {
             let ConstValue::List(values) = value else {
                 unreachable!("list constant has a non-list value")
             };
-            collection_constant(*element, *capacity, values, 1, types)
+            collection_constant(*element, *capacity, values, 1, types, functions)
         }
         TTypeKind::Queue { element, capacity } => {
             let ConstValue::Queue(values) = value else {
                 unreachable!("queue constant has a non-queue value")
             };
-            collection_constant(*element, *capacity, values, 2, types)
+            collection_constant(*element, *capacity, values, 2, types, functions)
         }
         TTypeKind::Ring { element, capacity } => {
             let ConstValue::Ring(values) = value else {
                 unreachable!("ring constant has a non-ring value")
             };
-            collection_constant(*element, *capacity, values, 2, types)
+            collection_constant(*element, *capacity, values, 2, types, functions)
         }
         TTypeKind::Grid {
             element, capacity, ..
@@ -719,7 +743,7 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
             let ConstValue::Grid(values) = value else {
                 unreachable!("grid constant has a non-grid value")
             };
-            collection_constant(*element, *capacity, values, 0, types)
+            collection_constant(*element, *capacity, values, 0, types, functions)
         }
         TTypeKind::Map {
             key,
@@ -729,13 +753,13 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
             let ConstValue::Map(entries) = value else {
                 unreachable!("map constant has a non-map value")
             };
-            map_constant(*key, *value_ty, *capacity, entries, types)
+            map_constant(*key, *value_ty, *capacity, entries, types, functions)
         }
         TTypeKind::Set { key, capacity } => {
             let ConstValue::Set(entries) = value else {
                 unreachable!("set constant has a non-set value")
             };
-            set_constant(*key, *capacity, entries, types)
+            set_constant(*key, *capacity, entries, types, functions)
         }
         TTypeKind::Pool {
             element, capacity, ..
@@ -779,7 +803,7 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
                                 },
                             );
                         let rendered = value
-                            .map(|value| llvm_constant(*lane_ty, value, types))
+                            .map(|value| llvm_constant(*lane_ty, value, types, functions))
                             .unwrap_or_else(|| "zeroinitializer".to_owned());
                         format!("{} {rendered}", llvm_type(*lane_ty, types))
                     })
@@ -821,6 +845,7 @@ fn collection_constant(
     values: &[ConstValue],
     metadata: usize,
     types: &[TType],
+    functions: &[TFunction],
 ) -> String {
     let lanes = collection_lane_types(element, types);
     let mut fields = Vec::new();
@@ -859,7 +884,7 @@ fn collection_constant(
                     ConstValue::Unit
                 };
                 let inner = if index < values.len() {
-                    llvm_constant(lane_ty, &value, types)
+                    llvm_constant(lane_ty, &value, types, functions)
                 } else {
                     "zeroinitializer".to_owned()
                 };
@@ -957,6 +982,7 @@ fn map_constant(
     capacity: usize,
     entries: &[(ConstValue, ConstValue)],
     types: &[TType],
+    functions: &[TFunction],
 ) -> String {
     let hashes = entries
         .iter()
@@ -980,7 +1006,7 @@ fn map_constant(
         .map(|slot| {
             let value = entries
                 .get(slot)
-                .map(|entry| llvm_constant(key_ty, &entry.0, types))
+                .map(|entry| llvm_constant(key_ty, &entry.0, types, functions))
                 .unwrap_or_else(|| "zeroinitializer".to_owned());
             format!("{} {value}", llvm_type(key_ty, types))
         })
@@ -990,7 +1016,7 @@ fn map_constant(
         .map(|slot| {
             let value = entries
                 .get(slot)
-                .map(|entry| llvm_constant(value_ty, &entry.1, types))
+                .map(|entry| llvm_constant(value_ty, &entry.1, types, functions))
                 .unwrap_or_else(|| "zeroinitializer".to_owned());
             format!("{} {value}", llvm_type(value_ty, types))
         })
@@ -1010,7 +1036,13 @@ fn map_constant(
     )
 }
 
-fn set_constant(key_ty: Ty, capacity: usize, entries: &[ConstValue], types: &[TType]) -> String {
+fn set_constant(
+    key_ty: Ty,
+    capacity: usize,
+    entries: &[ConstValue],
+    types: &[TType],
+    functions: &[TFunction],
+) -> String {
     let hashes = entries
         .iter()
         .map(|key| constant_hash(key_ty, key, types))
@@ -1033,7 +1065,7 @@ fn set_constant(key_ty: Ty, capacity: usize, entries: &[ConstValue], types: &[TT
         .map(|slot| {
             let value = entries
                 .get(slot)
-                .map(|key| llvm_constant(key_ty, key, types))
+                .map(|key| llvm_constant(key_ty, key, types, functions))
                 .unwrap_or_else(|| "zeroinitializer".to_owned());
             format!("{} {value}", llvm_type(key_ty, types))
         })
@@ -1101,6 +1133,9 @@ fn serialize_constant(
                 unreachable!("id constant has a non-integer value")
             };
             bytes.extend_from_slice(&(*value as u64).to_le_bytes());
+        }
+        TTypeKind::Function { .. } => {
+            unreachable!("function pointers are emitted as LLVM relocations, not serialized bytes")
         }
         TTypeKind::Struct(fields) => {
             let ConstValue::Struct(values) = value else {
@@ -1545,6 +1580,12 @@ impl<'a> FunctionEmitter<'a> {
                     self.collect_expr(arg);
                 }
             }
+            TExprKind::IndirectCall { callee, args, .. } => {
+                self.collect_expr(callee);
+                for arg in args {
+                    self.collect_expr(arg);
+                }
+            }
             TExprKind::Construct { args, .. } => {
                 for arg in args {
                     self.collect_expr(arg);
@@ -1645,6 +1686,7 @@ impl<'a> FunctionEmitter<'a> {
             | TExprKind::Unit
             | TExprKind::Global(_)
             | TExprKind::Constant(_)
+            | TExprKind::FunctionValue(_)
             | TExprKind::LoopExit(_)
             | TExprKind::EmptyArray
             | TExprKind::EmptyList
@@ -4955,6 +4997,10 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_print_value(&mut self, ty: Ty, value: &str) {
         let ty = base_type(ty, &self.program.types);
+        if matches!(self.program.types[ty.0].kind, TTypeKind::Function { .. }) {
+            self.emit_print_function(value);
+            return;
+        }
         if matches!(self.program.types[ty.0].kind, TTypeKind::Pool { .. }) {
             self.emit_print_pool(ty, value);
             return;
@@ -5053,6 +5099,34 @@ impl<'a> FunctionEmitter<'a> {
                 self.start_block(&merge);
             }
         }
+    }
+
+    fn emit_print_function(&mut self, value: &str) {
+        let unknown_id = self.print_ids["<unknown function>"];
+        let mut name_pointer = format!(
+            "getelementptr inbounds ([{} x i8], ptr @.nl.print.{unknown_id}, i64 0, i64 0)",
+            "<unknown function>".len() + 1
+        );
+        for function in &self.program.functions {
+            let Some(name_id) = self.print_ids.get(&function.name).copied() else {
+                continue;
+            };
+            let name_pointer_for_function = format!(
+                "getelementptr inbounds ([{} x i8], ptr @.nl.print.{name_id}, i64 0, i64 0)",
+                function.name.len() + 1
+            );
+            let equal = self.temp();
+            self.instruction(format!(
+                "{equal} = icmp eq ptr {value}, @nl_fn_{}",
+                function.id
+            ));
+            let selected = self.temp();
+            self.instruction(format!(
+                "{selected} = select i1 {equal}, ptr {name_pointer_for_function}, ptr {name_pointer}"
+            ));
+            name_pointer = selected;
+        }
+        self.instruction(format!("call void @nl_print_text(ptr {name_pointer})"));
     }
 
     fn emit_print_collection(&mut self, ty: Ty, value: &str) {
@@ -6134,6 +6208,7 @@ impl<'a> FunctionEmitter<'a> {
                     tmp
                 }
             }
+            TExprKind::FunctionValue(id) => format!("@nl_fn_{id}"),
             TExprKind::Call {
                 target,
                 args,
@@ -6222,6 +6297,44 @@ impl<'a> FunctionEmitter<'a> {
                     result
                 }
             },
+            TExprKind::IndirectCall {
+                callee,
+                args,
+                params,
+                ..
+            } => {
+                let function_value = self.emit_expr(callee);
+                if self.terminated {
+                    return String::new();
+                }
+                let mut call_args = Vec::with_capacity(args.len());
+                for (arg, param) in args.iter().zip(params) {
+                    if param.mode == ParamMode::Write
+                        || matches!(self.program.types[param.ty.0].kind, TTypeKind::Pool { .. })
+                    {
+                        let place = self.emit_place_pointer_expr(arg);
+                        call_args.push(format!("ptr {place}"));
+                    } else {
+                        let value = self.emit_expr(arg);
+                        if self.terminated {
+                            return String::new();
+                        }
+                        call_args.push(format!("{} {value}", self.lltype(param.ty)));
+                    }
+                }
+                let args = call_args.join(", ");
+                if self.lltype(expr.ty) == "void" {
+                    self.instruction(format!("call void {function_value}({args})"));
+                    String::new()
+                } else {
+                    let tmp = self.temp();
+                    self.instruction(format!(
+                        "{tmp} = call {} {function_value}({args})",
+                        self.lltype(expr.ty)
+                    ));
+                    tmp
+                }
+            }
             TExprKind::Construct { case_index, args } => {
                 self.emit_construct(expr.ty, *case_index, args)
             }
@@ -6498,6 +6611,18 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_binary(&mut self, op: BinaryOp, ty: Ty, lhs: &str, rhs: &str, span: Span) -> String {
         let primitive = base_type(ty, &self.program.types);
+        if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+            && matches!(self.program.types[ty.0].kind, TTypeKind::Function { .. })
+        {
+            let equal = self.temp();
+            self.instruction(format!("{equal} = icmp eq ptr {lhs}, {rhs}"));
+            if op == BinaryOp::Eq {
+                return equal;
+            }
+            let result = self.temp();
+            self.instruction(format!("{result} = xor i1 {equal}, true"));
+            return result;
+        }
         if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
             && matches!(self.program.types[ty.0].kind, TTypeKind::Id { .. })
         {

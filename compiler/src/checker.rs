@@ -17,6 +17,21 @@ struct Signature {
 }
 
 #[derive(Clone, Copy)]
+struct FunctionValueUse {
+    function: usize,
+    function_ty: Ty,
+    span: Span,
+}
+
+#[derive(Clone, Copy)]
+struct IndirectCallSite {
+    id: usize,
+    from: usize,
+    function_ty: Ty,
+    span: Span,
+}
+
+#[derive(Clone, Copy)]
 struct ParamSignature {
     ty: Ty,
     mode: ParamMode,
@@ -92,6 +107,8 @@ struct Checker {
     set_ids: HashMap<(Ty, usize), Ty>,
     pool_ids: HashMap<(Ty, usize, usize), Ty>,
     id_ids: HashMap<usize, Ty>,
+    function_type_ids: HashMap<(Vec<TFunctionTypeParam>, Ty, TFunctionEffects), Ty>,
+    function_effect_spans: HashMap<(Ty, String), Span>,
     ast_functions: Vec<Function>,
     ast_tests: Vec<Test>,
     ast_constants: Vec<ConstDecl>,
@@ -103,6 +120,10 @@ struct Checker {
     checking_global_initializer: bool,
     checking_constant: bool,
     edges: Vec<Edge>,
+    function_value_uses: Vec<FunctionValueUse>,
+    indirect_calls: Vec<IndirectCallSite>,
+    next_indirect_call: usize,
+    suppress_function_value_effect_check: bool,
     locals: Vec<HashMap<String, Binding>>,
     scope_ids: Vec<usize>,
     next_scope: usize,
@@ -183,6 +204,8 @@ impl Checker {
             set_ids: HashMap::new(),
             pool_ids: HashMap::new(),
             id_ids: HashMap::new(),
+            function_type_ids: HashMap::new(),
+            function_effect_spans: HashMap::new(),
             ast_functions: Vec::new(),
             ast_tests: Vec::new(),
             ast_constants: Vec::new(),
@@ -194,6 +217,10 @@ impl Checker {
             checking_global_initializer: false,
             checking_constant: false,
             edges: Vec::new(),
+            function_value_uses: Vec::new(),
+            indirect_calls: Vec::new(),
+            next_indirect_call: 0,
+            suppress_function_value_effect_check: false,
             locals: Vec::new(),
             scope_ids: Vec::new(),
             next_scope: 0,
@@ -358,14 +385,17 @@ impl Checker {
         for id in 0..self.ast_constants.len() {
             constant_exprs.push(self.check_constant_expr(id)?);
         }
-        self.check_recursion()?;
-        let mut call_graph = vec![Vec::new(); functions.len()];
+        self.validate_function_effect_paths()?;
+        let mut direct_call_graph = vec![Vec::new(); functions.len()];
         for edge in &self.edges {
-            call_graph[edge.from].push(TCallEdge {
+            direct_call_graph[edge.from].push(TCallEdge {
                 target: edge.to,
                 span: edge.span,
             });
         }
+        let (call_graph, indirect_targets) =
+            self.resolve_indirect_calls(&functions, direct_call_graph)?;
+        self.check_recursion(&call_graph)?;
         let constants = crate::const_eval::evaluate_constants(
             &constant_exprs,
             &functions,
@@ -376,7 +406,7 @@ impl Checker {
             self.finish_globals(global_init_exprs, &constants, &functions, &call_graph)?;
         let global_init_order =
             self.global_initialization_order(&globals, &functions, &call_graph)?;
-        self.check_global_access_contracts(&functions, &call_graph)?;
+        self.check_global_access_contracts(&functions, &call_graph, &indirect_targets)?;
         let (globals, global_state_bytes) = self.layout_globals(globals)?;
         let typed = TProgram {
             functions,
@@ -621,135 +651,142 @@ impl Checker {
             let owner = self.resolve_owner_path(owner_path, ty.span)?;
             return Ok(self.intern_id(owner, ty.span));
         }
-        let mut result = match ty.name.as_str() {
-            "int" if ty.args.is_empty() && ty.const_args.is_empty() => {
-                if let Some(range) = ty.range {
-                    self.intern_refinement(Ty::Int, range, ty.policy, ty.span)?
-                } else {
-                    Ty::Int
+        let mut result = if let Some(function) = &ty.function {
+            self.parse_function_type(function)?
+        } else {
+            match ty.name.as_str() {
+                "int" if ty.args.is_empty() && ty.const_args.is_empty() => {
+                    if let Some(range) = ty.range {
+                        self.intern_refinement(Ty::Int, range, ty.policy, ty.span)?
+                    } else {
+                        Ty::Int
+                    }
                 }
-            }
-            "long" if ty.args.is_empty() && ty.const_args.is_empty() => {
-                if let Some(range) = ty.range {
-                    self.intern_refinement(Ty::Long, range, ty.policy, ty.span)?
-                } else {
-                    Ty::Long
+                "long" if ty.args.is_empty() && ty.const_args.is_empty() => {
+                    if let Some(range) = ty.range {
+                        self.intern_refinement(Ty::Long, range, ty.policy, ty.span)?
+                    } else {
+                        Ty::Long
+                    }
                 }
-            }
-            "bool" if ty.args.is_empty() && ty.const_args.is_empty() && ty.range.is_none() => {
-                Ty::Bool
-            }
-            "()" if ty.args.is_empty() && ty.const_args.is_empty() && ty.range.is_none() => {
-                Ty::Unit
-            }
-            "Option" if ty.args.len() == 1 && ty.const_args.is_empty() && ty.range.is_none() => {
-                let value = self.parse_type(&ty.args[0])?;
-                self.intern_generic(
-                    1,
-                    value,
-                    Ty::Unit,
-                    format!("Option<{}>", self.type_name(value)),
-                    ty.span,
-                    TTypeKind::Option(value),
-                )
-            }
-            "Result" if ty.args.len() == 2 && ty.const_args.is_empty() && ty.range.is_none() => {
-                let ok = self.parse_type(&ty.args[0])?;
-                let err = self.parse_type(&ty.args[1])?;
-                self.intern_generic(
-                    2,
-                    ok,
-                    err,
-                    format!("Result<{}, {}>", self.type_name(ok), self.type_name(err)),
-                    ty.span,
-                    TTypeKind::Result(ok, err),
-                )
-            }
-            "list" if ty.args.len() == 1 && ty.const_args.len() == 1 && ty.range.is_none() => {
-                let element = self.parse_type(&ty.args[0])?;
-                if self.type_contains_pool(element) {
-                    return Err(CheckError {
+                "bool" if ty.args.is_empty() && ty.const_args.is_empty() && ty.range.is_none() => {
+                    Ty::Bool
+                }
+                "()" if ty.args.is_empty() && ty.const_args.is_empty() && ty.range.is_none() => {
+                    Ty::Unit
+                }
+                "Option"
+                    if ty.args.len() == 1 && ty.const_args.is_empty() && ty.range.is_none() =>
+                {
+                    let value = self.parse_type(&ty.args[0])?;
+                    self.intern_generic(
+                        1,
+                        value,
+                        Ty::Unit,
+                        format!("Option<{}>", self.type_name(value)),
+                        ty.span,
+                        TTypeKind::Option(value),
+                    )
+                }
+                "Result"
+                    if ty.args.len() == 2 && ty.const_args.is_empty() && ty.range.is_none() =>
+                {
+                    let ok = self.parse_type(&ty.args[0])?;
+                    let err = self.parse_type(&ty.args[1])?;
+                    self.intern_generic(
+                        2,
+                        ok,
+                        err,
+                        format!("Result<{}, {}>", self.type_name(ok), self.type_name(err)),
+                        ty.span,
+                        TTypeKind::Result(ok, err),
+                    )
+                }
+                "list" if ty.args.len() == 1 && ty.const_args.len() == 1 && ty.range.is_none() => {
+                    let element = self.parse_type(&ty.args[0])?;
+                    if self.type_contains_pool(element) {
+                        return Err(CheckError {
                         span: ty.args[0].span,
                         message: "pools cannot appear inside array or list elements; each repeated element would need a distinct owner".to_owned(),
                     });
-                }
-                let capacity = self.capacity_value(&ty.const_args[0])?;
-                if capacity < 0 {
-                    return Err(CheckError {
-                        span: ty.const_args[0].span,
-                        message:
-                            "list capacity cannot be negative; use zero or a positive constant"
-                                .to_owned(),
-                    });
-                }
-                if capacity > i64::MAX as i128 {
-                    return Err(CheckError {
+                    }
+                    let capacity = self.capacity_value(&ty.const_args[0])?;
+                    if capacity < 0 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message:
+                                "list capacity cannot be negative; use zero or a positive constant"
+                                    .to_owned(),
+                        });
+                    }
+                    if capacity > i64::MAX as i128 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message: "collection size overflows long; reduce a capacity".to_owned(),
+                        });
+                    }
+                    let capacity = usize::try_from(capacity).map_err(|_| CheckError {
                         span: ty.const_args[0].span,
                         message: "collection size overflows long; reduce a capacity".to_owned(),
-                    });
+                    })?;
+                    self.intern_collection(
+                        1,
+                        element,
+                        capacity,
+                        format!("list<{}, {}>", self.type_name(element), capacity),
+                        ty.span,
+                    )
                 }
-                let capacity = usize::try_from(capacity).map_err(|_| CheckError {
-                    span: ty.const_args[0].span,
-                    message: "collection size overflows long; reduce a capacity".to_owned(),
-                })?;
-                self.intern_collection(
-                    1,
-                    element,
-                    capacity,
-                    format!("list<{}, {}>", self.type_name(element), capacity),
-                    ty.span,
-                )
-            }
-            "queue" | "ring"
-                if ty.args.len() == 1 && ty.const_args.len() == 1 && ty.range.is_none() =>
-            {
-                let element = self.parse_type(&ty.args[0])?;
-                if self.type_contains_pool(element) {
-                    return Err(CheckError {
+                "queue" | "ring"
+                    if ty.args.len() == 1 && ty.const_args.len() == 1 && ty.range.is_none() =>
+                {
+                    let element = self.parse_type(&ty.args[0])?;
+                    if self.type_contains_pool(element) {
+                        return Err(CheckError {
                         span: ty.args[0].span,
                         message: "pools cannot appear inside queue or ring elements; each repeated element would need a distinct owner".to_owned(),
                     });
-                }
-                let raw_capacity = self.capacity_value(&ty.const_args[0])?;
-                if raw_capacity < 0 {
-                    return Err(CheckError {
-                        span: ty.const_args[0].span,
-                        message: format!(
-                            "{} capacity cannot be negative; use zero or a positive constant",
-                            ty.name
-                        ),
-                    });
-                }
-                if raw_capacity > i64::MAX as i128 {
-                    return Err(CheckError {
+                    }
+                    let raw_capacity = self.capacity_value(&ty.const_args[0])?;
+                    if raw_capacity < 0 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message: format!(
+                                "{} capacity cannot be negative; use zero or a positive constant",
+                                ty.name
+                            ),
+                        });
+                    }
+                    if raw_capacity > i64::MAX as i128 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message: "collection size overflows long; reduce a capacity".to_owned(),
+                        });
+                    }
+                    let capacity = usize::try_from(raw_capacity).map_err(|_| CheckError {
                         span: ty.const_args[0].span,
                         message: "collection size overflows long; reduce a capacity".to_owned(),
-                    });
+                    })?;
+                    self.intern_collection(
+                        if ty.name == "queue" { 2 } else { 3 },
+                        element,
+                        capacity,
+                        format!("{}<{}, {}>", ty.name, self.type_name(element), capacity),
+                        ty.span,
+                    )
                 }
-                let capacity = usize::try_from(raw_capacity).map_err(|_| CheckError {
-                    span: ty.const_args[0].span,
-                    message: "collection size overflows long; reduce a capacity".to_owned(),
-                })?;
-                self.intern_collection(
-                    if ty.name == "queue" { 2 } else { 3 },
-                    element,
-                    capacity,
-                    format!("{}<{}, {}>", ty.name, self.type_name(element), capacity),
-                    ty.span,
-                )
-            }
-            "grid" if ty.args.len() == 1 && ty.const_args.len() == 2 && ty.range.is_none() => {
-                let element = self.parse_type(&ty.args[0])?;
-                if self.type_contains_pool(element) {
-                    return Err(CheckError {
+                "grid" if ty.args.len() == 1 && ty.const_args.len() == 2 && ty.range.is_none() => {
+                    let element = self.parse_type(&ty.args[0])?;
+                    if self.type_contains_pool(element) {
+                        return Err(CheckError {
                         span: ty.args[0].span,
                         message: "pools cannot appear inside grid cells; each repeated cell would need a distinct owner".to_owned(),
                     });
-                }
-                let width = self.capacity_value(&ty.const_args[0])?;
-                let height = self.capacity_value(&ty.const_args[1])?;
-                if width < 0 || height < 0 {
-                    return Err(CheckError {
+                    }
+                    let width = self.capacity_value(&ty.const_args[0])?;
+                    let height = self.capacity_value(&ty.const_args[1])?;
+                    if width < 0 || height < 0 {
+                        return Err(CheckError {
                         span: if width < 0 {
                             ty.const_args[0].span
                         } else {
@@ -759,179 +796,184 @@ impl Checker {
                             "grid dimensions cannot be negative; use zero or a positive constant"
                                 .to_owned(),
                     });
-                }
-                if width > i64::MAX as i128 || height > i64::MAX as i128 {
-                    return Err(CheckError {
-                        span: if width > i64::MAX as i128 {
-                            ty.const_args[0].span
-                        } else {
-                            ty.const_args[1].span
-                        },
-                        message: "grid dimensions overflow long; reduce a dimension".to_owned(),
-                    });
-                }
-                let capacity = width.checked_mul(height).ok_or_else(|| CheckError {
-                    span: ty.span,
-                    message: "grid size product overflows long; reduce its dimensions".to_owned(),
-                })?;
-                if capacity > i64::MAX as i128 {
-                    return Err(CheckError {
+                    }
+                    if width > i64::MAX as i128 || height > i64::MAX as i128 {
+                        return Err(CheckError {
+                            span: if width > i64::MAX as i128 {
+                                ty.const_args[0].span
+                            } else {
+                                ty.const_args[1].span
+                            },
+                            message: "grid dimensions overflow long; reduce a dimension".to_owned(),
+                        });
+                    }
+                    let capacity = width.checked_mul(height).ok_or_else(|| CheckError {
                         span: ty.span,
                         message: "grid size product overflows long; reduce its dimensions"
                             .to_owned(),
-                    });
+                    })?;
+                    if capacity > i64::MAX as i128 {
+                        return Err(CheckError {
+                            span: ty.span,
+                            message: "grid size product overflows long; reduce its dimensions"
+                                .to_owned(),
+                        });
+                    }
+                    let width = usize::try_from(width).map_err(|_| CheckError {
+                        span: ty.const_args[0].span,
+                        message: "grid dimensions overflow long; reduce a dimension".to_owned(),
+                    })?;
+                    let height = usize::try_from(height).map_err(|_| CheckError {
+                        span: ty.const_args[1].span,
+                        message: "grid dimensions overflow long; reduce a dimension".to_owned(),
+                    })?;
+                    let capacity = usize::try_from(capacity).map_err(|_| CheckError {
+                        span: ty.span,
+                        message: "grid size product overflows long; reduce its dimensions"
+                            .to_owned(),
+                    })?;
+                    self.intern_grid(element, width, height, capacity, ty.span)
                 }
-                let width = usize::try_from(width).map_err(|_| CheckError {
-                    span: ty.const_args[0].span,
-                    message: "grid dimensions overflow long; reduce a dimension".to_owned(),
-                })?;
-                let height = usize::try_from(height).map_err(|_| CheckError {
-                    span: ty.const_args[1].span,
-                    message: "grid dimensions overflow long; reduce a dimension".to_owned(),
-                })?;
-                let capacity = usize::try_from(capacity).map_err(|_| CheckError {
-                    span: ty.span,
-                    message: "grid size product overflows long; reduce its dimensions".to_owned(),
-                })?;
-                self.intern_grid(element, width, height, capacity, ty.span)
-            }
-            "map" if ty.args.len() == 2 && ty.const_args.len() == 1 && ty.range.is_none() => {
-                let key = self.parse_type(&ty.args[0])?;
-                let value = self.parse_type(&ty.args[1])?;
-                if self.type_contains_pool(key) || self.type_contains_pool(value) {
-                    return Err(CheckError {
+                "map" if ty.args.len() == 2 && ty.const_args.len() == 1 && ty.range.is_none() => {
+                    let key = self.parse_type(&ty.args[0])?;
+                    let value = self.parse_type(&ty.args[1])?;
+                    if self.type_contains_pool(key) || self.type_contains_pool(value) {
+                        return Err(CheckError {
                         span: ty.span,
                         message: "pools cannot appear in map keys or values; store ids instead and keep their pool alive".to_owned(),
                     });
-                }
-                if !self.type_is_hashable(key, &mut std::collections::HashSet::new()) {
-                    return Err(CheckError {
-                        span: ty.args[0].span,
-                        message: format!(
-                            "map key type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
-                            self.type_name(key)
-                        ),
-                    });
-                }
-                let raw_capacity = self.capacity_value(&ty.const_args[0])?;
-                if raw_capacity < 0 {
-                    return Err(CheckError {
-                        span: ty.const_args[0].span,
-                        message: "map capacity cannot be negative; use zero or a positive constant"
-                            .to_owned(),
-                    });
-                }
-                if raw_capacity > i64::MAX as i128 {
-                    return Err(CheckError {
+                    }
+                    if !self.type_is_hashable(key, &mut std::collections::HashSet::new()) {
+                        return Err(CheckError {
+                            span: ty.args[0].span,
+                            message: format!(
+                                "map key type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
+                                self.type_name(key)
+                            ),
+                        });
+                    }
+                    let raw_capacity = self.capacity_value(&ty.const_args[0])?;
+                    if raw_capacity < 0 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message:
+                                "map capacity cannot be negative; use zero or a positive constant"
+                                    .to_owned(),
+                        });
+                    }
+                    if raw_capacity > i64::MAX as i128 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message: "collection size overflows long; reduce a capacity".to_owned(),
+                        });
+                    }
+                    let capacity = usize::try_from(raw_capacity).map_err(|_| CheckError {
                         span: ty.const_args[0].span,
                         message: "collection size overflows long; reduce a capacity".to_owned(),
-                    });
+                    })?;
+                    self.intern_map(key, value, capacity, ty.span)
                 }
-                let capacity = usize::try_from(raw_capacity).map_err(|_| CheckError {
-                    span: ty.const_args[0].span,
-                    message: "collection size overflows long; reduce a capacity".to_owned(),
-                })?;
-                self.intern_map(key, value, capacity, ty.span)
-            }
-            "set" if ty.args.len() == 1 && ty.const_args.len() == 1 && ty.range.is_none() => {
-                let key = self.parse_type(&ty.args[0])?;
-                if self.type_contains_pool(key) {
-                    return Err(CheckError {
+                "set" if ty.args.len() == 1 && ty.const_args.len() == 1 && ty.range.is_none() => {
+                    let key = self.parse_type(&ty.args[0])?;
+                    if self.type_contains_pool(key) {
+                        return Err(CheckError {
                         span: ty.span,
                         message: "pools cannot appear in set elements; store ids instead and keep their pool alive".to_owned(),
                     });
-                }
-                if !self.type_is_hashable(key, &mut std::collections::HashSet::new()) {
-                    return Err(CheckError {
-                        span: ty.args[0].span,
-                        message: format!(
-                            "set element type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
-                            self.type_name(key)
-                        ),
-                    });
-                }
-                let raw_capacity = self.capacity_value(&ty.const_args[0])?;
-                if raw_capacity < 0 {
-                    return Err(CheckError {
-                        span: ty.const_args[0].span,
-                        message: "set capacity cannot be negative; use zero or a positive constant"
-                            .to_owned(),
-                    });
-                }
-                if raw_capacity > i64::MAX as i128 {
-                    return Err(CheckError {
+                    }
+                    if !self.type_is_hashable(key, &mut std::collections::HashSet::new()) {
+                        return Err(CheckError {
+                            span: ty.args[0].span,
+                            message: format!(
+                                "set element type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
+                                self.type_name(key)
+                            ),
+                        });
+                    }
+                    let raw_capacity = self.capacity_value(&ty.const_args[0])?;
+                    if raw_capacity < 0 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message:
+                                "set capacity cannot be negative; use zero or a positive constant"
+                                    .to_owned(),
+                        });
+                    }
+                    if raw_capacity > i64::MAX as i128 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message: "collection size overflows long; reduce a capacity".to_owned(),
+                        });
+                    }
+                    let capacity = usize::try_from(raw_capacity).map_err(|_| CheckError {
                         span: ty.const_args[0].span,
                         message: "collection size overflows long; reduce a capacity".to_owned(),
-                    });
+                    })?;
+                    self.intern_set(key, capacity, ty.span)
                 }
-                let capacity = usize::try_from(raw_capacity).map_err(|_| CheckError {
-                    span: ty.const_args[0].span,
-                    message: "collection size overflows long; reduce a capacity".to_owned(),
-                })?;
-                self.intern_set(key, capacity, ty.span)
-            }
-            "pool"
-                if (ty.args.len() == 1 || ty.args.len() == 2)
-                    && ty.const_args.len() == 1
-                    && ty.range.is_none() =>
-            {
-                let element = self.parse_type(&ty.args[0])?;
-                if self.type_contains_pool(element) {
-                    return Err(CheckError {
+                "pool"
+                    if (ty.args.len() == 1 || ty.args.len() == 2)
+                        && ty.const_args.len() == 1
+                        && ty.range.is_none() =>
+                {
+                    let element = self.parse_type(&ty.args[0])?;
+                    if self.type_contains_pool(element) {
+                        return Err(CheckError {
                         span: ty.args[0].span,
                         message: "a pool element cannot itself contain a pool; fixed slots cannot give nested pools distinct owners".to_owned(),
                     });
-                }
-                let capacity = self.capacity_value(&ty.const_args[0])?;
-                if capacity < 0 {
-                    return Err(CheckError {
-                        span: ty.const_args[0].span,
-                        message:
-                            "pool capacity cannot be negative; use zero or a positive constant"
-                                .to_owned(),
-                    });
-                }
-                if capacity > i64::MAX as i128 {
-                    return Err(CheckError {
+                    }
+                    let capacity = self.capacity_value(&ty.const_args[0])?;
+                    if capacity < 0 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message:
+                                "pool capacity cannot be negative; use zero or a positive constant"
+                                    .to_owned(),
+                        });
+                    }
+                    if capacity > i64::MAX as i128 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message: "collection size overflows long; reduce a capacity".to_owned(),
+                        });
+                    }
+                    if capacity > (u32::MAX as i128) + 1 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message:
+                                "pool capacity exceeds the 32-bit slot limit; reduce the capacity"
+                                    .to_owned(),
+                        });
+                    }
+                    let capacity = usize::try_from(capacity).map_err(|_| CheckError {
                         span: ty.const_args[0].span,
                         message: "collection size overflows long; reduce a capacity".to_owned(),
-                    });
-                }
-                if capacity > (u32::MAX as i128) + 1 {
-                    return Err(CheckError {
-                        span: ty.const_args[0].span,
-                        message: "pool capacity exceeds the 32-bit slot limit; reduce the capacity"
-                            .to_owned(),
-                    });
-                }
-                let capacity = usize::try_from(capacity).map_err(|_| CheckError {
-                    span: ty.const_args[0].span,
-                    message: "collection size overflows long; reduce a capacity".to_owned(),
-                })?;
-                let owner = if ty.args.len() == 2 {
-                    self.owner_from_ast(&ty.args[1])?
-                } else if let Some((_, owner)) = &self.pending_owner {
-                    *owner
-                } else {
-                    return Err(CheckError {
+                    })?;
+                    let owner = if ty.args.len() == 2 {
+                        self.owner_from_ast(&ty.args[1])?
+                    } else if let Some((_, owner)) = &self.pending_owner {
+                        *owner
+                    } else {
+                        return Err(CheckError {
                         span: ty.span,
                         message: "a pool type needs an owner; declare it as a named local or write the owner parameter as the third type argument"
                             .to_owned(),
                     });
-                };
-                self.intern_pool(element, capacity, owner, ty.span)
-            }
-            name if !ty.args.is_empty() && ty.const_args.is_empty() && ty.range.is_none() => {
-                let Some(base) = self.type_ids.get(name).copied() else {
+                    };
+                    self.intern_pool(element, capacity, owner, ty.span)
+                }
+                name if !ty.args.is_empty() && ty.const_args.is_empty() && ty.range.is_none() => {
+                    let Some(base) = self.type_ids.get(name).copied() else {
+                        return Err(CheckError {
+                            span: ty.span,
+                            message: format!("unknown type '{}'; declare it with struct", name),
+                        });
+                    };
+                    self.instantiate_generic_struct(base, &ty.args, ty.span)?
+                }
+                "Option" | "Result" | "list" | "map" | "set" | "pool" => {
                     return Err(CheckError {
-                        span: ty.span,
-                        message: format!("unknown type '{}'; declare it with struct", name),
-                    });
-                };
-                self.instantiate_generic_struct(base, &ty.args, ty.span)?
-            }
-            "Option" | "Result" | "list" | "map" | "set" | "pool" => {
-                return Err(CheckError {
                     span: ty.span,
                     message: match ty.name.as_str() {
                         "list" => {
@@ -952,38 +994,39 @@ impl Checker {
                             .to_owned(),
                     },
                 });
-            }
-            _ if !ty.args.is_empty() || !ty.const_args.is_empty() || ty.range.is_some() => {
-                return Err(CheckError {
-                    span: ty.span,
-                    message: format!("'{}' is not a generic or range-refined type", ty.name),
-                });
-            }
-            _ => *self.type_ids.get(&ty.name).ok_or_else(|| {
-                let mut names = self.type_ids.keys().cloned().collect::<Vec<_>>();
-                names.extend([
-                    "int".to_owned(),
-                    "long".to_owned(),
-                    "bool".to_owned(),
-                    "Option".to_owned(),
-                    "Result".to_owned(),
-                    "list".to_owned(),
-                ]);
-                if let Some(suggestion) = close_name(&ty.name, &names) {
-                    CheckError {
-                        span: ty.span,
-                        message: format!(
-                            "unknown type '{}'; did you mean '{}'",
-                            ty.name, suggestion
-                        ),
-                    }
-                } else {
-                    CheckError {
-                        span: ty.span,
-                        message: format!("unknown type '{}'; declare it with enum", ty.name),
-                    }
                 }
-            })?,
+                _ if !ty.args.is_empty() || !ty.const_args.is_empty() || ty.range.is_some() => {
+                    return Err(CheckError {
+                        span: ty.span,
+                        message: format!("'{}' is not a generic or range-refined type", ty.name),
+                    });
+                }
+                _ => *self.type_ids.get(&ty.name).ok_or_else(|| {
+                    let mut names = self.type_ids.keys().cloned().collect::<Vec<_>>();
+                    names.extend([
+                        "int".to_owned(),
+                        "long".to_owned(),
+                        "bool".to_owned(),
+                        "Option".to_owned(),
+                        "Result".to_owned(),
+                        "list".to_owned(),
+                    ]);
+                    if let Some(suggestion) = close_name(&ty.name, &names) {
+                        CheckError {
+                            span: ty.span,
+                            message: format!(
+                                "unknown type '{}'; did you mean '{}'",
+                                ty.name, suggestion
+                            ),
+                        }
+                    } else {
+                        CheckError {
+                            span: ty.span,
+                            message: format!("unknown type '{}'; declare it with enum", ty.name),
+                        }
+                    }
+                })?,
+            }
         };
         for cap_expr in &ty.array_caps {
             if self.type_contains_pool(result) {
@@ -1029,6 +1072,112 @@ impl Checker {
             });
         }
         Ok(result)
+    }
+
+    fn parse_function_type(&mut self, function: &FunctionTypeAst) -> Result<Ty, CheckError> {
+        let params = function
+            .params
+            .iter()
+            .map(|param| {
+                Ok(TFunctionTypeParam {
+                    ty: self.parse_type(&param.ty)?,
+                    mode: param.mode,
+                })
+            })
+            .collect::<Result<Vec<_>, CheckError>>()?;
+        let result = function
+            .result
+            .as_deref()
+            .map(|result| self.parse_type(result))
+            .transpose()?
+            .unwrap_or(Ty::Unit);
+        if self.type_contains_pool(result) {
+            return Err(CheckError {
+                span: function
+                    .result
+                    .as_ref()
+                    .map(|result| result.span)
+                    .unwrap_or(function.span),
+                message: "a function value cannot return a value containing a pool; pool owners cannot escape a function".to_owned(),
+            });
+        }
+        let mut effects = TFunctionEffects::default();
+        let mut effect_path_spans = Vec::new();
+        for effect in &function.effects {
+            match effect {
+                FunctionEffectAst::Print => effects.print = true,
+                FunctionEffectAst::Reads { path, span } => {
+                    if !effects.reads.contains(path) {
+                        effects.reads.push(path.clone());
+                    }
+                    effect_path_spans.push((path.clone(), *span));
+                }
+                FunctionEffectAst::Writes { path, span } => {
+                    if !effects.writes.contains(path) {
+                        effects.writes.push(path.clone());
+                    }
+                    effect_path_spans.push((path.clone(), *span));
+                }
+            }
+        }
+        effects.reads.sort();
+        effects.writes.sort();
+        let ty = self.intern_function_type(params, result, effects, function.span);
+        for (path, span) in effect_path_spans {
+            self.function_effect_spans.entry((ty, path)).or_insert(span);
+        }
+        Ok(ty)
+    }
+
+    fn intern_function_type(
+        &mut self,
+        params: Vec<TFunctionTypeParam>,
+        result: Ty,
+        effects: TFunctionEffects,
+        span: Span,
+    ) -> Ty {
+        let key = (params.clone(), result, effects.clone());
+        if let Some(ty) = self.function_type_ids.get(&key) {
+            return *ty;
+        }
+        let params_text = params
+            .iter()
+            .map(|param| {
+                format!(
+                    "{}{}",
+                    if param.mode == ParamMode::Write {
+                        "write "
+                    } else {
+                        ""
+                    },
+                    self.type_name(param.ty)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut effect_text = Vec::new();
+        if effects.print {
+            effect_text.push("print".to_owned());
+        }
+        effect_text.extend(effects.reads.iter().map(|path| format!("reads {path}")));
+        effect_text.extend(effects.writes.iter().map(|path| format!("writes {path}")));
+        let suffix = if effect_text.is_empty() {
+            String::new()
+        } else {
+            format!(" effects {}", effect_text.join(", "))
+        };
+        let id = Ty(self.types.len());
+        self.types.push(TType {
+            name: format!("fn({params_text}) -> {}{suffix}", self.type_name(result)),
+            kind: TTypeKind::Function {
+                params,
+                result,
+                effects,
+            },
+            span,
+        });
+        self.function_type_ids.insert(key, id);
+        id
     }
 
     fn fresh_owner(&mut self, label: impl Into<String>) -> usize {
@@ -1206,6 +1355,12 @@ impl Checker {
                     visit(checker, *value, seen, owners);
                 }
                 TTypeKind::Set { key, .. } => visit(checker, *key, seen, owners),
+                TTypeKind::Function { params, result, .. } => {
+                    for param in params {
+                        visit(checker, param.ty, seen, owners);
+                    }
+                    visit(checker, *result, seen, owners);
+                }
                 _ => {}
             }
         }
@@ -1892,6 +2047,7 @@ impl Checker {
                 let per_entry = checked_add(17, key_size)?;
                 checked_add(16, checked_mul(*capacity as u128, per_entry)?)?
             }
+            TTypeKind::Function { .. } => 8,
             TTypeKind::Pool {
                 element, capacity, ..
             } => {
@@ -2602,70 +2758,102 @@ impl Checker {
         &self,
         functions: &[TFunction],
         call_graph: &[Vec<TCallEdge>],
+        indirect_targets: &HashMap<usize, Vec<usize>>,
     ) -> Result<(), CheckError> {
         let effects = infer_global_effects(functions, call_graph);
         for function in functions {
             let mut active_views = Vec::new();
             let mut check = |call: &TExpr, views: &[GlobalPath]| {
-                let (target, args, skip) = match &call.kind {
+                let calls = match &call.kind {
                     TExprKind::Call {
                         target: CallTarget::Function(target),
                         args,
                         ..
-                    } => (*target, args.as_slice(), 0),
+                    } => vec![(
+                        *target,
+                        args.as_slice(),
+                        functions[*target]
+                            .params
+                            .iter()
+                            .map(|param| param.mode)
+                            .collect::<Vec<_>>(),
+                    )],
                     TExprKind::OptionalCall {
                         function_id, args, ..
-                    } => (*function_id, args.as_slice(), 1),
-                    _ => return Ok(()),
+                    } => vec![(
+                        *function_id,
+                        args.as_slice(),
+                        functions[*function_id]
+                            .params
+                            .iter()
+                            .skip(1)
+                            .map(|param| param.mode)
+                            .collect::<Vec<_>>(),
+                    )],
+                    TExprKind::IndirectCall {
+                        callsite_id,
+                        args,
+                        params,
+                        ..
+                    } => indirect_targets
+                        .get(callsite_id)
+                        .into_iter()
+                        .flatten()
+                        .map(|target| {
+                            (
+                                *target,
+                                args.as_slice(),
+                                params.iter().map(|param| param.mode).collect(),
+                            )
+                        })
+                        .collect(),
+                    _ => Vec::new(),
                 };
-                let Some(callee_effects) = effects.get(target) else {
-                    return Ok(());
-                };
-                let Some(callee) = functions.get(target) else {
-                    return Ok(());
-                };
-                for (argument, parameter) in args.iter().zip(callee.params.iter().skip(skip)) {
-                    if parameter.mode != ParamMode::Write {
-                        continue;
-                    }
-                    let Some(argument_path) = global_path_from_expr(argument) else {
+                for (target, args, modes) in calls {
+                    let Some(callee_effects) = effects.get(target) else {
                         continue;
                     };
-                    if callee_effects
-                        .reads
-                        .iter()
-                        .chain(callee_effects.writes.iter().map(|write| &write.path))
-                        .any(|path| global_paths_overlap(&argument_path, path))
-                    {
-                        return Err(CheckError {
-                            span: call.span,
-                            message: format!(
-                                "write argument '{}' overlaps hidden global access in '{}'; pass separate fields or remove the by-name access",
-                                self.global_path_name(&argument_path),
-                                callee.name
-                            ),
-                        });
+                    let Some(callee) = functions.get(target) else {
+                        continue;
+                    };
+                    for (argument, mode) in args.iter().zip(modes) {
+                        if mode != ParamMode::Write {
+                            continue;
+                        }
+                        let Some(argument_path) = global_path_from_expr(argument) else {
+                            continue;
+                        };
+                        if callee_effects
+                            .reads
+                            .iter()
+                            .chain(callee_effects.writes.iter().map(|write| &write.path))
+                            .any(|path| global_paths_overlap(&argument_path, path))
+                        {
+                            return Err(CheckError {
+                                span: call.span,
+                                message: format!(
+                                    "write argument '{}' overlaps hidden global access in '{}'; pass separate fields or remove the by-name access",
+                                    self.global_path_name(&argument_path),
+                                    callee.name
+                                ),
+                            });
+                        }
                     }
-                }
-                for view in views {
-                    if callee_effects
-                        .structural_writes
-                        .iter()
-                        .any(|write| global_path_is_prefix(write, view))
-                    {
-                        let write = callee_effects
+                    for view in views {
+                        if let Some(write) = callee_effects
                             .structural_writes
                             .iter()
                             .find(|write| global_path_is_prefix(write, view))
-                            .unwrap();
-                        return Err(CheckError {
-                            span: call.span,
-                            message: format!(
-                                "cannot call '{}' while viewing '{}'; the call can structurally change that global",
-                                callee.name,
-                                self.global_path_name(write)
-                            ),
-                        });
+                        {
+                            return Err(CheckError {
+                                span: call.span,
+                                message: format!(
+                                    "cannot call '{}' while viewing '{}'; the call can structurally change that global",
+                                    callee.name,
+                                    self.global_path_name(write)
+                                ),
+                            });
+                        }
                     }
                 }
                 Ok(())
@@ -3719,8 +3907,20 @@ impl Checker {
             ExprKind::Call { name, .. } => {
                 if name == "print" {
                     Some(Ty::Unit)
+                } else if let Some(value_ty) = self.visible_value_type(name) {
+                    match self.types.get(value_ty.0).map(|ty| &ty.kind) {
+                        Some(TTypeKind::Function { result, .. }) => Some(*result),
+                        _ => None,
+                    }
                 } else {
                     self.signatures.get(name).map(|signature| signature.result)
+                }
+            }
+            ExprKind::IndirectCall { callee, .. } => {
+                let function_ty = self.natural_expr_type_inner(callee, shadowed_counter)?;
+                match self.types.get(function_ty.0).map(|ty| &ty.kind) {
+                    Some(TTypeKind::Function { result, .. }) => Some(*result),
+                    _ => None,
                 }
             }
             ExprKind::ToLong { .. } => Some(Ty::Long),
@@ -3973,6 +4173,12 @@ impl Checker {
                         .and_then(|params| params.get(index))
                         .copied();
                     self.collect_loop_constraints_expr(arg, counter, want, constraints);
+                }
+            }
+            ExprKind::IndirectCall { callee, args } => {
+                self.collect_loop_constraints_expr(callee, counter, None, constraints);
+                for arg in args {
+                    self.collect_loop_constraints_expr(arg, counter, None, constraints);
                 }
             }
             ExprKind::QualifiedCase {
@@ -4355,6 +4561,27 @@ impl Checker {
         span: Span,
     ) -> Result<(TExprKind, Ty), CheckError> {
         let typed_collection = self.check_expr(receiver, None)?;
+        // The parser represents `value.field(args)` as a method call when the
+        // field name also belongs to the built-in method vocabulary. Give a
+        // function-typed struct field precedence in that case so function
+        // fields remain callable with the ordinary call syntax.
+        if let TTypeKind::Struct(fields) = &self.types[typed_collection.ty.0].kind {
+            if let Some((field_index, field)) = fields
+                .iter()
+                .enumerate()
+                .find(|(_, field)| field.name == name && self.is_function_type(field.ty))
+            {
+                let callee = TExpr {
+                    kind: TExprKind::Field {
+                        receiver: Box::new(typed_collection),
+                        field_index,
+                    },
+                    ty: field.ty,
+                    span: method_span,
+                };
+                return self.check_indirect_call(callee, args, method_span, expected);
+            }
+        }
         if let TTypeKind::Pool {
             element,
             capacity,
@@ -5636,6 +5863,147 @@ impl Checker {
         Ok(())
     }
 
+    fn visible_value_type(&self, name: &str) -> Option<Ty> {
+        self.find_binding(name)
+            .map(|binding| binding.ty)
+            .or_else(|| {
+                self.global_ids
+                    .get(name)
+                    .and_then(|id| self.global_types.get(*id).and_then(|ty| *ty))
+            })
+            .or_else(|| {
+                self.constant_ids
+                    .get(name)
+                    .and_then(|id| self.constant_types.get(*id).copied())
+            })
+    }
+
+    fn check_indirect_call(
+        &mut self,
+        callee: TExpr,
+        args: &[Expr],
+        span: Span,
+        expected: Option<Ty>,
+    ) -> Result<(TExprKind, Ty), CheckError> {
+        let (params, result) = match &self.types[callee.ty.0].kind {
+            TTypeKind::Function { params, result, .. } => (params.clone(), *result),
+            _ => {
+                return Err(CheckError {
+                    span,
+                    message: format!(
+                        "value of type {} cannot be called; use a function-typed value",
+                        self.type_name(callee.ty)
+                    ),
+                });
+            }
+        };
+        if args.len() != params.len() {
+            return Err(CheckError {
+                span,
+                message: format!(
+                    "function value takes {} argument(s), but got {}",
+                    params.len(),
+                    args.len()
+                ),
+            });
+        }
+        let typed_params = params.clone();
+        let mut typed_args = Vec::with_capacity(args.len());
+        let mut places = Vec::<(Option<TPlace>, ParamMode)>::new();
+        for (arg, param) in args.iter().zip(params) {
+            let place = self.resolve_place(arg).ok();
+            for (previous, previous_mode) in &places {
+                if (param.mode == ParamMode::Write || *previous_mode == ParamMode::Write)
+                    && previous.as_ref().zip(place.as_ref()).is_some_and(|(a, b)| {
+                        places_overlap(&self.canonical_place(a), &self.canonical_place(b))
+                    })
+                {
+                    return Err(CheckError {
+                        span: arg.span,
+                        message: "arguments overlap, and at least one is passed as write; pass separate fields or a copy".to_owned(),
+                    });
+                }
+            }
+            if param.mode == ParamMode::Write {
+                let Some(place) = place.clone() else {
+                    return Err(CheckError {
+                        span: arg.span,
+                        message: "a write argument must be an assignable place".to_owned(),
+                    });
+                };
+                if !self.place_is_mutable(&place) {
+                    return Err(CheckError {
+                        span: arg.span,
+                        message: "a write argument must be a var, a field of a var, or another write parameter".to_owned(),
+                    });
+                }
+                let canonical = self.canonical_place(&place);
+                let write_collection = matches!(
+                    self.types[place.ty.0].kind,
+                    TTypeKind::Map { .. } | TTypeKind::Set { .. }
+                );
+                if self.active_views.iter().any(|view| {
+                    let view = self.canonical_place(view);
+                    let replaces_map_value = view.path.len() == canonical.path.len()
+                        && view.path.last().is_some_and(|projection| {
+                            matches!(projection, TProjection::Index { is_map: true, .. })
+                        });
+                    places_overlap(&view, &canonical)
+                        && (write_collection
+                            || replaces_map_value
+                            || !places_proven_prefix(&view, &canonical))
+                }) {
+                    return Err(CheckError {
+                        span: arg.span,
+                        message: "cannot pass storage containing a live collection view as write"
+                            .to_owned(),
+                    });
+                }
+                if place.ty != param.ty {
+                    return Err(CheckError {
+                        span: arg.span,
+                        message: format!(
+                            "write argument needs exactly {}; found {}",
+                            self.type_name(param.ty),
+                            self.type_name(place.ty)
+                        ),
+                    });
+                }
+                self.invalidate_place(&place);
+                self.invalidate_collection_counts(&place);
+                typed_args.push(self.check_expr(arg, Some(param.ty))?);
+            } else {
+                typed_args.push(self.check_store(arg, param.ty)?);
+            }
+            places.push((place, param.mode));
+        }
+        if let Some(want) = expected {
+            self.type_mismatch(result, want, span)?;
+        }
+        let callsite_id = self.next_indirect_call;
+        self.next_indirect_call += 1;
+        if !self.checking_constant
+            && !self.checking_global_initializer
+            && self.current_function < self.ast_functions.len() + self.ast_tests.len()
+        {
+            self.indirect_calls.push(IndirectCallSite {
+                id: callsite_id,
+                from: self.current_function,
+                function_ty: callee.ty,
+                span,
+            });
+        }
+        Ok((
+            TExprKind::IndirectCall {
+                callsite_id,
+                callee: Box::new(callee),
+                args: typed_args,
+                params: typed_params,
+            },
+            result,
+        ))
+    }
+
     fn check_expr(&mut self, expr: &Expr, expected: Option<Ty>) -> Result<TExpr, CheckError> {
         let (kind, ty) = match &expr.kind {
             ExprKind::Unit => {
@@ -5723,6 +6091,44 @@ impl Checker {
                         self.type_mismatch(ty, want, expr.span)?;
                     }
                     (TExprKind::Constant(id), ty)
+                } else if let Some(signature) = self.signatures.get(name).cloned() {
+                    let params = signature
+                        .params
+                        .iter()
+                        .map(|param| TFunctionTypeParam {
+                            ty: param.ty,
+                            mode: param.mode,
+                        })
+                        .collect::<Vec<_>>();
+                    let function_ty = self.intern_function_type(
+                        params,
+                        signature.result,
+                        TFunctionEffects::default(),
+                        expr.span,
+                    );
+                    let value_ty = if expected.is_some_and(|want| self.is_function_type(want)) {
+                        let want = expected.unwrap();
+                        self.type_mismatch(function_ty, want, expr.span)?;
+                        want
+                    } else {
+                        if let Some(want) = expected {
+                            self.type_mismatch(function_ty, want, expr.span)?;
+                        }
+                        function_ty
+                    };
+                    if !self.suppress_function_value_effect_check {
+                        self.function_value_uses.push(FunctionValueUse {
+                            function: signature.id,
+                            function_ty: value_ty,
+                            span: expr.span,
+                        });
+                    }
+                    (TExprKind::FunctionValue(signature.id), value_ty)
+                } else if self.generic_functions.contains_key(name) {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "owner- or capacity-generic functions cannot be stored as values yet; use a concrete wrapper function".to_owned(),
+                    });
                 } else if let Some(want) = expected {
                     if self.types[want.0].is_sum() {
                         if let Some((index, _case)) = self.find_case_in_type(want, name) {
@@ -6135,6 +6541,26 @@ impl Checker {
                 call_span,
                 args,
             } => {
+                if let Some(value_ty) = self.visible_value_type(name) {
+                    if !self.is_function_type(value_ty) {
+                        return Err(CheckError {
+                            span: *call_span,
+                            message: format!(
+                                "value '{}' has type {} and cannot be called; use a function-typed value",
+                                name,
+                                self.type_name(value_ty)
+                            ),
+                        });
+                    }
+                    let name_expr = Expr {
+                        kind: ExprKind::Name(name.clone()),
+                        span: *call_span,
+                    };
+                    let callee = self.check_expr(&name_expr, None)?;
+                    let (kind, result) =
+                        self.check_indirect_call(callee, args, *call_span, expected)?;
+                    return self.finish_expr(expr, (kind, result), expected);
+                }
                 if name == "default" {
                     if !args.is_empty() {
                         return Err(CheckError {
@@ -6246,7 +6672,16 @@ impl Checker {
                             ),
                         });
                     }
-                    let arg = self.check_expr(&args[0], None)?;
+                    let suppress_value_check = matches!(&args[0].kind, ExprKind::Name(value)
+                        if self.signatures.contains_key(value)
+                            && self.find_binding(value).is_none()
+                            && !self.global_ids.contains_key(value)
+                            && !self.constant_ids.contains_key(value));
+                    let saved_suppression = self.suppress_function_value_effect_check;
+                    self.suppress_function_value_effect_check |= suppress_value_check;
+                    let checked_arg = self.check_expr(&args[0], None);
+                    self.suppress_function_value_effect_check = saved_suppression;
+                    let arg = checked_arg?;
                     if !matches!(self.base_type(arg.ty), Ty::Int | Ty::Long | Ty::Bool)
                         && !self.types[arg.ty.0].is_sum()
                         && !matches!(self.types[arg.ty.0].kind, TTypeKind::Struct(_))
@@ -6260,11 +6695,12 @@ impl Checker {
                                 | TTypeKind::Map { .. }
                                 | TTypeKind::Set { .. }
                                 | TTypeKind::Pool { .. }
+                                | TTypeKind::Function { .. }
                         )
                     {
                         return Err(CheckError {
                             span: args[0].span,
-                            message: "print supports int, long, bool, enum, struct, array, list, queue, ring, grid, map, set, and pool values"
+                            message: "print supports int, long, bool, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values"
                                 .to_owned(),
                         });
                     }
@@ -6410,6 +6846,10 @@ impl Checker {
                         signature.result,
                     )
                 }
+            }
+            ExprKind::IndirectCall { callee, args } => {
+                let typed_callee = self.check_expr(callee, None)?;
+                self.check_indirect_call(typed_callee, args, expr.span, expected)?
             }
             ExprKind::QualifiedCase {
                 enum_name,
@@ -6728,7 +7168,15 @@ impl Checker {
                 operator_span,
                 left,
                 right,
-            } => self.check_binary_expr(*op, left, right, expected, *operator_span)?,
+            } => {
+                let saved_suppression = self.suppress_function_value_effect_check;
+                if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+                    self.suppress_function_value_effect_check = true;
+                }
+                let checked = self.check_binary_expr(*op, left, right, expected, *operator_span);
+                self.suppress_function_value_effect_check = saved_suppression;
+                checked?
+            }
             ExprKind::If {
                 condition,
                 then_block,
@@ -7514,6 +7962,25 @@ impl Checker {
                     self.collect_expr_writes(arg, writes);
                 }
             }
+            ExprKind::IndirectCall { callee, args } => {
+                if let Some(function_ty) = self.natural_expr_type(callee) {
+                    if let TTypeKind::Function { params, .. } =
+                        self.types[function_ty.0].kind.clone()
+                    {
+                        for (arg, param) in args.iter().zip(params) {
+                            if param.mode == ParamMode::Write {
+                                if let Ok(place) = self.resolve_place(arg) {
+                                    writes.insert(place.root);
+                                }
+                            }
+                        }
+                    }
+                }
+                self.collect_expr_writes(callee, writes);
+                for arg in args {
+                    self.collect_expr_writes(arg, writes);
+                }
+            }
             ExprKind::StructInit { fields, .. } => {
                 for field in fields {
                     self.collect_expr_writes(&field.value, writes);
@@ -7935,6 +8402,10 @@ impl Checker {
                 ExprKind::Call { args, .. } | ExprKind::QualifiedCase { args, .. } => {
                     args.iter().all(|arg| expr(checker, arg, counts))
                 }
+                ExprKind::IndirectCall { callee, args } => {
+                    expr(checker, callee, counts)
+                        && args.iter().all(|arg| expr(checker, arg, counts))
+                }
                 ExprKind::OptionalCall { receiver, args, .. } => {
                     expr(checker, receiver, counts)
                         && args.iter().all(|arg| expr(checker, arg, counts))
@@ -8261,9 +8732,32 @@ impl Checker {
         if actual == expected
             || actual == Ty::Never
             || (self.is_numeric(actual) && self.base_type(actual) == self.base_type(expected))
+            || self.function_type_assignable(actual, expected)
         {
             Ok(())
         } else {
+            if let Some(extra) = self.function_type_extra_effect(actual, expected) {
+                return Err(CheckError {
+                    span,
+                    message: format!(
+                        "function type exceeds the destination effects bound; extra effect '{}' is not allowed",
+                        extra
+                    ),
+                });
+            }
+            if let Some((index, actual_mode, expected_mode)) =
+                self.function_type_mode_mismatch(actual, expected)
+            {
+                return Err(CheckError {
+                    span,
+                    message: format!(
+                        "function parameter {} mode mismatch: expected {}, found {}",
+                        index + 1,
+                        parameter_mode_name(expected_mode),
+                        parameter_mode_name(actual_mode)
+                    ),
+                });
+            }
             if let (
                 TTypeKind::Id {
                     owner: actual_owner,
@@ -8302,6 +8796,151 @@ impl Checker {
                 .replace(" )", ")"),
             })
         }
+    }
+
+    fn is_function_type(&self, ty: Ty) -> bool {
+        matches!(
+            self.types.get(ty.0).map(|t| &t.kind),
+            Some(TTypeKind::Function { .. })
+        )
+    }
+
+    fn function_type_mode_mismatch(
+        &self,
+        actual: Ty,
+        expected: Ty,
+    ) -> Option<(usize, ParamMode, ParamMode)> {
+        let (
+            Some(TTypeKind::Function {
+                params: actual_params,
+                ..
+            }),
+            Some(TTypeKind::Function {
+                params: expected_params,
+                ..
+            }),
+        ) = (
+            self.types.get(actual.0).map(|ty| &ty.kind),
+            self.types.get(expected.0).map(|ty| &ty.kind),
+        )
+        else {
+            return None;
+        };
+        if actual_params.len() != expected_params.len() {
+            return None;
+        }
+        actual_params
+            .iter()
+            .zip(expected_params)
+            .enumerate()
+            .find_map(|(index, (actual, expected))| {
+                (actual.ty == expected.ty && actual.mode != expected.mode).then_some((
+                    index,
+                    actual.mode,
+                    expected.mode,
+                ))
+            })
+    }
+
+    fn function_type_assignable(&self, actual: Ty, expected: Ty) -> bool {
+        let (
+            Some(TTypeKind::Function {
+                params: actual_params,
+                result: actual_result,
+                effects: actual_effects,
+            }),
+            Some(TTypeKind::Function {
+                params: expected_params,
+                result: expected_result,
+                effects: expected_effects,
+            }),
+        ) = (
+            self.types.get(actual.0).map(|t| &t.kind),
+            self.types.get(expected.0).map(|t| &t.kind),
+        )
+        else {
+            return false;
+        };
+        actual_params == expected_params
+            && actual_result == expected_result
+            && self.function_effects_subset(actual_effects, expected_effects)
+    }
+
+    fn function_effects_subset(
+        &self,
+        actual: &TFunctionEffects,
+        expected: &TFunctionEffects,
+    ) -> bool {
+        (!actual.print || expected.print)
+            && actual.reads.iter().all(|path| {
+                expected
+                    .reads
+                    .iter()
+                    .any(|bound| effect_path_covers(bound, path))
+                    || expected
+                        .writes
+                        .iter()
+                        .any(|bound| effect_path_covers(bound, path))
+            })
+            && actual.writes.iter().all(|path| {
+                expected
+                    .writes
+                    .iter()
+                    .any(|bound| effect_path_covers(bound, path))
+            })
+    }
+
+    fn function_type_extra_effect(&self, actual: Ty, expected: Ty) -> Option<String> {
+        let (
+            TTypeKind::Function {
+                params: actual_params,
+                result: actual_result,
+                effects: actual_effects,
+            },
+            TTypeKind::Function {
+                params: expected_params,
+                result: expected_result,
+                effects: expected_effects,
+            },
+        ) = (
+            &self.types.get(actual.0)?.kind,
+            &self.types.get(expected.0)?.kind,
+        )
+        else {
+            return None;
+        };
+        if actual_params != expected_params || actual_result != expected_result {
+            return None;
+        }
+        if actual_effects.print && !expected_effects.print {
+            return Some("print".to_owned());
+        }
+        actual_effects
+            .reads
+            .iter()
+            .find(|path| {
+                !expected_effects
+                    .reads
+                    .iter()
+                    .any(|bound| effect_path_covers(bound, path))
+                    && !expected_effects
+                        .writes
+                        .iter()
+                        .any(|bound| effect_path_covers(bound, path))
+            })
+            .map(|path| format!("reads {path}"))
+            .or_else(|| {
+                actual_effects
+                    .writes
+                    .iter()
+                    .find(|path| {
+                        !expected_effects
+                            .writes
+                            .iter()
+                            .any(|bound| effect_path_covers(bound, path))
+                    })
+                    .map(|path| format!("writes {path}"))
+            })
     }
 
     fn base_type(&self, ty: Ty) -> Ty {
@@ -8491,6 +9130,13 @@ impl Checker {
     }
 
     fn coerce_store_hint(&self, value: TExpr, target: Ty, hint: &str) -> Result<TExpr, CheckError> {
+        if self.is_function_type(value.ty) || self.is_function_type(target) {
+            self.type_mismatch(value.ty, target, value.span)?;
+            return Ok(TExpr {
+                ty: target,
+                ..value
+            });
+        }
         if self.base_type(value.ty) != self.base_type(target) {
             return Err(self.mixed_types_error(value.ty, target, value.span));
         }
@@ -8550,12 +9196,243 @@ impl Checker {
         }
     }
 
-    fn check_recursion(&self) -> Result<(), CheckError> {
-        let n = self.ast_functions.len() + self.ast_tests.len();
-        let mut graph = vec![Vec::<Edge>::new(); n];
-        for edge in &self.edges {
-            graph[edge.from].push(*edge);
+    fn validate_function_effect_paths(&self) -> Result<(), CheckError> {
+        for (type_id, definition) in self.types.iter().enumerate() {
+            let TTypeKind::Function { effects, .. } = &definition.kind else {
+                continue;
+            };
+            for path in effects.reads.iter().chain(&effects.writes) {
+                let span = self
+                    .function_effect_spans
+                    .get(&(Ty(type_id), path.clone()))
+                    .copied()
+                    .unwrap_or(definition.span);
+                let mut parts = path.split('.');
+                let root = parts.next().unwrap_or_default();
+                let Some(global_id) = self.global_ids.get(root).copied() else {
+                    return Err(CheckError {
+                        span,
+                        message: format!(
+                            "unknown global effect path '{}'; name a global and optional struct fields",
+                            path
+                        ),
+                    });
+                };
+                let Some(mut ty) = self.global_types.get(global_id).and_then(|ty| *ty) else {
+                    continue;
+                };
+                for field_name in parts {
+                    let TTypeKind::Struct(fields) = &self.types[ty.0].kind else {
+                        return Err(CheckError {
+                            span,
+                            message: format!(
+                                "global effect path '{}' continues through a non-struct field",
+                                path
+                            ),
+                        });
+                    };
+                    let Some(field) = fields.iter().find(|field| field.name == field_name) else {
+                        return Err(CheckError {
+                            span,
+                            message: format!(
+                                "unknown field in global effect path '{}'; check the global's struct fields",
+                                path
+                            ),
+                        });
+                    };
+                    ty = field.ty;
+                }
+            }
         }
+        Ok(())
+    }
+
+    fn function_effect_extra(
+        &self,
+        actual: &GlobalEffects,
+        allowed: &TFunctionEffects,
+    ) -> Option<String> {
+        if actual.prints && !allowed.print {
+            return Some("print".to_owned());
+        }
+        for path in &actual.reads {
+            let name = self.global_path_name(path);
+            if !allowed
+                .reads
+                .iter()
+                .any(|bound| effect_path_covers(bound, &name))
+                && !allowed
+                    .writes
+                    .iter()
+                    .any(|bound| effect_path_covers(bound, &name))
+            {
+                return Some(format!("reads {name}"));
+            }
+        }
+        for write in &actual.writes {
+            let name = self.global_path_name(&write.path);
+            if !allowed
+                .writes
+                .iter()
+                .any(|bound| effect_path_covers(bound, &name))
+            {
+                return Some(format!("writes {name}"));
+            }
+        }
+        None
+    }
+
+    fn resolve_indirect_calls(
+        &self,
+        functions: &[TFunction],
+        direct_graph: Vec<Vec<TCallEdge>>,
+    ) -> Result<(Vec<Vec<TCallEdge>>, HashMap<usize, Vec<usize>>), CheckError> {
+        let mut graph = direct_graph.clone();
+        let mut targets = HashMap::<usize, Vec<usize>>::new();
+        let mut address_taken = self
+            .function_value_uses
+            .iter()
+            .map(|usage| usage.function)
+            .collect::<Vec<_>>();
+        address_taken.sort_unstable();
+        address_taken.dedup();
+        let mut seen_maps = Vec::<HashMap<usize, Vec<usize>>>::new();
+
+        for _ in 0..=functions
+            .len()
+            .saturating_add(self.indirect_calls.len())
+            .saturating_add(1)
+        {
+            let effects = infer_global_effects(functions, &graph);
+            let mut next_targets = HashMap::<usize, Vec<usize>>::new();
+            for site in &self.indirect_calls {
+                let TTypeKind::Function {
+                    params,
+                    result,
+                    effects: allowed,
+                } = &self.types[site.function_ty.0].kind
+                else {
+                    continue;
+                };
+                let mut compatible = Vec::new();
+                for candidate in &address_taken {
+                    let Some(function) = functions.get(*candidate) else {
+                        continue;
+                    };
+                    if function.is_test
+                        || function.result != *result
+                        || function.params.len() != params.len()
+                        || !function
+                            .params
+                            .iter()
+                            .zip(params)
+                            .all(|(actual, contract)| {
+                                actual.ty == contract.ty && actual.mode == contract.mode
+                            })
+                    {
+                        continue;
+                    }
+                    if effects
+                        .get(*candidate)
+                        .and_then(|summary| self.function_effect_extra(summary, allowed))
+                        .is_none()
+                    {
+                        compatible.push(*candidate);
+                    }
+                }
+                next_targets.insert(site.id, compatible);
+            }
+            let mut next_graph = direct_graph.clone();
+            for site in &self.indirect_calls {
+                if let Some(candidates) = next_targets.get(&site.id) {
+                    for target in candidates {
+                        if site.from < next_graph.len() {
+                            next_graph[site.from].push(TCallEdge {
+                                target: *target,
+                                span: site.span,
+                            });
+                        }
+                    }
+                }
+            }
+            if next_targets == targets {
+                graph = next_graph;
+                targets = next_targets;
+                break;
+            }
+            if seen_maps.contains(&next_targets) {
+                // If recursive effect bounds oscillate, retain every reachable candidate. This
+                // conservative closure keeps recursion and hidden effects visible to later checks.
+                for map in seen_maps.iter().chain(std::iter::once(&next_targets)) {
+                    for (site, candidates) in map {
+                        let current = targets.entry(*site).or_default();
+                        for candidate in candidates {
+                            if !current.contains(candidate) {
+                                current.push(*candidate);
+                            }
+                        }
+                    }
+                }
+                graph = direct_graph.clone();
+                for site in &self.indirect_calls {
+                    if let Some(candidates) = targets.get(&site.id) {
+                        for target in candidates {
+                            if site.from < graph.len() {
+                                graph[site.from].push(TCallEdge {
+                                    target: *target,
+                                    span: site.span,
+                                });
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            seen_maps.push(targets.clone());
+            targets = next_targets;
+            graph = next_graph;
+        }
+
+        let effects = infer_global_effects(functions, &graph);
+        for usage in &self.function_value_uses {
+            let TTypeKind::Function {
+                effects: allowed, ..
+            } = &self.types[usage.function_ty.0].kind
+            else {
+                continue;
+            };
+            if let Some(extra) = effects
+                .get(usage.function)
+                .and_then(|actual| self.function_effect_extra(actual, allowed))
+            {
+                return Err(CheckError {
+                    span: usage.span,
+                    message: format!(
+                        "function '{}' has extra effect '{}'; add it to the function type's effects bound",
+                        functions[usage.function].name, extra
+                    ),
+                });
+            }
+        }
+        Ok((graph, targets))
+    }
+
+    fn check_recursion(&self, call_graph: &[Vec<TCallEdge>]) -> Result<(), CheckError> {
+        let n = call_graph.len();
+        let graph = call_graph
+            .iter()
+            .enumerate()
+            .map(|(from, edges)| {
+                edges
+                    .iter()
+                    .map(|edge| Edge {
+                        from,
+                        to: edge.target,
+                        span: edge.span,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         let mut state = vec![0u8; n];
         fn visit(
             v: usize,
@@ -8690,6 +9567,20 @@ fn global_path_is_prefix(prefix: &GlobalPath, path: &GlobalPath) -> bool {
             .iter()
             .zip(&path.fields)
             .all(|(left, right)| left == right)
+}
+
+fn effect_path_covers(bound: &str, actual: &str) -> bool {
+    actual == bound
+        || actual
+            .strip_prefix(bound)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+fn parameter_mode_name(mode: ParamMode) -> &'static str {
+    match mode {
+        ParamMode::Read => "read",
+        ParamMode::Write => "write",
+    }
 }
 
 fn infer_global_effects(
@@ -8912,6 +9803,24 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
                 collect_global_expr_effects(argument, effects, functions);
             }
         }
+        TExprKind::IndirectCall {
+            callee,
+            args,
+            params,
+            ..
+        } => {
+            for (argument, parameter) in args.iter().zip(params) {
+                if parameter.mode == ParamMode::Write {
+                    if let Some(path) = global_path_from_expr(argument) {
+                        effects.add_write(path, false);
+                    }
+                }
+            }
+            collect_global_expr_effects(callee, effects, functions);
+            for argument in args {
+                collect_global_expr_effects(argument, effects, functions);
+            }
+        }
         TExprKind::CollectionOp {
             op, receiver, args, ..
         } => {
@@ -9032,6 +9941,7 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         | TExprKind::Bool(_)
         | TExprKind::Local(_)
         | TExprKind::Constant(_)
+        | TExprKind::FunctionValue(_)
         | TExprKind::LoopExit(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
@@ -9125,7 +10035,7 @@ fn visit_global_calls_expr(
 ) -> Result<(), CheckError> {
     if matches!(
         expr.kind,
-        TExprKind::Call { .. } | TExprKind::OptionalCall { .. }
+        TExprKind::Call { .. } | TExprKind::OptionalCall { .. } | TExprKind::IndirectCall { .. }
     ) {
         check(expr, active_views)?;
     }
@@ -9137,6 +10047,12 @@ fn visit_global_calls_expr(
         }
         TExprKind::OptionalCall { receiver, args, .. } => {
             visit_global_calls_expr(receiver, active_views, check)?;
+            for argument in args {
+                visit_global_calls_expr(argument, active_views, check)?;
+            }
+        }
+        TExprKind::IndirectCall { callee, args, .. } => {
+            visit_global_calls_expr(callee, active_views, check)?;
             for argument in args {
                 visit_global_calls_expr(argument, active_views, check)?;
             }
@@ -9227,6 +10143,7 @@ fn visit_global_calls_expr(
         | TExprKind::Local(_)
         | TExprKind::Global(_)
         | TExprKind::Constant(_)
+        | TExprKind::FunctionValue(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
         | TExprKind::EmptyPool

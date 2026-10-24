@@ -1,0 +1,1 @@
+main.nl:7:36: error: function 'announce' has extra effect 'print'; add it to the function type's effects bound

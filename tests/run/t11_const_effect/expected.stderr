@@ -1,0 +1,1 @@
+main.nl:10:18: error: constant 'BAD' is not cacheable: compile-time evaluation cannot reach an effect; call chain: constant BAD -> invoke -> loud -> print
