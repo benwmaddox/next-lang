@@ -198,12 +198,12 @@ test "the bullet limit holds" {
 }
 ```
 
-**What it exercises:** removing a hit rock before adding its fragments (so its slot is free), expiring bullets before they move, ship collisions with lives and game over, waves; a `prefault` global with defaults in the struct definitions; a wrapping range on the ship'"'"'s angle (`float 0.0f..TAU wrap`) and a clamping one on its cooldown (`int 0..15 clamp`); pools with typed ids; removing after the loop, not during it; `Full` handled at every `add`; parameter modes (`write`); a range cast that the compiler can prove (`(int 1..3)(r.size - 1)`); explicit casts (`(long)`, `(float)`); random state kept in the game state; a read-only `draw`; tests on a local `Game`.
+**What it exercises:** removing a hit rock before adding its fragments (so its slot is free), expiring bullets before they move, ship collisions with lives and game over, waves; a `prefault` global with defaults in the struct definitions; a wrapping range on the ship's angle (`float 0.0f..TAU wrap`) and a clamping one on its cooldown (`int 0..15 clamp`); pools with typed ids; removing after the loop, not during it; `Full` handled at every `add`; parameter modes (`write`); a range cast that the compiler can prove (`(int 1..3)(r.size - 1)`); explicit casts (`(long)`, `(float)`); random state kept in the game state; a read-only `draw`; tests on a local `Game`.
 
 **Open points it raised:**
 
-- *Parameter modes:* decided (2026-10-24): written before the type, `g: write Game` or `out: grow Text`; read is the default and isn'"'"'t written.
-- *Pushes the compiler can prove safe:* DESIGN.md already lets a push or add that the compiler proves can'"'"'t overflow skip the `Result` (Collections); `hit.push(rid)` and `spent.add(bid)` rely on it, and the compiler has to prove each holds at most as many ids as its pool.
+- *Parameter modes:* decided (2026-10-24): written before the type, `g: write Game` or `out: grow Text`; read is the default and isn't written.
+- *Pushes the compiler can prove safe:* DESIGN.md already lets a push or add that the compiler proves can't overflow skip the `Result` (Collections); `hit.push(rid)` and `spent.add(bid)` rely on it, and the compiler has to prove each holds at most as many ids as its pool.
 - *Element views in loops:* now in DESIGN.md: a loop variable over a collection the function may write (`for r in g.rocks`) is a writable view of each element, under the usual view rules (no removing from the collection inside the loop).
 - *Two meanings of `..`:* in a plain refinement (`int 0..100`) the range includes its end, a wrapping float range (`float 0.0f..TAU wrap`) excludes it; in a loop (`for k in 0..2`) it stops before it. The design should either say so plainly or use two spellings (Rust has `..` and `..=`).
 - *Restarting:* resetting the whole game (`g = Game {}`) replaces pools, which the design's Later list says needs a rule for generations.
@@ -241,7 +241,7 @@ fn main(env: Env) -> Result<(), ToolError> {
 
     var total = Counts {}
     for j in jobs {
-        let c = j.join()?                  // join gives the job function'"'"'s own Result; a crashed job fails the run
+        let c = j.join()?                  // join gives the job function's own Result; a crashed job fails the run
         merge(total, c)
     }
     report(env.out, total)
@@ -251,7 +251,7 @@ fn main(env: Env) -> Result<(), ToolError> {
 fn count_file(fs: Fs, path: Path) -> Result<Counts, ToolError> {
     var c = Counts {}
     let file = fs.open(path).map_io()?      // IoError to ToolError: see the open points
-    for line in file.lines(max 4096) {         // each line is a temporary, freed every iteration; a read error ends the loop with err, passed up like open'"'"'s
+    for line in file.lines(max 4096) {         // each line is a temporary, freed every iteration; a read error ends the loop with err, passed up like open's
         c.lines = c.lines + 1L
         match parse(line) {
             some(entry) => { c.responses = c.responses + 1L; add(c, entry) }
