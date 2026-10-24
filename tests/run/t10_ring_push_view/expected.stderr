@@ -1,0 +1,1 @@
+main.nl:5:11: error: cannot call 'ring<long, 1>.push' while a collection view is live; move the operation after the loop

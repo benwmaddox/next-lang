@@ -55,6 +55,20 @@ pub enum TTypeKind {
         element: Ty,
         capacity: usize,
     },
+    Queue {
+        element: Ty,
+        capacity: usize,
+    },
+    Ring {
+        element: Ty,
+        capacity: usize,
+    },
+    Grid {
+        element: Ty,
+        width: usize,
+        height: usize,
+        capacity: usize,
+    },
     Map {
         key: Ty,
         value: Ty,
@@ -224,6 +238,9 @@ pub enum ConstValue {
     Struct(Vec<ConstValue>),
     Array(Vec<ConstValue>),
     List(Vec<ConstValue>),
+    Queue(Vec<ConstValue>),
+    Ring(Vec<ConstValue>),
+    Grid(Vec<ConstValue>),
     Map(Vec<(ConstValue, ConstValue)>),
     Set(Vec<ConstValue>),
     Pool {
@@ -325,6 +342,7 @@ pub enum TStmtKind {
     ForEach {
         id: usize,
         index_id: Option<usize>,
+        second_index_id: Option<usize>,
         counter_id: usize,
         collection: TExpr,
         source: TPlace,
@@ -332,6 +350,7 @@ pub enum TStmtKind {
         is_pool: bool,
         is_map: bool,
         is_set: bool,
+        is_grid: bool,
         body: TBlock,
     },
     Discard(TExpr),
@@ -364,7 +383,18 @@ pub enum TProjection {
         is_pool: bool,
         is_map: bool,
         proven: bool,
+        grid: Option<GridIndexInfo>,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct GridIndexInfo {
+    pub x: TExpr,
+    pub y: TExpr,
+    pub width: usize,
+    pub height: usize,
+    pub proven_x: bool,
+    pub proven_y: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -412,11 +442,15 @@ pub enum MethodKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CollectionOp {
     Push,
+    RingPush,
     Pop,
+    Peek,
     Insert,
     Remove,
     Count,
     Len,
+    Width,
+    Height,
     Clear,
 }
 
@@ -502,16 +536,20 @@ pub enum TExprKind {
         capacity: usize,
         is_list: bool,
         proven: bool,
+        grid: Option<Box<GridIndexInfo>>,
     },
     Fill {
         value: Box<TExpr>,
         capacity: usize,
     },
     EmptyArray,
+    EmptyGrid,
     EmptyList,
     EmptyPool,
     EmptyMap,
     EmptySet,
+    EmptyQueue,
+    EmptyRing,
     CollectionOp {
         op: CollectionOp,
         receiver: Box<TExpr>,

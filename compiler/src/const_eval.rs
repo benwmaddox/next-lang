@@ -306,10 +306,17 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
             }
         }
         TExprKind::Index {
-            receiver, index, ..
+            receiver,
+            index,
+            grid,
+            ..
         } => {
             collect_constant_references_expr(receiver, references);
             collect_constant_references_expr(index, references);
+            if let Some(grid) = grid {
+                collect_constant_references_expr(&grid.x, references);
+                collect_constant_references_expr(&grid.y, references);
+            }
         }
         TExprKind::Fill { value, .. } => collect_constant_references_expr(value, references),
         TExprKind::CollectionOp { receiver, args, .. } => {
@@ -371,6 +378,9 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::EmptyPool
         | TExprKind::EmptyMap
         | TExprKind::EmptySet
+        | TExprKind::EmptyGrid
+        | TExprKind::EmptyQueue
+        | TExprKind::EmptyRing
         | TExprKind::LoopExit(_) => {}
     }
 }
@@ -488,8 +498,17 @@ fn expression_reads_global(expr: &TExpr) -> bool {
             expression_reads_global(receiver) || args.iter().any(expression_reads_global)
         }
         TExprKind::Index {
-            receiver, index, ..
-        } => expression_reads_global(receiver) || expression_reads_global(index),
+            receiver,
+            index,
+            grid,
+            ..
+        } => {
+            expression_reads_global(receiver)
+                || expression_reads_global(index)
+                || grid.as_ref().is_some_and(|grid| {
+                    expression_reads_global(&grid.x) || expression_reads_global(&grid.y)
+                })
+        }
         TExprKind::Fill { value, .. } => expression_reads_global(value),
         TExprKind::CollectionOp { receiver, args, .. }
         | TExprKind::PoolOp { receiver, args, .. }
@@ -529,7 +548,10 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         | TExprKind::EmptyList
         | TExprKind::EmptyPool
         | TExprKind::EmptyMap
-        | TExprKind::EmptySet => false,
+        | TExprKind::EmptySet
+        | TExprKind::EmptyGrid
+        | TExprKind::EmptyQueue
+        | TExprKind::EmptyRing => false,
     }
 }
 
@@ -728,10 +750,17 @@ fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mu
             }
         }
         TExprKind::Index {
-            receiver, index, ..
+            receiver,
+            index,
+            grid,
+            ..
         } => {
             collect_calls_expr(receiver, calls, effects);
             collect_calls_expr(index, calls, effects);
+            if let Some(grid) = grid {
+                collect_calls_expr(&grid.x, calls, effects);
+                collect_calls_expr(&grid.y, calls, effects);
+            }
         }
         TExprKind::Fill { value, .. } => collect_calls_expr(value, calls, effects),
         TExprKind::CollectionOp { receiver, args, .. } => {
@@ -799,6 +828,9 @@ fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mu
         | TExprKind::EmptyPool
         | TExprKind::EmptyMap
         | TExprKind::EmptySet
+        | TExprKind::EmptyGrid
+        | TExprKind::EmptyQueue
+        | TExprKind::EmptyRing
         | TExprKind::LoopExit(_) => {}
     }
 }
@@ -890,6 +922,7 @@ impl Evaluator<'_> {
                 capacity,
                 is_list,
                 proven,
+                grid,
             } => {
                 let mut place = self.place_from_expr(receiver)?;
                 let constant = if let TExprKind::Integer(value) = index.kind {
@@ -905,6 +938,7 @@ impl Evaluator<'_> {
                     is_pool: false,
                     is_map: false,
                     proven: *proven,
+                    grid: grid.as_deref().cloned(),
                 });
                 place.ty = expr.ty;
                 Some(place)
@@ -927,8 +961,44 @@ impl Evaluator<'_> {
                     index,
                     is_pool,
                     is_map,
+                    grid,
                     ..
                 } => {
+                    if let Some(grid) = grid {
+                        let x = match self.eval_expr(&grid.x, locals)? {
+                            Outcome::Value(value) => as_integer(&value),
+                            _ => {
+                                return Err(self.failure(
+                                    grid.x.span,
+                                    "control flow is not valid in a grid index",
+                                ));
+                            }
+                        };
+                        if x < 0 || x >= grid.width as i128 {
+                            return Err(self.failure(grid.x.span, "index out of range"));
+                        }
+                        let y = match self.eval_expr(&grid.y, locals)? {
+                            Outcome::Value(value) => as_integer(&value),
+                            _ => {
+                                return Err(self.failure(
+                                    grid.y.span,
+                                    "control flow is not valid in a grid index",
+                                ));
+                            }
+                        };
+                        if y < 0 || y >= grid.height as i128 {
+                            return Err(self.failure(grid.y.span, "index out of range"));
+                        }
+                        let flat = usize::try_from(y)
+                            .ok()
+                            .and_then(|row| row.checked_mul(grid.width))
+                            .and_then(|row| {
+                                usize::try_from(x).ok().and_then(|x| row.checked_add(x))
+                            })
+                            .ok_or_else(|| self.failure(grid.y.span, "index out of range"))?;
+                        resolved.push(ResolvedProjection::Index(flat));
+                        continue;
+                    }
                     let value = match self.eval_expr(index, locals)? {
                         Outcome::Value(value) => value,
                         _ => {
@@ -973,6 +1043,13 @@ impl Evaluator<'_> {
                 (ResolvedProjection::Index(index), ConstValue::List(values)) => {
                     values.get(*index)?.clone()
                 }
+                (ResolvedProjection::Index(index), ConstValue::Queue(values))
+                | (ResolvedProjection::Index(index), ConstValue::Ring(values)) => {
+                    values.get(*index)?.clone()
+                }
+                (ResolvedProjection::Index(index), ConstValue::Grid(values)) => {
+                    values.get(*index)?.clone()
+                }
                 (ResolvedProjection::MapIndex(index), ConstValue::Map(entries)) => {
                     entries.get(*index)?.1.clone()
                 }
@@ -1012,6 +1089,13 @@ impl Evaluator<'_> {
                     values.get_mut(*index)
                 }
                 (ResolvedProjection::Index(index), ConstValue::List(values)) => {
+                    values.get_mut(*index)
+                }
+                (ResolvedProjection::Index(index), ConstValue::Queue(values))
+                | (ResolvedProjection::Index(index), ConstValue::Ring(values)) => {
+                    values.get_mut(*index)
+                }
+                (ResolvedProjection::Index(index), ConstValue::Grid(values)) => {
                     values.get_mut(*index)
                 }
                 (ResolvedProjection::MapIndex(index), ConstValue::Map(entries)) => {
@@ -1064,6 +1148,10 @@ impl Evaluator<'_> {
             (CollectionOp::Count, ConstValue::List(values)) => {
                 ConstValue::Integer(values.len() as i128)
             }
+            (CollectionOp::Count, ConstValue::Queue(values))
+            | (CollectionOp::Count, ConstValue::Ring(values)) => {
+                ConstValue::Integer(values.len() as i128)
+            }
             (CollectionOp::Push, ConstValue::List(values)) => {
                 if values.len() >= capacity {
                     full()
@@ -1088,6 +1176,48 @@ impl Evaluator<'_> {
                 Some(value) => ConstValue::Enum {
                     case_index: 0,
                     payload: vec![value],
+                },
+                None => ConstValue::Enum {
+                    case_index: 1,
+                    payload: Vec::new(),
+                },
+            },
+            (CollectionOp::Push, ConstValue::Queue(values)) => {
+                if values.len() >= capacity {
+                    full()
+                } else {
+                    values.push(args[0].clone());
+                    success()
+                }
+            }
+            (CollectionOp::RingPush, ConstValue::Ring(values)) => {
+                if capacity > 0 {
+                    if values.len() == capacity {
+                        values.remove(0);
+                    }
+                    values.push(args[0].clone());
+                }
+                ConstValue::Unit
+            }
+            (CollectionOp::Pop, ConstValue::Queue(values))
+            | (CollectionOp::Pop, ConstValue::Ring(values)) => {
+                if values.is_empty() {
+                    ConstValue::Enum {
+                        case_index: 1,
+                        payload: Vec::new(),
+                    }
+                } else {
+                    ConstValue::Enum {
+                        case_index: 0,
+                        payload: vec![values.remove(0)],
+                    }
+                }
+            }
+            (CollectionOp::Peek, ConstValue::Queue(values))
+            | (CollectionOp::Peek, ConstValue::Ring(values)) => match values.first() {
+                Some(value) => ConstValue::Enum {
+                    case_index: 0,
+                    payload: vec![value.clone()],
                 },
                 None => ConstValue::Enum {
                     case_index: 1,
@@ -1562,12 +1692,14 @@ impl Evaluator<'_> {
                 TStmtKind::ForEach {
                     id,
                     index_id,
+                    second_index_id,
                     counter_id,
                     source,
                     is_list,
                     is_pool,
                     is_map,
                     is_set,
+                    is_grid,
                     body,
                     ..
                 } => {
@@ -1584,6 +1716,11 @@ impl Evaluator<'_> {
                     let (capacity, element) = match self.types[collection_ty.0].kind {
                         TTypeKind::Array { element, capacity }
                         | TTypeKind::List { element, capacity }
+                        | TTypeKind::Queue { element, capacity }
+                        | TTypeKind::Ring { element, capacity }
+                        | TTypeKind::Grid {
+                            element, capacity, ..
+                        }
                         | TTypeKind::Pool {
                             element, capacity, ..
                         } => (capacity, element),
@@ -1612,7 +1749,10 @@ impl Evaluator<'_> {
                     } else {
                         let length = match (&collection, *is_list) {
                             (ConstValue::List(values), true) => values.len(),
+                            (ConstValue::Queue(values), true)
+                            | (ConstValue::Ring(values), true) => values.len(),
                             (ConstValue::Array(values), false) => values.len(),
+                            (ConstValue::Grid(values), false) if *is_grid => values.len(),
                             (ConstValue::Map(entries), false) if *is_map => entries.len(),
                             (ConstValue::Set(entries), false) if *is_set => entries.len(),
                             _ => {
@@ -1630,6 +1770,14 @@ impl Evaluator<'_> {
                         }
                         self.step(stmt.span)?;
                         set_local(locals, *counter_id, ConstValue::Integer(index as i128));
+                        let grid_width = if *is_grid {
+                            match self.types[collection_ty.0].kind {
+                                TTypeKind::Grid { width, .. } => width,
+                                _ => unreachable!("grid loop source has grid type"),
+                            }
+                        } else {
+                            0
+                        };
                         if let Some(index_id) = index_id {
                             let id = if *is_pool {
                                 let pool = self
@@ -1674,10 +1822,19 @@ impl Evaluator<'_> {
                                     })?
                                     .0
                                     .clone()
+                            } else if *is_grid {
+                                ConstValue::Integer((index % grid_width) as i128)
                             } else {
                                 ConstValue::Integer(index as i128)
                             };
                             set_local(locals, *index_id, id);
+                        }
+                        if let Some(second_index_id) = second_index_id {
+                            set_local(
+                                locals,
+                                *second_index_id,
+                                ConstValue::Integer((index / grid_width) as i128),
+                            );
                         }
                         if *is_set {
                             let ConstValue::Set(entries) = self
@@ -1712,6 +1869,7 @@ impl Evaluator<'_> {
                             is_pool: *is_pool,
                             is_map: *is_map,
                             proven: true,
+                            grid: None,
                         });
                         element_place.ty = element;
                         let previous = if *is_set {
@@ -1936,9 +2094,35 @@ impl Evaluator<'_> {
                 _ => return Err(self.failure(expr.span, "field access receiver was not a struct")),
             },
             TExprKind::Index {
-                receiver, index, ..
+                receiver,
+                index,
+                grid,
+                ..
             } => {
                 let collection = value_or_flow!(self.eval_expr(receiver, locals));
+                if let Some(grid) = grid {
+                    let x = as_integer(&value_or_flow!(self.eval_expr(&grid.x, locals)));
+                    if x < 0 || x >= grid.width as i128 {
+                        return Err(self.failure(grid.x.span, "index out of range"));
+                    }
+                    let y = as_integer(&value_or_flow!(self.eval_expr(&grid.y, locals)));
+                    if y < 0 || y >= grid.height as i128 {
+                        return Err(self.failure(grid.y.span, "index out of range"));
+                    }
+                    let flat = usize::try_from(y)
+                        .ok()
+                        .and_then(|row| row.checked_mul(grid.width))
+                        .and_then(|row| usize::try_from(x).ok().and_then(|x| row.checked_add(x)))
+                        .ok_or_else(|| self.failure(grid.y.span, "index out of range"))?;
+                    return match collection {
+                        ConstValue::Grid(values) => values
+                            .get(flat)
+                            .cloned()
+                            .map(Outcome::Value)
+                            .ok_or_else(|| self.failure(expr.span, "index out of range")),
+                        _ => Err(self.failure(expr.span, "index receiver was not a grid")),
+                    };
+                }
                 let index_value = as_integer(&value_or_flow!(self.eval_expr(index, locals)));
                 if index_value < 0 {
                     return Err(self.failure(index.span, "index out of range"));
@@ -1946,7 +2130,10 @@ impl Evaluator<'_> {
                 let index_value = usize::try_from(index_value)
                     .map_err(|_| self.failure(index.span, "index out of range"))?;
                 match collection {
-                    ConstValue::Array(values) | ConstValue::List(values) => values
+                    ConstValue::Array(values)
+                    | ConstValue::List(values)
+                    | ConstValue::Queue(values)
+                    | ConstValue::Ring(values) => values
                         .get(index_value)
                         .cloned()
                         .ok_or_else(|| self.failure(index.span, "index out of range"))?,
@@ -1956,14 +2143,19 @@ impl Evaluator<'_> {
             TExprKind::Fill { value, capacity } => {
                 let item = value_or_flow!(self.eval_expr(value, locals));
                 let items = vec![item; *capacity];
-                if matches!(self.types[expr.ty.0].kind, TTypeKind::Array { .. }) {
-                    ConstValue::Array(items)
-                } else {
-                    return Err(self.failure(expr.span, "fill target was not an array"));
+                match self.types[expr.ty.0].kind {
+                    TTypeKind::Array { .. } => ConstValue::Array(items),
+                    TTypeKind::Grid { .. } => ConstValue::Grid(items),
+                    _ => {
+                        return Err(self.failure(expr.span, "fill target was not an array or grid"));
+                    }
                 }
             }
             TExprKind::EmptyArray => ConstValue::Array(Vec::new()),
+            TExprKind::EmptyGrid => ConstValue::Grid(Vec::new()),
             TExprKind::EmptyList => ConstValue::List(Vec::new()),
+            TExprKind::EmptyQueue => ConstValue::Queue(Vec::new()),
+            TExprKind::EmptyRing => ConstValue::Ring(Vec::new()),
             TExprKind::EmptyPool => {
                 let capacity = match self.types[expr.ty.0].kind {
                     TTypeKind::Pool { capacity, .. } => capacity,
@@ -1984,11 +2176,47 @@ impl Evaluator<'_> {
                 capacity,
                 proven_success: _,
             } => {
-                if matches!(op, CollectionOp::Count | CollectionOp::Len) {
+                if matches!(
+                    op,
+                    CollectionOp::Count
+                        | CollectionOp::Len
+                        | CollectionOp::Width
+                        | CollectionOp::Height
+                ) || (*op == CollectionOp::Peek && self.place_from_expr(receiver).is_none())
+                {
                     let value = value_or_flow!(self.eval_expr(receiver, locals));
+                    if *op == CollectionOp::Peek {
+                        let option = match value {
+                            ConstValue::Queue(items) | ConstValue::Ring(items) => {
+                                match items.first() {
+                                    Some(item) => ConstValue::Enum {
+                                        case_index: 0,
+                                        payload: vec![item.clone()],
+                                    },
+                                    None => ConstValue::Enum {
+                                        case_index: 1,
+                                        payload: Vec::new(),
+                                    },
+                                }
+                            }
+                            _ => {
+                                return Err(self.failure(
+                                    expr.span,
+                                    "collection peek receiver had the wrong value",
+                                ));
+                            }
+                        };
+                        return Ok(Outcome::Value(option));
+                    }
                     let count = match value {
                         ConstValue::Array(items) if *op == CollectionOp::Len => items.len(),
                         ConstValue::List(items) if *op == CollectionOp::Count => items.len(),
+                        ConstValue::Queue(items) | ConstValue::Ring(items)
+                            if *op == CollectionOp::Count =>
+                        {
+                            items.len()
+                        }
+                        _ if *op == CollectionOp::Width || *op == CollectionOp::Height => *capacity,
                         _ => {
                             return Err(self.failure(
                                 expr.span,
@@ -2639,9 +2867,45 @@ impl Evaluator<'_> {
                     })
             }
             (
-                TTypeKind::Array { element, capacity } | TTypeKind::List { element, capacity },
-                ConstValue::Array(left_values) | ConstValue::List(left_values),
-                ConstValue::Array(right_values) | ConstValue::List(right_values),
+                TTypeKind::Array { element, capacity },
+                ConstValue::Array(left_values),
+                ConstValue::Array(right_values),
+            ) => {
+                left_values.len() == right_values.len()
+                    && left_values.len() <= *capacity
+                    && left_values
+                        .iter()
+                        .zip(right_values)
+                        .all(|(left, right)| self.values_equal(*element, left, right))
+            }
+            (
+                TTypeKind::Grid {
+                    element, capacity, ..
+                },
+                ConstValue::Grid(left_values),
+                ConstValue::Grid(right_values),
+            ) => {
+                left_values.len() == *capacity
+                    && right_values.len() == *capacity
+                    && left_values
+                        .iter()
+                        .zip(right_values)
+                        .all(|(left, right)| self.values_equal(*element, left, right))
+            }
+            (
+                TTypeKind::List { element, capacity },
+                ConstValue::List(left_values),
+                ConstValue::List(right_values),
+            )
+            | (
+                TTypeKind::Queue { element, capacity },
+                ConstValue::Queue(left_values),
+                ConstValue::Queue(right_values),
+            )
+            | (
+                TTypeKind::Ring { element, capacity },
+                ConstValue::Ring(left_values),
+                ConstValue::Ring(right_values),
             ) => {
                 left_values.len() == right_values.len()
                     && left_values.len() <= *capacity

@@ -1,0 +1,1 @@
+main.nl:5:19: error: cannot call 'queue<long, 2>.pop' while a collection view is live; move the operation after the loop

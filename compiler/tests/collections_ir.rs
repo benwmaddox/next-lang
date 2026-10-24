@@ -63,3 +63,37 @@ fn nested_collection_layout_uses_field_lanes_and_proves_array_indexes() {
         "loop-body locals and fill temporaries must allocate in the function entry"
     );
 }
+
+#[test]
+fn queue_ring_and_grid_fields_keep_inline_soa_layout() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler directory has a workspace root");
+    let package = root.join("tests/run/t10_queue_ring_grid");
+    let compiled = compile_package(&package).expect("T10 collection fixture should compile");
+    let ir = compiled.llvm_ir;
+
+    assert!(
+        ir.lines().any(|line| line.contains("[2 x i64], [2 x i32]") && line.ends_with("; queue<Cell, 2>")),
+        "a queue of structs needs head/count metadata followed by one lane per field"
+    );
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("[2 x i64], [2 x i32]") && line.ends_with("; ring<Cell, 2>")),
+        "a ring of structs needs head/count metadata followed by one lane per field"
+    );
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("[4 x i64], [4 x i32]")
+                && line.ends_with("; grid<Cell, 2, 2>")),
+        "a grid of structs needs row-major field lanes"
+    );
+    let board_array = ir
+        .lines()
+        .find(|line| line.ends_with("; Board[2]"))
+        .expect("World should contain its bounded Board array");
+    assert!(
+        board_array.matches("[2 x %nl.ty.").count() == 3,
+        "nested queue, ring and grid values must be inline lanes in Board[2]: {board_array}"
+    );
+}

@@ -73,6 +73,34 @@ pub fn emit(program: &TProgram) -> String {
                     ty.name
                 ));
             }
+            TTypeKind::Queue { element, capacity } | TTypeKind::Ring { element, capacity } => {
+                let mut lanes = vec!["i64".to_owned(), "i64".to_owned()];
+                lanes.extend(
+                    collection_lane_types(*element, &program.types)
+                        .iter()
+                        .map(|lane| {
+                            format!("[{} x {}]", capacity, llvm_type(*lane, &program.types))
+                        }),
+                );
+                out.push_str(&format!(
+                    "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
+                    lanes.join(", "),
+                    ty.name
+                ));
+            }
+            TTypeKind::Grid {
+                element, capacity, ..
+            } => {
+                let lanes = collection_lane_types(*element, &program.types)
+                    .iter()
+                    .map(|lane| format!("[{} x {}]", capacity, llvm_type(*lane, &program.types)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push_str(&format!(
+                    "%nl.ty.{id} = type <{{ {lanes} }}> ; {}\n",
+                    ty.name
+                ));
+            }
             TTypeKind::Map {
                 key,
                 value,
@@ -226,6 +254,8 @@ pub fn emit(program: &TProgram) -> String {
         ": ".to_owned(),
         " }".to_owned(),
         "[".to_owned(),
+        "queue[".to_owned(),
+        "ring[".to_owned(),
         "]".to_owned(),
         "{".to_owned(),
         "pool{".to_owned(),
@@ -423,10 +453,18 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         }
         TExprKind::Method { receiver, .. } => collect_expect_sources_expr(receiver, sources),
         TExprKind::Index {
-            receiver, index, ..
+            receiver,
+            index,
+            grid,
+            ..
         } => {
             collect_expect_sources_expr(receiver, sources);
-            collect_expect_sources_expr(index, sources);
+            if let Some(grid) = grid {
+                collect_expect_sources_expr(&grid.x, sources);
+                collect_expect_sources_expr(&grid.y, sources);
+            } else {
+                collect_expect_sources_expr(index, sources);
+            }
         }
         TExprKind::Fill { value, .. } => collect_expect_sources_expr(value, sources),
         TExprKind::CollectionOp { receiver, args, .. }
@@ -501,7 +539,10 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         | TExprKind::EmptyList
         | TExprKind::EmptyPool
         | TExprKind::EmptyMap
-        | TExprKind::EmptySet => {}
+        | TExprKind::EmptySet
+        | TExprKind::EmptyGrid
+        | TExprKind::EmptyQueue
+        | TExprKind::EmptyRing => {}
     }
 }
 
@@ -564,6 +605,20 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
                         .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
                         .sum::<usize>(),
                 ),
+                TTypeKind::Queue { element, capacity } | TTypeKind::Ring { element, capacity } => {
+                    16usize.saturating_add(
+                        collection_lane_types(*element, types)
+                            .iter()
+                            .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
+                            .sum::<usize>(),
+                    )
+                }
+                TTypeKind::Grid {
+                    element, capacity, ..
+                } => collection_lane_types(*element, types)
+                    .iter()
+                    .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
+                    .sum(),
                 TTypeKind::Map {
                     key,
                     value,
@@ -638,13 +693,33 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
             let ConstValue::Array(values) = value else {
                 unreachable!("array constant has a non-array value")
             };
-            collection_constant(*element, *capacity, values, false, types)
+            collection_constant(*element, *capacity, values, 0, types)
         }
         TTypeKind::List { element, capacity } => {
             let ConstValue::List(values) = value else {
                 unreachable!("list constant has a non-list value")
             };
-            collection_constant(*element, *capacity, values, true, types)
+            collection_constant(*element, *capacity, values, 1, types)
+        }
+        TTypeKind::Queue { element, capacity } => {
+            let ConstValue::Queue(values) = value else {
+                unreachable!("queue constant has a non-queue value")
+            };
+            collection_constant(*element, *capacity, values, 2, types)
+        }
+        TTypeKind::Ring { element, capacity } => {
+            let ConstValue::Ring(values) = value else {
+                unreachable!("ring constant has a non-ring value")
+            };
+            collection_constant(*element, *capacity, values, 2, types)
+        }
+        TTypeKind::Grid {
+            element, capacity, ..
+        } => {
+            let ConstValue::Grid(values) = value else {
+                unreachable!("grid constant has a non-grid value")
+            };
+            collection_constant(*element, *capacity, values, 0, types)
         }
         TTypeKind::Map {
             key,
@@ -744,12 +819,15 @@ fn collection_constant(
     element: Ty,
     capacity: usize,
     values: &[ConstValue],
-    is_list: bool,
+    metadata: usize,
     types: &[TType],
 ) -> String {
     let lanes = collection_lane_types(element, types);
     let mut fields = Vec::new();
-    if is_list {
+    if metadata == 1 {
+        fields.push(format!("i64 {}", values.len()));
+    } else if metadata == 2 {
+        fields.push("i64 0".to_owned());
         fields.push(format!("i64 {}", values.len()));
     }
     for lane in lanes {
@@ -762,7 +840,7 @@ fn collection_constant(
                 _ => value.clone(),
             })
             .collect::<Vec<_>>();
-        let lane_index = fields.len() - usize::from(is_list);
+        let lane_index = fields.len() - metadata;
         let lane_ty = lane;
         let values_text = (0..capacity)
             .map(|index| {
@@ -1044,6 +1122,30 @@ fn serialize_constant(
             };
             bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
             serialize_collection(*element, *capacity, values, true, types, bytes, cache);
+        }
+        TTypeKind::Queue { element, capacity } => {
+            let ConstValue::Queue(values) = value else {
+                unreachable!("queue value has a non-queue constant")
+            };
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+            bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
+            serialize_collection(*element, *capacity, values, true, types, bytes, cache);
+        }
+        TTypeKind::Ring { element, capacity } => {
+            let ConstValue::Ring(values) = value else {
+                unreachable!("ring value has a non-ring constant")
+            };
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+            bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
+            serialize_collection(*element, *capacity, values, true, types, bytes, cache);
+        }
+        TTypeKind::Grid {
+            element, capacity, ..
+        } => {
+            let ConstValue::Grid(values) = value else {
+                unreachable!("grid value has a non-grid constant")
+            };
+            serialize_collection(*element, *capacity, values, false, types, bytes, cache);
         }
         TTypeKind::Map {
             key,
@@ -1387,6 +1489,7 @@ impl<'a> FunctionEmitter<'a> {
             TStmtKind::ForEach {
                 id,
                 index_id,
+                second_index_id,
                 counter_id,
                 collection,
                 body,
@@ -1395,6 +1498,9 @@ impl<'a> FunctionEmitter<'a> {
                 let element = match self.program.types[collection.ty.0].kind {
                     TTypeKind::Array { element, .. }
                     | TTypeKind::List { element, .. }
+                    | TTypeKind::Queue { element, .. }
+                    | TTypeKind::Ring { element, .. }
+                    | TTypeKind::Grid { element, .. }
                     | TTypeKind::Pool { element, .. } => element,
                     TTypeKind::Map { value, .. } => value,
                     TTypeKind::Set { key, .. } => key,
@@ -1407,6 +1513,9 @@ impl<'a> FunctionEmitter<'a> {
                         _ => Ty::Long,
                     };
                     self.record_slot(*index_id, index_ty);
+                }
+                if let Some(second_index_id) = second_index_id {
+                    self.record_slot(*second_index_id, Ty::Long);
                 }
                 self.record_slot(*counter_id, Ty::Long);
                 self.collect_expr(collection);
@@ -1443,10 +1552,18 @@ impl<'a> FunctionEmitter<'a> {
             }
             TExprKind::Method { receiver, .. } => self.collect_expr(receiver),
             TExprKind::Index {
-                receiver, index, ..
+                receiver,
+                index,
+                grid,
+                ..
             } => {
                 self.collect_expr(receiver);
-                self.collect_expr(index);
+                if let Some(grid) = grid {
+                    self.collect_expr(&grid.x);
+                    self.collect_expr(&grid.y);
+                } else {
+                    self.collect_expr(index);
+                }
             }
             TExprKind::Fill { value, .. } => self.collect_expr(value),
             TExprKind::CollectionOp { receiver, args, .. }
@@ -1533,7 +1650,10 @@ impl<'a> FunctionEmitter<'a> {
             | TExprKind::EmptyList
             | TExprKind::EmptyPool
             | TExprKind::EmptyMap
-            | TExprKind::EmptySet => {}
+            | TExprKind::EmptySet
+            | TExprKind::EmptyGrid
+            | TExprKind::EmptyQueue
+            | TExprKind::EmptyRing => {}
         }
     }
 
@@ -1568,6 +1688,12 @@ impl<'a> FunctionEmitter<'a> {
             match self.program.types[collection_ty.0].kind {
                 TTypeKind::Array { element, capacity } => (capacity, 0, element, false),
                 TTypeKind::List { element, capacity } => (capacity, 1, element, false),
+                TTypeKind::Queue { element, capacity } | TTypeKind::Ring { element, capacity } => {
+                    (capacity, 2, element, false)
+                }
+                TTypeKind::Grid {
+                    element, capacity, ..
+                } => (capacity, 0, element, false),
                 TTypeKind::Pool {
                     element, capacity, ..
                 } => (capacity, 5, element, false),
@@ -1617,15 +1743,26 @@ impl<'a> FunctionEmitter<'a> {
         let element = match self.program.types[collection_ty.0].kind {
             TTypeKind::Array { element, .. }
             | TTypeKind::List { element, .. }
+            | TTypeKind::Queue { element, .. }
+            | TTypeKind::Ring { element, .. }
+            | TTypeKind::Grid { element, .. }
             | TTypeKind::Pool { element, .. } => element,
             TTypeKind::Map { value, .. } => value,
             TTypeKind::Set { key, .. } => key,
             _ => unreachable!(),
         };
+        let index = if matches!(
+            self.program.types[collection_ty.0].kind,
+            TTypeKind::Queue { .. } | TTypeKind::Ring { .. }
+        ) {
+            self.emit_queue_ring_physical_index(collection_ty, pointer, index)
+        } else {
+            index.to_owned()
+        };
         if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
             let mut value = "zeroinitializer".to_owned();
             for (lane, field) in fields.iter().enumerate() {
-                let ptr = self.emit_collection_lane_pointer(collection_ty, pointer, index, lane);
+                let ptr = self.emit_collection_lane_pointer(collection_ty, pointer, &index, lane);
                 let loaded = self.temp();
                 self.instruction(format!(
                     "{loaded} = load {}, ptr {ptr}, align 1",
@@ -1641,7 +1778,7 @@ impl<'a> FunctionEmitter<'a> {
             }
             value
         } else {
-            let ptr = self.emit_collection_lane_pointer(collection_ty, pointer, index, 0);
+            let ptr = self.emit_collection_lane_pointer(collection_ty, pointer, &index, 0);
             let value = self.temp();
             self.instruction(format!(
                 "{value} = load {}, ptr {ptr}, align 1",
@@ -1661,6 +1798,9 @@ impl<'a> FunctionEmitter<'a> {
         let element = match self.program.types[collection_ty.0].kind {
             TTypeKind::Array { element, .. }
             | TTypeKind::List { element, .. }
+            | TTypeKind::Queue { element, .. }
+            | TTypeKind::Ring { element, .. }
+            | TTypeKind::Grid { element, .. }
             | TTypeKind::Pool { element, .. } => element,
             TTypeKind::Map { value, .. } => value,
             _ => unreachable!(),
@@ -1688,20 +1828,118 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_collection_count(&mut self, collection_ty: Ty, pointer: &str) -> String {
-        if matches!(
-            self.program.types[collection_ty.0].kind,
-            TTypeKind::Array { .. }
-        ) {
-            return "0".to_owned();
-        }
+        let count_offset = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Array { .. } | TTypeKind::Grid { .. } => return "0".to_owned(),
+            TTypeKind::Queue { .. } | TTypeKind::Ring { .. } => 1,
+            _ => 0,
+        };
         let ptr = self.temp();
         self.instruction(format!(
-            "{ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
+            "{ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 {count_offset}",
             self.lltype(collection_ty)
         ));
         let count = self.temp();
         self.instruction(format!("{count} = load i64, ptr {ptr}, align 1"));
         count
+    }
+
+    fn emit_queue_ring_physical_index(
+        &mut self,
+        collection_ty: Ty,
+        pointer: &str,
+        logical_index: &str,
+    ) -> String {
+        let capacity = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Queue { capacity, .. } | TTypeKind::Ring { capacity, .. } => capacity,
+            _ => unreachable!("queue/ring index conversion requires a queue or ring"),
+        };
+        if capacity == 0 {
+            return "0".to_owned();
+        }
+        let head_ptr = self.temp();
+        self.instruction(format!(
+            "{head_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
+            self.lltype(collection_ty)
+        ));
+        let head = self.temp();
+        self.instruction(format!("{head} = load i64, ptr {head_ptr}, align 1"));
+        let sum = self.temp();
+        self.instruction(format!("{sum} = add i64 {head}, {logical_index}"));
+        let physical = self.temp();
+        self.instruction(format!("{physical} = urem i64 {sum}, {capacity}"));
+        physical
+    }
+
+    fn emit_queue_ring_meta_ptr(
+        &mut self,
+        collection_ty: Ty,
+        pointer: &str,
+        field: usize,
+    ) -> String {
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 {field}",
+            self.lltype(collection_ty)
+        ));
+        result
+    }
+
+    fn emit_grid_coord_guard(&mut self, index: &str, bound: usize, span: Span) {
+        let negative = self.temp();
+        self.instruction(format!("{negative} = icmp slt i64 {index}, 0"));
+        let upper = self.temp();
+        self.instruction(format!("{upper} = icmp uge i64 {index}, {bound}"));
+        let bad = self.temp();
+        self.instruction(format!("{bad} = or i1 {negative}, {upper}"));
+        self.guard(bad, Failure::IndexOutOfRange, span);
+    }
+
+    fn emit_grid_index_value(&mut self, grid: &GridIndexInfo) -> String {
+        let x = self.emit_expr(&grid.x);
+        if self.terminated {
+            return String::new();
+        }
+        if !grid.proven_x {
+            self.emit_grid_coord_guard(&x, grid.width, grid.x.span);
+        }
+        let y = self.emit_expr(&grid.y);
+        if self.terminated {
+            return String::new();
+        }
+        if !grid.proven_y {
+            self.emit_grid_coord_guard(&y, grid.height, grid.y.span);
+        }
+        let row = self.temp();
+        self.instruction(format!("{row} = mul i64 {y}, {}", grid.width));
+        let flat = self.temp();
+        self.instruction(format!("{flat} = add i64 {row}, {x}"));
+        flat
+    }
+
+    fn emit_projection_index(
+        &mut self,
+        collection_ty: Ty,
+        pointer: &str,
+        index: &TExpr,
+        grid: Option<&GridIndexInfo>,
+        proven: bool,
+        is_map: bool,
+    ) -> String {
+        if let Some(grid) = grid {
+            return self.emit_grid_index_value(grid);
+        }
+        let index_value = self.emit_expr(index);
+        if !proven && !is_map {
+            self.emit_index_guard(collection_ty, pointer, &index_value, false, index.span);
+        }
+        if matches!(
+            self.program.types[collection_ty.0].kind,
+            TTypeKind::Queue { .. } | TTypeKind::Ring { .. }
+        ) {
+            self.emit_queue_ring_physical_index(collection_ty, pointer, &index_value)
+        } else {
+            index_value
+        }
     }
 
     fn emit_pool_meta_ptr(&mut self, pool_ty: Ty, pointer: &str, field: usize) -> String {
@@ -2957,7 +3195,7 @@ impl<'a> FunctionEmitter<'a> {
     fn emit_fill(&mut self, collection_ty: Ty, value: &TExpr, capacity: usize) -> String {
         debug_assert!(matches!(
             self.program.types[collection_ty.0].kind,
-            TTypeKind::Array { .. }
+            TTypeKind::Array { .. } | TTypeKind::Grid { .. }
         ));
         let value = self.emit_expr(value);
         if self.terminated {
@@ -3009,9 +3247,20 @@ impl<'a> FunctionEmitter<'a> {
     ) -> String {
         let collection_ty = receiver.ty;
         let element = match self.program.types[collection_ty.0].kind {
-            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            TTypeKind::Array { element, .. }
+            | TTypeKind::List { element, .. }
+            | TTypeKind::Queue { element, .. }
+            | TTypeKind::Ring { element, .. }
+            | TTypeKind::Grid { element, .. } => element,
             _ => unreachable!("typed collection operation"),
         };
+        if matches!(op, CollectionOp::Width | CollectionOp::Height) {
+            let _ = self.emit_expr(receiver);
+            if self.terminated {
+                return String::new();
+            }
+            return capacity.to_string();
+        }
         if op == CollectionOp::Len {
             let _ = self.emit_expr(receiver);
             if self.terminated {
@@ -3036,7 +3285,20 @@ impl<'a> FunctionEmitter<'a> {
             };
             return self.emit_collection_count(collection_ty, &pointer);
         }
-        let pointer = self.emit_place_pointer_expr(receiver);
+        let pointer = if op == CollectionOp::Peek && Self::expr_place(receiver).is_none() {
+            let value = self.emit_expr(receiver);
+            if self.terminated {
+                return String::new();
+            }
+            let pointer = self.entry_alloca(collection_ty);
+            self.instruction(format!(
+                "store {} {value}, ptr {pointer}, align 1",
+                self.lltype(collection_ty)
+            ));
+            pointer
+        } else {
+            self.emit_place_pointer_expr(receiver)
+        };
         if op == CollectionOp::Clear {
             let count_ptr = self.temp();
             self.instruction(format!(
@@ -3051,6 +3313,179 @@ impl<'a> FunctionEmitter<'a> {
             values.push(self.emit_expr(arg));
             if self.terminated {
                 return String::new();
+            }
+        }
+        if matches!(
+            self.program.types[collection_ty.0].kind,
+            TTypeKind::Queue { .. } | TTypeKind::Ring { .. }
+        ) {
+            let is_ring = matches!(
+                self.program.types[collection_ty.0].kind,
+                TTypeKind::Ring { .. }
+            );
+            match op {
+                CollectionOp::Push | CollectionOp::RingPush => {
+                    if is_ring && capacity == 0 {
+                        return String::new();
+                    }
+                    let count = self.emit_collection_count(collection_ty, &pointer);
+                    if op == CollectionOp::Push && proven_success {
+                        let physical =
+                            self.emit_queue_ring_physical_index(collection_ty, &pointer, &count);
+                        self.emit_store_collection_element(
+                            collection_ty,
+                            &pointer,
+                            &physical,
+                            &values[0],
+                        );
+                        let next = self.temp();
+                        self.instruction(format!("{next} = add i64 {count}, 1"));
+                        let count_ptr = self.emit_queue_ring_meta_ptr(collection_ty, &pointer, 1);
+                        self.instruction(format!("store i64 {next}, ptr {count_ptr}, align 1"));
+                        return self.emit_construct_values(
+                            expr.ty,
+                            0,
+                            vec![(Ty::Unit, String::new())],
+                        );
+                    }
+                    let full = self.temp();
+                    self.instruction(format!("{full} = icmp uge i64 {count}, {capacity}"));
+                    let full_label = self.new_label("queue.full");
+                    let room_label = self.new_label("queue.room");
+                    let merge = self.new_label("queue.push.end");
+                    self.terminate(format!(
+                        "br i1 {full}, label %{full_label}, label %{room_label}"
+                    ));
+                    self.start_block(&full_label);
+                    if op == CollectionOp::RingPush {
+                        let head_ptr = self.emit_queue_ring_meta_ptr(collection_ty, &pointer, 0);
+                        let head = self.temp();
+                        self.instruction(format!("{head} = load i64, ptr {head_ptr}, align 1"));
+                        self.emit_store_collection_element(
+                            collection_ty,
+                            &pointer,
+                            &head,
+                            &values[0],
+                        );
+                        let incremented = self.temp();
+                        self.instruction(format!("{incremented} = add i64 {head}, 1"));
+                        let next_head = self.temp();
+                        self.instruction(format!(
+                            "{next_head} = urem i64 {incremented}, {capacity}"
+                        ));
+                        self.instruction(format!("store i64 {next_head}, ptr {head_ptr}, align 1"));
+                    }
+                    let full_result = if op == CollectionOp::RingPush {
+                        "".to_owned()
+                    } else {
+                        let full_ty = self.program.types[expr.ty.0].cases()[1].payload[0];
+                        let full_value = self.emit_construct_values(full_ty, 0, Vec::new());
+                        self.emit_construct_values(expr.ty, 1, vec![(full_ty, full_value)])
+                    };
+                    let full_pred = self.current_label.clone();
+                    self.terminate(format!("br label %{merge}"));
+                    self.start_block(&room_label);
+                    let physical =
+                        self.emit_queue_ring_physical_index(collection_ty, &pointer, &count);
+                    self.emit_store_collection_element(
+                        collection_ty,
+                        &pointer,
+                        &physical,
+                        &values[0],
+                    );
+                    let next = self.temp();
+                    self.instruction(format!("{next} = add i64 {count}, 1"));
+                    let count_ptr = self.emit_queue_ring_meta_ptr(collection_ty, &pointer, 1);
+                    self.instruction(format!("store i64 {next}, ptr {count_ptr}, align 1"));
+                    let room_result = if op == CollectionOp::RingPush {
+                        String::new()
+                    } else {
+                        self.emit_construct_values(expr.ty, 0, vec![(Ty::Unit, String::new())])
+                    };
+                    let room_pred = self.current_label.clone();
+                    self.terminate(format!("br label %{merge}"));
+                    self.start_block(&merge);
+                    if op == CollectionOp::RingPush {
+                        return String::new();
+                    }
+                    let result = self.temp();
+                    self.instruction(format!(
+                        "{result} = phi {} [ {full_result}, %{full_pred} ], [ {room_result}, %{room_pred} ]",
+                        self.lltype(expr.ty)
+                    ));
+                    return result;
+                }
+                CollectionOp::Pop => {
+                    let count = self.emit_collection_count(collection_ty, &pointer);
+                    let empty = self.temp();
+                    self.instruction(format!("{empty} = icmp eq i64 {count}, 0"));
+                    let none_label = self.new_label("fifo.pop.none");
+                    let some_label = self.new_label("fifo.pop.some");
+                    let merge = self.new_label("fifo.pop.end");
+                    self.terminate(format!(
+                        "br i1 {empty}, label %{none_label}, label %{some_label}"
+                    ));
+                    self.start_block(&none_label);
+                    let none = self.emit_construct_values(expr.ty, 1, Vec::new());
+                    let none_pred = self.current_label.clone();
+                    self.terminate(format!("br label %{merge}"));
+                    self.start_block(&some_label);
+                    let value = self.emit_collection_element(collection_ty, &pointer, "0");
+                    let next_count = self.temp();
+                    self.instruction(format!("{next_count} = sub i64 {count}, 1"));
+                    let count_ptr = self.emit_queue_ring_meta_ptr(collection_ty, &pointer, 1);
+                    self.instruction(format!("store i64 {next_count}, ptr {count_ptr}, align 1"));
+                    if capacity > 0 {
+                        let head_ptr = self.emit_queue_ring_meta_ptr(collection_ty, &pointer, 0);
+                        let head = self.temp();
+                        self.instruction(format!("{head} = load i64, ptr {head_ptr}, align 1"));
+                        let incremented = self.temp();
+                        self.instruction(format!("{incremented} = add i64 {head}, 1"));
+                        let next_head = self.temp();
+                        self.instruction(format!(
+                            "{next_head} = urem i64 {incremented}, {capacity}"
+                        ));
+                        self.instruction(format!("store i64 {next_head}, ptr {head_ptr}, align 1"));
+                    }
+                    let some = self.emit_construct_values(expr.ty, 0, vec![(element, value)]);
+                    let some_pred = self.current_label.clone();
+                    self.terminate(format!("br label %{merge}"));
+                    self.start_block(&merge);
+                    let result = self.temp();
+                    self.instruction(format!(
+                        "{result} = phi {} [ {none}, %{none_pred} ], [ {some}, %{some_pred} ]",
+                        self.lltype(expr.ty)
+                    ));
+                    return result;
+                }
+                CollectionOp::Peek => {
+                    let count = self.emit_collection_count(collection_ty, &pointer);
+                    let empty = self.temp();
+                    self.instruction(format!("{empty} = icmp eq i64 {count}, 0"));
+                    let none_label = self.new_label("fifo.peek.none");
+                    let some_label = self.new_label("fifo.peek.some");
+                    let merge = self.new_label("fifo.peek.end");
+                    self.terminate(format!(
+                        "br i1 {empty}, label %{none_label}, label %{some_label}"
+                    ));
+                    self.start_block(&none_label);
+                    let none = self.emit_construct_values(expr.ty, 1, Vec::new());
+                    let none_pred = self.current_label.clone();
+                    self.terminate(format!("br label %{merge}"));
+                    self.start_block(&some_label);
+                    let value = self.emit_collection_element(collection_ty, &pointer, "0");
+                    let some = self.emit_construct_values(expr.ty, 0, vec![(element, value)]);
+                    let some_pred = self.current_label.clone();
+                    self.terminate(format!("br label %{merge}"));
+                    self.start_block(&merge);
+                    let result = self.temp();
+                    self.instruction(format!(
+                        "{result} = phi {} [ {none}, %{none_pred} ], [ {some}, %{some_pred} ]",
+                        self.lltype(expr.ty)
+                    ));
+                    return result;
+                }
+                _ => unreachable!("type checker restricts queue/ring operations"),
             }
         }
         match op {
@@ -3241,7 +3676,13 @@ impl<'a> FunctionEmitter<'a> {
                 self.instruction(format!("store i64 {new_count}, ptr {count_ptr}, align 1"));
                 removed
             }
-            CollectionOp::Count | CollectionOp::Len | CollectionOp::Clear => unreachable!(),
+            CollectionOp::Count
+            | CollectionOp::Len
+            | CollectionOp::Width
+            | CollectionOp::Height
+            | CollectionOp::Peek
+            | CollectionOp::RingPush
+            | CollectionOp::Clear => unreachable!(),
         }
     }
 
@@ -3292,9 +3733,20 @@ impl<'a> FunctionEmitter<'a> {
                 "{idx} = load i64, ptr %local.{}, align 1",
                 view.counter_id
             ));
+            let idx = if matches!(
+                self.program.types[view.collection_ty.0].kind,
+                TTypeKind::Queue { .. } | TTypeKind::Ring { .. }
+            ) {
+                self.emit_queue_ring_physical_index(view.collection_ty, &view.collection_ptr, &idx)
+            } else {
+                idx
+            };
             let element = match self.program.types[view.collection_ty.0].kind {
                 TTypeKind::Array { element, .. }
                 | TTypeKind::List { element, .. }
+                | TTypeKind::Queue { element, .. }
+                | TTypeKind::Ring { element, .. }
+                | TTypeKind::Grid { element, .. }
                 | TTypeKind::Pool { element, .. } => element,
                 TTypeKind::Map { value, .. } => value,
                 _ => unreachable!(),
@@ -3335,21 +3787,23 @@ impl<'a> FunctionEmitter<'a> {
                     index,
                     is_map,
                     proven,
+                    grid,
                     ..
                 } => {
-                    let index_value = self.emit_expr(index);
-                    if !*proven && !*is_map {
-                        self.emit_index_guard(
-                            current_ty,
-                            &pointer,
-                            &index_value,
-                            false,
-                            index.span,
-                        );
-                    }
+                    let index_value = self.emit_projection_index(
+                        current_ty,
+                        &pointer,
+                        index,
+                        grid.as_ref(),
+                        *proven,
+                        *is_map,
+                    );
                     let element = match self.program.types[current_ty.0].kind {
                         TTypeKind::Array { element, .. }
                         | TTypeKind::List { element, .. }
+                        | TTypeKind::Queue { element, .. }
+                        | TTypeKind::Ring { element, .. }
+                        | TTypeKind::Grid { element, .. }
                         | TTypeKind::Pool { element, .. } => element,
                         TTypeKind::Map { value, .. } if *is_map => value,
                         _ => unreachable!("typed place index crosses only collection storage"),
@@ -3418,6 +3872,7 @@ impl<'a> FunctionEmitter<'a> {
                 capacity,
                 is_list,
                 proven,
+                grid,
             } => {
                 let mut place = Self::expr_place(receiver)?;
                 let constant = if let TExprKind::Integer(value) = index.kind {
@@ -3433,6 +3888,7 @@ impl<'a> FunctionEmitter<'a> {
                     is_pool: false,
                     is_map: false,
                     proven: *proven,
+                    grid: grid.as_deref().cloned(),
                 });
                 place.ty = expr.ty;
                 Some(place)
@@ -3446,7 +3902,7 @@ impl<'a> FunctionEmitter<'a> {
         self.emit_place_pointer(&place)
     }
 
-    fn place_struct_element(&self, place: &TPlace) -> Option<(Ty, TExpr, String)> {
+    fn place_struct_element(&self, place: &TPlace) -> Option<(Ty, TProjection, String)> {
         if place
             .path
             .last()
@@ -3463,6 +3919,9 @@ impl<'a> FunctionEmitter<'a> {
                         match self.program.types[current_ty.0].kind {
                             TTypeKind::Array { element, .. }
                             | TTypeKind::List { element, .. }
+                            | TTypeKind::Queue { element, .. }
+                            | TTypeKind::Ring { element, .. }
+                            | TTypeKind::Grid { element, .. }
                             | TTypeKind::Pool { element, .. } => element,
                             TTypeKind::Map { value, .. } if *is_map => value,
                             _ => return None,
@@ -3470,37 +3929,63 @@ impl<'a> FunctionEmitter<'a> {
                     }
                 };
             }
-            let TProjection::Index { index, .. } = place.path.last()? else {
+            let projection @ TProjection::Index { .. } = place.path.last()? else {
                 unreachable!()
             };
             let element = match self.program.types[current_ty.0].kind {
                 TTypeKind::Array { element, .. }
                 | TTypeKind::List { element, .. }
+                | TTypeKind::Queue { element, .. }
+                | TTypeKind::Ring { element, .. }
+                | TTypeKind::Grid { element, .. }
                 | TTypeKind::Pool { element, .. } => element,
                 TTypeKind::Map { value, .. } => value,
                 _ => return None,
             };
             if matches!(self.program.types[element.0].kind, TTypeKind::Struct(_)) {
-                return Some((current_ty, index.clone(), String::new()));
+                return Some((current_ty, projection.clone(), String::new()));
             }
         }
         if let Some(view) = self.views.get(&place.root) {
             if place.path.is_empty()
                 && matches!(self.program.types[place.ty.0].kind, TTypeKind::Struct(_))
             {
+                let (capacity, is_list) = match self.program.types[view.collection_ty.0].kind {
+                    TTypeKind::Array { capacity, .. } | TTypeKind::Grid { capacity, .. } => {
+                        (capacity, false)
+                    }
+                    TTypeKind::List { capacity, .. } => (capacity, true),
+                    TTypeKind::Queue { capacity, .. } | TTypeKind::Ring { capacity, .. } => {
+                        (capacity, true)
+                    }
+                    _ => return None,
+                };
                 let index = TExpr {
                     kind: TExprKind::Local(view.counter_id),
                     ty: Ty::Long,
                     span: Span::default(),
                 };
-                return Some((view.collection_ty, index, view.collection_ptr.clone()));
+                return Some((
+                    view.collection_ty,
+                    TProjection::Index {
+                        index,
+                        constant: None,
+                        capacity,
+                        is_list,
+                        is_pool: false,
+                        is_map: false,
+                        proven: true,
+                        grid: None,
+                    },
+                    view.collection_ptr.clone(),
+                ));
             }
         }
         None
     }
 
     fn emit_struct_element_address(&mut self, place: &TPlace) -> Option<(Ty, String, String)> {
-        let (collection_ty, index, explicit_ptr) = self.place_struct_element(place)?;
+        let (collection_ty, projection, explicit_ptr) = self.place_struct_element(place)?;
         let has_explicit_pointer = !explicit_ptr.is_empty();
         let pointer = if has_explicit_pointer {
             explicit_ptr
@@ -3510,12 +3995,24 @@ impl<'a> FunctionEmitter<'a> {
             collection_place.ty = collection_ty;
             self.emit_place_pointer(&collection_place)
         };
-        let index_value = self.emit_expr(&index);
-        if !has_explicit_pointer {
-            if let Some(TProjection::Index { proven: false, .. }) = place.path.last() {
-                self.emit_index_guard(collection_ty, &pointer, &index_value, false, index.span);
-            }
-        }
+        let TProjection::Index {
+            index,
+            grid,
+            proven,
+            is_map,
+            ..
+        } = &projection
+        else {
+            unreachable!()
+        };
+        let index_value = self.emit_projection_index(
+            collection_ty,
+            &pointer,
+            index,
+            grid.as_ref(),
+            *proven || has_explicit_pointer,
+            *is_map,
+        );
         Some((collection_ty, pointer, index_value))
     }
 
@@ -3676,6 +4173,7 @@ impl<'a> FunctionEmitter<'a> {
             TStmtKind::ForEach {
                 id,
                 index_id,
+                second_index_id,
                 counter_id,
                 collection,
                 source,
@@ -3683,10 +4181,12 @@ impl<'a> FunctionEmitter<'a> {
                 is_pool,
                 is_map,
                 is_set,
+                is_grid,
                 body,
             } => self.emit_for_each(
                 *id,
                 *index_id,
+                *second_index_id,
                 *counter_id,
                 collection,
                 source,
@@ -3694,6 +4194,7 @@ impl<'a> FunctionEmitter<'a> {
                 *is_pool,
                 *is_map,
                 *is_set,
+                *is_grid,
                 body,
             ),
             TStmtKind::Discard(value) => {
@@ -3812,6 +4313,7 @@ impl<'a> FunctionEmitter<'a> {
         &mut self,
         id: usize,
         index_id: Option<usize>,
+        second_index_id: Option<usize>,
         counter_id: usize,
         collection: &TExpr,
         source: &TPlace,
@@ -3819,6 +4321,7 @@ impl<'a> FunctionEmitter<'a> {
         is_pool: bool,
         is_map: bool,
         is_set: bool,
+        is_grid: bool,
         body: &TBlock,
     ) {
         let collection_ptr = self.emit_place_pointer(source);
@@ -3826,6 +4329,9 @@ impl<'a> FunctionEmitter<'a> {
         let capacity = match self.program.types[collection_ty.0].kind {
             TTypeKind::Array { capacity, .. }
             | TTypeKind::List { capacity, .. }
+            | TTypeKind::Queue { capacity, .. }
+            | TTypeKind::Ring { capacity, .. }
+            | TTypeKind::Grid { capacity, .. }
             | TTypeKind::Pool { capacity, .. }
             | TTypeKind::Map { capacity, .. }
             | TTypeKind::Set { capacity, .. } => capacity,
@@ -4010,6 +4516,32 @@ impl<'a> FunctionEmitter<'a> {
                 "store {} {key}, ptr %local.{id}, align 1",
                 self.lltype(key_ty)
             ));
+        } else if is_grid {
+            let current = self.temp();
+            self.instruction(format!(
+                "{current} = load i64, ptr %local.{counter_id}, align 1"
+            ));
+            let width = match self.program.types[collection_ty.0].kind {
+                TTypeKind::Grid { width, .. } => width,
+                _ => unreachable!("grid iteration has a grid source"),
+            };
+            let (x, y) = if width == 0 {
+                ("0".to_owned(), "0".to_owned())
+            } else {
+                let x = self.temp();
+                self.instruction(format!("{x} = urem i64 {current}, {width}"));
+                let y = self.temp();
+                self.instruction(format!("{y} = udiv i64 {current}, {width}"));
+                (x, y)
+            };
+            if let Some(index_id) = index_id {
+                self.instruction(format!("store i64 {x}, ptr %local.{index_id}, align 1"));
+            }
+            if let Some(second_index_id) = second_index_id {
+                self.instruction(format!(
+                    "store i64 {y}, ptr %local.{second_index_id}, align 1"
+                ));
+            }
         } else if let Some(index_id) = index_id {
             let index = self.temp();
             self.instruction(format!(
@@ -4356,7 +4888,15 @@ impl<'a> FunctionEmitter<'a> {
         let mut sizes = vec![None; self.program.types.len()];
         let mut offset = 0usize;
         for ((field_ty, value), expected_ty) in values.into_iter().zip(case.payload) {
-            debug_assert_eq!(field_ty, expected_ty);
+            debug_assert_eq!(
+                base_type(field_ty, &self.program.types),
+                base_type(expected_ty, &self.program.types),
+                "construction of {} case {} has incompatible payload type {} but expects {}",
+                self.program.types[ty.0].name,
+                case_index,
+                self.program.types[field_ty.0].name,
+                self.program.types[expected_ty.0].name
+            );
             let size = type_size(field_ty, &self.program.types, &mut sizes);
             if field_ty != Ty::Unit {
                 let field_ptr = self.temp();
@@ -4419,9 +4959,16 @@ impl<'a> FunctionEmitter<'a> {
             self.emit_print_pool(ty, value);
             return;
         }
+        if matches!(self.program.types[ty.0].kind, TTypeKind::Grid { .. }) {
+            self.emit_print_grid(ty, value);
+            return;
+        }
         if matches!(
             self.program.types[ty.0].kind,
-            TTypeKind::Array { .. } | TTypeKind::List { .. }
+            TTypeKind::Array { .. }
+                | TTypeKind::List { .. }
+                | TTypeKind::Queue { .. }
+                | TTypeKind::Ring { .. }
         ) {
             self.emit_print_collection(ty, value);
             return;
@@ -4516,14 +5063,23 @@ impl<'a> FunctionEmitter<'a> {
         ));
         let length = match self.program.types[ty.0].kind {
             TTypeKind::Array { capacity, .. } => capacity.to_string(),
-            TTypeKind::List { .. } => self.emit_collection_count(ty, &pointer),
+            TTypeKind::List { .. } | TTypeKind::Queue { .. } | TTypeKind::Ring { .. } => {
+                self.emit_collection_count(ty, &pointer)
+            }
             _ => unreachable!(),
         };
         let element = match self.program.types[ty.0].kind {
-            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            TTypeKind::Array { element, .. }
+            | TTypeKind::List { element, .. }
+            | TTypeKind::Queue { element, .. }
+            | TTypeKind::Ring { element, .. } => element,
             _ => unreachable!(),
         };
-        self.print_text("[");
+        match self.program.types[ty.0].kind {
+            TTypeKind::Queue { .. } => self.print_text("queue["),
+            TTypeKind::Ring { .. } => self.print_text("ring["),
+            _ => self.print_text("["),
+        }
         let counter = self.entry_alloca(Ty::Long);
         self.instruction(format!("store i64 0, ptr {counter}, align 1"));
         let cond = self.new_label("print.collection.cond");
@@ -4555,6 +5111,95 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!("store i64 {next}, ptr {counter}, align 1"));
         self.terminate(format!("br label %{cond}"));
         self.start_block(&done);
+        self.print_text("]");
+    }
+
+    fn emit_print_grid(&mut self, ty: Ty, value: &str) {
+        let pointer = self.entry_alloca(ty);
+        self.instruction(format!(
+            "store {} {value}, ptr {pointer}, align 1",
+            self.lltype(ty)
+        ));
+        let (element, width, height) = match self.program.types[ty.0].kind {
+            TTypeKind::Grid {
+                element,
+                width,
+                height,
+                ..
+            } => (element, width, height),
+            _ => unreachable!(),
+        };
+        let y_ptr = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {y_ptr}, align 1"));
+        let outer_cond = self.new_label("print.grid.outer.cond");
+        let outer_body = self.new_label("print.grid.outer.body");
+        let outer_done = self.new_label("print.grid.outer.done");
+        self.print_text("[");
+        self.terminate(format!("br label %{outer_cond}"));
+        self.start_block(&outer_cond);
+        let y = self.temp();
+        self.instruction(format!("{y} = load i64, ptr {y_ptr}, align 1"));
+        let more_rows = self.temp();
+        self.instruction(format!("{more_rows} = icmp ult i64 {y}, {height}"));
+        self.terminate(format!(
+            "br i1 {more_rows}, label %{outer_body}, label %{outer_done}"
+        ));
+        self.start_block(&outer_body);
+        let first_row = self.temp();
+        self.instruction(format!("{first_row} = icmp eq i64 {y}, 0"));
+        let row_separator = self.new_label("print.grid.row.separator");
+        let row_start = self.new_label("print.grid.row.start");
+        self.terminate(format!(
+            "br i1 {first_row}, label %{row_start}, label %{row_separator}"
+        ));
+        self.start_block(&row_separator);
+        self.print_text(", ");
+        self.terminate(format!("br label %{row_start}"));
+        self.start_block(&row_start);
+        self.print_text("[");
+        let x_ptr = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {x_ptr}, align 1"));
+        let inner_cond = self.new_label("print.grid.inner.cond");
+        let inner_body = self.new_label("print.grid.inner.body");
+        let inner_done = self.new_label("print.grid.inner.done");
+        self.terminate(format!("br label %{inner_cond}"));
+        self.start_block(&inner_cond);
+        let x = self.temp();
+        self.instruction(format!("{x} = load i64, ptr {x_ptr}, align 1"));
+        let more_cols = self.temp();
+        self.instruction(format!("{more_cols} = icmp ult i64 {x}, {width}"));
+        self.terminate(format!(
+            "br i1 {more_cols}, label %{inner_body}, label %{inner_done}"
+        ));
+        self.start_block(&inner_body);
+        let first_col = self.temp();
+        self.instruction(format!("{first_col} = icmp eq i64 {x}, 0"));
+        let item_separator = self.new_label("print.grid.item.separator");
+        let item_start = self.new_label("print.grid.item.start");
+        self.terminate(format!(
+            "br i1 {first_col}, label %{item_start}, label %{item_separator}"
+        ));
+        self.start_block(&item_separator);
+        self.print_text(", ");
+        self.terminate(format!("br label %{item_start}"));
+        self.start_block(&item_start);
+        let row = self.temp();
+        self.instruction(format!("{row} = mul i64 {y}, {width}"));
+        let flat = self.temp();
+        self.instruction(format!("{flat} = add i64 {row}, {x}"));
+        let item = self.emit_collection_element(ty, &pointer, &flat);
+        self.emit_print_value(element, &item);
+        let next_x = self.temp();
+        self.instruction(format!("{next_x} = add i64 {x}, 1"));
+        self.instruction(format!("store i64 {next_x}, ptr {x_ptr}, align 1"));
+        self.terminate(format!("br label %{inner_cond}"));
+        self.start_block(&inner_done);
+        self.print_text("]");
+        let next_y = self.temp();
+        self.instruction(format!("{next_y} = add i64 {y}, 1"));
+        self.instruction(format!("store i64 {next_y}, ptr {y_ptr}, align 1"));
+        self.terminate(format!("br label %{outer_cond}"));
+        self.start_block(&outer_done);
         self.print_text("]");
     }
 
@@ -5023,7 +5668,12 @@ impl<'a> FunctionEmitter<'a> {
         }
         if matches!(
             self.program.types[ty.0].kind,
-            TTypeKind::Array { .. } | TTypeKind::List { .. } | TTypeKind::Pool { .. }
+            TTypeKind::Array { .. }
+                | TTypeKind::List { .. }
+                | TTypeKind::Queue { .. }
+                | TTypeKind::Ring { .. }
+                | TTypeKind::Grid { .. }
+                | TTypeKind::Pool { .. }
         ) {
             if matches!(self.program.types[ty.0].kind, TTypeKind::Pool { .. }) {
                 return self.emit_pool_equal(ty, left, right);
@@ -5255,19 +5905,21 @@ impl<'a> FunctionEmitter<'a> {
             "store {} {right}, ptr {right_ptr}, align 1",
             self.lltype(ty)
         ));
-        let (length, is_list) = match self.program.types[ty.0].kind {
-            TTypeKind::Array { capacity, .. } => (capacity.to_string(), false),
-            TTypeKind::List { .. } => {
-                let left_count = self.emit_collection_count(ty, &left_ptr);
-                let right_count = self.emit_collection_count(ty, &right_ptr);
-                let same = self.temp();
-                self.instruction(format!("{same} = icmp eq i64 {left_count}, {right_count}"));
-                (left_count, true)
+        let (length, is_dynamic) = match self.program.types[ty.0].kind {
+            TTypeKind::Array { capacity, .. } | TTypeKind::Grid { capacity, .. } => {
+                (capacity.to_string(), false)
+            }
+            TTypeKind::List { .. } | TTypeKind::Queue { .. } | TTypeKind::Ring { .. } => {
+                (self.emit_collection_count(ty, &left_ptr), true)
             }
             _ => unreachable!(),
         };
         let element = match self.program.types[ty.0].kind {
-            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            TTypeKind::Array { element, .. }
+            | TTypeKind::List { element, .. }
+            | TTypeKind::Queue { element, .. }
+            | TTypeKind::Ring { element, .. }
+            | TTypeKind::Grid { element, .. } => element,
             _ => unreachable!(),
         };
         let counter = self.entry_alloca(Ty::Long);
@@ -5278,7 +5930,7 @@ impl<'a> FunctionEmitter<'a> {
         let true_label = self.new_label("eq.collection.true");
         let false_label = self.new_label("eq.collection.false");
         let merge = self.new_label("eq.collection.end");
-        if is_list {
+        if is_dynamic {
             let left_count = self.emit_collection_count(ty, &left_ptr);
             let right_count = self.emit_collection_count(ty, &right_ptr);
             let same = self.temp();
@@ -5578,6 +6230,7 @@ impl<'a> FunctionEmitter<'a> {
                 receiver,
                 index,
                 proven,
+                grid,
                 ..
             } => {
                 if let Some(place) = Self::expr_place(expr) {
@@ -5594,11 +6247,15 @@ impl<'a> FunctionEmitter<'a> {
                         "store {} {collection}, ptr {pointer}, align 1",
                         self.lltype(receiver.ty)
                     ));
-                    let index_value = self.emit_expr(index);
+                    let index_value = if let Some(grid) = grid {
+                        self.emit_grid_index_value(grid)
+                    } else {
+                        self.emit_expr(index)
+                    };
                     if self.terminated {
                         return String::new();
                     }
-                    if !*proven {
+                    if grid.is_none() && !*proven {
                         self.emit_index_guard(
                             receiver.ty,
                             &pointer,
@@ -5612,9 +6269,12 @@ impl<'a> FunctionEmitter<'a> {
             }
             TExprKind::Fill { value, capacity } => self.emit_fill(expr.ty, value, *capacity),
             TExprKind::EmptyArray
+            | TExprKind::EmptyGrid
             | TExprKind::EmptyList
             | TExprKind::EmptyMap
-            | TExprKind::EmptySet => "zeroinitializer".to_owned(),
+            | TExprKind::EmptySet
+            | TExprKind::EmptyQueue
+            | TExprKind::EmptyRing => "zeroinitializer".to_owned(),
             TExprKind::EmptyPool => self.emit_pool_init(expr.ty),
             TExprKind::CollectionOp {
                 op,

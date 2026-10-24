@@ -87,6 +87,7 @@ struct Checker {
     refinement_ids: HashMap<(Ty, i128, i128, RefinePolicy), Ty>,
     generic_ids: HashMap<(u8, Ty, Ty), Ty>,
     collection_ids: HashMap<(u8, Ty, usize), Ty>,
+    grid_ids: HashMap<(Ty, usize, usize), Ty>,
     map_ids: HashMap<(Ty, Ty, usize), Ty>,
     set_ids: HashMap<(Ty, usize), Ty>,
     pool_ids: HashMap<(Ty, usize, usize), Ty>,
@@ -177,6 +178,7 @@ impl Checker {
             refinement_ids: HashMap::new(),
             generic_ids: HashMap::new(),
             collection_ids: HashMap::new(),
+            grid_ids: HashMap::new(),
             map_ids: HashMap::new(),
             set_ids: HashMap::new(),
             pool_ids: HashMap::new(),
@@ -698,6 +700,101 @@ impl Checker {
                     ty.span,
                 )
             }
+            "queue" | "ring"
+                if ty.args.len() == 1 && ty.const_args.len() == 1 && ty.range.is_none() =>
+            {
+                let element = self.parse_type(&ty.args[0])?;
+                if self.type_contains_pool(element) {
+                    return Err(CheckError {
+                        span: ty.args[0].span,
+                        message: "pools cannot appear inside queue or ring elements; each repeated element would need a distinct owner".to_owned(),
+                    });
+                }
+                let raw_capacity = self.capacity_value(&ty.const_args[0])?;
+                if raw_capacity < 0 {
+                    return Err(CheckError {
+                        span: ty.const_args[0].span,
+                        message: format!(
+                            "{} capacity cannot be negative; use zero or a positive constant",
+                            ty.name
+                        ),
+                    });
+                }
+                if raw_capacity > i64::MAX as i128 {
+                    return Err(CheckError {
+                        span: ty.const_args[0].span,
+                        message: "collection size overflows long; reduce a capacity".to_owned(),
+                    });
+                }
+                let capacity = usize::try_from(raw_capacity).map_err(|_| CheckError {
+                    span: ty.const_args[0].span,
+                    message: "collection size overflows long; reduce a capacity".to_owned(),
+                })?;
+                self.intern_collection(
+                    if ty.name == "queue" { 2 } else { 3 },
+                    element,
+                    capacity,
+                    format!("{}<{}, {}>", ty.name, self.type_name(element), capacity),
+                    ty.span,
+                )
+            }
+            "grid" if ty.args.len() == 1 && ty.const_args.len() == 2 && ty.range.is_none() => {
+                let element = self.parse_type(&ty.args[0])?;
+                if self.type_contains_pool(element) {
+                    return Err(CheckError {
+                        span: ty.args[0].span,
+                        message: "pools cannot appear inside grid cells; each repeated cell would need a distinct owner".to_owned(),
+                    });
+                }
+                let width = self.capacity_value(&ty.const_args[0])?;
+                let height = self.capacity_value(&ty.const_args[1])?;
+                if width < 0 || height < 0 {
+                    return Err(CheckError {
+                        span: if width < 0 {
+                            ty.const_args[0].span
+                        } else {
+                            ty.const_args[1].span
+                        },
+                        message:
+                            "grid dimensions cannot be negative; use zero or a positive constant"
+                                .to_owned(),
+                    });
+                }
+                if width > i64::MAX as i128 || height > i64::MAX as i128 {
+                    return Err(CheckError {
+                        span: if width > i64::MAX as i128 {
+                            ty.const_args[0].span
+                        } else {
+                            ty.const_args[1].span
+                        },
+                        message: "grid dimensions overflow long; reduce a dimension".to_owned(),
+                    });
+                }
+                let capacity = width.checked_mul(height).ok_or_else(|| CheckError {
+                    span: ty.span,
+                    message: "grid size product overflows long; reduce its dimensions".to_owned(),
+                })?;
+                if capacity > i64::MAX as i128 {
+                    return Err(CheckError {
+                        span: ty.span,
+                        message: "grid size product overflows long; reduce its dimensions"
+                            .to_owned(),
+                    });
+                }
+                let width = usize::try_from(width).map_err(|_| CheckError {
+                    span: ty.const_args[0].span,
+                    message: "grid dimensions overflow long; reduce a dimension".to_owned(),
+                })?;
+                let height = usize::try_from(height).map_err(|_| CheckError {
+                    span: ty.const_args[1].span,
+                    message: "grid dimensions overflow long; reduce a dimension".to_owned(),
+                })?;
+                let capacity = usize::try_from(capacity).map_err(|_| CheckError {
+                    span: ty.span,
+                    message: "grid size product overflows long; reduce its dimensions".to_owned(),
+                })?;
+                self.intern_grid(element, width, height, capacity, ty.span)
+            }
             "map" if ty.args.len() == 2 && ty.const_args.len() == 1 && ty.range.is_none() => {
                 let key = self.parse_type(&ty.args[0])?;
                 let value = self.parse_type(&ty.args[1])?;
@@ -1049,9 +1146,11 @@ impl Checker {
                 TTypeKind::Result(ok, err) => {
                     visit(checker, *ok, seen) || visit(checker, *err, seen)
                 }
-                TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
-                    visit(checker, *element, seen)
-                }
+                TTypeKind::Array { element, .. }
+                | TTypeKind::List { element, .. }
+                | TTypeKind::Queue { element, .. }
+                | TTypeKind::Ring { element, .. }
+                | TTypeKind::Grid { element, .. } => visit(checker, *element, seen),
                 TTypeKind::Map { key, value, .. } => {
                     visit(checker, *key, seen) || visit(checker, *value, seen)
                 }
@@ -1097,9 +1196,11 @@ impl Checker {
                     visit(checker, *ok, seen, owners);
                     visit(checker, *err, seen, owners);
                 }
-                TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
-                    visit(checker, *element, seen, owners)
-                }
+                TTypeKind::Array { element, .. }
+                | TTypeKind::List { element, .. }
+                | TTypeKind::Queue { element, .. }
+                | TTypeKind::Ring { element, .. }
+                | TTypeKind::Grid { element, .. } => visit(checker, *element, seen, owners),
                 TTypeKind::Map { key, value, .. } => {
                     visit(checker, *key, seen, owners);
                     visit(checker, *value, seen, owners);
@@ -1386,6 +1487,35 @@ impl Checker {
                     span,
                 )
             }
+            TTypeKind::Queue { element, capacity } => {
+                let element = self.substitute_owner_type(element, substitutions, memo, span)?;
+                self.intern_collection(
+                    2,
+                    element,
+                    capacity,
+                    format!("queue<{}, {}>", self.type_name(element), capacity),
+                    span,
+                )
+            }
+            TTypeKind::Ring { element, capacity } => {
+                let element = self.substitute_owner_type(element, substitutions, memo, span)?;
+                self.intern_collection(
+                    3,
+                    element,
+                    capacity,
+                    format!("ring<{}, {}>", self.type_name(element), capacity),
+                    span,
+                )
+            }
+            TTypeKind::Grid {
+                element,
+                width,
+                height,
+                capacity,
+            } => {
+                let element = self.substitute_owner_type(element, substitutions, memo, span)?;
+                self.intern_grid(element, width, height, capacity, span)
+            }
             TTypeKind::Map {
                 key,
                 value,
@@ -1512,14 +1642,41 @@ impl Checker {
         let ty = Ty(self.types.len());
         self.types.push(TType {
             name,
-            kind: if kind == 0 {
-                TTypeKind::Array { element, capacity }
-            } else {
-                TTypeKind::List { element, capacity }
+            kind: match kind {
+                0 => TTypeKind::Array { element, capacity },
+                1 => TTypeKind::List { element, capacity },
+                2 => TTypeKind::Queue { element, capacity },
+                _ => TTypeKind::Ring { element, capacity },
             },
             span,
         });
         self.collection_ids.insert((kind, element, capacity), ty);
+        ty
+    }
+
+    fn intern_grid(
+        &mut self,
+        element: Ty,
+        width: usize,
+        height: usize,
+        capacity: usize,
+        span: Span,
+    ) -> Ty {
+        if let Some(ty) = self.grid_ids.get(&(element, width, height)) {
+            return *ty;
+        }
+        let ty = Ty(self.types.len());
+        self.types.push(TType {
+            name: format!("grid<{}, {}, {}>", self.type_name(element), width, height),
+            kind: TTypeKind::Grid {
+                element,
+                width,
+                height,
+                capacity,
+            },
+            span,
+        });
+        self.grid_ids.insert((element, width, height), ty);
         ty
     }
 
@@ -1683,7 +1840,13 @@ impl Checker {
                 }
                 size
             }
-            TTypeKind::Array { element, capacity } | TTypeKind::List { element, capacity } => {
+            TTypeKind::Array { element, capacity }
+            | TTypeKind::List { element, capacity }
+            | TTypeKind::Queue { element, capacity }
+            | TTypeKind::Ring { element, capacity }
+            | TTypeKind::Grid {
+                element, capacity, ..
+            } => {
                 let lanes = match &self.types[element.0].kind {
                     TTypeKind::Struct(fields) => {
                         fields.iter().map(|field| field.ty).collect::<Vec<_>>()
@@ -1700,8 +1863,16 @@ impl Checker {
                         )?,
                     )?;
                 }
-                if matches!(self.types[ty.0].kind, TTypeKind::List { .. }) {
-                    checked_add(8, payload)?
+                if matches!(
+                    self.types[ty.0].kind,
+                    TTypeKind::List { .. } | TTypeKind::Queue { .. } | TTypeKind::Ring { .. }
+                ) {
+                    let metadata = if matches!(self.types[ty.0].kind, TTypeKind::List { .. }) {
+                        8
+                    } else {
+                        16
+                    };
+                    checked_add(metadata, payload)?
                 } else {
                     payload
                 }
@@ -1776,13 +1947,16 @@ impl Checker {
 
     fn check_all_type_sizes(&self) -> Result<(), CheckError> {
         for (id, definition) in self.types.iter().enumerate().skip(5) {
-            if let TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } =
-                &definition.kind
+            if let TTypeKind::Array { element, .. }
+            | TTypeKind::List { element, .. }
+            | TTypeKind::Queue { element, .. }
+            | TTypeKind::Ring { element, .. }
+            | TTypeKind::Grid { element, .. } = &definition.kind
             {
                 if self.type_contains_pool(*element) {
                     return Err(CheckError {
                         span: definition.span,
-                        message: "pools cannot appear inside array or list elements; each repeated element would need a distinct owner".to_owned(),
+                        message: "pools cannot appear inside repeated collection elements; each repeated element would need a distinct owner".to_owned(),
                     });
                 }
             }
@@ -2010,7 +2184,11 @@ impl Checker {
                 TTypeKind::Struct(fields) => fields.iter().map(|field| field.ty).collect(),
                 TTypeKind::Option(t) => vec![*t],
                 TTypeKind::Result(a, b) => vec![*a, *b],
-                TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
+                TTypeKind::Array { element, .. }
+                | TTypeKind::List { element, .. }
+                | TTypeKind::Queue { element, .. }
+                | TTypeKind::Ring { element, .. }
+                | TTypeKind::Grid { element, .. } => {
                     vec![*element]
                 }
                 TTypeKind::Map { key, value, .. } => vec![*key, *value],
@@ -2812,6 +2990,8 @@ impl Checker {
                 if matches!(
                     self.types[ty.0].kind,
                     TTypeKind::List { .. }
+                        | TTypeKind::Queue { .. }
+                        | TTypeKind::Ring { .. }
                         | TTypeKind::Pool { .. }
                         | TTypeKind::Map { .. }
                         | TTypeKind::Set { .. }
@@ -2826,6 +3006,8 @@ impl Checker {
                             | TExprKind::EmptyPool
                             | TExprKind::EmptyMap
                             | TExprKind::EmptySet
+                            | TExprKind::EmptyQueue
+                            | TExprKind::EmptyRing
                     ) {
                         self.collection_counts.insert(key, 0);
                     } else {
@@ -3168,50 +3350,80 @@ impl Checker {
             StmtKind::ForEach {
                 name,
                 index_name,
+                second_index_name,
                 collection,
                 body,
             } => {
                 let typed_collection = self.check_expr(collection, None)?;
-                let (element, capacity, is_list, is_pool, is_map, is_set, pool_owner, map_key) =
-                    match self.types[typed_collection.ty.0].kind {
-                        TTypeKind::Array { element, capacity } => {
-                            (element, capacity, false, false, false, false, None, None)
-                        }
-                        TTypeKind::List { element, capacity } => {
-                            (element, capacity, true, false, false, false, None, None)
-                        }
-                        TTypeKind::Pool {
-                            element,
-                            capacity,
-                            owner,
-                        } => (
-                            element,
-                            capacity,
-                            false,
-                            true,
-                            false,
-                            false,
-                            Some(owner),
-                            None,
-                        ),
-                        TTypeKind::Map {
-                            key,
-                            value,
-                            capacity,
-                        } => (value, capacity, false, false, true, false, None, Some(key)),
-                        TTypeKind::Set { key, capacity } => {
-                            (key, capacity, false, false, false, true, None, None)
-                        }
-                        _ => {
-                            return Err(CheckError {
-                                span: collection.span,
-                                message: format!(
-                                    "{} is not an array, list, or pool; collection loops need a fixed collection",
-                                    self.type_name(typed_collection.ty)
-                                ),
-                            });
-                        }
-                    };
+                let (
+                    element,
+                    capacity,
+                    is_list,
+                    is_pool,
+                    is_map,
+                    is_set,
+                    is_grid,
+                    pool_owner,
+                    map_key,
+                ) = match self.types[typed_collection.ty.0].kind {
+                    TTypeKind::Array { element, capacity } => (
+                        element, capacity, false, false, false, false, false, None, None,
+                    ),
+                    TTypeKind::List { element, capacity } => (
+                        element, capacity, true, false, false, false, false, None, None,
+                    ),
+                    TTypeKind::Queue { element, capacity }
+                    | TTypeKind::Ring { element, capacity } => (
+                        element, capacity, true, false, false, false, false, None, None,
+                    ),
+                    TTypeKind::Pool {
+                        element,
+                        capacity,
+                        owner,
+                    } => (
+                        element,
+                        capacity,
+                        false,
+                        true,
+                        false,
+                        false,
+                        false,
+                        Some(owner),
+                        None,
+                    ),
+                    TTypeKind::Map {
+                        key,
+                        value,
+                        capacity,
+                    } => (
+                        value,
+                        capacity,
+                        false,
+                        false,
+                        true,
+                        false,
+                        false,
+                        None,
+                        Some(key),
+                    ),
+                    TTypeKind::Set { key, capacity } => {
+                        (key, capacity, false, false, false, true, false, None, None)
+                    }
+                    TTypeKind::Grid {
+                        element, capacity, ..
+                    } => (
+                        element, capacity, false, false, false, false, true, None, None,
+                    ),
+                    _ => {
+                        return Err(CheckError {
+                            span: collection.span,
+                            message: format!(
+                                "{} is not a fixed collection; collection loops need an array, list, pool, map, set, queue, ring, or grid",
+                                self.type_name(typed_collection.ty)
+                            ),
+                        });
+                    }
+                };
                 if is_map && index_name.is_none() {
                     return Err(CheckError {
                         span: stmt.span,
@@ -3222,6 +3434,18 @@ impl Checker {
                     return Err(CheckError {
                         span: stmt.span,
                         message: "set iteration binds one key: use 'for key in set'".to_owned(),
+                    });
+                }
+                if is_grid && (index_name.is_none() || second_index_name.is_none()) {
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message: "grid iteration needs cell, x, and y names: use 'for cell, x, y in grid'".to_owned(),
+                    });
+                }
+                if !is_grid && second_index_name.is_some() {
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message: "only a grid loop has three bindings; use 'for value, index in collection'".to_owned(),
                     });
                 }
                 let source = self.resolve_place(collection).map_err(|_| CheckError {
@@ -3264,6 +3488,14 @@ impl Checker {
                 } else {
                     None
                 };
+                let second_index_id = if let Some(second_index_name) = second_index_name {
+                    Some(
+                        self.declare(second_index_name, Ty::Long, false, stmt.span, true)?
+                            .id,
+                    )
+                } else {
+                    None
+                };
                 let index_expr = TExpr {
                     kind: TExprKind::Local(counter_id),
                     ty: Ty::Long,
@@ -3278,6 +3510,7 @@ impl Checker {
                     is_pool,
                     is_map,
                     proven: true,
+                    grid: None,
                 });
                 element_place.ty = element;
                 if is_set {
@@ -3316,6 +3549,8 @@ impl Checker {
                     is_pool,
                     is_map,
                     is_set,
+                    is_grid,
+                    second_index_id,
                     body: typed_body,
                 }
             }
@@ -3478,7 +3713,9 @@ impl Checker {
             ExprKind::ListLiteral
             | ExprKind::PoolLiteral
             | ExprKind::MapLiteral
-            | ExprKind::SetLiteral => None,
+            | ExprKind::SetLiteral
+            | ExprKind::QueueLiteral
+            | ExprKind::RingLiteral => None,
             ExprKind::Call { name, .. } => {
                 if name == "print" {
                     Some(Ty::Unit)
@@ -3546,9 +3783,18 @@ impl Checker {
             ExprKind::Index { receiver, .. } => {
                 let receiver_ty = self.natural_expr_type_inner(receiver, shadowed_counter)?;
                 match self.types[receiver_ty.0].kind {
-                    TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
-                        Some(element)
-                    }
+                    TTypeKind::Array { element, .. }
+                    | TTypeKind::List { element, .. }
+                    | TTypeKind::Queue { element, .. }
+                    | TTypeKind::Ring { element, .. }
+                    | TTypeKind::Grid { element, .. } => Some(element),
+                    _ => None,
+                }
+            }
+            ExprKind::GridIndex { receiver, .. } => {
+                let receiver_ty = self.natural_expr_type_inner(receiver, shadowed_counter)?;
+                match self.types[receiver_ty.0].kind {
+                    TTypeKind::Grid { element, .. } => Some(element),
                     _ => None,
                 }
             }
@@ -3565,11 +3811,29 @@ impl Checker {
                     (TTypeKind::Option(value), "unwrap") => Some(value),
                     (TTypeKind::Result(ok, _), "unwrap") => Some(ok),
                     (TTypeKind::Result(ok, _), "ok") => Some(self.option_type(ok, expr.span)),
-                    (TTypeKind::Array { .. }, "len") | (TTypeKind::List { .. }, "count") => {
-                        Some(Ty::Long)
-                    }
-                    (TTypeKind::List { element, .. }, "pop") => {
-                        Some(self.option_type(element, expr.span))
+                    (TTypeKind::Array { .. }, "len")
+                    | (TTypeKind::Grid { .. }, "width" | "height")
+                    | (
+                        TTypeKind::List { .. } | TTypeKind::Queue { .. } | TTypeKind::Ring { .. },
+                        "count",
+                    ) => Some(Ty::Long),
+                    (
+                        TTypeKind::List { element, .. }
+                        | TTypeKind::Queue { element, .. }
+                        | TTypeKind::Ring { element, .. },
+                        "pop" | "peek",
+                    ) => Some(self.option_type(element, expr.span)),
+                    (TTypeKind::Ring { .. }, "push") => Some(Ty::Unit),
+                    (TTypeKind::List { .. } | TTypeKind::Queue { .. }, "push") => {
+                        let full_ty = self.type_ids["Full"];
+                        Some(self.intern_generic(
+                            2,
+                            Ty::Unit,
+                            full_ty,
+                            "Result<(), Full>".to_owned(),
+                            expr.span,
+                            TTypeKind::Result(Ty::Unit, full_ty),
+                        ))
                     }
                     (TTypeKind::Pool { element, .. }, "get" | "remove") => {
                         Some(self.option_type(element, expr.span))
@@ -3770,10 +4034,17 @@ impl Checker {
                 self.collect_loop_constraints_expr(receiver, counter, None, constraints);
                 self.collect_loop_constraints_expr(index, counter, Some(Ty::Long), constraints);
             }
+            ExprKind::GridIndex { receiver, x, y, .. } => {
+                self.collect_loop_constraints_expr(receiver, counter, None, constraints);
+                self.collect_loop_constraints_expr(x, counter, Some(Ty::Long), constraints);
+                self.collect_loop_constraints_expr(y, counter, Some(Ty::Long), constraints);
+            }
             ExprKind::ListLiteral
             | ExprKind::PoolLiteral
             | ExprKind::MapLiteral
-            | ExprKind::SetLiteral => {}
+            | ExprKind::SetLiteral
+            | ExprKind::QueueLiteral
+            | ExprKind::RingLiteral => {}
             ExprKind::StructInit { fields, .. } => {
                 for field in fields {
                     self.collect_loop_constraints_expr(&field.value, counter, None, constraints);
@@ -4252,6 +4523,49 @@ impl Checker {
                 ));
             }
         }
+        if let TTypeKind::Grid { width, height, .. } = self.types[typed_collection.ty.0].kind {
+            let value = match name {
+                "width" => width,
+                "height" => height,
+                _ => {
+                    return Err(CheckError {
+                        span: method_span,
+                        message: format!(
+                            "no method '{}' on {}; available methods: width and height",
+                            name,
+                            self.type_name(typed_collection.ty)
+                        ),
+                    });
+                }
+            };
+            if !args.is_empty() {
+                return Err(CheckError {
+                    span: method_span,
+                    message: format!(
+                        "method '{}.{}' takes no arguments",
+                        self.type_name(typed_collection.ty),
+                        name
+                    ),
+                });
+            }
+            if let Some(want) = expected {
+                self.type_mismatch(Ty::Long, want, span)?;
+            }
+            return Ok((
+                TExprKind::CollectionOp {
+                    op: if name == "width" {
+                        CollectionOp::Width
+                    } else {
+                        CollectionOp::Height
+                    },
+                    receiver: Box::new(typed_collection),
+                    args: Vec::new(),
+                    capacity: value,
+                    proven_success: true,
+                },
+                Ty::Long,
+            ));
+        }
         if let TTypeKind::Map {
             key,
             value,
@@ -4528,19 +4842,28 @@ impl Checker {
                 result,
             ));
         }
-        if let TTypeKind::List { element, capacity } = self.types[typed_collection.ty.0].kind {
+        if let Some((element, capacity, is_queue, is_ring)) =
+            match self.types[typed_collection.ty.0].kind {
+                TTypeKind::List { element, capacity } => Some((element, capacity, false, false)),
+                TTypeKind::Queue { element, capacity } => Some((element, capacity, true, false)),
+                TTypeKind::Ring { element, capacity } => Some((element, capacity, false, true)),
+                _ => None,
+            }
+        {
             let op = match name {
+                "push" if is_ring => CollectionOp::RingPush,
                 "push" => CollectionOp::Push,
                 "pop" => CollectionOp::Pop,
-                "insert" => CollectionOp::Insert,
-                "remove" => CollectionOp::Remove,
+                "peek" if is_queue || is_ring => CollectionOp::Peek,
+                "insert" if !is_queue && !is_ring => CollectionOp::Insert,
+                "remove" if !is_queue && !is_ring => CollectionOp::Remove,
                 "count" => CollectionOp::Count,
-                "clear" => CollectionOp::Clear,
+                "clear" if !is_queue && !is_ring => CollectionOp::Clear,
                 _ => {
                     return Err(CheckError {
                         span: method_span,
                         message: format!(
-                            "no method '{}' on {}; available methods: push, pop, insert, remove, count, clear",
+                            "no method '{}' on {}; queues and rings support push, pop, peek, and count; lists support push, pop, insert, remove, count, and clear",
                             name,
                             self.type_name(typed_collection.ty)
                         ),
@@ -4548,7 +4871,7 @@ impl Checker {
                 }
             };
             let expected_args = match op {
-                CollectionOp::Push | CollectionOp::Remove => 1,
+                CollectionOp::Push | CollectionOp::RingPush | CollectionOp::Remove => 1,
                 CollectionOp::Insert => 2,
                 _ => 0,
             };
@@ -4564,9 +4887,24 @@ impl Checker {
                     ),
                 });
             }
-            if op == CollectionOp::Count {
+            if op == CollectionOp::Count || op == CollectionOp::Peek {
+                let result = if op == CollectionOp::Count {
+                    self.intern_refinement(
+                        Ty::Long,
+                        TypeRangeAst {
+                            lower: 0,
+                            upper: capacity as i128,
+                            inclusive: true,
+                            span: method_span,
+                        },
+                        RefinePolicy::Checked,
+                        method_span,
+                    )?
+                } else {
+                    self.option_type(element, method_span)
+                };
                 if let Some(want) = expected {
-                    self.type_mismatch(Ty::Long, want, span)?;
+                    self.type_mismatch(result, want, span)?;
                 }
                 return Ok((
                     TExprKind::CollectionOp {
@@ -4576,33 +4914,47 @@ impl Checker {
                         capacity,
                         proven_success: true,
                     },
-                    Ty::Long,
+                    result,
                 ));
             }
-            let mut receiver_place = self.resolve_place(receiver).map_err(|_| CheckError { span: receiver.span, message: "a collection mutation needs a var, write parameter, or writable collection view".to_owned() })?;
-            if matches!(
-                op,
-                CollectionOp::Push
-                    | CollectionOp::Pop
-                    | CollectionOp::Insert
-                    | CollectionOp::Remove
-                    | CollectionOp::Clear
-            ) {
-                if !self.place_is_mutable(&receiver_place) {
-                    return Err(CheckError { span: receiver.span, message: "a collection mutation needs mutable storage; use var or pass it as write".to_owned() });
-                }
+            let mut receiver_place = self.resolve_place(receiver).map_err(|_| CheckError {
+                span: receiver.span,
+                message: "a collection mutation needs a var, write parameter, or writable collection view".to_owned(),
+            })?;
+            if !self.place_is_mutable(&receiver_place) {
+                return Err(CheckError {
+                    span: receiver.span,
+                    message:
+                        "a collection mutation needs mutable storage; use var or pass it as write"
+                            .to_owned(),
+                });
             }
-            if matches!(
+            let count_key = self.collection_count_key(&receiver_place);
+            let ring_push_safe = op == CollectionOp::RingPush
+                && count_key.as_ref().is_some_and(|key| {
+                    self.loop_push_proofs
+                        .iter()
+                        .any(|proofs| proofs.contains(key))
+                        || (self.loop_depth == 0
+                            && self
+                                .collection_counts
+                                .get(key)
+                                .is_some_and(|count| *count < capacity))
+                });
+            let structural_view_block = matches!(
                 op,
                 CollectionOp::Pop
                     | CollectionOp::Insert
                     | CollectionOp::Remove
                     | CollectionOp::Clear
-            ) && self.active_views.iter().any(|view| {
-                let view = self.canonical_place(view);
-                let receiver = self.canonical_place(&receiver_place);
-                places_may_prefix(&receiver, &view) || places_may_prefix(&view, &receiver)
-            }) {
+            );
+            if (structural_view_block || (op == CollectionOp::RingPush && !ring_push_safe))
+                && self.active_views.iter().any(|view| {
+                    let view = self.canonical_place(view);
+                    let receiver = self.canonical_place(&receiver_place);
+                    places_may_prefix(&receiver, &view) || places_may_prefix(&view, &receiver)
+                })
+            {
                 return Err(CheckError {
                     span: method_span,
                     message: format!(
@@ -4614,10 +4966,11 @@ impl Checker {
             }
             let mut typed_args = Vec::new();
             match op {
-                CollectionOp::Push => typed_args.push(self.check_store(&args[0], element)?),
+                CollectionOp::Push | CollectionOp::RingPush => {
+                    typed_args.push(self.check_store(&args[0], element)?)
+                }
                 CollectionOp::Insert => {
-                    let index = self.check_collection_index(&args[0])?;
-                    typed_args.push(index);
+                    typed_args.push(self.check_collection_index(&args[0])?);
                     typed_args.push(self.check_store(&args[1], element)?);
                 }
                 CollectionOp::Remove => typed_args.push(self.check_collection_index(&args[0])?),
@@ -4636,14 +4989,17 @@ impl Checker {
                     )
                 }
                 CollectionOp::Pop => self.option_type(element, method_span),
+                CollectionOp::RingPush | CollectionOp::Clear => Ty::Unit,
                 CollectionOp::Remove => element,
-                CollectionOp::Count | CollectionOp::Len => Ty::Long,
-                CollectionOp::Clear => Ty::Unit,
+                CollectionOp::Count
+                | CollectionOp::Len
+                | CollectionOp::Width
+                | CollectionOp::Height => Ty::Long,
+                CollectionOp::Peek => unreachable!("peek handled above"),
             };
             if let Some(want) = expected {
                 self.type_mismatch(result, want, span)?;
             }
-            let count_key = self.collection_count_key(&receiver_place);
             let loop_proven = count_key.as_ref().is_some_and(|key| {
                 self.loop_push_proofs
                     .iter()
@@ -4667,6 +5023,17 @@ impl Checker {
                         }
                     }
                 }
+                CollectionOp::RingPush => {
+                    if let Some(key) = count_key {
+                        let current = self
+                            .collection_counts
+                            .get(&key)
+                            .copied()
+                            .unwrap_or(capacity);
+                        self.collection_counts
+                            .insert(key, current.saturating_add(1).min(capacity));
+                    }
+                }
                 CollectionOp::Clear => {
                     if let Some(key) = count_key {
                         self.collection_counts.insert(key, 0);
@@ -4675,18 +5042,13 @@ impl Checker {
                 CollectionOp::Pop | CollectionOp::Insert | CollectionOp::Remove => {
                     self.invalidate_collection_counts(&receiver_place)
                 }
-                CollectionOp::Count | CollectionOp::Len => {}
+                CollectionOp::Count
+                | CollectionOp::Len
+                | CollectionOp::Width
+                | CollectionOp::Height
+                | CollectionOp::Peek => {}
             }
-            if matches!(
-                op,
-                CollectionOp::Push
-                    | CollectionOp::Pop
-                    | CollectionOp::Insert
-                    | CollectionOp::Remove
-                    | CollectionOp::Clear
-            ) {
-                self.invalidate_place(&receiver_place);
-            }
+            self.invalidate_place(&receiver_place);
             receiver_place.ty = typed_collection.ty;
             return Ok((
                 TExprKind::CollectionOp {
@@ -4820,10 +5182,41 @@ impl Checker {
                 ty,
                 span,
             },
+            TTypeKind::Queue { .. } => TExpr {
+                kind: TExprKind::EmptyQueue,
+                ty,
+                span,
+            },
+            TTypeKind::Ring { .. } => TExpr {
+                kind: TExprKind::EmptyRing,
+                ty,
+                span,
+            },
             TTypeKind::Array { element, capacity } => {
                 if capacity == 0 {
                     TExpr {
                         kind: TExprKind::EmptyArray,
+                        ty,
+                        span,
+                    }
+                } else {
+                    let value = self.default_typed_value(element, span)?;
+                    TExpr {
+                        kind: TExprKind::Fill {
+                            value: Box::new(value),
+                            capacity,
+                        },
+                        ty,
+                        span,
+                    }
+                }
+            }
+            TTypeKind::Grid {
+                element, capacity, ..
+            } => {
+                if capacity == 0 {
+                    TExpr {
+                        kind: TExprKind::EmptyGrid,
                         ty,
                         span,
                     }
@@ -4851,7 +5244,11 @@ impl Checker {
                         values.push((index, self.check_store(default, field.ty)?));
                     } else if matches!(
                         self.types[field.ty.0].kind,
-                        TTypeKind::Array { .. } | TTypeKind::List { .. }
+                        TTypeKind::Array { .. }
+                            | TTypeKind::List { .. }
+                            | TTypeKind::Queue { .. }
+                            | TTypeKind::Ring { .. }
+                            | TTypeKind::Grid { .. }
                     ) {
                         values.push((index, self.default_typed_value(field.ty, span)?));
                     } else {
@@ -5485,6 +5882,61 @@ impl Checker {
                         capacity,
                         is_list,
                         proven,
+                        grid: None,
+                    },
+                    element,
+                )
+            }
+            ExprKind::GridIndex {
+                receiver,
+                x,
+                y,
+                x_span,
+            } => {
+                let typed_receiver = self.check_expr(receiver, None)?;
+                let TTypeKind::Grid {
+                    element,
+                    width,
+                    height,
+                    capacity,
+                } = self.types[typed_receiver.ty.0].kind
+                else {
+                    return Err(CheckError {
+                        span: *x_span,
+                        message: format!(
+                            "{} needs one index; two indexes are only valid on a grid",
+                            self.type_name(typed_receiver.ty)
+                        ),
+                    });
+                };
+                let typed_x = self.check_collection_index(x)?;
+                let typed_y = self.check_collection_index(y)?;
+                let x_range = self.expr_range(&typed_x);
+                let y_range = self.expr_range(&typed_y);
+                let proven_x = x_range.is_some_and(|(lo, hi)| lo >= 0 && hi < width as i128);
+                let proven_y = y_range.is_some_and(|(lo, hi)| lo >= 0 && hi < height as i128);
+                if let Some(want) = expected {
+                    self.type_mismatch(element, want, expr.span)?;
+                }
+                (
+                    TExprKind::Index {
+                        receiver: Box::new(typed_receiver),
+                        index: Box::new(TExpr {
+                            kind: TExprKind::Integer(0),
+                            ty: Ty::Long,
+                            span: expr.span,
+                        }),
+                        capacity,
+                        is_list: false,
+                        proven: proven_x && proven_y,
+                        grid: Some(Box::new(GridIndexInfo {
+                            x: typed_x,
+                            y: typed_y,
+                            width,
+                            height,
+                            proven_x,
+                            proven_y,
+                        })),
                     },
                     element,
                 )
@@ -5496,6 +5948,28 @@ impl Checker {
                     return Err(CheckError { span: expr.span, message: "cannot infer the capacity for 'list {}'; add a list<T, N> type annotation".to_owned() });
                 };
                 (TExprKind::EmptyList, ty)
+            }
+            ExprKind::QueueLiteral => {
+                let Some(ty) =
+                    expected.filter(|ty| matches!(self.types[ty.0].kind, TTypeKind::Queue { .. }))
+                else {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "cannot infer the capacity for 'queue {}'; add a queue<T, N> type annotation".to_owned(),
+                    });
+                };
+                (TExprKind::EmptyQueue, ty)
+            }
+            ExprKind::RingLiteral => {
+                let Some(ty) =
+                    expected.filter(|ty| matches!(self.types[ty.0].kind, TTypeKind::Ring { .. }))
+                else {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "cannot infer the capacity for 'ring {}'; add a ring<T, N> type annotation".to_owned(),
+                    });
+                };
+                (TExprKind::EmptyRing, ty)
             }
             ExprKind::PoolLiteral => {
                 let Some(ty) =
@@ -5592,7 +6066,11 @@ impl Checker {
                         typed_fields.push((index, self.check_store(default, field.ty)?));
                     } else if matches!(
                         self.types[field.ty.0].kind,
-                        TTypeKind::Array { .. } | TTypeKind::List { .. }
+                        TTypeKind::Array { .. }
+                            | TTypeKind::List { .. }
+                            | TTypeKind::Queue { .. }
+                            | TTypeKind::Ring { .. }
+                            | TTypeKind::Grid { .. }
                     ) {
                         typed_fields.push((index, self.default_typed_value(field.ty, expr.span)?));
                     } else {
@@ -5687,13 +6165,17 @@ impl Checker {
                                 .to_owned(),
                         });
                     };
-                    let TTypeKind::Array { element, capacity } = self.types[target.0].kind else {
-                        return Err(CheckError {
-                            span: *call_span,
-                            message:
-                                "fill constructs a fixed array; the expected type must be T[N]"
-                                    .to_owned(),
-                        });
+                    let (element, capacity) = match self.types[target.0].kind {
+                        TTypeKind::Array { element, capacity }
+                        | TTypeKind::Grid {
+                            element, capacity, ..
+                        } => (element, capacity),
+                        _ => {
+                            return Err(CheckError {
+                                span: *call_span,
+                                message: "fill constructs a fixed array or grid; add an array or grid type annotation".to_owned(),
+                            });
+                        }
                     };
                     let value = self.check_store(&args[0], element)?;
                     return self.finish_expr(
@@ -5772,6 +6254,9 @@ impl Checker {
                             self.types[arg.ty.0].kind,
                             TTypeKind::Array { .. }
                                 | TTypeKind::List { .. }
+                                | TTypeKind::Queue { .. }
+                                | TTypeKind::Ring { .. }
+                                | TTypeKind::Grid { .. }
                                 | TTypeKind::Map { .. }
                                 | TTypeKind::Set { .. }
                                 | TTypeKind::Pool { .. }
@@ -5779,7 +6264,7 @@ impl Checker {
                     {
                         return Err(CheckError {
                             span: args[0].span,
-                            message: "print supports int, long, bool, enum, struct, array, list, map, set, and pool values"
+                            message: "print supports int, long, bool, enum, struct, array, list, queue, ring, grid, map, set, and pool values"
                                 .to_owned(),
                         });
                     }
@@ -7056,6 +7541,11 @@ impl Checker {
             | ExprKind::Unary {
                 value: receiver, ..
             } => self.collect_expr_writes(receiver, writes),
+            ExprKind::GridIndex { receiver, x, y, .. } => {
+                self.collect_expr_writes(receiver, writes);
+                self.collect_expr_writes(x, writes);
+                self.collect_expr_writes(y, writes);
+            }
             ExprKind::QualifiedCase { args, .. } => {
                 for arg in args {
                     self.collect_expr_writes(arg, writes);
@@ -7092,6 +7582,8 @@ impl Checker {
             | ExprKind::PoolLiteral
             | ExprKind::MapLiteral
             | ExprKind::SetLiteral
+            | ExprKind::QueueLiteral
+            | ExprKind::RingLiteral
             | ExprKind::Unit
             | ExprKind::Integer { .. }
             | ExprKind::Bool(_)
@@ -7264,6 +7756,61 @@ impl Checker {
                     is_pool: false,
                     is_map: false,
                     proven,
+                    grid: None,
+                });
+                place.ty = element;
+                Ok(place)
+            }
+            ExprKind::GridIndex {
+                receiver,
+                x,
+                y,
+                x_span,
+            } => {
+                let mut place = self.resolve_place(receiver)?;
+                let TTypeKind::Grid {
+                    element,
+                    width,
+                    height,
+                    capacity,
+                } = self.types[place.ty.0].kind
+                else {
+                    return Err(CheckError {
+                        span: *x_span,
+                        message: format!(
+                            "{} needs one index; two indexes are only valid on a grid",
+                            self.type_name(place.ty)
+                        ),
+                    });
+                };
+                let typed_x = self.check_collection_index(x)?;
+                let typed_y = self.check_collection_index(y)?;
+                let proven_x = self
+                    .expr_range(&typed_x)
+                    .is_some_and(|(lo, hi)| lo >= 0 && hi < width as i128);
+                let proven_y = self
+                    .expr_range(&typed_y)
+                    .is_some_and(|(lo, hi)| lo >= 0 && hi < height as i128);
+                place.path.push(TProjection::Index {
+                    index: TExpr {
+                        kind: TExprKind::Integer(0),
+                        ty: Ty::Long,
+                        span: *x_span,
+                    },
+                    constant: None,
+                    capacity,
+                    is_list: false,
+                    is_pool: false,
+                    is_map: false,
+                    proven: proven_x && proven_y,
+                    grid: Some(GridIndexInfo {
+                        x: typed_x,
+                        y: typed_y,
+                        width,
+                        height,
+                        proven_x,
+                        proven_y,
+                    }),
                 });
                 place.ty = element;
                 Ok(place)
@@ -7342,7 +7889,10 @@ impl Checker {
             };
         }
         match self.types[ty.0].kind {
-            TTypeKind::List { capacity, .. } | TTypeKind::Pool { capacity, .. } => Some(capacity),
+            TTypeKind::List { capacity, .. }
+            | TTypeKind::Queue { capacity, .. }
+            | TTypeKind::Ring { capacity, .. }
+            | TTypeKind::Pool { capacity, .. } => Some(capacity),
             TTypeKind::Map { capacity, .. } | TTypeKind::Set { capacity, .. } => Some(capacity),
             _ => None,
         }
@@ -7397,6 +7947,11 @@ impl Checker {
                     right: index,
                     ..
                 } => expr(checker, receiver, counts) && expr(checker, index, counts),
+                ExprKind::GridIndex { receiver, x, y, .. } => {
+                    expr(checker, receiver, counts)
+                        && expr(checker, x, counts)
+                        && expr(checker, y, counts)
+                }
                 ExprKind::Field { receiver, .. }
                 | ExprKind::Fit {
                     value: receiver, ..
@@ -7424,6 +7979,8 @@ impl Checker {
                 | ExprKind::PoolLiteral
                 | ExprKind::MapLiteral
                 | ExprKind::SetLiteral
+                | ExprKind::QueueLiteral
+                | ExprKind::RingLiteral
                 | ExprKind::LoopExit(_) => true,
                 ExprKind::Match { scrutinee, arms } => {
                     if !expr(checker, scrutinee, counts) {
@@ -7621,12 +8178,15 @@ impl Checker {
                     capacity,
                     is_list,
                     proven,
+                    grid,
                     ..
                 } => {
                     let element = match self.types[expr.ty.0].kind {
-                        TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
-                            element
-                        }
+                        TTypeKind::Array { element, .. }
+                        | TTypeKind::List { element, .. }
+                        | TTypeKind::Queue { element, .. }
+                        | TTypeKind::Ring { element, .. }
+                        | TTypeKind::Grid { element, .. } => element,
                         _ => unreachable!("resolved place index belongs to a collection"),
                     };
                     expr = TExpr {
@@ -7636,6 +8196,7 @@ impl Checker {
                             capacity: *capacity,
                             is_list: *is_list,
                             proven: *proven,
+                            grid: grid.clone().map(Box::new),
                         },
                         ty: element,
                         span,
@@ -8301,14 +8862,22 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
             }
         }
         TExprKind::Index {
-            receiver, index, ..
+            receiver,
+            index,
+            grid,
+            ..
         } => {
             if let Some(path) = global_path_from_expr(expr) {
                 effects.add_read(path);
             } else {
                 collect_global_expr_effects(receiver, effects, functions);
             }
-            collect_global_expr_effects(index, effects, functions);
+            if let Some(grid) = grid {
+                collect_global_expr_effects(&grid.x, effects, functions);
+                collect_global_expr_effects(&grid.y, effects, functions);
+            } else {
+                collect_global_expr_effects(index, effects, functions);
+            }
         }
         TExprKind::Call { target, args, .. } => {
             match target {
@@ -8350,11 +8919,16 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
             if let Some(path) = global_path_from_expr(receiver) {
                 match op {
                     CollectionOp::Push => effects.add_write(path, false),
+                    CollectionOp::RingPush => effects.add_write(path, true),
                     CollectionOp::Pop
                     | CollectionOp::Insert
                     | CollectionOp::Remove
                     | CollectionOp::Clear => effects.add_write(path, true),
-                    CollectionOp::Count | CollectionOp::Len => {}
+                    CollectionOp::Count
+                    | CollectionOp::Len
+                    | CollectionOp::Peek
+                    | CollectionOp::Width
+                    | CollectionOp::Height => {}
                 }
             }
             for argument in args {
@@ -8463,7 +9037,10 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         | TExprKind::EmptyList
         | TExprKind::EmptyPool
         | TExprKind::EmptyMap
-        | TExprKind::EmptySet => {}
+        | TExprKind::EmptySet
+        | TExprKind::EmptyGrid
+        | TExprKind::EmptyQueue
+        | TExprKind::EmptyRing => {}
     }
 }
 
@@ -8586,10 +9163,18 @@ fn visit_global_calls_expr(
             visit_global_calls_expr(receiver, active_views, check)?;
         }
         TExprKind::Index {
-            receiver, index, ..
+            receiver,
+            index,
+            grid,
+            ..
         } => {
             visit_global_calls_expr(receiver, active_views, check)?;
-            visit_global_calls_expr(index, active_views, check)?;
+            if let Some(grid) = grid {
+                visit_global_calls_expr(&grid.x, active_views, check)?;
+                visit_global_calls_expr(&grid.y, active_views, check)?;
+            } else {
+                visit_global_calls_expr(index, active_views, check)?;
+            }
         }
         TExprKind::Fill { value, .. } => visit_global_calls_expr(value, active_views, check)?,
         TExprKind::CollectionOp { receiver, args, .. }
@@ -8647,6 +9232,9 @@ fn visit_global_calls_expr(
         | TExprKind::EmptyPool
         | TExprKind::EmptyMap
         | TExprKind::EmptySet
+        | TExprKind::EmptyGrid
+        | TExprKind::EmptyQueue
+        | TExprKind::EmptyRing
         | TExprKind::LoopExit(_) => {}
     }
     Ok(())

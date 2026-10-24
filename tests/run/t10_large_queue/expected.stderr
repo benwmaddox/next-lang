@@ -1,0 +1,1 @@
+main.nl:2:5: error: local 'too_large' exceeds the temporary 64 KB native-stack limit; this value needs M3 data-stack lowering

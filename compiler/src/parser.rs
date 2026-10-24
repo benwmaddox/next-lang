@@ -312,12 +312,24 @@ impl Parser<'_> {
         let mut const_args = Vec::new();
         if self.take(&TokenKind::Lt) {
             args.push(self.type_name()?);
-            if matches!(name.as_str(), "list" | "pool") && self.take(&TokenKind::Comma) {
+            if matches!(name.as_str(), "list" | "pool" | "queue" | "ring")
+                && self.take(&TokenKind::Comma)
+            {
                 const_args.push(self.expression(8)?);
                 if name == "pool" && self.take(&TokenKind::Comma) {
                     self.skip_newlines();
                     args.push(self.type_name()?);
                 }
+            } else if name == "grid" {
+                self.expect(
+                    &TokenKind::Comma,
+                    "expected a width after the grid element type",
+                )?;
+                self.skip_newlines();
+                const_args.push(self.expression(8)?);
+                self.expect(&TokenKind::Comma, "expected a height after the grid width")?;
+                self.skip_newlines();
+                const_args.push(self.expression(8)?);
             } else if name == "map" {
                 self.expect(
                     &TokenKind::Comma,
@@ -612,7 +624,10 @@ impl Parser<'_> {
         if let Some(op) = assignment {
             let span = expression.span;
             let target = match &expression.kind {
-                ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => expression,
+                ExprKind::Name(_)
+                | ExprKind::Field { .. }
+                | ExprKind::Index { .. }
+                | ExprKind::GridIndex { .. } => expression,
                 _ => {
                     return Err(ParseError {
                         span,
@@ -657,6 +672,17 @@ impl Parser<'_> {
         } else {
             None
         };
+        let second_index_name = if self.take(&TokenKind::Comma) {
+            Some(
+                self.expect_ident("expected a second index name after ','")?
+                    .0,
+            )
+        } else {
+            None
+        };
+        if self.take(&TokenKind::Comma) {
+            return Err(self.error_here("collection loops support at most three bindings"));
+        }
         let annotation = if self.take(&TokenKind::Colon) {
             Some(self.type_name()?)
         } else {
@@ -668,7 +694,7 @@ impl Parser<'_> {
         let inclusive = self.take(&TokenKind::RangeInclusive);
         let is_range = inclusive || self.take(&TokenKind::Range);
         if is_range {
-            if index_name.is_some() {
+            if index_name.is_some() || second_index_name.is_some() {
                 return Err(ParseError {
                     span: start,
                     message: "range loops have one counter; use 'for value, index in collection' for collection iteration".to_owned(),
@@ -704,6 +730,7 @@ impl Parser<'_> {
                 kind: StmtKind::ForEach {
                     name,
                     index_name,
+                    second_index_name,
                     collection: first,
                     body,
                 },
@@ -863,16 +890,31 @@ impl Parser<'_> {
             if self.take(&TokenKind::LBracket) {
                 let index = self.expression(0)?;
                 let index_span = index.span;
-                self.expect(&TokenKind::RBracket, "expected ']' after the index")?;
                 let span = expr.span;
-                expr = Expr {
-                    kind: ExprKind::Index {
-                        receiver: Box::new(expr),
-                        index: Box::new(index),
-                        index_span,
-                    },
-                    span,
-                };
+                if self.take(&TokenKind::Comma) {
+                    self.skip_newlines();
+                    let y = self.expression(0)?;
+                    self.expect(&TokenKind::RBracket, "expected ']' after the grid indexes")?;
+                    expr = Expr {
+                        kind: ExprKind::GridIndex {
+                            receiver: Box::new(expr),
+                            x: Box::new(index),
+                            y: Box::new(y),
+                            x_span: index_span,
+                        },
+                        span,
+                    };
+                } else {
+                    self.expect(&TokenKind::RBracket, "expected ']' after the index")?;
+                    expr = Expr {
+                        kind: ExprKind::Index {
+                            receiver: Box::new(expr),
+                            index: Box::new(index),
+                            index_span,
+                        },
+                        span,
+                    };
+                }
                 continue;
             }
             if self.take(&TokenKind::LParen) {
@@ -913,7 +955,10 @@ impl Parser<'_> {
             if self.allow_struct_literals && self.at(&TokenKind::LBrace) {
                 let name = match &expr.kind {
                     ExprKind::Name(name)
-                        if matches!(name.as_str(), "list" | "pool" | "map" | "set") =>
+                        if matches!(
+                            name.as_str(),
+                            "list" | "pool" | "map" | "set" | "queue" | "ring"
+                        ) =>
                     {
                         Some(name.clone())
                     }
@@ -985,6 +1030,38 @@ impl Parser<'_> {
                         )?;
                         expr = Expr {
                             kind: ExprKind::SetLiteral,
+                            span: expr.span,
+                        };
+                    } else if name == "queue" {
+                        self.expect(&TokenKind::LBrace, "expected '{' after 'queue'")?;
+                        self.skip_separators();
+                        if !self.at(&TokenKind::RBrace) {
+                            return Err(self.error_here(
+                                "queue literals start empty; push values after construction",
+                            ));
+                        }
+                        self.expect(
+                            &TokenKind::RBrace,
+                            "expected '}' after the empty queue literal",
+                        )?;
+                        expr = Expr {
+                            kind: ExprKind::QueueLiteral,
+                            span: expr.span,
+                        };
+                    } else if name == "ring" {
+                        self.expect(&TokenKind::LBrace, "expected '{' after 'ring'")?;
+                        self.skip_separators();
+                        if !self.at(&TokenKind::RBrace) {
+                            return Err(self.error_here(
+                                "ring literals start empty; push values after construction",
+                            ));
+                        }
+                        self.expect(
+                            &TokenKind::RBrace,
+                            "expected '}' after the empty ring literal",
+                        )?;
+                        expr = Expr {
+                            kind: ExprKind::RingLiteral,
                             span: expr.span,
                         };
                     } else {
@@ -1060,6 +1137,9 @@ impl Parser<'_> {
                             | "is_err"
                             | "len"
                             | "count"
+                            | "peek"
+                            | "width"
+                            | "height"
                             | "add"
                             | "set"
                             | "get"

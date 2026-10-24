@@ -1,0 +1,59 @@
+none
+none
+ok(())
+ok(())
+ok(())
+err(Full)
+queue[1, 2, 3]
+some(1)
+some(1)
+queue[2, 3, 4]
+2
+3
+4
+10
+20
+queue[10, 20, 30]
+true
+ring[4, 5, 6]
+some(4)
+some(4)
+ring[6, 7, 8]
+3
+6
+7
+8
+true
+ring[1, 2]
+err(Full)
+0
+0
+ring[]
+2
+[[2, 2], [2, 2]]
+3
+[[], []]
+0
+2
+[[0], [0]]
+2
+2
+2
+[[1, 2], [3, 99]]
+1
+0
+0
+2
+1
+0
+3
+0
+1
+99
+1
+1
+queue[11, 22]
+true
+[[1, 2], [3, 4]]
+true
+[[Cell { value: 0, tag: 0 }, Cell { value: 0, tag: 0 }], [Cell { value: 0, tag: 0 }, Cell { value: 0, tag: 0 }]]

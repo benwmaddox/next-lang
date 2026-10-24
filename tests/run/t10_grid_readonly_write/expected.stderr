@@ -1,0 +1,1 @@
+main.nl:2:5: error: cannot assign to read parameter 'g'; pass it as 'write' to allow mutation
