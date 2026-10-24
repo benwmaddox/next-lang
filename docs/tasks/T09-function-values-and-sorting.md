@@ -1,29 +1,19 @@
-# T09: function values and sorting (milestone M2, part 4)
+# T11: function values (milestone M2, part 6)
 
-Depends on T08. Same rules. Read DESIGN.md "Functions as values, no closures", including "A function type is a full contract" and "Patterns without closures".
+This file kept its old name for history; the task is **T11**. Depends on T10. Same rules. Read DESIGN.md "Functions as values, no closures". Reviewed: docs/reviews/sol-T08-T09-r1.md (points 9 and 12). Sorting is T12 (docs/tasks/T12-sorting.md).
 
 ## Function values
 
-- A named top-level function is a value of a function type: `fn(int, int) -> bool`. It can be a local, a parameter, a field, an element of an array, list or map, and a global. No anonymous functions; nothing is captured.
-- **A function type is a full contract:** parameter types and modes (`fn(write Counts, Entry)`), the result type, and the function's effects (in this task: whether it can `print`; a `fn(int) -> int` with no effects can't hold a function that prints, and the error names the difference). Assigning a function whose contract doesn't match the type exactly is a build error naming what differs.
-- Calls through a value: `f(a, b)`. The call graph includes every function that can be stored in a value of that type (all functions whose address is taken with a matching type), so T01's recursion check still holds: a cycle through a function value is a build error.
-- Owner and capacity parameters (T07) in function types: a value of `fn<P>(pool<Node<P>, 64, P>, Id<P>) -> long` is a build error in this task; function values are for plain types.
-- Equality: two function values are equal when they name the same function. `print` shows the function's name.
-
-## Sorting and searching (standard library, written in the language where possible)
-
-- `sort_by(xs: write list<T, N>, ctx: C, less: fn(C, T, T) -> bool)` and the same for arrays; stable (equal elements keep their order). Also `sort(xs)` for lists of integers, `bool`s and payload-free enums in their natural order. Insertion sort for small inputs and merge sort with a fixed scratch buffer of the same capacity otherwise (no allocation: the scratch is a local of the same bounded type, under T06's 64 KB rule).
-- `binary_search(xs, key) -> Option<long>` on a sorted list of integers.
-- `ctx` is how a comparison gets extra data without closures (DESIGN.md "Patterns without closures").
+- A named top-level function is a value of a function type: `fn(int, int) -> bool`. It can be a local, a parameter, a result, a field, an element of an array, list or map, and part of a global. No anonymous functions (an attempt is a build error saying so); nothing is captured. A function-typed field has no implicit "null": a struct literal must give it, like any required field.
+- **The contract:** parameter types and modes and the result type must match exactly. Effects are an upper bound written on the type: `fn(int) -> int` has no effects; `fn(int) -> int effects print` may print. A function with fewer effects than the bound fits (a pure function in a `print`-allowed slot); one with more doesn't, and the error names the extra effect. Reading or writing globals (T08) counts as an effect for this purpose: `effects reads app` / `writes app` (field paths allowed), so a comparator can't secretly change what it's sorting.
+- **Calls through a value:** `f(a, b)`. The call graph gets an edge to every address-taken function that fits the value's type (not only exact matches), so T01's recursion check, T05's cacheability and T08's hidden-access checks all see through function values: widening can't hide recursion, printing or global access.
+- Suspension, append mode and data-stack contracts in function types are M3 and later. Owner- or capacity-generic function values (`fn<P>(...)`) are a build error in this task; a concrete owner-typed signature (`fn(Id<app.nodes>) -> long`) is allowed.
+- Equality: two function values are equal when they name the same function; `print` shows the name.
 
 ## Acceptance cases
 
-- A function value passed, stored in a struct field, in a list, in a map, and in a global; called through each.
-- A contract mismatch (different parameter mode; an effect the type doesn't allow; a different result type), each a build error naming the difference.
-- A recursion cycle through a function value (build error).
-- `sort_by` with a context (sorting units by distance to a point given in `ctx`), stability on equal keys, already-sorted and reverse-sorted input, empty and one-element lists, a full list.
-- `binary_search` found, not found, empty.
+A function value passed, returned, stored in a struct field, an array, a list, a map and a global, and called through each; a pure function in a `print`-allowed slot (allowed); a printing function in a pure slot (build error naming `print`); a parameter-mode or result mismatch (build error); recursion through a function value (build error); a function value reaching `print` used by a `const` (build error); a comparator that writes the global it's given (build error); an anonymous function (build error); a missing function field (build error); identity equality and printing.
 
 ## Report
 
-docs/tasks/T09-report.md.
+docs/tasks/T11-report.md.
