@@ -1,6 +1,6 @@
 # T11: function values (milestone M2, part 6)
 
-This file kept its old name for history; the task is **T11**. Depends on T10. Same rules. Read DESIGN.md "Functions as values, no closures". Reviewed: docs/reviews/sol-T08-T09-r1.md (points 9 and 12). Sorting is T12 (docs/tasks/T12-sorting.md).
+Depends on T10. Same rules. Read DESIGN.md "Functions as values, no closures". Reviewed: docs/reviews/sol-T08-T09-r1.md (points 9 and 12). Sorting is T12 (docs/tasks/T12-sorting.md).
 
 ## Function values
 
