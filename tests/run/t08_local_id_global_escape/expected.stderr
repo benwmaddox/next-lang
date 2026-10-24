@@ -1,0 +1,1 @@
+main.nl:9:18: error: expected app.nodes.Id, got local.Id; ids belong to their declaring pools

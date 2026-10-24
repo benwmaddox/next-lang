@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use next_lang::{PackageError, build_package, run_package, test_package};
+use next_lang::{PackageError, build_package, inspect_memory, run_package_args, test_package};
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os();
@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     };
     let rest = args.collect::<Vec<_>>();
     match command.as_str() {
-        "run" if rest.len() == 1 => match run_package(Path::new(&rest[0])) {
+        "run" if !rest.is_empty() => match run_package_args(Path::new(&rest[0]), &rest[1..]) {
             Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
             Err(error) => report_error(error),
         },
@@ -22,6 +22,17 @@ fn main() -> ExitCode {
         },
         "build" if rest.len() == 3 && rest[1] == "-o" => {
             match build_package(Path::new(&rest[0]), Path::new(&rest[2])) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => report_error(error),
+            }
+        }
+        "inspect" if (rest.len() == 2 || rest.len() == 3) && rest[0] == "memory" => {
+            let allow_overcommit = rest.len() == 3 && rest[2] == "--allow-overcommit";
+            if rest.len() == 3 && !allow_overcommit {
+                usage();
+                return ExitCode::from(3);
+            }
+            match inspect_memory(Path::new(&rest[1]), allow_overcommit) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => report_error(error),
             }
@@ -48,6 +59,6 @@ fn report_error(error: PackageError) -> ExitCode {
 
 fn usage() {
     eprintln!(
-        "usage: nlc run <package-dir> | nlc build <package-dir> -o <file> | nlc test <package-dir>"
+        "usage: nlc run <package-dir> [--allow-overcommit] | nlc build <package-dir> -o <file> | nlc test <package-dir> | nlc inspect memory <package-dir> [--allow-overcommit]"
     );
 }

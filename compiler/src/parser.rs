@@ -30,6 +30,7 @@ impl Parser<'_> {
         let mut structs = Vec::new();
         let mut aliases = Vec::new();
         let mut constants = Vec::new();
+        let mut globals = Vec::new();
         let mut functions = Vec::new();
         let mut tests = Vec::new();
         self.skip_separators();
@@ -42,6 +43,8 @@ impl Parser<'_> {
                 aliases.push(self.type_alias_decl()?);
             } else if self.word_is("const") {
                 constants.push(self.const_decl()?);
+            } else if self.word_is("global") {
+                globals.push(self.global_decl()?);
             } else if self.word_is("test") {
                 tests.push(self.test()?);
             } else {
@@ -55,6 +58,7 @@ impl Parser<'_> {
             structs,
             aliases,
             constants,
+            globals,
             functions,
             tests,
         })
@@ -119,6 +123,35 @@ impl Parser<'_> {
         self.expect(&TokenKind::Eq, "expected '=' in a constant declaration")?;
         let value = self.expression(0)?;
         Ok(ConstDecl {
+            name,
+            ty,
+            value,
+            span: start,
+        })
+    }
+
+    fn global_decl(&mut self) -> Result<GlobalDecl, ParseError> {
+        let start = self.expect_word("global", "expected 'global'")?.span;
+        let (name, _) = self.expect_ident("expected a global name")?;
+        self.expect(&TokenKind::Colon, "expected ':' after the global name")?;
+        let ty = self.type_name()?;
+        let mut prefault = false;
+        while self.word_is("prefault") {
+            if prefault {
+                return Err(self.error_here("'prefault' may only appear once on a global"));
+            }
+            self.next();
+            prefault = true;
+        }
+        if self.word_is("locked") {
+            return Err(self.error_here(
+                "'locked' globals are unsupported; remove the modifier instead of silently ignoring it",
+            ));
+        }
+        // The Linux startup policy already touches every global page.
+        self.expect(&TokenKind::Eq, "expected '=' in a global declaration")?;
+        let value = self.expression(0)?;
+        Ok(GlobalDecl {
             name,
             ty,
             value,

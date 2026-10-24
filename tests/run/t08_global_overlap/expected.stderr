@@ -1,0 +1,1 @@
+main.nl:11:5: error: write argument 'app.items' overlaps hidden global access in 'helper'; pass separate fields or remove the by-name access

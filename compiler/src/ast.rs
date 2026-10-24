@@ -39,8 +39,17 @@ pub struct Program {
     pub structs: Vec<StructDecl>,
     pub aliases: Vec<TypeAliasDecl>,
     pub constants: Vec<ConstDecl>,
+    pub globals: Vec<GlobalDecl>,
     pub functions: Vec<Function>,
     pub tests: Vec<Test>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GlobalDecl {
+    pub name: String,
+    pub ty: TypeAst,
+    pub value: Expr,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]

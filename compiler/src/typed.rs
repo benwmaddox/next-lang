@@ -152,9 +152,41 @@ pub struct TProgram {
     pub functions: Vec<TFunction>,
     pub tests: Vec<TTest>,
     pub constants: Vec<TConstant>,
+    pub globals: Vec<TGlobal>,
+    pub global_init_order: Vec<usize>,
+    pub global_state_bytes: u64,
+    pub job_headroom_bytes: u64,
+    pub globals_budget_bytes: u64,
     pub files: Vec<String>,
     pub call_graph: Vec<Vec<TCallEdge>>,
     pub types: Vec<TType>,
+}
+
+pub const GLOBAL_ROOT_START: usize = usize::MAX / 2;
+
+pub fn global_root(id: usize) -> usize {
+    GLOBAL_ROOT_START + id
+}
+
+pub fn global_from_root(root: usize) -> Option<usize> {
+    (root >= GLOBAL_ROOT_START).then(|| root - GLOBAL_ROOT_START)
+}
+
+#[derive(Clone, Debug)]
+pub struct TGlobal {
+    pub id: usize,
+    pub name: String,
+    pub ty: Ty,
+    pub initializer: TGlobalInitializer,
+    pub span: Span,
+    pub offset: u64,
+    pub size_bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+pub enum TGlobalInitializer {
+    Constant(ConstValue),
+    Runtime(TExpr),
 }
 
 #[derive(Clone, Debug)]
@@ -407,6 +439,7 @@ pub enum TExprKind {
     Integer(i128),
     Bool(bool),
     Local(usize),
+    Global(usize),
     Constant(usize),
     Call {
         target: CallTarget,

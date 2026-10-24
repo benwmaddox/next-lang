@@ -79,6 +79,7 @@ struct Checker {
     struct_specialization_ids: HashMap<(Ty, Vec<usize>), Ty>,
     current_generic_owners: HashMap<String, usize>,
     owner_labels: HashMap<usize, String>,
+    global_owner_paths: HashMap<String, usize>,
     owner_scope_depths: HashMap<usize, usize>,
     current_external_owners: std::collections::HashSet<usize>,
     next_owner: usize,
@@ -91,8 +92,12 @@ struct Checker {
     ast_functions: Vec<Function>,
     ast_tests: Vec<Test>,
     ast_constants: Vec<ConstDecl>,
+    ast_globals: Vec<GlobalDecl>,
     constant_ids: HashMap<String, usize>,
     constant_types: Vec<Ty>,
+    global_ids: HashMap<String, usize>,
+    global_types: Vec<Option<Ty>>,
+    checking_global_initializer: bool,
     checking_constant: bool,
     edges: Vec<Edge>,
     locals: Vec<HashMap<String, Binding>>,
@@ -162,6 +167,7 @@ impl Checker {
             struct_specialization_ids: HashMap::new(),
             current_generic_owners: HashMap::new(),
             owner_labels: HashMap::new(),
+            global_owner_paths: HashMap::new(),
             owner_scope_depths: HashMap::new(),
             current_external_owners: std::collections::HashSet::new(),
             next_owner: 0,
@@ -174,8 +180,12 @@ impl Checker {
             ast_functions: Vec::new(),
             ast_tests: Vec::new(),
             ast_constants: Vec::new(),
+            ast_globals: Vec::new(),
             constant_ids: HashMap::new(),
             constant_types: Vec::new(),
+            global_ids: HashMap::new(),
+            global_types: Vec::new(),
+            checking_global_initializer: false,
             checking_constant: false,
             edges: Vec::new(),
             locals: Vec::new(),
@@ -212,11 +222,14 @@ impl Checker {
         self.fill_type_aliases()?;
         self.fill_enum_cases()?;
         self.fill_struct_fields()?;
+        self.register_globals()?;
         self.check_recursive_value_types()?;
         self.check_all_type_sizes()?;
         for program in self.programs.clone() {
             for constant in program.constants {
-                if self.constant_ids.contains_key(&constant.name) {
+                if self.constant_ids.contains_key(&constant.name)
+                    || self.global_ids.contains_key(&constant.name)
+                {
                     return Err(CheckError {
                         span: constant.span,
                         message: format!("constant '{}' is declared more than once", constant.name),
@@ -253,6 +266,17 @@ impl Checker {
                             function.name
                         )
                         .to_owned(),
+                    });
+                }
+                if self.global_ids.contains_key(&function.name)
+                    || self.constant_ids.contains_key(&function.name)
+                {
+                    return Err(CheckError {
+                        span: function.span,
+                        message: format!(
+                            "function '{}' conflicts with a global or constant; choose a unique value name",
+                            function.name
+                        ),
                     });
                 }
                 if self.signatures.contains_key(&function.name)
@@ -307,6 +331,10 @@ impl Checker {
         if self.require_main || self.signatures.contains_key("main") {
             self.check_entry()?;
         }
+        let mut global_init_exprs = Vec::with_capacity(self.ast_globals.len());
+        for id in 0..self.ast_globals.len() {
+            global_init_exprs.push(self.check_global_initializer(id)?);
+        }
         let mut functions = Vec::with_capacity(self.ast_functions.len() + self.ast_tests.len());
         let mut id = 0;
         while id < self.ast_functions.len() {
@@ -326,26 +354,37 @@ impl Checker {
         }
         self.check_recursion()?;
         let mut call_graph = vec![Vec::new(); functions.len()];
-        for edge in self.edges {
+        for edge in &self.edges {
             call_graph[edge.from].push(TCallEdge {
                 target: edge.to,
                 span: edge.span,
             });
         }
-        let mut typed = TProgram {
+        let constants = crate::const_eval::evaluate_constants(
+            &constant_exprs,
+            &functions,
+            &call_graph,
+            &self.types,
+        )?;
+        let globals =
+            self.finish_globals(global_init_exprs, &constants, &functions, &call_graph)?;
+        let global_init_order =
+            self.global_initialization_order(&globals, &functions, &call_graph)?;
+        self.check_global_access_contracts(&functions, &call_graph)?;
+        let (globals, global_state_bytes) = self.layout_globals(globals)?;
+        let typed = TProgram {
             functions,
             tests,
-            constants: Vec::new(),
+            constants,
+            globals,
+            global_init_order,
+            global_state_bytes,
+            job_headroom_bytes: 256 * 1024 * 1024,
+            globals_budget_bytes: 64 * 1024 * 1024,
             files: self.files,
             call_graph,
             types: self.types,
         };
-        typed.constants = crate::const_eval::evaluate_constants(
-            &constant_exprs,
-            &typed.functions,
-            &typed.call_graph,
-            &typed.types,
-        )?;
         Ok(typed)
     }
 
@@ -879,6 +918,7 @@ impl Checker {
             .values()
             .flat_map(|owners| owners.values().copied())
             .chain(self.current_generic_owners.values().copied())
+            .chain(self.global_owner_paths.values().copied())
             .collect::<std::collections::HashSet<_>>();
         let mut substitutions = HashMap::new();
         for (old, path) in declarations {
@@ -893,6 +933,14 @@ impl Checker {
             let owner = self.fresh_owner(field_path);
             self.owner_scope_depths
                 .insert(owner, self.scope_ids.len().saturating_sub(1));
+            if self.global_ids.contains_key(root_name) {
+                let field_path = if path.is_empty() {
+                    root_name.to_owned()
+                } else {
+                    format!("{root_name}.{path}")
+                };
+                self.global_owner_paths.insert(field_path, owner);
+            }
             substitutions.insert(old, owner);
         }
         if substitutions.is_empty() {
@@ -1025,6 +1073,9 @@ impl Checker {
     }
 
     fn resolve_owner_path(&self, path: &str, span: Span) -> Result<usize, CheckError> {
+        if let Some(owner) = self.global_owner_paths.get(path) {
+            return Ok(*owner);
+        }
         if let Some(owner) = self.current_generic_owners.get(path) {
             return Ok(*owner);
         }
@@ -1042,8 +1093,16 @@ impl Checker {
         } else {
             let mut parts = path.split('.');
             if let Some(root) = parts.next() {
-                if let Some(binding) = self.find_binding(root) {
-                    let mut ty = binding.ty;
+                let root_ty = self
+                    .find_binding(root)
+                    .map(|binding| binding.ty)
+                    .or_else(|| {
+                        self.global_ids
+                            .get(root)
+                            .and_then(|id| self.global_types.get(*id))
+                            .and_then(|ty| *ty)
+                    });
+                if let Some(mut ty) = root_ty {
                     for part in parts {
                         let TTypeKind::Struct(fields) = &self.types[ty.0].kind else {
                             return Err(CheckError {
@@ -1799,6 +1858,7 @@ impl Checker {
             });
         }
         let saved_external_owners = std::mem::take(&mut self.current_external_owners);
+        self.current_external_owners = saved_external_owners.clone();
         let saved_generic_owners = std::mem::replace(
             &mut self.current_generic_owners,
             self.function_owner_substitutions
@@ -1897,6 +1957,387 @@ impl Checker {
             span: function.span,
             is_test: false,
         })
+    }
+
+    fn register_globals(&mut self) -> Result<(), CheckError> {
+        let declarations = self
+            .programs
+            .iter()
+            .flat_map(|program| program.globals.clone())
+            .collect::<Vec<_>>();
+        let mut names = HashMap::<String, Span>::new();
+        for declaration in &declarations {
+            if let Some(previous) = names.insert(declaration.name.clone(), declaration.span) {
+                return Err(CheckError {
+                    span: declaration.span,
+                    message: format!(
+                        "global '{}' is declared more than once (first on line {})",
+                        declaration.name, previous.line
+                    ),
+                });
+            }
+            if self.constant_ids.contains_key(&declaration.name)
+                || self
+                    .programs
+                    .iter()
+                    .flat_map(|program| program.constants.iter())
+                    .any(|constant| constant.name == declaration.name)
+            {
+                return Err(CheckError {
+                    span: declaration.span,
+                    message: format!(
+                        "global '{}' conflicts with a constant; choose a unique value name",
+                        declaration.name
+                    ),
+                });
+            }
+            let id = self.global_ids.len();
+            self.global_ids.insert(declaration.name.clone(), id);
+            self.global_types.push(None);
+            let owner = self.fresh_owner(declaration.name.clone());
+            self.owner_scope_depths.insert(owner, 0);
+            self.global_owner_paths
+                .insert(declaration.name.clone(), owner);
+        }
+
+        // Owner arguments on a global struct name the concrete pool paths in that
+        // instance, such as App<app.nodes>. Register them before instantiating the
+        // type so fields can refer to the same owner while the type is built.
+        for declaration in &declarations {
+            let Some(base) = self.type_ids.get(&declaration.ty.name).copied() else {
+                continue;
+            };
+            let Some(parameters) = self.generic_struct_owners.get(&base) else {
+                continue;
+            };
+            if parameters.len() != declaration.ty.args.len() {
+                continue;
+            }
+            for argument in &declaration.ty.args {
+                let path = argument.name.clone();
+                if !self.global_owner_paths.contains_key(&path) {
+                    let owner = self.fresh_owner(path.clone());
+                    self.owner_scope_depths.insert(owner, 0);
+                    self.global_owner_paths.insert(path, owner);
+                }
+            }
+        }
+
+        for declaration in &declarations {
+            let id = self.global_ids[&declaration.name];
+            let saved_pending = self.pending_owner.take();
+            if declaration.ty.name == "pool" {
+                let owner = self.global_owner_paths[&declaration.name];
+                self.pending_owner = Some((declaration.name.clone(), owner));
+            }
+            let ty = self.parse_type(&declaration.ty);
+            self.pending_owner = saved_pending;
+            let mut ty = ty?;
+            if self.type_contains_pool(ty) {
+                ty = self.localize_embedded_pool_owners(ty, &declaration.name, declaration.span)?;
+            }
+            self.global_types[id] = Some(ty);
+        }
+        self.ast_globals = declarations;
+        Ok(())
+    }
+
+    fn check_global_initializer(&mut self, id: usize) -> Result<TExpr, CheckError> {
+        let declaration = self.ast_globals[id].clone();
+        let ty = self.global_types[id].expect("registered global type");
+        self.current_function = self.ast_functions.len() + self.ast_tests.len();
+        self.current_return = ty;
+        self.current_is_test = false;
+        self.checking_constant = false;
+        self.checking_global_initializer = true;
+        self.loop_depth = 0;
+        self.facts.clear();
+        self.collection_counts.clear();
+        self.loop_push_proofs.clear();
+        self.active_views.clear();
+        self.view_bindings.clear();
+        self.next_local = 0;
+        self.locals.clear();
+        self.locals.push(HashMap::new());
+        self.scope_ids.clear();
+        self.scope_ids.push(0);
+        self.current_external_owners = self
+            .global_types
+            .iter()
+            .flatten()
+            .flat_map(|global_ty| self.owners_in_type(*global_ty))
+            .collect();
+        let initializer = self.check_store(&declaration.value, ty);
+        self.locals.clear();
+        self.checking_global_initializer = false;
+        initializer
+    }
+
+    fn finish_globals(
+        &self,
+        initializers: Vec<TExpr>,
+        constants: &[TConstant],
+        functions: &[TFunction],
+        call_graph: &[Vec<TCallEdge>],
+    ) -> Result<Vec<TGlobal>, CheckError> {
+        let function_effects = infer_global_effects(functions, call_graph);
+        let mut globals = Vec::with_capacity(initializers.len());
+        for (id, initializer) in initializers.into_iter().enumerate() {
+            let declaration = &self.ast_globals[id];
+            let mut effects = GlobalEffects::default();
+            collect_global_expr_effects(&initializer, &mut effects, functions);
+            close_global_effects(&mut effects, &function_effects);
+            if effects.prints {
+                return Err(CheckError {
+                    span: declaration.value.span,
+                    message: format!(
+                        "global '{}' initializer cannot call print or another effectful function",
+                        declaration.name
+                    ),
+                });
+            }
+            if !effects.writes.is_empty() {
+                let access = self.global_path_name(&effects.writes[0].path);
+                return Err(CheckError {
+                    span: declaration.value.span,
+                    message: format!(
+                        "global '{}' initializer cannot write global '{}'; build the value in its initializer",
+                        declaration.name, access
+                    ),
+                });
+            }
+            let ty = self.global_types[id].expect("registered global type");
+            let initializer = if effects.reads.is_empty() {
+                TGlobalInitializer::Constant(crate::const_eval::evaluate_expression(
+                    &declaration.name,
+                    &initializer,
+                    functions,
+                    call_graph,
+                    &self.types,
+                    constants,
+                )?)
+            } else {
+                TGlobalInitializer::Runtime(initializer)
+            };
+            globals.push(TGlobal {
+                id,
+                name: declaration.name.clone(),
+                ty,
+                initializer,
+                span: declaration.span,
+                offset: 0,
+                size_bytes: 0,
+            });
+        }
+        Ok(globals)
+    }
+
+    fn global_initialization_order(
+        &self,
+        globals: &[TGlobal],
+        functions: &[TFunction],
+        call_graph: &[Vec<TCallEdge>],
+    ) -> Result<Vec<usize>, CheckError> {
+        let function_effects = infer_global_effects(functions, call_graph);
+        let mut dependencies = vec![Vec::<usize>::new(); globals.len()];
+        for global in globals {
+            let TGlobalInitializer::Runtime(expr) = &global.initializer else {
+                continue;
+            };
+            let mut effects = GlobalEffects::default();
+            collect_global_expr_effects(expr, &mut effects, functions);
+            close_global_effects(&mut effects, &function_effects);
+            dependencies[global.id] = effects.reads.into_iter().map(|path| path.global).collect();
+            dependencies[global.id].sort_unstable();
+            dependencies[global.id].dedup();
+        }
+        fn visit(
+            id: usize,
+            globals: &[TGlobal],
+            dependencies: &[Vec<usize>],
+            state: &mut [u8],
+            stack: &mut Vec<usize>,
+            order: &mut Vec<usize>,
+        ) -> Result<(), Vec<usize>> {
+            if state[id] == 2 {
+                return Ok(());
+            }
+            if state[id] == 1 {
+                let start = stack.iter().position(|entry| *entry == id).unwrap_or(0);
+                let mut cycle = stack[start..].to_vec();
+                cycle.push(id);
+                return Err(cycle);
+            }
+            state[id] = 1;
+            stack.push(id);
+            for dependency in &dependencies[id] {
+                visit(*dependency, globals, dependencies, state, stack, order)?;
+            }
+            stack.pop();
+            state[id] = 2;
+            if matches!(globals[id].initializer, TGlobalInitializer::Runtime(_)) {
+                order.push(id);
+            }
+            Ok(())
+        }
+        let mut state = vec![0; globals.len()];
+        let mut stack = Vec::new();
+        let mut order = Vec::new();
+        for id in 0..globals.len() {
+            if let Err(cycle) = visit(
+                id,
+                globals,
+                &dependencies,
+                &mut state,
+                &mut stack,
+                &mut order,
+            ) {
+                let names = cycle
+                    .iter()
+                    .map(|entry| globals[*entry].name.clone())
+                    .collect::<Vec<_>>();
+                return Err(CheckError {
+                    span: globals[id].span,
+                    message: format!("global initialization cycle: {}", names.join(" -> ")),
+                });
+            }
+        }
+        Ok(order)
+    }
+
+    fn check_global_access_contracts(
+        &self,
+        functions: &[TFunction],
+        call_graph: &[Vec<TCallEdge>],
+    ) -> Result<(), CheckError> {
+        let effects = infer_global_effects(functions, call_graph);
+        for function in functions {
+            let mut active_views = Vec::new();
+            let mut check = |call: &TExpr, views: &[GlobalPath]| {
+                let (target, args, skip) = match &call.kind {
+                    TExprKind::Call {
+                        target: CallTarget::Function(target),
+                        args,
+                        ..
+                    } => (*target, args.as_slice(), 0),
+                    TExprKind::OptionalCall {
+                        function_id, args, ..
+                    } => (*function_id, args.as_slice(), 1),
+                    _ => return Ok(()),
+                };
+                let Some(callee_effects) = effects.get(target) else {
+                    return Ok(());
+                };
+                let Some(callee) = functions.get(target) else {
+                    return Ok(());
+                };
+                for (argument, parameter) in args.iter().zip(callee.params.iter().skip(skip)) {
+                    if parameter.mode != ParamMode::Write {
+                        continue;
+                    }
+                    let Some(argument_path) = global_path_from_expr(argument) else {
+                        continue;
+                    };
+                    if callee_effects
+                        .reads
+                        .iter()
+                        .chain(callee_effects.writes.iter().map(|write| &write.path))
+                        .any(|path| global_paths_overlap(&argument_path, path))
+                    {
+                        return Err(CheckError {
+                            span: call.span,
+                            message: format!(
+                                "write argument '{}' overlaps hidden global access in '{}'; pass separate fields or remove the by-name access",
+                                self.global_path_name(&argument_path),
+                                callee.name
+                            ),
+                        });
+                    }
+                }
+                for view in views {
+                    if callee_effects
+                        .structural_writes
+                        .iter()
+                        .any(|write| global_path_is_prefix(write, view))
+                    {
+                        let write = callee_effects
+                            .structural_writes
+                            .iter()
+                            .find(|write| global_path_is_prefix(write, view))
+                            .unwrap();
+                        return Err(CheckError {
+                            span: call.span,
+                            message: format!(
+                                "cannot call '{}' while viewing '{}'; the call can structurally change that global",
+                                callee.name,
+                                self.global_path_name(write)
+                            ),
+                        });
+                    }
+                }
+                Ok(())
+            };
+            visit_global_calls_block(&function.body, &mut active_views, &mut check)?;
+        }
+        Ok(())
+    }
+
+    fn layout_globals(&self, mut globals: Vec<TGlobal>) -> Result<(Vec<TGlobal>, u64), CheckError> {
+        let mut offset = 0u128;
+        let mut cache = vec![None; self.types.len()];
+        for global in &mut globals {
+            offset = offset.checked_add(7).ok_or_else(|| CheckError {
+                span: global.span,
+                message: "global state size overflows long; reduce its capacity".to_owned(),
+            })? & !7;
+            global.offset = u64::try_from(offset).map_err(|_| CheckError {
+                span: global.span,
+                message: "global state size overflows long; reduce its capacity".to_owned(),
+            })?;
+            let size = self.type_size_checked(global.ty, &mut cache, global.span)?;
+            let aligned = size.checked_add(7).ok_or_else(|| CheckError {
+                span: global.span,
+                message: "global state size overflows long; reduce its capacity".to_owned(),
+            })? & !7;
+            global.size_bytes = u64::try_from(aligned).map_err(|_| CheckError {
+                span: global.span,
+                message: "global state size overflows long; reduce its capacity".to_owned(),
+            })?;
+            offset = offset.checked_add(aligned).ok_or_else(|| CheckError {
+                span: global.span,
+                message: "global state size overflows long; reduce its capacity".to_owned(),
+            })?;
+        }
+        let total = u64::try_from(offset).map_err(|_| CheckError {
+            span: globals
+                .first()
+                .map_or(Span::default(), |global| global.span),
+            message: "global state size overflows long; reduce its capacity".to_owned(),
+        })?;
+        Ok((globals, total))
+    }
+
+    fn global_path_name(&self, path: &GlobalPath) -> String {
+        let mut name = self
+            .ast_globals
+            .get(path.global)
+            .map(|global| global.name.clone())
+            .unwrap_or_else(|| "<global>".to_owned());
+        let Some(mut ty) = self.global_types.get(path.global).and_then(|ty| *ty) else {
+            return name;
+        };
+        for index in &path.fields {
+            let TTypeKind::Struct(fields) = &self.types[ty.0].kind else {
+                break;
+            };
+            let Some(field) = fields.get(*index) else {
+                break;
+            };
+            name.push('.');
+            name.push_str(&field.name);
+            ty = field.ty;
+        }
+        name
     }
 
     fn check_test(&mut self, index: usize) -> Result<(TFunction, TTest), CheckError> {
@@ -4295,6 +4736,12 @@ impl Checker {
                         self.type_mismatch(binding.ty, want, expr.span)?;
                     }
                     (TExprKind::Local(binding.id), binding.ty)
+                } else if let Some(id) = self.global_ids.get(name).copied() {
+                    let ty = self.global_types[id].expect("registered global type");
+                    if let Some(want) = expected {
+                        self.type_mismatch(ty, want, expr.span)?;
+                    }
+                    (TExprKind::Global(id), ty)
                 } else if let Some(id) = self.constant_ids.get(name).copied() {
                     let ty = self.constant_types[id];
                     if let Some(want) = expected {
@@ -4847,7 +5294,7 @@ impl Checker {
                     if let Some(want) = expected {
                         self.type_mismatch(signature.result, want, *call_span)?;
                     }
-                    if !self.checking_constant {
+                    if !self.checking_constant && !self.checking_global_initializer {
                         self.edges.push(Edge {
                             from: self.current_function,
                             to: signature.id,
@@ -4959,7 +5406,7 @@ impl Checker {
                     if let Some(want) = expected {
                         self.type_mismatch(result_ty, want, expr.span)?;
                     }
-                    if !self.checking_constant {
+                    if !self.checking_constant && !self.checking_global_initializer {
                         self.edges.push(Edge {
                             from: self.current_function,
                             to: signature.id,
@@ -6109,15 +6556,23 @@ impl Checker {
     fn resolve_place(&mut self, expr: &Expr) -> Result<TPlace, CheckError> {
         match &expr.kind {
             ExprKind::Name(name) => {
-                let binding = self
-                    .find_binding(name)
-                    .ok_or_else(|| self.unknown_local(name, expr.span))?;
-                Ok(TPlace {
-                    root: binding.id,
-                    fields: Vec::new(),
-                    path: Vec::new(),
-                    ty: binding.ty,
-                })
+                if let Some(binding) = self.find_binding(name) {
+                    Ok(TPlace {
+                        root: binding.id,
+                        fields: Vec::new(),
+                        path: Vec::new(),
+                        ty: binding.ty,
+                    })
+                } else if let Some(id) = self.global_ids.get(name).copied() {
+                    Ok(TPlace {
+                        root: global_root(id),
+                        fields: Vec::new(),
+                        path: Vec::new(),
+                        ty: self.global_types[id].expect("registered global type"),
+                    })
+                } else {
+                    Err(self.unknown_local(name, expr.span))
+                }
             }
             ExprKind::Field {
                 receiver,
@@ -6204,8 +6659,10 @@ impl Checker {
     }
 
     fn place_is_mutable(&self, place: &TPlace) -> bool {
-        self.binding_by_id(place.root)
-            .is_some_and(|binding| binding.mutable)
+        global_from_root(place.root).is_some()
+            || self
+                .binding_by_id(place.root)
+                .is_some_and(|binding| binding.mutable)
     }
 
     fn canonical_place(&self, place: &TPlace) -> TPlace {
@@ -6505,14 +6962,23 @@ impl Checker {
     }
 
     fn typed_place_expr(&self, place: &TPlace, span: Span) -> TExpr {
-        let binding = self
-            .binding_by_id(place.root)
-            .expect("place owner exists in scope");
-        let mut expr = TExpr {
-            kind: TExprKind::Local(place.root),
-            ty: binding.ty,
-            span,
+        let root = if let Some(global) = global_from_root(place.root) {
+            TExpr {
+                kind: TExprKind::Global(global),
+                ty: self.global_types[global].expect("registered global type"),
+                span,
+            }
+        } else {
+            let binding = self
+                .binding_by_id(place.root)
+                .expect("place owner exists in scope");
+            TExpr {
+                kind: TExprKind::Local(place.root),
+                ty: binding.ty,
+                span,
+            }
         };
+        let mut expr = root;
         for projection in &place.path {
             match projection {
                 TProjection::Field(index) => {
@@ -6671,6 +7137,7 @@ impl Checker {
     fn place_key(&self, expr: &TExpr) -> Option<(usize, Vec<usize>)> {
         match &expr.kind {
             TExprKind::Local(id) => Some((*id, Vec::new())),
+            TExprKind::Global(id) => Some((global_root(*id), Vec::new())),
             TExprKind::Field {
                 receiver,
                 field_index,
@@ -6947,6 +7414,587 @@ impl Checker {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct GlobalPath {
+    global: usize,
+    fields: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct GlobalWrite {
+    path: GlobalPath,
+    structural: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct GlobalEffects {
+    reads: Vec<GlobalPath>,
+    writes: Vec<GlobalWrite>,
+    structural_writes: Vec<GlobalPath>,
+    calls: Vec<usize>,
+    prints: bool,
+}
+
+impl GlobalEffects {
+    fn add_read(&mut self, path: GlobalPath) {
+        if !self.reads.contains(&path) {
+            self.reads.push(path);
+        }
+    }
+
+    fn add_write(&mut self, path: GlobalPath, structural: bool) {
+        let write = GlobalWrite {
+            path: path.clone(),
+            structural,
+        };
+        if !self.writes.contains(&write) {
+            self.writes.push(write);
+        }
+        if structural && !self.structural_writes.contains(&path) {
+            self.structural_writes.push(path);
+        }
+    }
+
+    fn add_call(&mut self, function: usize) {
+        if !self.calls.contains(&function) {
+            self.calls.push(function);
+        }
+    }
+}
+
+fn global_path_from_expr(expr: &TExpr) -> Option<GlobalPath> {
+    match &expr.kind {
+        TExprKind::Global(global) => Some(GlobalPath {
+            global: *global,
+            fields: Vec::new(),
+        }),
+        TExprKind::Field {
+            receiver,
+            field_index,
+        } => {
+            let mut path = global_path_from_expr(receiver)?;
+            path.fields.push(*field_index);
+            Some(path)
+        }
+        TExprKind::Index { receiver, .. } => global_path_from_expr(receiver),
+        _ => None,
+    }
+}
+
+fn global_path_from_place(place: &TPlace) -> Option<GlobalPath> {
+    let global = global_from_root(place.root)?;
+    let fields = place
+        .path
+        .iter()
+        .filter_map(|projection| match projection {
+            TProjection::Field(index) => Some(*index),
+            TProjection::Index { .. } => None,
+        })
+        .collect();
+    Some(GlobalPath { global, fields })
+}
+
+fn global_paths_overlap(left: &GlobalPath, right: &GlobalPath) -> bool {
+    global_path_is_prefix(left, right) || global_path_is_prefix(right, left)
+}
+
+fn global_path_is_prefix(prefix: &GlobalPath, path: &GlobalPath) -> bool {
+    prefix.global == path.global
+        && prefix.fields.len() <= path.fields.len()
+        && prefix
+            .fields
+            .iter()
+            .zip(&path.fields)
+            .all(|(left, right)| left == right)
+}
+
+fn infer_global_effects(
+    functions: &[TFunction],
+    call_graph: &[Vec<TCallEdge>],
+) -> Vec<GlobalEffects> {
+    let mut effects = functions
+        .iter()
+        .map(|function| {
+            let mut effects = GlobalEffects::default();
+            collect_global_block_effects(&function.body, &mut effects, functions);
+            effects
+        })
+        .collect::<Vec<_>>();
+    for (function, edges) in call_graph.iter().enumerate() {
+        if let Some(effect) = effects.get_mut(function) {
+            for edge in edges {
+                effect.add_call(edge.target);
+            }
+        }
+    }
+    loop {
+        let previous = effects.clone();
+        let mut changed = false;
+        for effect in &mut effects {
+            let calls = effect.calls.clone();
+            for target in calls {
+                let Some(callee) = previous.get(target) else {
+                    continue;
+                };
+                for read in &callee.reads {
+                    if !effect.reads.contains(read) {
+                        effect.reads.push(read.clone());
+                        changed = true;
+                    }
+                }
+                for write in &callee.writes {
+                    if !effect.writes.contains(write) {
+                        effect.writes.push(write.clone());
+                        changed = true;
+                    }
+                }
+                for write in &callee.structural_writes {
+                    if !effect.structural_writes.contains(write) {
+                        effect.structural_writes.push(write.clone());
+                        changed = true;
+                    }
+                }
+                if callee.prints && !effect.prints {
+                    effect.prints = true;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    effects
+}
+
+fn close_global_effects(effects: &mut GlobalEffects, functions: &[GlobalEffects]) {
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = effects.calls.clone();
+    while let Some(target) = pending.pop() {
+        if !seen.insert(target) {
+            continue;
+        }
+        let Some(callee) = functions.get(target) else {
+            continue;
+        };
+        for read in &callee.reads {
+            effects.add_read(read.clone());
+        }
+        for write in &callee.writes {
+            effects.add_write(write.path.clone(), write.structural);
+        }
+        for write in &callee.structural_writes {
+            if !effects.structural_writes.contains(write) {
+                effects.structural_writes.push(write.clone());
+            }
+        }
+        effects.prints |= callee.prints;
+        pending.extend(callee.calls.iter().copied());
+    }
+}
+
+fn collect_global_block_effects(
+    block: &TBlock,
+    effects: &mut GlobalEffects,
+    functions: &[TFunction],
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            TStmtKind::Let { value, .. } | TStmtKind::Expr(value) | TStmtKind::Discard(value) => {
+                collect_global_expr_effects(value, effects, functions)
+            }
+            TStmtKind::Assign {
+                place, op, value, ..
+            } => {
+                if let Some(path) = global_path_from_place(place) {
+                    effects.add_write(path.clone(), *op == AssignOp::Set);
+                    if *op != AssignOp::Set {
+                        effects.add_read(path);
+                    }
+                }
+                for projection in &place.path {
+                    if let TProjection::Index { index, .. } = projection {
+                        collect_global_expr_effects(index, effects, functions);
+                    }
+                }
+                collect_global_expr_effects(value, effects, functions);
+            }
+            TStmtKind::Return(value) => {
+                if let Some(value) = value {
+                    collect_global_expr_effects(value, effects, functions);
+                }
+            }
+            TStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                collect_global_expr_effects(condition, effects, functions);
+                collect_global_block_effects(then_block, effects, functions);
+                if let Some(other) = else_block {
+                    collect_global_block_effects(other, effects, functions);
+                }
+            }
+            TStmtKind::For {
+                start, end, body, ..
+            } => {
+                collect_global_expr_effects(start, effects, functions);
+                collect_global_expr_effects(end, effects, functions);
+                collect_global_block_effects(body, effects, functions);
+            }
+            TStmtKind::ForEach {
+                collection, body, ..
+            } => {
+                collect_global_expr_effects(collection, effects, functions);
+                collect_global_block_effects(body, effects, functions);
+            }
+            TStmtKind::Expect { kind, .. } => match kind {
+                TExpectKind::Bool(value) => collect_global_expr_effects(value, effects, functions),
+                TExpectKind::Compare { left, right, .. } => {
+                    collect_global_expr_effects(left, effects, functions);
+                    collect_global_expr_effects(right, effects, functions);
+                }
+            },
+            TStmtKind::Block(inner) => collect_global_block_effects(inner, effects, functions),
+            TStmtKind::Break | TStmtKind::Continue => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_global_expr_effects(tail, effects, functions);
+    }
+}
+
+fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functions: &[TFunction]) {
+    match &expr.kind {
+        TExprKind::Global(global) => effects.add_read(GlobalPath {
+            global: *global,
+            fields: Vec::new(),
+        }),
+        TExprKind::Field { receiver, .. } => {
+            if let Some(path) = global_path_from_expr(expr) {
+                effects.add_read(path);
+            } else {
+                collect_global_expr_effects(receiver, effects, functions);
+            }
+        }
+        TExprKind::Index {
+            receiver, index, ..
+        } => {
+            if let Some(path) = global_path_from_expr(expr) {
+                effects.add_read(path);
+            } else {
+                collect_global_expr_effects(receiver, effects, functions);
+            }
+            collect_global_expr_effects(index, effects, functions);
+        }
+        TExprKind::Call { target, args, .. } => {
+            match target {
+                CallTarget::Function(function) => {
+                    effects.add_call(*function);
+                    if let Some(callee) = functions.get(*function) {
+                        for (argument, parameter) in args.iter().zip(&callee.params) {
+                            if parameter.mode == ParamMode::Write {
+                                if let Some(path) = global_path_from_expr(argument) {
+                                    effects.add_write(path, false);
+                                }
+                            }
+                        }
+                    }
+                }
+                CallTarget::Print => effects.prints = true,
+                CallTarget::Min | CallTarget::Max => {}
+            }
+            for argument in args {
+                collect_global_expr_effects(argument, effects, functions);
+            }
+        }
+        TExprKind::OptionalCall {
+            receiver,
+            function_id,
+            args,
+            ..
+        } => {
+            effects.add_call(*function_id);
+            collect_global_expr_effects(receiver, effects, functions);
+            for argument in args {
+                collect_global_expr_effects(argument, effects, functions);
+            }
+        }
+        TExprKind::CollectionOp {
+            op, receiver, args, ..
+        } => {
+            collect_global_expr_effects(receiver, effects, functions);
+            if let Some(path) = global_path_from_expr(receiver) {
+                match op {
+                    CollectionOp::Push => effects.add_write(path, false),
+                    CollectionOp::Pop
+                    | CollectionOp::Insert
+                    | CollectionOp::Remove
+                    | CollectionOp::Clear => effects.add_write(path, true),
+                    CollectionOp::Count | CollectionOp::Len => {}
+                }
+            }
+            for argument in args {
+                collect_global_expr_effects(argument, effects, functions);
+            }
+        }
+        TExprKind::PoolOp {
+            op, receiver, args, ..
+        } => {
+            collect_global_expr_effects(receiver, effects, functions);
+            if let Some(path) = global_path_from_expr(receiver) {
+                match op {
+                    PoolOp::Add => effects.add_write(path, false),
+                    PoolOp::Remove => effects.add_write(path, true),
+                    PoolOp::Get | PoolOp::Contains | PoolOp::Count => {}
+                }
+            }
+            for argument in args {
+                collect_global_expr_effects(argument, effects, functions);
+            }
+        }
+        TExprKind::Construct { args, .. } => {
+            for argument in args {
+                collect_global_expr_effects(argument, effects, functions);
+            }
+        }
+        TExprKind::Method { receiver, .. }
+        | TExprKind::OptionalToLong(receiver)
+        | TExprKind::ToLong(receiver) => collect_global_expr_effects(receiver, effects, functions),
+        TExprKind::Fill { value, .. } => collect_global_expr_effects(value, effects, functions),
+        TExprKind::StructConstruct { fields } => {
+            for (_, value) in fields {
+                collect_global_expr_effects(value, effects, functions);
+            }
+        }
+        TExprKind::Convert { value, .. }
+        | TExprKind::Fit { value, .. }
+        | TExprKind::Try { value, .. }
+        | TExprKind::Cast { value, .. }
+        | TExprKind::Unary { value, .. } => collect_global_expr_effects(value, effects, functions),
+        TExprKind::Coalesce { option, fallback } => {
+            collect_global_expr_effects(option, effects, functions);
+            collect_global_expr_effects(fallback, effects, functions);
+        }
+        TExprKind::Match { scrutinee, arms } => {
+            collect_global_expr_effects(scrutinee, effects, functions);
+            for arm in arms {
+                collect_global_block_effects(&arm.body, effects, functions);
+            }
+        }
+        TExprKind::Return(value) => {
+            if let Some(value) = value {
+                collect_global_expr_effects(value, effects, functions);
+            }
+        }
+        TExprKind::Binary { left, right, .. } => {
+            collect_global_expr_effects(left, effects, functions);
+            collect_global_expr_effects(right, effects, functions);
+        }
+        TExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            collect_global_expr_effects(condition, effects, functions);
+            collect_global_block_effects(then_block, effects, functions);
+            if let Some(other) = else_block {
+                collect_global_block_effects(other, effects, functions);
+            }
+        }
+        TExprKind::Unit
+        | TExprKind::Integer(_)
+        | TExprKind::Bool(_)
+        | TExprKind::Local(_)
+        | TExprKind::Constant(_)
+        | TExprKind::LoopExit(_)
+        | TExprKind::EmptyArray
+        | TExprKind::EmptyList
+        | TExprKind::EmptyPool => {}
+    }
+}
+
+fn visit_global_calls_block(
+    block: &TBlock,
+    active_views: &mut Vec<GlobalPath>,
+    check: &mut impl FnMut(&TExpr, &[GlobalPath]) -> Result<(), CheckError>,
+) -> Result<(), CheckError> {
+    for statement in &block.statements {
+        match &statement.kind {
+            TStmtKind::Let { value, .. } | TStmtKind::Expr(value) | TStmtKind::Discard(value) => {
+                visit_global_calls_expr(value, active_views, check)?
+            }
+            TStmtKind::Assign { place, value, .. } => {
+                for projection in &place.path {
+                    if let TProjection::Index { index, .. } = projection {
+                        visit_global_calls_expr(index, active_views, check)?;
+                    }
+                }
+                visit_global_calls_expr(value, active_views, check)?;
+            }
+            TStmtKind::Return(value) => {
+                if let Some(value) = value {
+                    visit_global_calls_expr(value, active_views, check)?;
+                }
+            }
+            TStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                visit_global_calls_expr(condition, active_views, check)?;
+                visit_global_calls_block(then_block, active_views, check)?;
+                if let Some(other) = else_block {
+                    visit_global_calls_block(other, active_views, check)?;
+                }
+            }
+            TStmtKind::For {
+                start, end, body, ..
+            } => {
+                visit_global_calls_expr(start, active_views, check)?;
+                visit_global_calls_expr(end, active_views, check)?;
+                visit_global_calls_block(body, active_views, check)?;
+            }
+            TStmtKind::ForEach {
+                collection,
+                source,
+                body,
+                ..
+            } => {
+                visit_global_calls_expr(collection, active_views, check)?;
+                let view = global_path_from_place(source);
+                if let Some(view) = &view {
+                    active_views.push(view.clone());
+                }
+                visit_global_calls_block(body, active_views, check)?;
+                if view.is_some() {
+                    active_views.pop();
+                }
+            }
+            TStmtKind::Expect { kind, .. } => match kind {
+                TExpectKind::Bool(value) => visit_global_calls_expr(value, active_views, check)?,
+                TExpectKind::Compare { left, right, .. } => {
+                    visit_global_calls_expr(left, active_views, check)?;
+                    visit_global_calls_expr(right, active_views, check)?;
+                }
+            },
+            TStmtKind::Block(inner) => visit_global_calls_block(inner, active_views, check)?,
+            TStmtKind::Break | TStmtKind::Continue => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        visit_global_calls_expr(tail, active_views, check)?;
+    }
+    Ok(())
+}
+
+fn visit_global_calls_expr(
+    expr: &TExpr,
+    active_views: &mut Vec<GlobalPath>,
+    check: &mut impl FnMut(&TExpr, &[GlobalPath]) -> Result<(), CheckError>,
+) -> Result<(), CheckError> {
+    if matches!(
+        expr.kind,
+        TExprKind::Call { .. } | TExprKind::OptionalCall { .. }
+    ) {
+        check(expr, active_views)?;
+    }
+    match &expr.kind {
+        TExprKind::Call { args, .. } | TExprKind::Construct { args, .. } => {
+            for argument in args {
+                visit_global_calls_expr(argument, active_views, check)?;
+            }
+        }
+        TExprKind::OptionalCall { receiver, args, .. } => {
+            visit_global_calls_expr(receiver, active_views, check)?;
+            for argument in args {
+                visit_global_calls_expr(argument, active_views, check)?;
+            }
+        }
+        TExprKind::Method { receiver, .. }
+        | TExprKind::OptionalToLong(receiver)
+        | TExprKind::Field { receiver, .. }
+        | TExprKind::ToLong(receiver)
+        | TExprKind::Convert {
+            value: receiver, ..
+        }
+        | TExprKind::Fit {
+            value: receiver, ..
+        }
+        | TExprKind::Try {
+            value: receiver, ..
+        }
+        | TExprKind::Cast {
+            value: receiver, ..
+        }
+        | TExprKind::Unary {
+            value: receiver, ..
+        } => {
+            visit_global_calls_expr(receiver, active_views, check)?;
+        }
+        TExprKind::Index {
+            receiver, index, ..
+        } => {
+            visit_global_calls_expr(receiver, active_views, check)?;
+            visit_global_calls_expr(index, active_views, check)?;
+        }
+        TExprKind::Fill { value, .. } => visit_global_calls_expr(value, active_views, check)?,
+        TExprKind::CollectionOp { receiver, args, .. }
+        | TExprKind::PoolOp { receiver, args, .. } => {
+            visit_global_calls_expr(receiver, active_views, check)?;
+            for argument in args {
+                visit_global_calls_expr(argument, active_views, check)?;
+            }
+        }
+        TExprKind::StructConstruct { fields } => {
+            for (_, value) in fields {
+                visit_global_calls_expr(value, active_views, check)?;
+            }
+        }
+        TExprKind::Coalesce { option, fallback } => {
+            visit_global_calls_expr(option, active_views, check)?;
+            visit_global_calls_expr(fallback, active_views, check)?;
+        }
+        TExprKind::Match { scrutinee, arms } => {
+            visit_global_calls_expr(scrutinee, active_views, check)?;
+            for arm in arms {
+                visit_global_calls_block(&arm.body, active_views, check)?;
+            }
+        }
+        TExprKind::Return(value) => {
+            if let Some(value) = value {
+                visit_global_calls_expr(value, active_views, check)?;
+            }
+        }
+        TExprKind::Binary { left, right, .. } => {
+            visit_global_calls_expr(left, active_views, check)?;
+            visit_global_calls_expr(right, active_views, check)?;
+        }
+        TExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            visit_global_calls_expr(condition, active_views, check)?;
+            visit_global_calls_block(then_block, active_views, check)?;
+            if let Some(other) = else_block {
+                visit_global_calls_block(other, active_views, check)?;
+            }
+        }
+        TExprKind::Unit
+        | TExprKind::Integer(_)
+        | TExprKind::Bool(_)
+        | TExprKind::Local(_)
+        | TExprKind::Global(_)
+        | TExprKind::Constant(_)
+        | TExprKind::EmptyArray
+        | TExprKind::EmptyList
+        | TExprKind::EmptyPool
+        | TExprKind::LoopExit(_) => {}
+    }
+    Ok(())
 }
 
 fn block_value_ty(block: &TBlock) -> Ty {

@@ -46,6 +46,7 @@ pub fn evaluate_constants(
         values: vec![None; declarations.len()],
         states: vec![0; declarations.len()],
         active_constants: Vec::new(),
+        constant_values: None,
         views: HashMap::new(),
         steps: 0,
     };
@@ -64,6 +65,68 @@ pub fn evaluate_constants(
             span: declaration.span,
         })
         .collect())
+}
+
+pub fn evaluate_expression(
+    name: &str,
+    expr: &TExpr,
+    functions: &[TFunction],
+    call_graph: &[Vec<TCallEdge>],
+    types: &[TType],
+    constants: &[TConstant],
+) -> Result<ConstValue, CheckError> {
+    if let Some(problem) = expression_cacheability_problem(expr, functions, call_graph, types) {
+        let mut chain = vec![format!("global {}", name)];
+        chain.extend(problem.chain);
+        return Err(CheckError {
+            span: problem.span.unwrap_or(expr.span),
+            message: format!(
+                "global '{}' initializer is not constant: {}; call chain: {}",
+                name,
+                problem.reason,
+                chain.join(" -> ")
+            ),
+        });
+    }
+    let values = constants
+        .iter()
+        .map(|constant| constant.value.clone())
+        .collect::<Vec<_>>();
+    let mut evaluator = Evaluator {
+        declarations: &[],
+        functions,
+        types,
+        values: Vec::new(),
+        states: Vec::new(),
+        active_constants: Vec::new(),
+        constant_values: Some(&values),
+        views: HashMap::new(),
+        steps: 0,
+    };
+    match evaluator.eval_expr(expr, &mut Vec::new()) {
+        Ok(Outcome::Value(value)) => Ok(value),
+        Ok(Outcome::Return(_)) => Err(CheckError {
+            span: expr.span,
+            message: format!(
+                "global '{}' initializer cannot return from compile-time evaluation",
+                name
+            ),
+        }),
+        Ok(Outcome::Break | Outcome::Continue) => Err(CheckError {
+            span: expr.span,
+            message: format!(
+                "global '{}' initializer cannot exit a loop at top level",
+                name
+            ),
+        }),
+        Err(failure) => Err(CheckError {
+            span: failure.span,
+            message: format!(
+                "global '{}' constant evaluation failed: {}",
+                name, failure.message
+            ),
+        }),
+    }
 }
 
 fn find_constant_cycle(
@@ -300,6 +363,7 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
         | TExprKind::Local(_)
+        | TExprKind::Global(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
         | TExprKind::EmptyPool
@@ -319,6 +383,13 @@ fn expression_cacheability_problem(
     call_graph: &[Vec<TCallEdge>],
     types: &[TType],
 ) -> Option<CacheabilityProblem> {
+    if expression_reads_global(expr) {
+        return Some(CacheabilityProblem {
+            reason: "compile-time evaluation cannot read global state".to_owned(),
+            chain: vec!["global read".to_owned()],
+            span: Some(expr.span),
+        });
+    }
     let mut calls = Vec::<(usize, Span)>::new();
     let mut effects = Vec::<Span>::new();
     collect_calls_expr(expr, &mut calls, &mut effects);
@@ -344,6 +415,157 @@ fn expression_cacheability_problem(
     None
 }
 
+fn expression_reads_global(expr: &TExpr) -> bool {
+    fn block_reads(block: &TBlock) -> bool {
+        block
+            .statements
+            .iter()
+            .any(|statement| match &statement.kind {
+                TStmtKind::Let { value, .. }
+                | TStmtKind::Assign { value, .. }
+                | TStmtKind::Expr(value)
+                | TStmtKind::Discard(value) => expression_reads_global(value),
+                TStmtKind::Return(value) => value.as_ref().is_some_and(expression_reads_global),
+                TStmtKind::If {
+                    condition,
+                    then_block,
+                    else_block,
+                } => {
+                    expression_reads_global(condition)
+                        || block_reads(then_block)
+                        || else_block.as_ref().is_some_and(block_reads)
+                }
+                TStmtKind::For {
+                    start, end, body, ..
+                } => {
+                    expression_reads_global(start)
+                        || expression_reads_global(end)
+                        || block_reads(body)
+                }
+                TStmtKind::ForEach {
+                    collection, body, ..
+                } => expression_reads_global(collection) || block_reads(body),
+                TStmtKind::Expect { kind, .. } => match kind {
+                    TExpectKind::Bool(value) => expression_reads_global(value),
+                    TExpectKind::Compare { left, right, .. } => {
+                        expression_reads_global(left) || expression_reads_global(right)
+                    }
+                },
+                TStmtKind::Block(inner) => block_reads(inner),
+                TStmtKind::Break | TStmtKind::Continue => false,
+            })
+            || block.tail.as_deref().is_some_and(expression_reads_global)
+    }
+    match &expr.kind {
+        TExprKind::Global(_) => true,
+        TExprKind::Call { args, .. } | TExprKind::Construct { args, .. } => {
+            args.iter().any(expression_reads_global)
+        }
+        TExprKind::Method { receiver, .. }
+        | TExprKind::OptionalToLong(receiver)
+        | TExprKind::Field { receiver, .. }
+        | TExprKind::ToLong(receiver)
+        | TExprKind::Convert {
+            value: receiver, ..
+        }
+        | TExprKind::Fit {
+            value: receiver, ..
+        }
+        | TExprKind::Try {
+            value: receiver, ..
+        }
+        | TExprKind::Cast {
+            value: receiver, ..
+        }
+        | TExprKind::Unary {
+            value: receiver, ..
+        } => expression_reads_global(receiver),
+        TExprKind::OptionalCall { receiver, args, .. } => {
+            expression_reads_global(receiver) || args.iter().any(expression_reads_global)
+        }
+        TExprKind::Index {
+            receiver, index, ..
+        } => expression_reads_global(receiver) || expression_reads_global(index),
+        TExprKind::Fill { value, .. } => expression_reads_global(value),
+        TExprKind::CollectionOp { receiver, args, .. }
+        | TExprKind::PoolOp { receiver, args, .. } => {
+            expression_reads_global(receiver) || args.iter().any(expression_reads_global)
+        }
+        TExprKind::StructConstruct { fields } => fields
+            .iter()
+            .any(|(_, value)| expression_reads_global(value)),
+        TExprKind::Coalesce { option, fallback } => {
+            expression_reads_global(option) || expression_reads_global(fallback)
+        }
+        TExprKind::Match { scrutinee, arms } => {
+            expression_reads_global(scrutinee) || arms.iter().any(|arm| block_reads(&arm.body))
+        }
+        TExprKind::Return(value) => value.as_deref().is_some_and(expression_reads_global),
+        TExprKind::Binary { left, right, .. } => {
+            expression_reads_global(left) || expression_reads_global(right)
+        }
+        TExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            expression_reads_global(condition)
+                || block_reads(then_block)
+                || else_block.as_ref().is_some_and(block_reads)
+        }
+        TExprKind::Unit
+        | TExprKind::Integer(_)
+        | TExprKind::Bool(_)
+        | TExprKind::Local(_)
+        | TExprKind::Constant(_)
+        | TExprKind::LoopExit(_)
+        | TExprKind::EmptyArray
+        | TExprKind::EmptyList
+        | TExprKind::EmptyPool => false,
+    }
+}
+
+fn block_reads_global(block: &TBlock) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            TStmtKind::Let { value, .. }
+            | TStmtKind::Assign { value, .. }
+            | TStmtKind::Expr(value)
+            | TStmtKind::Discard(value) => expression_reads_global(value),
+            TStmtKind::Return(value) => value.as_ref().is_some_and(expression_reads_global),
+            TStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                expression_reads_global(condition)
+                    || block_reads_global(then_block)
+                    || else_block.as_ref().is_some_and(block_reads_global)
+            }
+            TStmtKind::For {
+                start, end, body, ..
+            } => {
+                expression_reads_global(start)
+                    || expression_reads_global(end)
+                    || block_reads_global(body)
+            }
+            TStmtKind::ForEach {
+                collection, body, ..
+            } => expression_reads_global(collection) || block_reads_global(body),
+            TStmtKind::Expect { kind, .. } => match kind {
+                TExpectKind::Bool(value) => expression_reads_global(value),
+                TExpectKind::Compare { left, right, .. } => {
+                    expression_reads_global(left) || expression_reads_global(right)
+                }
+            },
+            TStmtKind::Block(inner) => block_reads_global(inner),
+            TStmtKind::Break | TStmtKind::Continue => false,
+        })
+        || block.tail.as_deref().is_some_and(expression_reads_global)
+}
+
 fn function_cacheability_problem(
     id: usize,
     functions: &[TFunction],
@@ -363,6 +585,14 @@ fn function_cacheability_problem(
         let problem = Some((
             "cacheable functions cannot have write parameters".to_owned(),
             vec![function.name.clone(), "write parameter".to_owned()],
+        ));
+        memo[id] = Some(problem.clone());
+        return problem;
+    }
+    if block_reads_global(&function.body) {
+        let problem = Some((
+            "cacheable functions cannot read global state".to_owned(),
+            vec![function.name.clone(), "global read".to_owned()],
         ));
         memo[id] = Some(problem.clone());
         return problem;
@@ -552,6 +782,7 @@ fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mu
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
         | TExprKind::Local(_)
+        | TExprKind::Global(_)
         | TExprKind::Constant(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
@@ -592,6 +823,7 @@ struct Evaluator<'a> {
     values: Vec<Option<ConstValue>>,
     states: Vec<u8>,
     active_constants: Vec<usize>,
+    constant_values: Option<&'a [ConstValue]>,
     views: HashMap<usize, TPlace>,
     steps: u64,
 }
@@ -1365,6 +1597,15 @@ impl Evaluator<'_> {
                 }
             }
             TExprKind::Constant(id) => {
+                if let Some(constants) = self.constant_values {
+                    return constants
+                        .get(*id)
+                        .cloned()
+                        .map(Outcome::Value)
+                        .ok_or_else(|| {
+                            self.failure(expr.span, "constant reference was out of range")
+                        });
+                }
                 return self
                     .eval_constant(*id, expr.span)
                     .map(Outcome::Value)
@@ -1374,6 +1615,12 @@ impl Evaluator<'_> {
                         chain: Vec::new(),
                         step_limit: false,
                     });
+            }
+            TExprKind::Global(_) => {
+                return Err(self.failure(
+                    expr.span,
+                    "compile-time evaluation cannot read global state",
+                ));
             }
             TExprKind::Call { target, args, .. } => match target {
                 CallTarget::Function(id) => {
@@ -2184,6 +2431,7 @@ mod pool_tests {
             values: Vec::new(),
             states: Vec::new(),
             active_constants: Vec::new(),
+            constant_values: None,
             views: HashMap::new(),
             steps: 0,
         }

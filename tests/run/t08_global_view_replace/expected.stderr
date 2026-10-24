@@ -1,0 +1,1 @@
+main.nl:9:9: error: cannot call 'replace_items' while viewing 'items'; the call can structurally change that global

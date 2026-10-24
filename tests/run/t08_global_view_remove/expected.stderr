@@ -1,0 +1,1 @@
+main.nl:8:9: error: cannot call 'clear_items' while viewing 'app.items'; the call can structurally change that global

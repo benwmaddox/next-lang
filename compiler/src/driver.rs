@@ -31,6 +31,22 @@ pub struct CompileOutput {
     pub llvm_ir: String,
     pub files: Vec<String>,
     pub tests: Vec<String>,
+    pub memory: MemoryReport,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MemoryReport {
+    pub globals: Vec<GlobalMemory>,
+    pub startup_claim_bytes: u64,
+    pub job_headroom_bytes: u64,
+    pub globals_budget_bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct GlobalMemory {
+    pub name: String,
+    pub offset_bytes: u64,
+    pub size_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -72,6 +88,7 @@ fn compile_package_internal(
     package: &Path,
     require_main: bool,
 ) -> Result<CompileOutput, PackageError> {
+    let memory_config = read_memory_config(package)?;
     let entries = fs::read_dir(package)
         .map_err(|e| PackageError::Tool(format!("cannot read package directory: {e}")))?;
     let mut paths = Vec::new();
@@ -117,7 +134,7 @@ fn compile_package_internal(
         files.push(file);
         programs.push(program);
     }
-    let typed = checker::check_package(programs, files.clone(), require_main).map_err(|e| {
+    let mut typed = checker::check_package(programs, files.clone(), require_main).map_err(|e| {
         PackageError::Compile({
             let file = files
                 .get(e.span.file)
@@ -130,10 +147,27 @@ fn compile_package_internal(
             }
         })
     })?;
+    typed.job_headroom_bytes = memory_config.job_headroom_bytes;
+    typed.globals_budget_bytes = memory_config.globals_budget_bytes;
+    let memory = MemoryReport {
+        globals: typed
+            .globals
+            .iter()
+            .map(|global| GlobalMemory {
+                name: global.name.clone(),
+                offset_bytes: global.offset,
+                size_bytes: global.size_bytes,
+            })
+            .collect(),
+        startup_claim_bytes: typed.global_state_bytes,
+        job_headroom_bytes: typed.job_headroom_bytes,
+        globals_budget_bytes: typed.globals_budget_bytes,
+    };
     Ok(CompileOutput {
         llvm_ir: emit::emit(&typed),
         files,
         tests: typed.tests.iter().map(|test| test.name.clone()).collect(),
+        memory,
     })
 }
 
@@ -148,10 +182,17 @@ pub fn build_package(package: &Path, output: &Path) -> Result<(), PackageError> 
     let ir = temp.path.join("module.ll");
     fs::write(&ir, compiled.llvm_ir)
         .map_err(|e| PackageError::Tool(format!("cannot write generated LLVM IR: {e}")))?;
-    clang(&ir, output)
+    clang(&ir, output, false)
 }
 
 pub fn run_package(package: &Path) -> Result<ExitStatus, PackageError> {
+    run_package_args(package, &[])
+}
+
+pub fn run_package_args(
+    package: &Path,
+    args: &[std::ffi::OsString],
+) -> Result<ExitStatus, PackageError> {
     let compiled = compile_package_internal(package, true)?;
     let temp = TempDir::new()
         .map_err(|e| PackageError::Tool(format!("cannot create temporary directory: {e}")))?;
@@ -163,8 +204,9 @@ pub fn run_package(package: &Path) -> Result<ExitStatus, PackageError> {
     });
     fs::write(&ir, compiled.llvm_ir)
         .map_err(|e| PackageError::Tool(format!("cannot write generated LLVM IR: {e}")))?;
-    clang(&ir, &binary)?;
+    clang(&ir, &binary, false)?;
     Command::new(&binary)
+        .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -188,7 +230,7 @@ pub fn test_package(package: &Path) -> Result<u8, PackageError> {
     });
     fs::write(&ir, compiled.llvm_ir)
         .map_err(|e| PackageError::Tool(format!("cannot write generated LLVM IR: {e}")))?;
-    clang(&ir, &binary)?;
+    clang(&ir, &binary, true)?;
 
     let mut passed = 0usize;
     let mut failed = 0usize;
@@ -227,7 +269,34 @@ pub fn test_package(package: &Path) -> Result<u8, PackageError> {
     Ok(if failed == 0 { 0 } else { 1 })
 }
 
-fn clang(ir: &Path, output: &Path) -> Result<(), PackageError> {
+pub fn inspect_memory(package: &Path, allow_overcommit: bool) -> Result<(), PackageError> {
+    let compiled = compile_package_internal(package, false)?;
+    for global in &compiled.memory.globals {
+        println!(
+            "global {}: {} bytes (offset {}, alignment 8)",
+            global.name, global.size_bytes, global.offset_bytes
+        );
+    }
+    println!(
+        "startup claim: {} bytes",
+        compiled.memory.startup_claim_bytes
+    );
+    println!("job headroom: {} bytes", compiled.memory.job_headroom_bytes);
+    println!(
+        "guarantee waived: {}",
+        if allow_overcommit { "yes" } else { "no" }
+    );
+    println!("local storage: excluded from startup claim");
+    if compiled.memory.startup_claim_bytes > compiled.memory.globals_budget_bytes {
+        println!(
+            "warning: globals use {} bytes, above globals_budget of {} bytes",
+            compiled.memory.startup_claim_bytes, compiled.memory.globals_budget_bytes
+        );
+    }
+    Ok(())
+}
+
+fn clang(ir: &Path, output: &Path, test_build: bool) -> Result<(), PackageError> {
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/nl_runtime.c");
     if !runtime.is_file() {
         return Err(PackageError::Tool(format!(
@@ -235,8 +304,12 @@ fn clang(ir: &Path, output: &Path) -> Result<(), PackageError> {
             runtime.display()
         )));
     }
-    let result = Command::new("clang")
-        .arg("-O1")
+    let mut command = Command::new("clang");
+    command.arg("-O1");
+    if test_build {
+        command.arg("-DNLC_TEST_BUILD=1");
+    }
+    let result = command
         .arg(ir)
         .arg(&runtime)
         .arg("-o")
@@ -251,6 +324,81 @@ fn clang(ir: &Path, output: &Path) -> Result<(), PackageError> {
         )));
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct MemoryConfig {
+    job_headroom_bytes: u64,
+    globals_budget_bytes: u64,
+}
+
+fn read_memory_config(package: &Path) -> Result<MemoryConfig, PackageError> {
+    let path = package.join("next-lang.toml");
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(MemoryConfig {
+                job_headroom_bytes: 256 * 1024 * 1024,
+                globals_budget_bytes: 64 * 1024 * 1024,
+            });
+        }
+        Err(error) => {
+            return Err(PackageError::Tool(format!(
+                "cannot read package memory manifest '{}': {error}",
+                path.display()
+            )));
+        }
+    };
+    let mut config = MemoryConfig {
+        job_headroom_bytes: 256 * 1024 * 1024,
+        globals_budget_bytes: 64 * 1024 * 1024,
+    };
+    for (line_number, line) in contents.lines().enumerate() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() || (line.starts_with('[') && line.ends_with(']')) {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key != "job_headroom" && key != "globals_budget" {
+            continue;
+        }
+        let bytes = parse_manifest_memory(value.trim()).ok_or_else(|| {
+            PackageError::Tool(format!(
+                "{}:{}: expected {} to be a nonnegative byte count or MB value",
+                path.display(),
+                line_number + 1,
+                key
+            ))
+        })?;
+        match key {
+            "job_headroom" => config.job_headroom_bytes = bytes,
+            "globals_budget" => config.globals_budget_bytes = bytes,
+            _ => unreachable!(),
+        }
+    }
+    Ok(config)
+}
+
+fn parse_manifest_memory(value: &str) -> Option<u64> {
+    let value = value.replace('_', "");
+    let value = value.trim();
+    let (number, multiplier) = if let Some(number) = value.strip_suffix("GiB") {
+        (number, 1024u64 * 1024 * 1024)
+    } else if let Some(number) = value.strip_suffix("GB") {
+        (number, 1000u64 * 1000 * 1000)
+    } else if let Some(number) = value.strip_suffix("MiB") {
+        (number, 1024u64 * 1024)
+    } else if let Some(number) = value.strip_suffix("MB") {
+        (number, 1000u64 * 1000)
+    } else if let Some(number) = value.strip_suffix('B') {
+        (number, 1)
+    } else {
+        (value, 1024u64 * 1024)
+    };
+    number.trim().parse::<u64>().ok()?.checked_mul(multiplier)
 }
 
 struct TempDir {

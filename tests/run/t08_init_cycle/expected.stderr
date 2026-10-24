@@ -1,0 +1,1 @@
+main.nl:1:1: error: global initialization cycle: first -> second -> first

@@ -1,0 +1,1 @@
+main.nl:1:22: error: global 'result' initializer cannot call print or another effectful function

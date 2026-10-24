@@ -1,0 +1,1 @@
+main.nl:5:21: error: constant 'CACHED' is not cacheable: cacheable functions cannot read global state; call chain: constant CACHED -> read_value -> global read
