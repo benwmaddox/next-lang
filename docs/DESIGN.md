@@ -215,6 +215,24 @@ Adding to a full collection (or writing a field past its maximum) returns `Resul
 
 - **Typed ids:** a pool's elements are named by ids, 64 bits: a 32-bit slot and a 32-bit generation counter. The id's type names its pool (`units.Id`, written `Id<app.world.units>` where that's ambiguous), so an id from one pool can't be used with another, even of the same element type. Removing an element bumps its slot's generation, so an old id no longer matches. Looking up an id returns `Option`: `none` for a stale id, never a dangling pointer. A slot whose generation reaches its maximum is retired, never reused, so wraparound can't make a stale id match again.
 - **A slot is a fixed position, never moved:** a pool's arrays are indexed by slot, with holes where elements were removed. Each slot has an occupied flag and its generation, and the pool keeps a list of free slots for reuse. A lookup checks the slot is in range, occupied, and of the id's generation before reading any field. Elements are never moved to fill holes (moving the last one into a removed one's place would silently change which element an id names; Stasis's plain `pool` does that swap, and its `stable_pool` doesn't). Flags and generations are arrays like any other, so snapshots carry them.
+- **Owner parameters in reusable definitions** (decided 2026-10-24; options in docs/reviews/sol-ids-r1.md). A definition that holds ids of its own kind of element takes an *owner parameter*, a compile-time name for one particular pool or batch, which is never stored in the data:
+
+  ```
+  struct Node<P> { parent: Option<Id<P>>, first_child: Option<Id<P>> }
+  var nodes: pool<Node<nodes>, 4096>          // the pool is its own owner
+  fn parent<P>(nodes: pool<Node<P>, 4096, P>, id: Id<P>) -> Option<Id<P>> {
+      let node = nodes.get(id) ?? return none
+      node.parent
+  }
+  ```
+
+  - `Id<P>` is the same 64 bits as today (slot and generation; for a frozen batch, partition and row), with no owner bits and no extra comparison: the owner is checked by the compiler. `nodes.Id` stays as shorthand for `Id<nodes>`.
+  - Each pool, local pool, builder and batch is a fresh owner, even when made repeatedly at one line (a loop that makes a pool each iteration makes a new owner each time). Owners can't be cast or attached to another collection, so mixing two pools' ids is a build error naming both: `expected nodes.Id, got other.Id`.
+  - Helpers take owner parameters like type parameters, and the compiler infers them at call sites, so they're written mostly in definitions. A helper may return ids of a pool its caller owns, never of a pool that ends when it returns.
+  - A definition with no self-links (a plain `Rock`) needs no parameter, and two pools of `Rock` just work.
+  - Copying a self-contained pool makes a fresh owner for the copy and keeps the id bits, so its internal links still work; ids kept outside still name the original. Copies that would need external links rewritten are refused for now.
+  - Resetting a pool under the same owner must keep its generation history (or is refused), since zeroing generations would bring stale ids back to life.
+  - Frozen batches use the same model: every builder in a batch shares the batch's owner (`Node<b.Node>`), so cross-file links work, and freezing keeps the ids unchanged.
 - A pool nested inside an array of structs (a pool per world in `worlds: World[4]`) would need its ids to carry the outer index; that's left for later. Frozen pools and database rows have ids of their own (see Frozen pools, Databases), and no id of one kind can be used as another.
 - Invariants are declared on state and checked on every write (see Correctness).
 
@@ -806,6 +824,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - A value a loop keeps growing must have a bound the compiler knows, and each iteration's temporaries are freed when it ends.
 - A failed job discards only its uncommitted batch; committed batches stay, and `transaction { }` groups changes that must succeed together.
 - A transaction's checks and writes run on the writer against its latest version, with no waits inside.
+- Reusable definitions that hold their own ids take an owner parameter (`struct Node<P> { parent: Option<Id<P>> }`), checked at compile time; ids stay 64 bits.
 - Ranges are Rust-style: `a..b` excludes `b` and `a..=b` includes it, everywhere (`int 0..=100`, `for i in 0..8`); loop counters take their type from their bounds and use.
 - Clarity: compound assignment (`+=` and the rest, same checks); unsuffixed literals take their type from context; `??` may `continue` or `break`; `discard` drops a collection's expected error on purpose; named refinements (`type Size = int 1..=3`, cast as `(Size)(x)`); widening methods like `.to_long()`.
 - Parameter modes are written before the type (`write T`, `grow T`; read unwritten). JSON endpoints are an `api` kind. Rate limits stay exact through the writer in v1.
