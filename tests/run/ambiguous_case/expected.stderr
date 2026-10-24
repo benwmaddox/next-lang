@@ -1,0 +1,1 @@
+main.nl:4:17: error: case 'Same' belongs to more than one enum; qualify it with the enum name

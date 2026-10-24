@@ -14,12 +14,29 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare void @nl_print_int(i32)\n");
     out.push_str("declare void @nl_print_long(i64)\n");
     out.push_str("declare void @nl_print_bool(i1)\n");
+    out.push_str("declare void @nl_print_int_raw(i32)\n");
+    out.push_str("declare void @nl_print_long_raw(i64)\n");
+    out.push_str("declare void @nl_print_bool_raw(i1)\n");
+    out.push_str("declare void @nl_print_text(ptr)\n");
+    out.push_str("declare void @nl_print_newline()\n");
+    out.push_str("declare void @nl_expect_fail_header(i32, i32, i32, ptr)\n");
+    out.push_str("declare void @nl_expect_fail_left()\n");
+    out.push_str("declare void @nl_expect_fail_right()\n");
     for width in [32, 64] {
         for op in ["sadd", "ssub", "smul"] {
             out.push_str(&format!(
                 "declare {{ i{width}, i1 }} @llvm.{op}.with.overflow.i{width}(i{width}, i{width})\n"
             ));
         }
+    }
+    out.push('\n');
+    let mut size_cache = vec![None; program.types.len()];
+    for (id, ty) in program.types.iter().enumerate().skip(5) {
+        let payload = enum_payload_size(Ty(id), &program.types, &mut size_cache);
+        out.push_str(&format!(
+            "%nl.ty.{id} = type {{ i32, [{payload} x i8] }} ; {}\n",
+            ty.name
+        ));
     }
     out.push('\n');
     for (id, file) in program.files.iter().enumerate() {
@@ -49,9 +66,33 @@ pub fn emit(program: &TProgram) -> String {
             encoded
         ));
     }
+    let mut print_texts = vec![
+        "(".to_owned(),
+        ")".to_owned(),
+        ", ".to_owned(),
+        "()".to_owned(),
+    ];
+    for ty in program.types.iter().skip(5) {
+        print_texts.extend(ty.cases().into_iter().map(|case| case.name));
+    }
+    print_texts.sort();
+    print_texts.dedup();
+    let print_ids = print_texts
+        .iter()
+        .enumerate()
+        .map(|(id, text)| (text.clone(), id))
+        .collect::<HashMap<_, _>>();
+    for (id, text) in print_texts.iter().enumerate() {
+        let encoded = llvm_bytes(text.as_bytes());
+        out.push_str(&format!(
+            "@.nl.print.{id} = private unnamed_addr constant [{} x i8] c\"{}\", align 1\n",
+            text.len() + 1,
+            encoded
+        ));
+    }
     out.push('\n');
     for function in &program.functions {
-        let mut emitter = FunctionEmitter::new(program, function, &expect_ids);
+        let mut emitter = FunctionEmitter::new(program, function, &expect_ids, &print_ids);
         out.push_str(&emitter.emit_function());
         out.push('\n');
     }
@@ -142,6 +183,34 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
                 collect_expect_sources_expr(arg, sources);
             }
         }
+        TExprKind::Construct { args, .. } => {
+            for arg in args {
+                collect_expect_sources_expr(arg, sources);
+            }
+        }
+        TExprKind::Method { receiver, .. } => collect_expect_sources_expr(receiver, sources),
+        TExprKind::OptionalCall { receiver, args, .. } => {
+            collect_expect_sources_expr(receiver, sources);
+            for arg in args {
+                collect_expect_sources_expr(arg, sources);
+            }
+        }
+        TExprKind::Try { value, .. } => collect_expect_sources_expr(value, sources),
+        TExprKind::Coalesce { option, fallback } => {
+            collect_expect_sources_expr(option, sources);
+            collect_expect_sources_expr(fallback, sources);
+        }
+        TExprKind::Match { scrutinee, arms } => {
+            collect_expect_sources_expr(scrutinee, sources);
+            for arm in arms {
+                collect_expect_sources(&arm.body, sources);
+            }
+        }
+        TExprKind::Return(value) => {
+            if let Some(value) = value {
+                collect_expect_sources_expr(value, sources);
+            }
+        }
         TExprKind::ToLong(value)
         | TExprKind::Cast { value, .. }
         | TExprKind::Unary { value, .. } => {
@@ -162,7 +231,11 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
                 collect_expect_sources(other, sources);
             }
         }
-        TExprKind::Integer(_) | TExprKind::Bool(_) | TExprKind::Local(_) => {}
+        TExprKind::Integer(_)
+        | TExprKind::Bool(_)
+        | TExprKind::Unit
+        | TExprKind::Local(_)
+        | TExprKind::LoopExit(_) => {}
     }
 }
 
@@ -178,10 +251,43 @@ fn llvm_bytes(bytes: &[u8]) -> String {
     out
 }
 
+fn enum_payload_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
+    types[ty.0]
+        .cases()
+        .iter()
+        .map(|case| {
+            case.payload
+                .iter()
+                .map(|field| type_size(*field, types, cache))
+                .sum()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
+    match ty {
+        Ty::Int => 4,
+        Ty::Long => 8,
+        Ty::Bool => 1,
+        Ty::Unit | Ty::Never => 0,
+        Ty(id) => {
+            if let Some(size) = cache[id] {
+                return size;
+            }
+            let payload = enum_payload_size(ty, types, cache);
+            let size = (4 + payload + 3) & !3;
+            cache[id] = Some(size);
+            size
+        }
+    }
+}
+
 struct FunctionEmitter<'a> {
     program: &'a TProgram,
     function: &'a TFunction,
     expect_ids: &'a HashMap<String, usize>,
+    print_ids: &'a HashMap<String, usize>,
     lines: Vec<String>,
     temp: usize,
     label: usize,
@@ -201,11 +307,13 @@ impl<'a> FunctionEmitter<'a> {
         program: &'a TProgram,
         function: &'a TFunction,
         expect_ids: &'a HashMap<String, usize>,
+        print_ids: &'a HashMap<String, usize>,
     ) -> Self {
         let mut this = Self {
             program,
             function,
             expect_ids,
+            print_ids,
             lines: Vec::new(),
             temp: 0,
             label: 0,
@@ -221,8 +329,12 @@ impl<'a> FunctionEmitter<'a> {
         this
     }
 
+    fn lltype(&self, ty: Ty) -> String {
+        llvm_type(ty, &self.program.types)
+    }
+
     fn emit_function(&mut self) -> String {
-        let signature = lower_signature(self.function);
+        let signature = lower_signature(self.function, &self.program.types);
         let params = self
             .function
             .params
@@ -235,13 +347,13 @@ impl<'a> FunctionEmitter<'a> {
         for (id, ty) in self.slots.iter().enumerate() {
             if let Some(ty) = ty {
                 self.lines
-                    .push(format!("  %local.{id} = alloca {}", llvm_type(*ty)));
+                    .push(format!("  %local.{id} = alloca {}", self.lltype(*ty)));
             }
         }
         for param in &self.function.params {
             self.lines.push(format!(
                 "  store {} %arg.{}, ptr %local.{}",
-                llvm_type(param.ty),
+                self.lltype(param.ty),
                 param.id,
                 param.id
             ));
@@ -256,7 +368,10 @@ impl<'a> FunctionEmitter<'a> {
                     } else if self.function.result == Ty::Unit {
                         self.terminate("ret void");
                     } else {
-                        self.terminate(format!("ret {} {value}", llvm_type(self.function.result)));
+                        self.terminate(format!(
+                            "ret {} {value}",
+                            self.lltype(self.function.result)
+                        ));
                     }
                 }
             } else if self.function.is_test {
@@ -348,6 +463,49 @@ impl<'a> FunctionEmitter<'a> {
                     self.collect_expr(arg);
                 }
             }
+            TExprKind::Construct { args, .. } => {
+                for arg in args {
+                    self.collect_expr(arg);
+                }
+            }
+            TExprKind::Method { receiver, .. } => self.collect_expr(receiver),
+            TExprKind::OptionalCall { receiver, args, .. } => {
+                self.collect_expr(receiver);
+                for arg in args {
+                    self.collect_expr(arg);
+                }
+            }
+            TExprKind::Try { value, .. } => self.collect_expr(value),
+            TExprKind::Coalesce { option, fallback } => {
+                self.collect_expr(option);
+                self.collect_expr(fallback);
+            }
+            TExprKind::Match { scrutinee, arms } => {
+                self.collect_expr(scrutinee);
+                for arm in arms {
+                    if let TPattern::Case {
+                        bindings,
+                        ty,
+                        case_index,
+                    } = &arm.pattern
+                    {
+                        let payload = self.program.types[ty.0].cases()[*case_index]
+                            .payload
+                            .clone();
+                        for (id, field_ty) in bindings.iter().zip(payload) {
+                            if let Some(id) = id {
+                                self.record_slot(*id, field_ty);
+                            }
+                        }
+                    }
+                    self.collect_block(&arm.body);
+                }
+            }
+            TExprKind::Return(value) => {
+                if let Some(value) = value {
+                    self.collect_expr(value);
+                }
+            }
             TExprKind::ToLong(v)
             | TExprKind::Cast { value: v, .. }
             | TExprKind::Unary { value: v, .. } => self.collect_expr(v),
@@ -366,7 +524,10 @@ impl<'a> FunctionEmitter<'a> {
                     self.collect_block(other);
                 }
             }
-            TExprKind::Integer(_) | TExprKind::Bool(_) => {}
+            TExprKind::Integer(_)
+            | TExprKind::Bool(_)
+            | TExprKind::Unit
+            | TExprKind::LoopExit(_) => {}
         }
     }
 
@@ -391,7 +552,7 @@ impl<'a> FunctionEmitter<'a> {
             TStmtKind::Let { id, ty, value, .. } => {
                 let val = self.emit_expr(value);
                 if !self.terminated {
-                    self.instruction(format!("store {} {val}, ptr %local.{id}", llvm_type(*ty)));
+                    self.instruction(format!("store {} {val}, ptr %local.{id}", self.lltype(*ty)));
                 }
             }
             TStmtKind::Assign {
@@ -406,16 +567,19 @@ impl<'a> FunctionEmitter<'a> {
                     return;
                 }
                 if *op == AssignOp::Set {
-                    self.instruction(format!("store {} {rhs}, ptr %local.{id}", llvm_type(*ty)));
+                    self.instruction(format!("store {} {rhs}, ptr %local.{id}", self.lltype(*ty)));
                 } else {
                     let lhs = self.temp();
-                    self.instruction(format!("{lhs} = load {}, ptr %local.{id}", llvm_type(*ty)));
+                    self.instruction(format!(
+                        "{lhs} = load {}, ptr %local.{id}",
+                        self.lltype(*ty)
+                    ));
                     let bop = assign_binary(*op);
                     let result = self.emit_binary(bop, *ty, &lhs, &rhs, *operator_span);
                     if !self.terminated {
                         self.instruction(format!(
                             "store {} {result}, ptr %local.{id}",
-                            llvm_type(*ty)
+                            self.lltype(*ty)
                         ));
                     }
                 }
@@ -425,7 +589,7 @@ impl<'a> FunctionEmitter<'a> {
                     let val = self.emit_expr(value);
                     if !self.terminated {
                         self.emit_all_iteration_cleanups();
-                        self.terminate(format!("ret {} {val}", llvm_type(value.ty)));
+                        self.terminate(format!("ret {} {val}", self.lltype(value.ty)));
                     }
                 } else {
                     self.emit_all_iteration_cleanups();
@@ -507,7 +671,7 @@ impl<'a> FunctionEmitter<'a> {
         }
         self.instruction(format!(
             "store {} {start_value}, ptr %local.{id}",
-            llvm_type(ty)
+            self.lltype(ty)
         ));
         let condition = self.new_label("for.cond");
         let body_label = self.new_label("for.body");
@@ -519,13 +683,13 @@ impl<'a> FunctionEmitter<'a> {
         let current = self.temp();
         self.instruction(format!(
             "{current} = load {}, ptr %local.{id}",
-            llvm_type(ty)
+            self.lltype(ty)
         ));
         let in_range = self.temp();
         self.instruction(format!(
             "{in_range} = icmp {} {} {current}, {end_value}",
             if inclusive { "sle" } else { "slt" },
-            llvm_type(ty)
+            self.lltype(ty)
         ));
         self.terminate(format!(
             "br i1 {in_range}, label %{body_label}, label %{exit}"
@@ -547,21 +711,21 @@ impl<'a> FunctionEmitter<'a> {
         let current = self.temp();
         self.instruction(format!(
             "{current} = load {}, ptr %local.{id}",
-            llvm_type(ty)
+            self.lltype(ty)
         ));
         if inclusive {
             let at_end = self.temp();
             self.instruction(format!(
                 "{at_end} = icmp eq {} {current}, {end_value}",
-                llvm_type(ty)
+                self.lltype(ty)
             ));
             let increment = self.new_label("for.increment");
             self.terminate(format!("br i1 {at_end}, label %{exit}, label %{increment}"));
             self.start_block(&increment);
         }
         let next = self.temp();
-        self.instruction(format!("{next} = add {} {current}, 1", llvm_type(ty)));
-        self.instruction(format!("store {} {next}, ptr %local.{id}", llvm_type(ty)));
+        self.instruction(format!("{next} = add {} {current}, 1", self.lltype(ty)));
+        self.instruction(format!("store {} {next}, ptr %local.{id}", self.lltype(ty)));
         self.terminate(format!("br label %{condition}"));
         self.start_block(&exit);
     }
@@ -610,25 +774,38 @@ impl<'a> FunctionEmitter<'a> {
             "getelementptr inbounds ([{source_len} x i8], ptr @.nl.expect.{source_id}, i64 0, i64 0)"
         );
         if let Some((ty, lhs, rhs)) = comparison_values {
-            let (left, right, is_bool) = match ty {
-                Ty::Int => {
-                    let l = self.temp();
-                    let r = self.temp();
-                    self.instruction(format!("{l} = sext i32 {lhs} to i64"));
-                    self.instruction(format!("{r} = sext i32 {rhs} to i64"));
-                    (l, r, 0)
-                }
-                Ty::Long => (lhs, rhs, 0),
-                Ty::Bool => {
-                    let l = self.temp();
-                    let r = self.temp();
-                    self.instruction(format!("{l} = zext i1 {lhs} to i64"));
-                    self.instruction(format!("{r} = zext i1 {rhs} to i64"));
-                    (l, r, 1)
-                }
-                _ => unreachable!("expect comparisons only admit scalar values"),
-            };
-            self.instruction(format!("call void @nl_expect_fail_compare(i32 {}, i32 {}, i32 {}, ptr {source_ptr}, i64 {left}, i64 {right}, i32 {is_bool})", span.file, span.line, span.col));
+            if !matches!(ty, Ty::Int | Ty::Long | Ty::Bool) {
+                self.instruction(format!(
+                    "call void @nl_expect_fail_header(i32 {}, i32 {}, i32 {}, ptr {source_ptr})",
+                    span.file, span.line, span.col
+                ));
+                self.instruction("call void @nl_expect_fail_left()");
+                self.emit_print_value(ty, &lhs);
+                self.instruction("call void @nl_print_newline()");
+                self.instruction("call void @nl_expect_fail_right()");
+                self.emit_print_value(ty, &rhs);
+                self.instruction("call void @nl_print_newline()");
+            } else {
+                let (left, right, is_bool) = match ty {
+                    Ty::Int => {
+                        let l = self.temp();
+                        let r = self.temp();
+                        self.instruction(format!("{l} = sext i32 {lhs} to i64"));
+                        self.instruction(format!("{r} = sext i32 {rhs} to i64"));
+                        (l, r, 0)
+                    }
+                    Ty::Long => (lhs, rhs, 0),
+                    Ty::Bool => {
+                        let l = self.temp();
+                        let r = self.temp();
+                        self.instruction(format!("{l} = zext i1 {lhs} to i64"));
+                        self.instruction(format!("{r} = zext i1 {rhs} to i64"));
+                        (l, r, 1)
+                    }
+                    _ => unreachable!("expect comparisons only admit scalar values"),
+                };
+                self.instruction(format!("call void @nl_expect_fail_compare(i32 {}, i32 {}, i32 {}, ptr {source_ptr}, i64 {left}, i64 {right}, i32 {is_bool})", span.file, span.line, span.col));
+            }
         } else {
             self.instruction(format!(
                 "call void @nl_expect_fail_bool(i32 {}, i32 {}, i32 {}, ptr {source_ptr})",
@@ -640,18 +817,543 @@ impl<'a> FunctionEmitter<'a> {
         self.start_block(&pass_label);
     }
 
+    fn print_text(&mut self, value: &str) {
+        let id = self.print_ids[value];
+        let len = value.len() + 1;
+        let ptr =
+            format!("getelementptr inbounds ([{len} x i8], ptr @.nl.print.{id}, i64 0, i64 0)");
+        self.instruction(format!("call void @nl_print_text(ptr {ptr})"));
+    }
+
+    fn emit_tag(&mut self, ty: Ty, value: &str) -> String {
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = extractvalue {} {value}, 0",
+            self.lltype(ty)
+        ));
+        result
+    }
+
+    fn emit_construct(&mut self, ty: Ty, case_index: usize, args: &[TExpr]) -> String {
+        let mut values = Vec::new();
+        for arg in args {
+            let value = self.emit_expr(arg);
+            if self.terminated {
+                return String::new();
+            }
+            values.push((arg.ty, value));
+        }
+        self.emit_construct_values(ty, case_index, values)
+    }
+
+    fn emit_construct_values(
+        &mut self,
+        ty: Ty,
+        case_index: usize,
+        values: Vec<(Ty, String)>,
+    ) -> String {
+        let llvm_ty = self.lltype(ty);
+        let place = self.temp();
+        self.instruction(format!("{place} = alloca {llvm_ty}"));
+        self.instruction(format!(
+            "store {llvm_ty} zeroinitializer, ptr {place}, align 1"
+        ));
+        let tag_ptr = self.temp();
+        self.instruction(format!(
+            "{tag_ptr} = getelementptr {llvm_ty}, ptr {place}, i32 0, i32 0"
+        ));
+        self.instruction(format!("store i32 {case_index}, ptr {tag_ptr}, align 4"));
+        let payload = self.temp();
+        self.instruction(format!(
+            "{payload} = getelementptr {llvm_ty}, ptr {place}, i32 0, i32 1"
+        ));
+        let case = self.program.types[ty.0].cases()[case_index].clone();
+        let mut sizes = vec![None; self.program.types.len()];
+        let mut offset = 0usize;
+        for ((field_ty, value), expected_ty) in values.into_iter().zip(case.payload) {
+            debug_assert_eq!(field_ty, expected_ty);
+            let size = type_size(field_ty, &self.program.types, &mut sizes);
+            if field_ty != Ty::Unit {
+                let field_ptr = self.temp();
+                self.instruction(format!(
+                    "{field_ptr} = getelementptr i8, ptr {payload}, i64 {offset}"
+                ));
+                self.instruction(format!(
+                    "store {} {value}, ptr {field_ptr}, align 1",
+                    self.lltype(field_ty)
+                ));
+            }
+            offset += size;
+        }
+        let result = self.temp();
+        self.instruction(format!("{result} = load {llvm_ty}, ptr {place}, align 1"));
+        result
+    }
+
+    fn emit_payload(
+        &mut self,
+        ty: Ty,
+        value: &str,
+        case_index: usize,
+        payload_index: usize,
+    ) -> (Ty, String) {
+        let payload_ty = self.program.types[ty.0].cases()[case_index].payload[payload_index];
+        if payload_ty == Ty::Unit {
+            return (payload_ty, String::new());
+        }
+        let llvm_ty = self.lltype(ty);
+        let place = self.temp();
+        self.instruction(format!("{place} = alloca {llvm_ty}"));
+        self.instruction(format!("store {llvm_ty} {value}, ptr {place}, align 1"));
+        let payload = self.temp();
+        self.instruction(format!(
+            "{payload} = getelementptr {llvm_ty}, ptr {place}, i32 0, i32 1"
+        ));
+        let mut sizes = vec![None; self.program.types.len()];
+        let case = self.program.types[ty.0].cases()[case_index].clone();
+        let offset = case
+            .payload
+            .iter()
+            .take(payload_index)
+            .map(|field| type_size(*field, &self.program.types, &mut sizes))
+            .sum::<usize>();
+        let field_ptr = self.temp();
+        self.instruction(format!(
+            "{field_ptr} = getelementptr i8, ptr {payload}, i64 {offset}"
+        ));
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = load {}, ptr {field_ptr}, align 1",
+            self.lltype(payload_ty)
+        ));
+        (payload_ty, result)
+    }
+
+    fn emit_print_value(&mut self, ty: Ty, value: &str) {
+        match ty {
+            Ty::Int => self.instruction(format!("call void @nl_print_int_raw(i32 {value})")),
+            Ty::Long => self.instruction(format!("call void @nl_print_long_raw(i64 {value})")),
+            Ty::Bool => self.instruction(format!("call void @nl_print_bool_raw(i1 {value})")),
+            Ty::Unit => self.print_text("()"),
+            _ => {
+                let tag = self.emit_tag(ty, value);
+                let cases = self.program.types[ty.0].cases();
+                let merge = self.new_label("print.end");
+                let mut case_labels = Vec::new();
+                let invalid = self.new_label("print.invalid");
+                for _ in cases.iter() {
+                    case_labels.push(self.new_label("print.case"));
+                }
+                let switch = cases
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| format!("i32 {index}, label %{}", case_labels[index]))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.terminate(format!("switch i32 {tag}, label %{invalid} [ {switch} ]"));
+                self.start_block(&invalid);
+                self.terminate("unreachable");
+                for (index, case) in cases.iter().enumerate() {
+                    self.start_block(&case_labels[index]);
+                    self.print_text(&case.name);
+                    if !case.payload.is_empty() {
+                        self.print_text("(");
+                        for payload_index in 0..case.payload.len() {
+                            if payload_index != 0 {
+                                self.print_text(", ");
+                            }
+                            let (field_ty, field) =
+                                self.emit_payload(ty, value, index, payload_index);
+                            self.emit_print_value(field_ty, &field);
+                        }
+                        self.print_text(")");
+                    }
+                    self.terminate(format!("br label %{merge}"));
+                }
+                self.start_block(&merge);
+            }
+        }
+    }
+
+    fn emit_method(&mut self, expr: &TExpr, kind: MethodKind, receiver: &TExpr) -> String {
+        let value = self.emit_expr(receiver);
+        let tag = self.emit_tag(receiver.ty, &value);
+        match kind {
+            MethodKind::IsNone | MethodKind::IsErr => {
+                let result = self.temp();
+                self.instruction(format!("{result} = icmp eq i32 {tag}, 1"));
+                result
+            }
+            MethodKind::IsSome | MethodKind::IsOk => {
+                let result = self.temp();
+                self.instruction(format!("{result} = icmp eq i32 {tag}, 0"));
+                result
+            }
+            MethodKind::UnwrapOption | MethodKind::UnwrapResult => {
+                let success = self.temp();
+                self.instruction(format!("{success} = icmp eq i32 {tag}, 0"));
+                let bad = self.temp();
+                self.instruction(format!("{bad} = xor i1 {success}, true"));
+                self.guard(
+                    bad,
+                    if kind == MethodKind::UnwrapOption {
+                        Failure::UnwrapNone
+                    } else {
+                        Failure::UnwrapErr
+                    },
+                    expr.span,
+                );
+                self.emit_payload(receiver.ty, &value, 0, 0).1
+            }
+            MethodKind::ResultOk => {
+                let is_ok = self.temp();
+                self.instruction(format!("{is_ok} = icmp eq i32 {tag}, 0"));
+                let ok_label = self.new_label("result.ok");
+                let err_label = self.new_label("result.err");
+                let merge = self.new_label("result.ok.end");
+                self.terminate(format!(
+                    "br i1 {is_ok}, label %{ok_label}, label %{err_label}"
+                ));
+                self.start_block(&ok_label);
+                let (payload_ty, payload) = self.emit_payload(receiver.ty, &value, 0, 0);
+                let some = self.emit_construct_values(expr.ty, 0, vec![(payload_ty, payload)]);
+                let ok_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&err_label);
+                let none = self.emit_construct_values(expr.ty, 1, Vec::new());
+                let err_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&merge);
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = phi {} [ {some}, %{ok_pred} ], [ {none}, %{err_pred} ]",
+                    self.lltype(expr.ty)
+                ));
+                result
+            }
+        }
+    }
+
+    fn emit_optional_call(
+        &mut self,
+        expr: &TExpr,
+        receiver: &TExpr,
+        function_id: usize,
+        args: &[TExpr],
+        wraps_result: bool,
+    ) -> String {
+        let receiver_value = self.emit_expr(receiver);
+        let tag = self.emit_tag(receiver.ty, &receiver_value);
+        let is_some = self.temp();
+        self.instruction(format!("{is_some} = icmp eq i32 {tag}, 0"));
+        let some_label = self.new_label("optional.some");
+        let none_label = self.new_label("optional.none");
+        let merge = self.new_label("optional.end");
+        self.terminate(format!(
+            "br i1 {is_some}, label %{some_label}, label %{none_label}"
+        ));
+        self.start_block(&none_label);
+        let none = self.emit_construct_values(expr.ty, 1, Vec::new());
+        let none_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&some_label);
+        let (receiver_ty, receiver_arg) = self.emit_payload(receiver.ty, &receiver_value, 0, 0);
+        let mut values = vec![(receiver_ty, receiver_arg)];
+        for arg in args {
+            let value = self.emit_expr(arg);
+            if self.terminated {
+                break;
+            }
+            values.push((arg.ty, value));
+        }
+        if self.terminated {
+            self.start_block(&merge);
+            return none;
+        }
+        let target = &self.program.functions[function_id];
+        let signature = lower_signature(target, &self.program.types);
+        let call_args = values
+            .iter()
+            .zip(signature.params.iter())
+            .map(|((_, value), ty)| format!("{ty} {value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let function_result = if signature.result == "void" {
+            self.instruction(format!("call void @nl_fn_{function_id}({call_args})"));
+            String::new()
+        } else {
+            let result = self.temp();
+            self.instruction(format!(
+                "{result} = call {} @nl_fn_{function_id}({call_args})",
+                signature.result
+            ));
+            result
+        };
+        let some = if wraps_result {
+            self.emit_construct_values(expr.ty, 0, vec![(target.result, function_result)])
+        } else {
+            function_result
+        };
+        let some_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&merge);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi {} [ {none}, %{none_pred} ], [ {some}, %{some_pred} ]",
+            self.lltype(expr.ty)
+        ));
+        result
+    }
+
+    fn emit_try(
+        &mut self,
+        _expr: &TExpr,
+        value: &TExpr,
+        _success_ty: Ty,
+        error_ty: Option<Ty>,
+        propagated_ty: Ty,
+    ) -> String {
+        let source = self.emit_expr(value);
+        let tag = self.emit_tag(value.ty, &source);
+        let success = self.temp();
+        self.instruction(format!("{success} = icmp eq i32 {tag}, 0"));
+        let success_label = self.new_label("try.success");
+        let failure_label = self.new_label("try.failure");
+        self.terminate(format!(
+            "br i1 {success}, label %{success_label}, label %{failure_label}"
+        ));
+        self.start_block(&failure_label);
+        let propagated = if let Some(err_ty) = error_ty {
+            let (_, err) = self.emit_payload(value.ty, &source, 1, 0);
+            self.emit_construct_values(propagated_ty, 1, vec![(err_ty, err)])
+        } else {
+            self.emit_construct_values(propagated_ty, 1, Vec::new())
+        };
+        self.emit_all_iteration_cleanups();
+        self.terminate(format!("ret {} {propagated}", self.lltype(propagated_ty)));
+        self.start_block(&success_label);
+        self.emit_payload(value.ty, &source, 0, 0).1
+    }
+
+    fn emit_coalesce(&mut self, expr: &TExpr, option: &TExpr, fallback: &TExpr) -> String {
+        let option_value = self.emit_expr(option);
+        let tag = self.emit_tag(option.ty, &option_value);
+        let is_some = self.temp();
+        self.instruction(format!("{is_some} = icmp eq i32 {tag}, 0"));
+        let some_label = self.new_label("coalesce.some");
+        let fallback_label = self.new_label("coalesce.fallback");
+        let merge = self.new_label("coalesce.end");
+        self.terminate(format!(
+            "br i1 {is_some}, label %{some_label}, label %{fallback_label}"
+        ));
+        self.start_block(&some_label);
+        let some = self.emit_payload(option.ty, &option_value, 0, 0).1;
+        let some_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&fallback_label);
+        let fallback_value = self.emit_expr(fallback);
+        let fallback_live = !self.terminated;
+        let fallback_pred = self.current_label.clone();
+        if fallback_live {
+            self.terminate(format!("br label %{merge}"));
+        }
+        self.start_block(&merge);
+        if expr.ty == Ty::Unit {
+            return String::new();
+        }
+        if fallback_live {
+            let result = self.temp();
+            self.instruction(format!("{result} = phi {} [ {some}, %{some_pred} ], [ {fallback_value}, %{fallback_pred} ]", self.lltype(expr.ty)));
+            result
+        } else {
+            some
+        }
+    }
+
+    fn emit_match(&mut self, expr: &TExpr, scrutinee: &TExpr, arms: &[TMatchArm]) -> String {
+        let value = self.emit_expr(scrutinee);
+        let tag = if self.program.types[scrutinee.ty.0].is_sum() {
+            Some(self.emit_tag(scrutinee.ty, &value))
+        } else {
+            None
+        };
+        let merge = self.new_label("match.end");
+        let mut arm_labels = Vec::new();
+        for arm in arms {
+            let arm_label = self.new_label("match.arm");
+            arm_labels.push(arm_label.clone());
+            match &arm.pattern {
+                TPattern::Wildcard => self.terminate(format!("br label %{arm_label}")),
+                TPattern::Integer(literal) => {
+                    let condition = self.temp();
+                    self.instruction(format!(
+                        "{condition} = icmp eq {} {value}, {literal}",
+                        self.lltype(scrutinee.ty)
+                    ));
+                    let next = self.new_label("match.next");
+                    self.terminate(format!(
+                        "br i1 {condition}, label %{arm_label}, label %{next}"
+                    ));
+                    self.start_block(&next);
+                }
+                TPattern::Bool(literal) => {
+                    let condition = self.temp();
+                    self.instruction(format!("{condition} = icmp eq i1 {value}, {literal}"));
+                    let next = self.new_label("match.next");
+                    self.terminate(format!(
+                        "br i1 {condition}, label %{arm_label}, label %{next}"
+                    ));
+                    self.start_block(&next);
+                }
+                TPattern::Case { case_index, .. } => {
+                    let condition = self.temp();
+                    self.instruction(format!(
+                        "{condition} = icmp eq i32 {}, {case_index}",
+                        tag.as_ref().unwrap()
+                    ));
+                    let next = self.new_label("match.next");
+                    self.terminate(format!(
+                        "br i1 {condition}, label %{arm_label}, label %{next}"
+                    ));
+                    self.start_block(&next);
+                }
+            }
+        }
+        if !self.terminated {
+            self.terminate("unreachable");
+        }
+
+        let mut incoming = Vec::<(String, String)>::new();
+        for (arm, label) in arms.iter().zip(arm_labels.iter()) {
+            self.start_block(label);
+            if let TPattern::Case {
+                ty,
+                case_index,
+                bindings,
+            } = &arm.pattern
+            {
+                for (index, id) in bindings.iter().enumerate() {
+                    if let Some(id) = id {
+                        let (field_ty, field) = self.emit_payload(*ty, &value, *case_index, index);
+                        self.instruction(format!(
+                            "store {} {field}, ptr %local.{id}",
+                            self.lltype(field_ty)
+                        ));
+                    }
+                }
+            }
+            let arm_value = self.emit_branch_block(&arm.body, &merge);
+            if !self.terminated {
+                let predecessor = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                incoming.push((arm_value.unwrap_or_default(), predecessor));
+            }
+        }
+        if incoming.is_empty() {
+            self.terminated = true;
+            String::new()
+        } else {
+            self.start_block(&merge);
+            if expr.ty == Ty::Unit {
+                return String::new();
+            }
+            if incoming.len() == 1 {
+                return incoming.pop().unwrap().0;
+            }
+            let result = self.temp();
+            let values = incoming
+                .iter()
+                .map(|(value, pred)| format!("[ {value}, %{pred} ]"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.instruction(format!("{result} = phi {} {values}", self.lltype(expr.ty)));
+            result
+        }
+    }
+
+    fn emit_structural_equal(&mut self, ty: Ty, left: &str, right: &str) -> String {
+        let left_tag = self.emit_tag(ty, left);
+        let right_tag = self.emit_tag(ty, right);
+        let same_tag = self.temp();
+        self.instruction(format!("{same_tag} = icmp eq i32 {left_tag}, {right_tag}"));
+        let dispatch = self.new_label("eq.dispatch");
+        let unequal = self.new_label("eq.unequal");
+        let merge = self.new_label("eq.end");
+        self.terminate(format!(
+            "br i1 {same_tag}, label %{dispatch}, label %{unequal}"
+        ));
+        self.start_block(&unequal);
+        let unequal_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+
+        let cases = self.program.types[ty.0].cases();
+        let labels = (0..cases.len())
+            .map(|_| self.new_label("eq.case"))
+            .collect::<Vec<_>>();
+        let invalid = self.new_label("eq.invalid");
+        self.start_block(&dispatch);
+        let switch_cases = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| format!("i32 {index}, label %{label}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.terminate(format!(
+            "switch i32 {left_tag}, label %{invalid} [ {switch_cases} ]"
+        ));
+        self.start_block(&invalid);
+        self.terminate("unreachable");
+
+        let mut incoming = vec![("false".to_owned(), unequal_pred)];
+        for (case_index, case) in cases.iter().enumerate() {
+            self.start_block(&labels[case_index]);
+            let mut equal = "true".to_owned();
+            for field_index in 0..case.payload.len() {
+                let field_ty = case.payload[field_index];
+                if field_ty == Ty::Unit {
+                    continue;
+                }
+                let left_field = self.emit_payload(ty, left, case_index, field_index).1;
+                let right_field = self.emit_payload(ty, right, case_index, field_index).1;
+                let field_equal = self.emit_binary(
+                    BinaryOp::Eq,
+                    field_ty,
+                    &left_field,
+                    &right_field,
+                    Span::default(),
+                );
+                let next_equal = self.temp();
+                self.instruction(format!("{next_equal} = and i1 {equal}, {field_equal}"));
+                equal = next_equal;
+            }
+            let predecessor = self.current_label.clone();
+            self.terminate(format!("br label %{merge}"));
+            incoming.push((equal, predecessor));
+        }
+        self.start_block(&merge);
+        let result = self.temp();
+        let values = incoming
+            .iter()
+            .map(|(value, pred)| format!("[ {value}, %{pred} ]"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.instruction(format!("{result} = phi i1 {values}"));
+        result
+    }
+
     fn emit_expr(&mut self, expr: &TExpr) -> String {
         if self.terminated {
             return String::new();
         }
         match &expr.kind {
+            TExprKind::Unit => String::new(),
             TExprKind::Integer(value) => value.to_string(),
             TExprKind::Bool(value) => if *value { "true" } else { "false" }.to_owned(),
             TExprKind::Local(id) => {
                 let tmp = self.temp();
                 self.instruction(format!(
                     "{tmp} = load {}, ptr %local.{id}",
-                    llvm_type(expr.ty)
+                    self.lltype(expr.ty)
                 ));
                 tmp
             }
@@ -675,18 +1377,26 @@ impl<'a> FunctionEmitter<'a> {
                 match target {
                     CallTarget::Print => {
                         let (ty, value) = &values[0];
-                        let name = match *ty {
-                            Ty::Int => "nl_print_int",
-                            Ty::Long => "nl_print_long",
-                            Ty::Bool => "nl_print_bool",
-                            _ => unreachable!(),
-                        };
-                        self.instruction(format!("call void @{name}({} {value})", llvm_type(*ty)));
+                        if matches!(*ty, Ty::Int | Ty::Long | Ty::Bool) {
+                            let name = match *ty {
+                                Ty::Int => "nl_print_int",
+                                Ty::Long => "nl_print_long",
+                                Ty::Bool => "nl_print_bool",
+                                _ => unreachable!(),
+                            };
+                            self.instruction(format!(
+                                "call void @{name}({} {value})",
+                                self.lltype(*ty)
+                            ));
+                        } else {
+                            self.emit_print_value(*ty, value);
+                            self.instruction("call void @nl_print_newline()");
+                        }
                         String::new()
                     }
                     CallTarget::Function(id) => {
                         let target = &self.program.functions[*id];
-                        let signature = lower_signature(target);
+                        let signature = lower_signature(target, &self.program.types);
                         let args = values
                             .iter()
                             .zip(signature.params.iter())
@@ -706,6 +1416,53 @@ impl<'a> FunctionEmitter<'a> {
                         }
                     }
                 }
+            }
+            TExprKind::Construct { case_index, args } => {
+                self.emit_construct(expr.ty, *case_index, args)
+            }
+            TExprKind::Method { kind, receiver } => self.emit_method(expr, *kind, receiver),
+            TExprKind::OptionalCall {
+                receiver,
+                function_id,
+                args,
+                wraps_result,
+            } => self.emit_optional_call(expr, receiver, *function_id, args, *wraps_result),
+            TExprKind::Try {
+                value,
+                success_ty,
+                error_ty,
+                propagated_ty,
+            } => self.emit_try(expr, value, *success_ty, *error_ty, *propagated_ty),
+            TExprKind::Coalesce { option, fallback } => self.emit_coalesce(expr, option, fallback),
+            TExprKind::Match { scrutinee, arms } => self.emit_match(expr, scrutinee, arms),
+            TExprKind::Return(value) => {
+                if let Some(value) = value {
+                    let result = self.emit_expr(value);
+                    if !self.terminated {
+                        self.emit_all_iteration_cleanups();
+                        self.terminate(format!(
+                            "ret {} {result}",
+                            self.lltype(self.function.result)
+                        ));
+                    }
+                } else {
+                    self.emit_all_iteration_cleanups();
+                    self.terminate("ret void");
+                }
+                String::new()
+            }
+            TExprKind::LoopExit(is_break) => {
+                self.emit_iteration_cleanup();
+                let target = self.loops.last().expect("checker validated loop exit");
+                self.terminate(format!(
+                    "br label %{}",
+                    if *is_break {
+                        &target.exit
+                    } else {
+                        &target.latch
+                    }
+                ));
+                String::new()
             }
             TExprKind::ToLong(value) => {
                 let source = self.emit_expr(value);
@@ -800,7 +1557,17 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_binary(&mut self, op: BinaryOp, ty: Ty, lhs: &str, rhs: &str, span: Span) -> String {
-        let llvm_ty = llvm_type(ty);
+        if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && !matches!(ty, Ty::Int | Ty::Long | Ty::Bool)
+        {
+            let equal = self.emit_structural_equal(ty, lhs, rhs);
+            if op == BinaryOp::Eq {
+                return equal;
+            }
+            let result = self.temp();
+            self.instruction(format!("{result} = xor i1 {equal}, true"));
+            return result;
+        }
+        let llvm_ty = self.lltype(ty);
         if matches!(
             op,
             BinaryOp::Add
@@ -896,7 +1663,7 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_div_rem(&mut self, op: BinaryOp, ty: Ty, lhs: &str, rhs: &str, span: Span) -> String {
-        let llvm_ty = llvm_type(ty);
+        let llvm_ty = self.lltype(ty);
         let zero = self.temp();
         self.instruction(format!("{zero} = icmp eq {llvm_ty} {rhs}, 0"));
         self.guard(zero, Failure::DivideByZero, span);
@@ -1033,7 +1800,7 @@ impl<'a> FunctionEmitter<'a> {
                 let result = self.temp();
                 self.instruction(format!(
                     "{result} = phi {} [ {tv}, %{then_pred} ], [ {ev}, %{} ]",
-                    llvm_type(result_ty),
+                    self.lltype(result_ty),
                     else_pred.unwrap()
                 ));
                 result
@@ -1133,6 +1900,8 @@ enum Failure {
     BadShift = 11,
     OverflowIntDiv = 12,
     OverflowLongDiv = 13,
+    UnwrapNone = 14,
+    UnwrapErr = 15,
 }
 
 fn failure_for(ty: Ty, op: BinaryOp, unary: bool) -> Failure {
@@ -1167,23 +1936,23 @@ fn assign_binary(op: AssignOp) -> BinaryOp {
 }
 
 struct LoweredSignature {
-    result: &'static str,
-    params: Vec<&'static str>,
+    result: String,
+    params: Vec<String>,
 }
 
 // All language function ABI decisions live here. Hidden context and destination
 // parameters added by later milestones belong in this lowering function.
-fn lower_signature(function: &TFunction) -> LoweredSignature {
+fn lower_signature(function: &TFunction, types: &[TType]) -> LoweredSignature {
     LoweredSignature {
         result: if function.is_test {
-            "i32"
+            "i32".to_owned()
         } else {
-            llvm_type(function.result)
+            llvm_type(function.result, types)
         },
         params: function
             .params
             .iter()
-            .map(|param| llvm_type(param.ty))
+            .map(|param| llvm_type(param.ty, types))
             .collect(),
     }
 }

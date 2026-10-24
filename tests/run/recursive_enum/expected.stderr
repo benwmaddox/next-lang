@@ -1,0 +1,1 @@
+main.nl:1:1: error: value type 'Node' contains itself directly or through Option/Result and would have infinite size

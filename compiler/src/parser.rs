@@ -12,6 +12,7 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> Result<Program, ParseError> {
         tokens,
         pos: 0,
         source,
+        pending_type_gt: false,
     }
     .program()
 }
@@ -20,15 +21,19 @@ struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
     source: &'a str,
+    pending_type_gt: bool,
 }
 
 impl Parser<'_> {
     fn program(mut self) -> Result<Program, ParseError> {
+        let mut enums = Vec::new();
         let mut functions = Vec::new();
         let mut tests = Vec::new();
         self.skip_separators();
         while !self.at(&TokenKind::Eof) {
-            if self.word_is("test") {
+            if self.word_is("enum") {
+                enums.push(self.enum_decl()?);
+            } else if self.word_is("test") {
                 tests.push(self.test()?);
             } else {
                 functions.push(self.function()?);
@@ -36,7 +41,64 @@ impl Parser<'_> {
             self.require_separator_or_eof()?;
             self.skip_separators();
         }
-        Ok(Program { functions, tests })
+        Ok(Program {
+            enums,
+            functions,
+            tests,
+        })
+    }
+
+    fn enum_decl(&mut self) -> Result<EnumDecl, ParseError> {
+        let start = self.expect_word("enum", "expected 'enum'")?.span;
+        let (name, _) = self.expect_ident("expected an enum name after 'enum'")?;
+        self.skip_newlines();
+        self.expect(&TokenKind::LBrace, "expected '{' after the enum name")?;
+        self.skip_separators();
+        let mut cases = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let (case_name, case_span) = self.expect_ident("expected an enum case name")?;
+            let mut payload = Vec::new();
+            if self.take(&TokenKind::LParen) {
+                self.skip_newlines();
+                if !self.at(&TokenKind::RParen) {
+                    loop {
+                        payload.push(self.type_name()?);
+                        self.skip_newlines();
+                        if !self.take(&TokenKind::Comma) {
+                            break;
+                        }
+                        self.skip_newlines();
+                        if self.at(&TokenKind::RParen) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&TokenKind::RParen, "expected ')' after enum payload types")?;
+            }
+            cases.push(EnumCase {
+                name: case_name,
+                payload,
+                span: case_span,
+            });
+            let separated = self.skip_separators() > 0;
+            if self.take(&TokenKind::Comma) {
+                self.skip_separators();
+            } else if !self.at(&TokenKind::RBrace) && !separated {
+                return Err(self.error_here("expected a comma or newline between enum cases"));
+            }
+        }
+        if cases.is_empty() {
+            return Err(ParseError {
+                span: start,
+                message: "an enum needs at least one case".to_owned(),
+            });
+        }
+        self.expect(&TokenKind::RBrace, "expected '}' to close the enum")?;
+        Ok(EnumDecl {
+            name,
+            cases,
+            span: start,
+        })
     }
 
     fn test(&mut self) -> Result<Test, ParseError> {
@@ -108,17 +170,35 @@ impl Parser<'_> {
     }
 
     fn type_name(&mut self) -> Result<TypeAst, ParseError> {
-        let (name, span) = self.expect_ident("expected a type name")?;
-        if !matches!(name.as_str(), "int" | "long" | "bool") {
-            return Err(ParseError {
-                span,
-                message: format!(
-                    "unknown type '{}'; use int, long, or bool in this task",
-                    name
-                ),
+        if self.take(&TokenKind::LParen) {
+            self.expect(&TokenKind::RParen, "expected ')' in unit type '()'")?;
+            return Ok(TypeAst {
+                name: "()".to_owned(),
+                args: Vec::new(),
+                span: self.tokens[self.pos.saturating_sub(2)].span,
             });
         }
-        Ok(TypeAst { name, span })
+        let (name, span) = self.expect_ident("expected a type name")?;
+        let mut args = Vec::new();
+        if self.take(&TokenKind::Lt) {
+            loop {
+                args.push(self.type_name()?);
+                self.skip_newlines();
+                if !self.take(&TokenKind::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+            }
+            if self.pending_type_gt {
+                self.pending_type_gt = false;
+            } else if self.take(&TokenKind::Gt) {
+            } else if self.take(&TokenKind::Shr) {
+                self.pending_type_gt = true;
+            } else {
+                return Err(self.error_here("expected '>' after generic type arguments"));
+            }
+        }
+        Ok(TypeAst { name, args, span })
     }
 
     fn block(&mut self) -> Result<Block, ParseError> {
@@ -333,7 +413,11 @@ impl Parser<'_> {
                 break;
             }
             let op_span = self.next().span;
-            let right = self.expression(precedence + 1)?;
+            let right = self.expression(if op == BinaryOp::Coalesce {
+                precedence
+            } else {
+                precedence + 1
+            })?;
             left = Expr {
                 kind: ExprKind::Binary {
                     op,
@@ -389,35 +473,43 @@ impl Parser<'_> {
                 }
             }
             TokenKind::LParen => {
-                let cast_name = match (&self.peek().kind, &self.peek_n(1).kind) {
-                    (TokenKind::Ident(name), TokenKind::RParen)
-                        if matches!(name.as_str(), "int" | "long" | "bool") =>
-                    {
-                        Some(name.clone())
-                    }
-                    _ => None,
-                };
-                if let Some(name) = cast_name {
-                    let ty_token = self.next().clone();
-                    self.next();
-                    let ty = TypeAst {
-                        name,
-                        span: ty_token.span,
-                    };
-                    self.skip_newlines();
-                    let value = self.prefix()?;
+                if self.take(&TokenKind::RParen) {
                     Expr {
-                        kind: ExprKind::Cast {
-                            ty,
-                            cast_span: span,
-                            value: Box::new(value),
-                        },
+                        kind: ExprKind::Unit,
                         span,
                     }
                 } else {
-                    let inner = self.expression(0)?;
-                    self.expect(&TokenKind::RParen, "expected ')' after this expression")?;
-                    Expr { span, ..inner }
+                    let cast_name = match (&self.peek().kind, &self.peek_n(1).kind) {
+                        (TokenKind::Ident(name), TokenKind::RParen)
+                            if matches!(name.as_str(), "int" | "long" | "bool") =>
+                        {
+                            Some(name.clone())
+                        }
+                        _ => None,
+                    };
+                    if let Some(name) = cast_name {
+                        let ty_token = self.next().clone();
+                        self.next();
+                        let ty = TypeAst {
+                            name,
+                            args: Vec::new(),
+                            span: ty_token.span,
+                        };
+                        self.skip_newlines();
+                        let value = self.prefix()?;
+                        Expr {
+                            kind: ExprKind::Cast {
+                                ty,
+                                cast_span: span,
+                                value: Box::new(value),
+                            },
+                            span,
+                        }
+                    } else {
+                        let inner = self.expression(0)?;
+                        self.expect(&TokenKind::RParen, "expected ')' after this expression")?;
+                        Expr { span, ..inner }
+                    }
                 }
             }
             TokenKind::Ident(name) if name == "true" => Expr {
@@ -429,6 +521,26 @@ impl Parser<'_> {
                 span,
             },
             TokenKind::Ident(name) if name == "if" => self.if_expression(span)?,
+            TokenKind::Ident(name) if name == "match" => self.match_expression(span)?,
+            TokenKind::Ident(name) if name == "return" => {
+                let value = if self.at(&TokenKind::Newline)
+                    || self.at(&TokenKind::Semicolon)
+                    || self.at(&TokenKind::RBrace)
+                    || self.at(&TokenKind::Comma)
+                {
+                    None
+                } else {
+                    Some(Box::new(self.expression(0)?))
+                };
+                Expr {
+                    kind: ExprKind::Return(value),
+                    span,
+                }
+            }
+            TokenKind::Ident(name) if name == "break" || name == "continue" => Expr {
+                kind: ExprKind::LoopExit(name == "break"),
+                span,
+            },
             TokenKind::Ident(name) => Expr {
                 kind: ExprKind::Name(name),
                 span,
@@ -443,64 +555,265 @@ impl Parser<'_> {
 
         loop {
             if self.take(&TokenKind::LParen) {
-                let name = match expr.kind {
-                    ExprKind::Name(name) => name,
+                let args = self.arguments_after_lparen()?;
+                let old = expr;
+                expr = match old.kind {
+                    ExprKind::Name(name) => Expr {
+                        kind: ExprKind::Call {
+                            name,
+                            call_span: old.span,
+                            args,
+                        },
+                        span: old.span,
+                    },
+                    ExprKind::QualifiedCase {
+                        enum_name,
+                        case_name,
+                        case_span,
+                        ..
+                    } => Expr {
+                        kind: ExprKind::QualifiedCase {
+                            enum_name,
+                            case_name,
+                            case_span,
+                            args,
+                        },
+                        span: old.span,
+                    },
                     _ => {
                         return Err(ParseError {
-                            span: expr.span,
-                            message: "only a named function can be called".to_owned(),
+                            span: old.span,
+                            message: "only a named function or enum case can be called".to_owned(),
                         });
                     }
                 };
-                let mut args = Vec::new();
-                self.skip_newlines();
-                if !self.at(&TokenKind::RParen) {
-                    loop {
-                        args.push(self.expression(0)?);
-                        self.skip_newlines();
-                        if !self.take(&TokenKind::Comma) {
-                            break;
-                        }
-                        self.skip_newlines();
-                        if self.at(&TokenKind::RParen) {
-                            break;
-                        }
-                    }
-                }
-                self.expect(&TokenKind::RParen, "expected ')' after the arguments")?;
+                continue;
+            }
+            if self.take(&TokenKind::Question) {
+                let span = expr.span;
                 expr = Expr {
-                    kind: ExprKind::Call {
-                        name,
-                        call_span: expr.span,
+                    kind: ExprKind::Try(Box::new(expr)),
+                    span,
+                };
+                continue;
+            }
+            if self.take(&TokenKind::QuestionDot) {
+                let (method, method_span) =
+                    self.expect_ident("expected a function name after '?.'")?;
+                self.expect(
+                    &TokenKind::LParen,
+                    "expected '(' after the optional call name",
+                )?;
+                let args = self.arguments_after_lparen()?;
+                let span = expr.span;
+                expr = Expr {
+                    kind: ExprKind::OptionalCall {
+                        receiver: Box::new(expr),
+                        name: method,
+                        method_span,
                         args,
                     },
-                    span: expr.span,
+                    span,
                 };
                 continue;
             }
             if self.take(&TokenKind::Dot) {
                 let (method, method_span) =
                     self.expect_ident("expected a method name after '.'")?;
-                if method != "to_long" {
-                    return Err(ParseError {
-                        span: method_span,
-                        message: format!("unknown method '{}'; did you mean 'to_long'?", method),
-                    });
-                }
-                self.expect(&TokenKind::LParen, "expected '()' after to_long")?;
-                self.expect(&TokenKind::RParen, "expected '()' after to_long")?;
-                expr = Expr {
-                    kind: ExprKind::ToLong {
-                        value: Box::new(expr.clone()),
-                        method_span,
-                    },
-                    span: expr.span,
+                let qualifier = match &expr.kind {
+                    ExprKind::Name(name) => Some(name.clone()),
+                    _ => None,
                 };
+                if self.take(&TokenKind::LParen) {
+                    let args = self.arguments_after_lparen()?;
+                    let span = expr.span;
+                    let is_builtin_method = matches!(
+                        method.as_str(),
+                        "to_long" | "ok" | "unwrap" | "is_none" | "is_some" | "is_ok" | "is_err"
+                    );
+                    if let Some(enum_name) = qualifier.filter(|_| !is_builtin_method) {
+                        expr = Expr {
+                            kind: ExprKind::QualifiedCase {
+                                enum_name,
+                                case_name: method,
+                                case_span: method_span,
+                                args,
+                            },
+                            span,
+                        };
+                    } else if method == "to_long" && args.is_empty() {
+                        expr = Expr {
+                            kind: ExprKind::ToLong {
+                                value: Box::new(expr),
+                                method_span,
+                            },
+                            span,
+                        };
+                    } else {
+                        expr = Expr {
+                            kind: ExprKind::MethodCall {
+                                receiver: Box::new(expr),
+                                name: method,
+                                method_span,
+                                args,
+                            },
+                            span,
+                        };
+                    }
+                } else {
+                    let span = expr.span;
+                    let Some(enum_name) = qualifier else {
+                        return Err(ParseError {
+                            span: method_span,
+                            message: "expected '()' after a method name".to_owned(),
+                        });
+                    };
+                    expr = Expr {
+                        kind: ExprKind::QualifiedCase {
+                            enum_name,
+                            case_name: method,
+                            case_span: method_span,
+                            args: Vec::new(),
+                        },
+                        span,
+                    };
+                }
                 continue;
             }
             break;
         }
         Ok(expr)
+    }
+
+    fn arguments_after_lparen(&mut self) -> Result<Vec<Expr>, ParseError> {
+        let mut args = Vec::new();
+        self.skip_newlines();
+        if !self.at(&TokenKind::RParen) {
+            loop {
+                args.push(self.expression(0)?);
+                self.skip_newlines();
+                if !self.take(&TokenKind::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+                if self.at(&TokenKind::RParen) {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RParen, "expected ')' after the arguments")?;
+        Ok(args)
+    }
+
+    fn match_expression(&mut self, span: Span) -> Result<Expr, ParseError> {
+        let scrutinee = self.expression(0)?;
+        self.skip_newlines();
+        self.expect(&TokenKind::LBrace, "expected '{' after the match value")?;
+        self.skip_separators();
+        let mut arms = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let arm_span = self.peek().span;
+            let pattern = self.pattern()?;
+            self.expect(
+                &TokenKind::FatArrow,
+                "expected '=>' after the match pattern",
+            )?;
+            self.skip_newlines();
+            let body = if self.at(&TokenKind::LBrace) {
+                self.block()?
+            } else {
+                let value = self.expression(0)?;
+                Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(value)),
+                    span: arm_span,
+                }
+            };
+            arms.push(MatchArm {
+                pattern,
+                body,
+                span: arm_span,
+            });
+            let separated = self.skip_separators() > 0;
+            if self.take(&TokenKind::Comma) {
+                self.skip_separators();
+            } else if !self.at(&TokenKind::RBrace) && !separated {
+                return Err(self.error_here("expected a comma or newline between match arms"));
+            }
+        }
+        self.expect(&TokenKind::RBrace, "expected '}' to close the match")?;
+        Ok(Expr {
+            kind: ExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            span,
+        })
+    }
+
+    fn pattern(&mut self) -> Result<Pattern, ParseError> {
+        let token = self.next().clone();
+        match token.kind {
+            TokenKind::Number(raw) => Ok(Pattern::Integer(self.integer(raw, token.span, false)?)),
+            TokenKind::Minus => {
+                if let TokenKind::Number(raw) = self.peek().kind.clone() {
+                    self.next();
+                    Ok(Pattern::Integer(self.integer(raw, token.span, true)?))
+                } else {
+                    Err(ParseError {
+                        span: token.span,
+                        message: "expected an integer literal after '-' in a pattern".to_owned(),
+                    })
+                }
+            }
+            TokenKind::Ident(name) if name == "_" => Ok(Pattern::Wildcard),
+            TokenKind::Ident(name) if name == "true" => Ok(Pattern::Bool(true, token.span)),
+            TokenKind::Ident(name) if name == "false" => Ok(Pattern::Bool(false, token.span)),
+            TokenKind::Ident(first) => {
+                let (enum_name, name, name_span) = if self.take(&TokenKind::Dot) {
+                    let (case_name, case_span) =
+                        self.expect_ident("expected an enum case after '.'")?;
+                    (Some(first), case_name, case_span)
+                } else {
+                    (None, first, token.span)
+                };
+                let mut bindings = Vec::new();
+                if self.take(&TokenKind::LParen) {
+                    self.skip_newlines();
+                    if !self.at(&TokenKind::RParen) {
+                        loop {
+                            let (binding, binding_span) = self
+                                .expect_ident("expected a payload name or '_' in this pattern")?;
+                            bindings.push(if binding == "_" {
+                                None
+                            } else {
+                                Some((binding, binding_span))
+                            });
+                            self.skip_newlines();
+                            if !self.take(&TokenKind::Comma) {
+                                break;
+                            }
+                            self.skip_newlines();
+                            if self.at(&TokenKind::RParen) {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(&TokenKind::RParen, "expected ')' after pattern payload")?;
+                }
+                Ok(Pattern::Case {
+                    enum_name,
+                    name,
+                    name_span,
+                    bindings,
+                })
+            }
+            _ => Err(ParseError {
+                span: token.span,
+                message: "expected an enum case, bool or integer literal, or '_' pattern"
+                    .to_owned(),
+            }),
+        }
     }
 
     fn if_expression(&mut self, span: Span) -> Result<Expr, ParseError> {
@@ -666,6 +979,7 @@ enum Candidate {
 
 fn binary_op(kind: &TokenKind) -> Option<(BinaryOp, u8)> {
     Some(match kind {
+        TokenKind::QuestionQuestion => (BinaryOp::Coalesce, 0),
         TokenKind::OrOr => (BinaryOp::Or, 1),
         TokenKind::AndAnd => (BinaryOp::And, 2),
         TokenKind::Or => (BinaryOp::BitOr, 3),

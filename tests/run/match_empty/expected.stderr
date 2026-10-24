@@ -1,0 +1,1 @@
+main.nl:4:11: error: non-exhaustive match; missing Color.Red, Color.Blue

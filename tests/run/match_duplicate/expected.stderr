@@ -1,0 +1,1 @@
+main.nl:4:41: error: unreachable duplicate pattern 'Color.Red'; remove this arm

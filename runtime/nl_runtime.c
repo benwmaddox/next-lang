@@ -54,6 +54,8 @@ _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col)
         case 11: message = "bad shift"; break;
         case 12: message = "overflow in int division"; break;
         case 13: message = "overflow in long division"; break;
+        case 14: message = "unwrap called on none"; break;
+        case 15: message = "unwrap called on err"; break;
     }
     fprintf(stderr, "%s:%d:%d: %s\n", file, line, col, message);
     exit(nl_test_mode ? 70 : 1);
@@ -84,3 +86,16 @@ void nl_expect_fail_bool(int32_t file_id, int32_t line, int32_t col,
 void nl_print_int(int32_t value) { printf("%d\n", value); }
 void nl_print_long(int64_t value) { printf("%lld\n", (long long)value); }
 void nl_print_bool(_Bool value) { puts(value ? "true" : "false"); }
+
+void nl_print_int_raw(int32_t value) { printf("%d", value); }
+void nl_print_long_raw(int64_t value) { printf("%lld", (long long)value); }
+void nl_print_bool_raw(_Bool value) { fputs(value ? "true" : "false", stdout); }
+void nl_print_text(const char *value) { fputs(value, stdout); }
+void nl_print_newline(void) { putchar('\n'); }
+
+void nl_expect_fail_header(int32_t file_id, int32_t line, int32_t col,
+                           const char *source) {
+    printf("  %s:%d:%d: %s\n", nl_file_name(file_id), line, col, source);
+}
+void nl_expect_fail_left(void) { fputs("    left:  ", stdout); }
+void nl_expect_fail_right(void) { fputs("    right: ", stdout); }

@@ -1,0 +1,1 @@
+main.nl:4:24: error: '??' works on Option only; use match or convert the Result with .ok()

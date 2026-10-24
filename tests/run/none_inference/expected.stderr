@@ -1,0 +1,1 @@
+main.nl:2:17: error: cannot infer the type of 'none'; add an Option<T> type annotation or expected type

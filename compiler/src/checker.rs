@@ -46,6 +46,9 @@ struct Checker {
     files: Vec<String>,
     require_main: bool,
     signatures: HashMap<String, Signature>,
+    types: Vec<TType>,
+    enum_ids: HashMap<String, Ty>,
+    generic_ids: HashMap<(u8, Ty, Ty), Ty>,
     ast_functions: Vec<Function>,
     ast_tests: Vec<Test>,
     edges: Vec<Edge>,
@@ -66,6 +69,35 @@ impl Checker {
             files,
             require_main,
             signatures: HashMap::new(),
+            types: vec![
+                TType {
+                    name: "int".to_owned(),
+                    kind: TTypeKind::Int,
+                    span: Span::default(),
+                },
+                TType {
+                    name: "long".to_owned(),
+                    kind: TTypeKind::Long,
+                    span: Span::default(),
+                },
+                TType {
+                    name: "bool".to_owned(),
+                    kind: TTypeKind::Bool,
+                    span: Span::default(),
+                },
+                TType {
+                    name: "()".to_owned(),
+                    kind: TTypeKind::Unit,
+                    span: Span::default(),
+                },
+                TType {
+                    name: "never".to_owned(),
+                    kind: TTypeKind::Never,
+                    span: Span::default(),
+                },
+            ],
+            enum_ids: HashMap::new(),
+            generic_ids: HashMap::new(),
             ast_functions: Vec::new(),
             ast_tests: Vec::new(),
             edges: Vec::new(),
@@ -81,6 +113,9 @@ impl Checker {
     }
 
     fn run(mut self) -> Result<TProgram, CheckError> {
+        self.register_enum_names()?;
+        self.fill_enum_cases()?;
+        self.check_recursive_value_types()?;
         let mut test_names = HashMap::<String, Span>::new();
         for p in self.programs.clone() {
             for function in p.functions {
@@ -101,12 +136,12 @@ impl Checker {
                 let params = function
                     .params
                     .iter()
-                    .map(|p| parse_ty(&p.ty))
+                    .map(|p| self.parse_type(&p.ty))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = function
                     .result
                     .as_ref()
-                    .map(parse_ty)
+                    .map(|ty| self.parse_type(ty))
                     .transpose()?
                     .unwrap_or(Ty::Unit);
                 self.signatures
@@ -153,7 +188,232 @@ impl Checker {
             tests,
             files: self.files,
             call_graph,
+            types: self.types,
         })
+    }
+
+    fn register_enum_names(&mut self) -> Result<(), CheckError> {
+        for program in &self.programs {
+            for declaration in &program.enums {
+                if matches!(
+                    declaration.name.as_str(),
+                    "int" | "long" | "bool" | "Option" | "Result"
+                ) || self.enum_ids.contains_key(&declaration.name)
+                {
+                    return Err(CheckError {
+                        span: declaration.span,
+                        message: format!(
+                            "type '{}' is declared more than once or shadows a built-in type",
+                            declaration.name
+                        ),
+                    });
+                }
+                let ty = Ty(self.types.len());
+                self.enum_ids.insert(declaration.name.clone(), ty);
+                self.types.push(TType {
+                    name: declaration.name.clone(),
+                    kind: TTypeKind::Enum(Vec::new()),
+                    span: declaration.span,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn fill_enum_cases(&mut self) -> Result<(), CheckError> {
+        let declarations = self
+            .programs
+            .iter()
+            .flat_map(|p| p.enums.clone())
+            .collect::<Vec<_>>();
+        for declaration in declarations {
+            let ty = self.enum_ids[&declaration.name];
+            let mut names = HashMap::<String, Span>::new();
+            let mut cases = Vec::new();
+            for case in declaration.cases {
+                if let Some(previous) = names.insert(case.name.clone(), case.span) {
+                    return Err(CheckError {
+                        span: case.span,
+                        message: format!(
+                            "case '{}.{}' is declared twice (first on line {})",
+                            declaration.name, case.name, previous.line
+                        ),
+                    });
+                }
+                let payload = case
+                    .payload
+                    .iter()
+                    .map(|t| self.parse_type(t))
+                    .collect::<Result<Vec<_>, _>>()?;
+                cases.push(TCase {
+                    name: case.name,
+                    payload,
+                    span: case.span,
+                });
+            }
+            self.types[ty.0].kind = TTypeKind::Enum(cases);
+        }
+        Ok(())
+    }
+
+    fn parse_type(&mut self, ty: &TypeAst) -> Result<Ty, CheckError> {
+        if ty.name == "int" && ty.args.is_empty() {
+            return Ok(Ty::Int);
+        }
+        if ty.name == "long" && ty.args.is_empty() {
+            return Ok(Ty::Long);
+        }
+        if ty.name == "bool" && ty.args.is_empty() {
+            return Ok(Ty::Bool);
+        }
+        if ty.name == "()" && ty.args.is_empty() {
+            return Ok(Ty::Unit);
+        }
+        match ty.name.as_str() {
+            "Option" if ty.args.len() == 1 => {
+                let value = self.parse_type(&ty.args[0])?;
+                Ok(self.intern_generic(
+                    1,
+                    value,
+                    Ty::Unit,
+                    format!("Option<{}>", self.type_name(value)),
+                    ty.span,
+                    TTypeKind::Option(value),
+                ))
+            }
+            "Result" if ty.args.len() == 2 => {
+                let ok = self.parse_type(&ty.args[0])?;
+                let err = self.parse_type(&ty.args[1])?;
+                Ok(self.intern_generic(
+                    2,
+                    ok,
+                    err,
+                    format!("Result<{}, {}>", self.type_name(ok), self.type_name(err)),
+                    ty.span,
+                    TTypeKind::Result(ok, err),
+                ))
+            }
+            "Option" | "Result" => Err(CheckError {
+                span: ty.span,
+                message: format!(
+                    "type '{}' has the wrong number of parameters; use Option<T> or Result<T, E>",
+                    ty.name
+                ),
+            }),
+            _ if !ty.args.is_empty() => Err(CheckError {
+                span: ty.span,
+                message: format!(
+                    "'{}' is not a generic type; only Option<T> and Result<T, E> accept type arguments",
+                    ty.name
+                ),
+            }),
+            _ => self.enum_ids.get(&ty.name).copied().ok_or_else(|| {
+                let mut names = self.enum_ids.keys().cloned().collect::<Vec<_>>();
+                names.extend([
+                    "int".to_owned(),
+                    "long".to_owned(),
+                    "bool".to_owned(),
+                    "Option".to_owned(),
+                    "Result".to_owned(),
+                ]);
+                if let Some(suggestion) = close_name(&ty.name, &names) {
+                    CheckError {
+                        span: ty.span,
+                        message: format!(
+                            "unknown type '{}'; did you mean '{}'",
+                            ty.name, suggestion
+                        ),
+                    }
+                } else {
+                    CheckError {
+                        span: ty.span,
+                        message: format!("unknown type '{}'; declare it with enum", ty.name),
+                    }
+                }
+            }),
+        }
+    }
+
+    fn intern_generic(
+        &mut self,
+        kind: u8,
+        first: Ty,
+        second: Ty,
+        name: String,
+        span: Span,
+        desc: TTypeKind,
+    ) -> Ty {
+        let key = (kind, first, second);
+        if let Some(ty) = self.generic_ids.get(&key) {
+            return *ty;
+        }
+        let ty = Ty(self.types.len());
+        self.types.push(TType {
+            name,
+            kind: desc,
+            span,
+        });
+        self.generic_ids.insert(key, ty);
+        ty
+    }
+
+    fn type_name(&self, ty: Ty) -> String {
+        self.types
+            .get(ty.0)
+            .map(|t| t.name.clone())
+            .unwrap_or_else(|| ty.name().to_owned())
+    }
+
+    fn check_recursive_value_types(&self) -> Result<(), CheckError> {
+        fn visit(
+            id: usize,
+            types: &[TType],
+            state: &mut [u8],
+            stack: &mut Vec<usize>,
+        ) -> Option<usize> {
+            if state[id] == 1 {
+                return Some(id);
+            }
+            if state[id] == 2 {
+                return None;
+            }
+            state[id] = 1;
+            stack.push(id);
+            let children = match &types[id].kind {
+                TTypeKind::Enum(cases) => cases
+                    .iter()
+                    .flat_map(|c| c.payload.iter().copied())
+                    .collect::<Vec<_>>(),
+                TTypeKind::Option(t) => vec![*t],
+                TTypeKind::Result(a, b) => vec![*a, *b],
+                _ => Vec::new(),
+            };
+            for child in children {
+                if let Some(cycle) = visit(child.0, types, state, stack) {
+                    if types[cycle].name != "Option" && types[cycle].name != "Result" {
+                        return Some(cycle);
+                    }
+                    return Some(cycle);
+                }
+            }
+            stack.pop();
+            state[id] = 2;
+            None
+        }
+        let mut state = vec![0; self.types.len()];
+        for id in 5..self.types.len() {
+            let mut stack = Vec::new();
+            if visit(id, &self.types, &mut state, &mut stack).is_some() {
+                return Err(CheckError {
+                    span: self.types[id].span,
+                    message: format!(
+                        "value type '{}' contains itself directly or through Option/Result and would have infinite size",
+                        self.types[id].name
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     fn check_entry(&self) -> Result<(), CheckError> {
@@ -204,7 +464,7 @@ impl Checker {
                 message: format!(
                     "function '{}' can reach the end without a {}; return a value on every path",
                     function.name,
-                    signature.result.name()
+                    self.type_name(signature.result)
                 ),
             });
         }
@@ -217,7 +477,7 @@ impl Checker {
                             message: format!(
                                 "function '{}' returns (), but its last expression has type {}; remove it or return ()",
                                 function.name,
-                                tail.ty.name()
+                                self.type_name(tail.ty)
                             ),
                         });
                     }
@@ -258,7 +518,7 @@ impl Checker {
                         message: format!(
                             "test '{}' ends with {}; remove the value or use it in a statement",
                             test.name,
-                            tail.ty.name()
+                            self.type_name(tail.ty)
                         ),
                     });
                 }
@@ -339,7 +599,10 @@ impl Checker {
                 annotation,
                 value,
             } => {
-                let annotated = annotation.as_ref().map(parse_ty).transpose()?;
+                let annotated = annotation
+                    .as_ref()
+                    .map(|ty| self.parse_type(ty))
+                    .transpose()?;
                 let typed_value = self.check_expr(value, annotated)?;
                 if typed_value.ty == Ty::Unit || typed_value.ty == Ty::Never {
                     return Err(CheckError { span: value.span, message: "a binding needs a value; functions and if expressions used here must return int, long, or bool".to_owned() });
@@ -390,7 +653,7 @@ impl Checker {
                                 "'{}=' requires int or long; '{}' is {}",
                                 assign_spelling(*op),
                                 name,
-                                binding.ty.name()
+                                self.type_name(binding.ty)
                             ),
                         });
                     }
@@ -429,7 +692,7 @@ impl Checker {
                                 span: stmt.span,
                                 message: format!(
                                     "this function must return {}; add a value after 'return'",
-                                    self.current_return.name()
+                                    self.type_name(self.current_return)
                                 ),
                             });
                         }
@@ -559,7 +822,7 @@ impl Checker {
     }
 
     fn infer_loop_type(
-        &self,
+        &mut self,
         counter: &str,
         annotation: Option<&TypeAst>,
         start: &Expr,
@@ -569,7 +832,7 @@ impl Checker {
     ) -> Result<Ty, CheckError> {
         let mut constraints = Vec::new();
         if let Some(annotation) = annotation {
-            let ty = parse_ty(annotation)?;
+            let ty = self.parse_type(annotation)?;
             if !ty.is_numeric() {
                 return Err(CheckError {
                     span: annotation.span,
@@ -584,7 +847,10 @@ impl Checker {
                 if !ty.is_numeric() {
                     return Err(CheckError {
                         span: bound.span,
-                        message: format!("a range bound must be int or long, found {}", ty.name()),
+                        message: format!(
+                            "a range bound must be int or long, found {}",
+                            self.type_name(ty)
+                        ),
                     });
                 }
                 constraints.push(ty);
@@ -602,20 +868,25 @@ impl Checker {
                 span,
                 message: format!(
                     "loop counter and range uses conflict between {} and {}; cast a bound or use explicitly typed values of one type",
-                    ty.name(),
-                    other.name()
+                    self.type_name(ty),
+                    self.type_name(other)
                 ),
             });
         }
         Ok(ty)
     }
 
-    fn natural_expr_type(&self, expr: &Expr) -> Option<Ty> {
+    fn natural_expr_type(&mut self, expr: &Expr) -> Option<Ty> {
         self.natural_expr_type_inner(expr, None)
     }
 
-    fn natural_expr_type_inner(&self, expr: &Expr, shadowed_counter: Option<&str>) -> Option<Ty> {
+    fn natural_expr_type_inner(
+        &mut self,
+        expr: &Expr,
+        shadowed_counter: Option<&str>,
+    ) -> Option<Ty> {
         match &expr.kind {
+            ExprKind::Unit => Some(Ty::Unit),
             ExprKind::Integer {
                 long_suffix: true, ..
             } => Some(Ty::Long),
@@ -631,7 +902,7 @@ impl Checker {
                 }
             }
             ExprKind::ToLong { .. } => Some(Ty::Long),
-            ExprKind::Cast { ty, .. } => parse_ty(ty).ok(),
+            ExprKind::Cast { ty, .. } => self.parse_type(ty).ok(),
             ExprKind::Unary { op, value, .. } => match op {
                 UnaryOp::Not => Some(Ty::Bool),
                 UnaryOp::Neg => self.natural_expr_type_inner(value, shadowed_counter),
@@ -677,20 +948,47 @@ impl Checker {
                     .and_then(|tail| self.natural_expr_type_inner(tail, shadowed_counter));
                 if left == right { left } else { None }
             }
+            ExprKind::QualifiedCase { enum_name, .. } => self.enum_ids.get(enum_name).copied(),
+            ExprKind::MethodCall { receiver, name, .. } => {
+                let receiver_ty = self.natural_expr_type_inner(receiver, shadowed_counter)?;
+                match (self.types[receiver_ty.0].kind.clone(), name.as_str()) {
+                    (TTypeKind::Option(_), "is_none" | "is_some")
+                    | (TTypeKind::Result(..), "is_ok" | "is_err") => Some(Ty::Bool),
+                    (TTypeKind::Option(value), "unwrap") => Some(value),
+                    (TTypeKind::Result(ok, _), "unwrap") => Some(ok),
+                    (TTypeKind::Result(ok, _), "ok") => Some(self.option_type(ok, expr.span)),
+                    _ => None,
+                }
+            }
+            ExprKind::OptionalCall { name, .. } => self.signatures.get(name).map(|sig| sig.result),
+            ExprKind::Try(value) => {
+                let receiver_ty = self.natural_expr_type_inner(value, shadowed_counter)?;
+                match self.types[receiver_ty.0].kind {
+                    TTypeKind::Option(inner) => Some(inner),
+                    TTypeKind::Result(ok, _) => Some(ok),
+                    _ => None,
+                }
+            }
+            ExprKind::Return(_) | ExprKind::LoopExit(_) => Some(Ty::Never),
+            ExprKind::Match { arms, .. } => arms
+                .first()
+                .and_then(|arm| arm.body.tail.as_deref())
+                .and_then(|e| self.natural_expr_type_inner(e, shadowed_counter)),
         }
     }
 
-    fn collect_loop_constraints_stmt(&self, stmt: &Stmt, counter: &str, constraints: &mut Vec<Ty>) {
+    fn collect_loop_constraints_stmt(
+        &mut self,
+        stmt: &Stmt,
+        counter: &str,
+        constraints: &mut Vec<Ty>,
+    ) {
         match &stmt.kind {
             StmtKind::Let {
                 annotation, value, ..
             } => {
-                self.collect_loop_constraints_expr(
-                    value,
-                    counter,
-                    annotation.as_ref().and_then(|ty| parse_ty(ty).ok()),
-                    constraints,
-                );
+                let expected = annotation.as_ref().and_then(|ty| self.parse_type(ty).ok());
+                self.collect_loop_constraints_expr(value, counter, expected, constraints);
             }
             StmtKind::Assign { name, value, .. } => {
                 let expected = self.find_binding(name).map(|binding| binding.ty);
@@ -733,7 +1031,7 @@ impl Checker {
     }
 
     fn collect_loop_constraints_block(
-        &self,
+        &mut self,
         block: &Block,
         counter: &str,
         constraints: &mut Vec<Ty>,
@@ -747,7 +1045,7 @@ impl Checker {
     }
 
     fn collect_loop_constraints_expr(
-        &self,
+        &mut self,
         expr: &Expr,
         counter: &str,
         expected: Option<Ty>,
@@ -759,7 +1057,7 @@ impl Checker {
                     constraints.push(ty);
                 }
             }
-            ExprKind::Name(_) | ExprKind::Integer { .. } | ExprKind::Bool(_) => {}
+            ExprKind::Name(_) | ExprKind::Integer { .. } | ExprKind::Bool(_) | ExprKind::Unit => {}
             ExprKind::Call { name, args, .. } => {
                 let parameters = self.signatures.get(name).map(|sig| sig.params.clone());
                 for (index, arg) in args.iter().enumerate() {
@@ -770,11 +1068,59 @@ impl Checker {
                     self.collect_loop_constraints_expr(arg, counter, want, constraints);
                 }
             }
+            ExprKind::QualifiedCase {
+                args,
+                enum_name,
+                case_name,
+                ..
+            } => {
+                let payload = self
+                    .enum_ids
+                    .get(enum_name)
+                    .and_then(|ty| self.find_case_in_type(*ty, case_name))
+                    .map(|(_, c)| c.payload);
+                for (i, arg) in args.iter().enumerate() {
+                    self.collect_loop_constraints_expr(
+                        arg,
+                        counter,
+                        payload.as_ref().and_then(|p| p.get(i)).copied(),
+                        constraints,
+                    );
+                }
+            }
+            ExprKind::MethodCall { receiver, args, .. }
+            | ExprKind::OptionalCall { receiver, args, .. } => {
+                self.collect_loop_constraints_expr(receiver, counter, None, constraints);
+                for arg in args {
+                    self.collect_loop_constraints_expr(arg, counter, None, constraints);
+                }
+            }
+            ExprKind::Try(value) => {
+                self.collect_loop_constraints_expr(value, counter, None, constraints)
+            }
+            ExprKind::Return(value) => {
+                if let Some(value) = value {
+                    self.collect_loop_constraints_expr(
+                        value,
+                        counter,
+                        Some(self.current_return),
+                        constraints,
+                    );
+                }
+            }
+            ExprKind::LoopExit(_) => {}
+            ExprKind::Match { scrutinee, arms } => {
+                self.collect_loop_constraints_expr(scrutinee, counter, None, constraints);
+                for arm in arms {
+                    self.collect_loop_constraints_block(&arm.body, counter, constraints);
+                }
+            }
             ExprKind::ToLong { value, .. } => {
                 self.collect_loop_constraints_expr(value, counter, Some(Ty::Int), constraints);
             }
             ExprKind::Cast { ty, value, .. } => {
-                self.collect_loop_constraints_expr(value, counter, parse_ty(ty).ok(), constraints);
+                let expected = self.parse_type(ty).ok();
+                self.collect_loop_constraints_expr(value, counter, expected, constraints);
             }
             ExprKind::Unary { op, value, .. } => {
                 let want = match op {
@@ -838,8 +1184,294 @@ impl Checker {
         }
     }
 
+    fn option_type(&mut self, value: Ty, span: Span) -> Ty {
+        self.intern_generic(
+            1,
+            value,
+            Ty::Unit,
+            format!("Option<{}>", self.type_name(value)),
+            span,
+            TTypeKind::Option(value),
+        )
+    }
+
+    fn case_def(&self, ty: Ty, index: usize) -> TCase {
+        self.types[ty.0].cases()[index].clone()
+    }
+
+    fn find_case_in_type(&self, ty: Ty, name: &str) -> Option<(usize, TCase)> {
+        self.types[ty.0]
+            .cases()
+            .into_iter()
+            .enumerate()
+            .find(|(_, case)| case.name == name)
+    }
+
+    fn unknown_case(&self, name: &str, span: Span) -> CheckError {
+        let candidates = self
+            .types
+            .iter()
+            .flat_map(|ty| ty.cases())
+            .map(|c| c.name)
+            .collect::<Vec<_>>();
+        if let Some(suggestion) = close_name(name, &candidates) {
+            CheckError {
+                span,
+                message: format!(
+                    "unknown enum case '{}'; did you mean '{}'",
+                    name, suggestion
+                ),
+            }
+        } else {
+            CheckError {
+                span,
+                message: format!(
+                    "unknown enum case '{}'; qualify it with its enum name",
+                    name
+                ),
+            }
+        }
+    }
+
+    fn check_constructor(
+        &mut self,
+        ty: Ty,
+        case_index: usize,
+        args: &[Expr],
+        span: Span,
+        expected: Option<Ty>,
+    ) -> Result<(TExprKind, Ty), CheckError> {
+        let case = self.case_def(ty, case_index);
+        if args.len() != case.payload.len() {
+            return Err(CheckError {
+                span,
+                message: format!(
+                    "case '{}.{}' takes {} payload value(s), but got {}",
+                    self.type_name(ty),
+                    case.name,
+                    case.payload.len(),
+                    args.len()
+                ),
+            });
+        }
+        let mut values = Vec::new();
+        for (arg, payload_ty) in args.iter().zip(case.payload) {
+            values.push(self.check_expr(arg, Some(payload_ty))?);
+        }
+        if let Some(want) = expected {
+            self.type_mismatch(ty, want, span)?;
+        }
+        Ok((
+            TExprKind::Construct {
+                case_index,
+                args: values,
+            },
+            ty,
+        ))
+    }
+
+    fn check_unqualified_constructor(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        span: Span,
+        expected: Option<Ty>,
+    ) -> Result<(TExprKind, Ty), CheckError> {
+        if let Some(want) = expected {
+            if self.types[want.0].is_sum() {
+                if let Some((index, _)) = self.find_case_in_type(want, name) {
+                    return self.check_constructor(want, index, args, span, Some(want));
+                }
+            }
+        }
+        let candidates = self
+            .types
+            .iter()
+            .enumerate()
+            .skip(5)
+            .filter_map(|(id, def)| {
+                if matches!(def.kind, TTypeKind::Enum(_)) {
+                    def.cases()
+                        .iter()
+                        .position(|case| case.name == name)
+                        .map(|index| (Ty(id), index))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [(ty, index)] => self.check_constructor(*ty, *index, args, span, expected),
+            [] => Err(self.unknown_case(name, span)),
+            _ => Err(CheckError {
+                span,
+                message: format!(
+                    "case '{}' belongs to more than one enum; qualify it with the enum name",
+                    name
+                ),
+            }),
+        }
+    }
+
+    fn check_builtin_constructor(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        span: Span,
+        expected: Option<Ty>,
+    ) -> Result<Option<(TExprKind, Ty)>, CheckError> {
+        match name {
+            "some" => {
+                if args.len() != 1 {
+                    return Err(CheckError {
+                        span,
+                        message: format!("some takes one value, but got {}", args.len()),
+                    });
+                }
+                let expected_inner = expected.and_then(|ty| match self.types[ty.0].kind {
+                    TTypeKind::Option(inner) => Some(inner),
+                    _ => None,
+                });
+                if expected.is_some() && expected_inner.is_none() {
+                    return Err(CheckError {
+                        span,
+                        message: format!(
+                            "some constructs Option<T>, but the expected type is {}",
+                            self.type_name(expected.unwrap())
+                        ),
+                    });
+                }
+                let value = self.check_expr(&args[0], expected_inner)?;
+                let ty = expected.unwrap_or_else(|| self.option_type(value.ty, span));
+                Ok(Some((
+                    TExprKind::Construct {
+                        case_index: 0,
+                        args: vec![value],
+                    },
+                    ty,
+                )))
+            }
+            "none" => {
+                if !args.is_empty() {
+                    return Err(CheckError {
+                        span,
+                        message: "none takes no payload".to_owned(),
+                    });
+                }
+                let Some(ty) =
+                    expected.filter(|ty| matches!(self.types[ty.0].kind, TTypeKind::Option(_)))
+                else {
+                    return Err(CheckError { span, message: "cannot infer the type of 'none'; add an Option<T> type annotation or expected type".to_owned() });
+                };
+                Ok(Some((
+                    TExprKind::Construct {
+                        case_index: 1,
+                        args: Vec::new(),
+                    },
+                    ty,
+                )))
+            }
+            "ok" | "err" => {
+                if args.len() != 1 {
+                    return Err(CheckError {
+                        span,
+                        message: format!("{} takes one value, but got {}", name, args.len()),
+                    });
+                }
+                let Some(ty) =
+                    expected.filter(|ty| matches!(self.types[ty.0].kind, TTypeKind::Result(..)))
+                else {
+                    return Err(CheckError {
+                        span,
+                        message: format!(
+                            "cannot infer the missing type parameter for '{}'; add a Result<T, E> expected type",
+                            name
+                        ),
+                    });
+                };
+                let index = if name == "ok" { 0 } else { 1 };
+                let case = self.case_def(ty, index);
+                let value = self.check_expr(&args[0], Some(case.payload[0]))?;
+                Ok(Some((
+                    TExprKind::Construct {
+                        case_index: index,
+                        args: vec![value],
+                    },
+                    ty,
+                )))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn check_method_call(
+        &mut self,
+        receiver: &Expr,
+        name: &str,
+        method_span: Span,
+        args: &[Expr],
+        expected: Option<Ty>,
+        span: Span,
+    ) -> Result<(TExprKind, Ty), CheckError> {
+        if !args.is_empty() {
+            let receiver_ty = self.natural_expr_type(receiver).unwrap_or(Ty::Unit);
+            return Err(CheckError {
+                span: method_span,
+                message: format!(
+                    "method '{}.{}' takes no arguments",
+                    self.type_name(receiver_ty),
+                    name
+                ),
+            });
+        }
+        let typed = self.check_expr(receiver, None)?;
+        let (kind, result) = match (self.types[typed.ty.0].kind.clone(), name) {
+            (TTypeKind::Option(_), "is_none") => (MethodKind::IsNone, Ty::Bool),
+            (TTypeKind::Option(_), "is_some") => (MethodKind::IsSome, Ty::Bool),
+            (TTypeKind::Option(value), "unwrap") => (MethodKind::UnwrapOption, value),
+            (TTypeKind::Result(_, _), "is_ok") => (MethodKind::IsOk, Ty::Bool),
+            (TTypeKind::Result(_, _), "is_err") => (MethodKind::IsErr, Ty::Bool),
+            (TTypeKind::Result(ok, _err), "ok") => {
+                (MethodKind::ResultOk, self.option_type(ok, method_span))
+            }
+            (TTypeKind::Result(ok, _), "unwrap") => (MethodKind::UnwrapResult, ok),
+            (kind, _) => {
+                let available = match kind {
+                    TTypeKind::Option(_) => "is_none(), is_some(), and unwrap()",
+                    TTypeKind::Result(..) => "ok(), is_ok(), is_err(), and unwrap()",
+                    _ => "no methods",
+                };
+                return Err(CheckError {
+                    span: method_span,
+                    message: format!(
+                        "no method '{}' on {}; available methods: {}",
+                        name,
+                        self.type_name(typed.ty),
+                        available
+                    ),
+                });
+            }
+        };
+        if let Some(want) = expected {
+            self.type_mismatch(result, want, span)?;
+        }
+        Ok((
+            TExprKind::Method {
+                kind,
+                receiver: Box::new(typed),
+            },
+            result,
+        ))
+    }
+
     fn check_expr(&mut self, expr: &Expr, expected: Option<Ty>) -> Result<TExpr, CheckError> {
         let (kind, ty) = match &expr.kind {
+            ExprKind::Unit => {
+                if let Some(want) = expected {
+                    self.type_mismatch(Ty::Unit, want, expr.span)?;
+                }
+                (TExprKind::Unit, Ty::Unit)
+            }
             ExprKind::Integer {
                 magnitude,
                 negative,
@@ -865,7 +1497,7 @@ impl Checker {
                         span: expr.span,
                         message: format!(
                             "integer literal does not fit {}; add 'L' for long or give it a long context",
-                            ty.name()
+                            self.type_name(ty)
                         ),
                     });
                 }
@@ -888,8 +1520,55 @@ impl Checker {
                         self.type_mismatch(binding.ty, want, expr.span)?;
                     }
                     (TExprKind::Local(binding.id), binding.ty)
-                } else {
+                } else if let Some(want) = expected {
+                    if self.types[want.0].is_sum() {
+                        if let Some((index, _case)) = self.find_case_in_type(want, name) {
+                            let built =
+                                self.check_constructor(want, index, &[], expr.span, Some(want))?;
+                            return self.finish_expr(expr, built, expected);
+                        }
+                    }
+                    if name == "none" {
+                        let built = self
+                            .check_builtin_constructor(name, &[], expr.span, expected)?
+                            .unwrap();
+                        return self.finish_expr(expr, built, expected);
+                    }
                     return Err(self.unknown_local(name, expr.span));
+                } else {
+                    if name == "none" {
+                        return Err(CheckError { span: expr.span, message: "cannot infer the type of 'none'; add an Option<T> type annotation or expected type".to_owned() });
+                    }
+                    let cases = self
+                        .types
+                        .iter()
+                        .enumerate()
+                        .skip(5)
+                        .filter_map(|(id, def)| {
+                            if matches!(def.kind, TTypeKind::Enum(_)) {
+                                def.cases().iter().position(|case| case.name == *name).map(
+                                    |index| (Ty(id), index, def.cases()[index].payload.is_empty()),
+                                )
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    match cases.as_slice() {
+                        [(ty, index, _)] => {
+                            self.check_constructor(*ty, *index, &[], expr.span, None)?
+                        }
+                        [] => return Err(self.unknown_local(name, expr.span)),
+                        _ => {
+                            return Err(CheckError {
+                                span: expr.span,
+                                message: format!(
+                                    "case '{}' belongs to more than one enum; qualify it with the enum name",
+                                    name
+                                ),
+                            });
+                        }
+                    }
                 }
             }
             ExprKind::Call {
@@ -897,7 +1576,21 @@ impl Checker {
                 call_span,
                 args,
             } => {
-                if name == "print" {
+                if matches!(name.as_str(), "some" | "none" | "ok" | "err") {
+                    self.check_builtin_constructor(name, args, *call_span, expected)?
+                        .unwrap()
+                } else if expected.is_some_and(|want| {
+                    self.types[want.0].is_sum() && self.find_case_in_type(want, name).is_some()
+                }) {
+                    let want = expected.unwrap();
+                    let index = self.find_case_in_type(want, name).unwrap().0;
+                    self.check_constructor(want, index, args, *call_span, Some(want))?
+                } else if self.types.iter().skip(5).any(|ty| {
+                    matches!(ty.kind, TTypeKind::Enum(_))
+                        && ty.cases().iter().any(|case| case.name == *name)
+                }) {
+                    self.check_unqualified_constructor(name, args, *call_span, expected)?
+                } else if name == "print" {
                     if args.len() != 1 {
                         return Err(CheckError {
                             span: *call_span,
@@ -908,10 +1601,12 @@ impl Checker {
                         });
                     }
                     let arg = self.check_expr(&args[0], None)?;
-                    if !matches!(arg.ty, Ty::Int | Ty::Long | Ty::Bool) {
+                    if !matches!(arg.ty, Ty::Int | Ty::Long | Ty::Bool)
+                        && !self.types[arg.ty.0].is_sum()
+                    {
                         return Err(CheckError {
                             span: args[0].span,
-                            message: "print supports int, long, and bool values".to_owned(),
+                            message: "print supports int, long, bool, and enum values".to_owned(),
                         });
                     }
                     if let Some(want) = expected {
@@ -962,6 +1657,204 @@ impl Checker {
                     )
                 }
             }
+            ExprKind::QualifiedCase {
+                enum_name,
+                case_name,
+                case_span,
+                args,
+            } => {
+                let Some(ty) = self.enum_ids.get(enum_name).copied() else {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: format!("unknown enum '{}'; declare it with enum", enum_name),
+                    });
+                };
+                let Some((index, _)) = self.find_case_in_type(ty, case_name) else {
+                    return Err(self.unknown_case(case_name, *case_span));
+                };
+                self.check_constructor(ty, index, args, *case_span, expected)?
+            }
+            ExprKind::MethodCall {
+                receiver,
+                name,
+                method_span,
+                args,
+            } => self.check_method_call(receiver, name, *method_span, args, expected, expr.span)?,
+            ExprKind::OptionalCall {
+                receiver,
+                name,
+                method_span,
+                args,
+            } => {
+                let typed_receiver = self.check_expr(receiver, None)?;
+                let inner = match self.types[typed_receiver.ty.0].kind {
+                    TTypeKind::Option(inner) => inner,
+                    TTypeKind::Result(_, _) => return Err(CheckError {
+                        span: *method_span,
+                        message:
+                            "optional chaining requires Option; convert a Result with .ok() first"
+                                .to_owned(),
+                    }),
+                    _ => {
+                        return Err(CheckError {
+                            span: *method_span,
+                            message: format!(
+                                "optional chaining requires Option<T>, found {}",
+                                self.type_name(typed_receiver.ty)
+                            ),
+                        });
+                    }
+                };
+                let Some(signature) = self.signatures.get(name).cloned() else {
+                    return Err(self.unknown_function(name, *method_span));
+                };
+                if signature.params.len() != args.len() + 1 {
+                    return Err(CheckError {
+                        span: *method_span,
+                        message: format!(
+                            "optional call '{}()' takes the receiver plus {} argument(s), but got {}",
+                            name,
+                            signature.params.len().saturating_sub(1),
+                            args.len()
+                        ),
+                    });
+                }
+                self.type_mismatch(inner, signature.params[0], receiver.span)?;
+                let mut typed_args = Vec::new();
+                for (arg, ty) in args.iter().zip(signature.params.iter().copied().skip(1)) {
+                    typed_args.push(self.check_expr(arg, Some(ty))?);
+                }
+                let (result_ty, wraps_result) =
+                    if matches!(self.types[signature.result.0].kind, TTypeKind::Option(_)) {
+                        (signature.result, false)
+                    } else {
+                        (self.option_type(signature.result, expr.span), true)
+                    };
+                if let Some(want) = expected {
+                    self.type_mismatch(result_ty, want, expr.span)?;
+                }
+                self.edges.push(Edge {
+                    from: self.current_function,
+                    to: signature.id,
+                    span: *method_span,
+                });
+                (
+                    TExprKind::OptionalCall {
+                        receiver: Box::new(typed_receiver),
+                        function_id: signature.id,
+                        args: typed_args,
+                        wraps_result,
+                    },
+                    result_ty,
+                )
+            }
+            ExprKind::Try(value) => {
+                if self.current_is_test {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message:
+                            "a test cannot use '?'; let the test finish so all expectations run"
+                                .to_owned(),
+                    });
+                }
+                let typed = self.check_expr(value, None)?;
+                let (success_ty, error_ty) = match self.types[typed.ty.0].kind {
+                    TTypeKind::Option(inner) => {
+                        if !matches!(self.types[self.current_return.0].kind, TTypeKind::Option(_)) {
+                            return Err(CheckError { span: expr.span, message: "'?' on Option requires the enclosing function to return Option; return an Option or use match".to_owned() });
+                        }
+                        (inner, None)
+                    }
+                    TTypeKind::Result(ok, err) => {
+                        let Some((_, return_err)) = (match self.types[self.current_return.0].kind {
+                            TTypeKind::Result(a, b) => Some((a, b)),
+                            _ => None,
+                        }) else {
+                            return Err(CheckError { span: expr.span, message: "'?' on Result requires the enclosing function to return Result; return a Result or use match".to_owned() });
+                        };
+                        if err != return_err {
+                            return Err(CheckError {
+                                span: expr.span,
+                                message: format!(
+                                    "'?' error type {} does not match enclosing error type {}; convert it explicitly or use match",
+                                    self.type_name(err),
+                                    self.type_name(return_err)
+                                ),
+                            });
+                        }
+                        (ok, Some(err))
+                    }
+                    _ => {
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: format!(
+                                "'?' requires Option or Result, found {}",
+                                self.type_name(typed.ty)
+                            ),
+                        });
+                    }
+                };
+                if let Some(want) = expected {
+                    self.type_mismatch(success_ty, want, expr.span)?;
+                }
+                (
+                    TExprKind::Try {
+                        value: Box::new(typed),
+                        success_ty,
+                        error_ty,
+                        propagated_ty: self.current_return,
+                    },
+                    success_ty,
+                )
+            }
+            ExprKind::Return(value) => {
+                if self.current_is_test {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message:
+                            "a test cannot return; let the test finish so all expectations run"
+                                .to_owned(),
+                    });
+                }
+                let typed = match value {
+                    Some(value) => {
+                        if self.current_return == Ty::Unit {
+                            return Err(CheckError {
+                                span: value.span,
+                                message: "this function returns (); remove the value from 'return'"
+                                    .to_owned(),
+                            });
+                        }
+                        Some(Box::new(self.check_expr(value, Some(self.current_return))?))
+                    }
+                    None if self.current_return == Ty::Unit => None,
+                    None => {
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: format!(
+                                "this function must return {}; add a value after 'return'",
+                                self.type_name(self.current_return)
+                            ),
+                        });
+                    }
+                };
+                (TExprKind::Return(typed), Ty::Never)
+            }
+            ExprKind::LoopExit(is_break) => {
+                if self.loop_depth == 0 {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: format!(
+                            "'{}' is only valid inside a loop",
+                            if *is_break { "break" } else { "continue" }
+                        ),
+                    });
+                }
+                (TExprKind::LoopExit(*is_break), Ty::Never)
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.check_match(scrutinee, arms, expected, expr.span)?
+            }
             ExprKind::ToLong { value, method_span } => {
                 let typed = self.check_expr(value, None)?;
                 if typed.ty != Ty::Int {
@@ -969,7 +1862,7 @@ impl Checker {
                         span: *method_span,
                         message: format!(
                             "no method 'to_long' on {}; 'to_long' is available on int",
-                            typed.ty.name()
+                            self.type_name(typed.ty)
                         ),
                     });
                 }
@@ -983,7 +1876,7 @@ impl Checker {
                 cast_span,
                 value,
             } => {
-                let target = parse_ty(ty)?;
+                let target = self.parse_type(ty)?;
                 if !target.is_numeric() {
                     return Err(CheckError {
                         span: ty.span,
@@ -996,8 +1889,8 @@ impl Checker {
                         span: value.span,
                         message: format!(
                             "cannot cast {} to {}; casts are between int and long",
-                            source.ty.name(),
-                            target.name()
+                            self.type_name(source.ty),
+                            self.type_name(target)
                         ),
                     });
                 }
@@ -1083,6 +1976,310 @@ impl Checker {
         })
     }
 
+    fn finish_expr(
+        &self,
+        expr: &Expr,
+        (kind, ty): (TExprKind, Ty),
+        expected: Option<Ty>,
+    ) -> Result<TExpr, CheckError> {
+        if let Some(want) = expected {
+            self.type_mismatch(ty, want, expr.span)?;
+        }
+        Ok(TExpr {
+            kind,
+            ty,
+            span: expr.span,
+        })
+    }
+
+    fn check_match(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        expected: Option<Ty>,
+        span: Span,
+    ) -> Result<(TExprKind, Ty), CheckError> {
+        let scrutinee = self.check_expr(scrutinee, None)?;
+        let sum = self.types[scrutinee.ty.0].is_sum();
+        if !sum && !matches!(scrutinee.ty, Ty::Int | Ty::Long | Ty::Bool) {
+            return Err(CheckError {
+                span,
+                message: format!(
+                    "match requires an enum, Option, Result, int, long, or bool; found {}",
+                    self.type_name(scrutinee.ty)
+                ),
+            });
+        }
+        let mut covered_cases = Vec::<usize>::new();
+        let mut covered_ints = Vec::<i128>::new();
+        let mut covered_bools = Vec::<bool>::new();
+        let mut has_wildcard = false;
+        let mut typed_arms = Vec::new();
+        let mut reachable_ty = None;
+
+        for arm in arms {
+            let (typed_pattern, binding_specs, is_wildcard) = match &arm.pattern {
+                Pattern::Wildcard => {
+                    let already_total = match &self.types[scrutinee.ty.0].kind {
+                        TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
+                            covered_cases.len() == self.types[scrutinee.ty.0].cases().len()
+                        }
+                        TTypeKind::Bool => covered_bools.len() == 2,
+                        TTypeKind::Int | TTypeKind::Long => false,
+                        _ => false,
+                    };
+                    if has_wildcard || already_total {
+                        return Err(CheckError {
+                            span: arm.span,
+                            message:
+                                "unreachable match arm; previous patterns already cover this value"
+                                    .to_owned(),
+                        });
+                    }
+                    has_wildcard = true;
+                    (TPattern::Wildcard, Vec::new(), true)
+                }
+                Pattern::Integer(literal) => {
+                    if !matches!(scrutinee.ty, Ty::Int | Ty::Long) {
+                        return Err(CheckError {
+                            span: literal.span,
+                            message: "integer patterns require an int or long match value"
+                                .to_owned(),
+                        });
+                    }
+                    if has_wildcard {
+                        return Err(CheckError {
+                            span: arm.span,
+                            message: "unreachable match arm after '_'".to_owned(),
+                        });
+                    }
+                    let typed = self.check_expr(literal, Some(scrutinee.ty))?;
+                    let TExprKind::Integer(value) = typed.kind else {
+                        unreachable!()
+                    };
+                    if covered_ints.contains(&value) {
+                        return Err(CheckError {
+                            span: arm.span,
+                            message: format!(
+                                "unreachable duplicate pattern '{}'; remove this arm",
+                                value
+                            ),
+                        });
+                    }
+                    covered_ints.push(value);
+                    (TPattern::Integer(value), Vec::new(), false)
+                }
+                Pattern::Bool(value, pattern_span) => {
+                    if scrutinee.ty != Ty::Bool {
+                        return Err(CheckError {
+                            span: *pattern_span,
+                            message: "bool patterns require a bool match value".to_owned(),
+                        });
+                    }
+                    if has_wildcard || covered_bools.contains(value) {
+                        return Err(CheckError {
+                            span: arm.span,
+                            message: format!(
+                                "unreachable duplicate pattern '{}'; remove this arm",
+                                value
+                            ),
+                        });
+                    }
+                    covered_bools.push(*value);
+                    (TPattern::Bool(*value), Vec::new(), false)
+                }
+                Pattern::Case {
+                    enum_name,
+                    name,
+                    name_span,
+                    bindings,
+                } => {
+                    if !sum {
+                        return Err(CheckError {
+                            span: *name_span,
+                            message:
+                                "enum case patterns require an enum, Option, or Result match value"
+                                    .to_owned(),
+                        });
+                    }
+                    if has_wildcard {
+                        return Err(CheckError {
+                            span: arm.span,
+                            message: "unreachable match arm after '_'".to_owned(),
+                        });
+                    }
+                    if let Some(qualifier) = enum_name {
+                        let qualified_ty = if let Some(ty) = self.enum_ids.get(qualifier) {
+                            Some(*ty)
+                        } else if qualifier == "Option"
+                            && matches!(self.types[scrutinee.ty.0].kind, TTypeKind::Option(_))
+                        {
+                            Some(scrutinee.ty)
+                        } else if qualifier == "Result"
+                            && matches!(self.types[scrutinee.ty.0].kind, TTypeKind::Result(..))
+                        {
+                            Some(scrutinee.ty)
+                        } else {
+                            None
+                        };
+                        if qualified_ty != Some(scrutinee.ty) {
+                            return Err(CheckError {
+                                span: *name_span,
+                                message: format!(
+                                    "pattern '{}.{}' does not match {}",
+                                    qualifier,
+                                    name,
+                                    self.type_name(scrutinee.ty)
+                                ),
+                            });
+                        }
+                    }
+                    let Some((case_index, case)) = self.find_case_in_type(scrutinee.ty, name)
+                    else {
+                        return Err(self.unknown_case(name, *name_span));
+                    };
+                    if bindings.len() != case.payload.len() {
+                        return Err(CheckError {
+                            span: *name_span,
+                            message: format!(
+                                "case '{}.{}' has {} payload part(s), but this pattern names {}",
+                                self.type_name(scrutinee.ty),
+                                case.name,
+                                case.payload.len(),
+                                bindings.len()
+                            ),
+                        });
+                    }
+                    if covered_cases.contains(&case_index) {
+                        return Err(CheckError {
+                            span: arm.span,
+                            message: format!(
+                                "unreachable duplicate pattern '{}.{}'; remove this arm",
+                                self.type_name(scrutinee.ty),
+                                case.name
+                            ),
+                        });
+                    }
+                    covered_cases.push(case_index);
+                    (
+                        TPattern::Case {
+                            ty: scrutinee.ty,
+                            case_index,
+                            bindings: vec![None; case.payload.len()],
+                        },
+                        case.payload
+                            .into_iter()
+                            .zip(bindings.iter())
+                            .map(|(ty, binding)| (binding.clone(), ty))
+                            .collect::<Vec<_>>(),
+                        false,
+                    )
+                }
+            };
+
+            self.locals.push(HashMap::new());
+            self.scope_ids.push(self.next_scope);
+            self.next_scope += 1;
+            let mut ids = Vec::new();
+            for (binding, ty) in binding_specs {
+                if let Some((name, name_span)) = binding {
+                    let declared = self.declare(&name, ty, false, name_span, false)?;
+                    ids.push(Some(declared.id));
+                } else {
+                    ids.push(None);
+                }
+            }
+            let typed_body = self.check_block(&arm.body, false, expected)?;
+            self.locals.pop();
+            self.scope_ids.pop();
+            let pattern = match typed_pattern {
+                TPattern::Case { ty, case_index, .. } => TPattern::Case {
+                    ty,
+                    case_index,
+                    bindings: ids,
+                },
+                other => other,
+            };
+            let arm_ty = block_value_ty(&typed_body);
+            if arm_ty != Ty::Never {
+                if let Some(previous) = reachable_ty {
+                    if previous != arm_ty {
+                        return Err(CheckError {
+                            span: arm.span,
+                            message: format!(
+                                "match arms have different types: {} and {}; make reachable arms return the same type",
+                                self.type_name(previous),
+                                self.type_name(arm_ty)
+                            ),
+                        });
+                    }
+                } else {
+                    reachable_ty = Some(arm_ty);
+                }
+            }
+            let _ = is_wildcard;
+            typed_arms.push(TMatchArm {
+                pattern,
+                body: typed_body,
+            });
+        }
+
+        if !has_wildcard {
+            match &self.types[scrutinee.ty.0].kind {
+                TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
+                    let missing = self.types[scrutinee.ty.0]
+                        .cases()
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| !covered_cases.contains(i))
+                        .map(|(_, c)| format!("{}.{}", self.type_name(scrutinee.ty), c.name))
+                        .collect::<Vec<_>>();
+                    if !missing.is_empty() {
+                        return Err(CheckError {
+                            span,
+                            message: format!(
+                                "non-exhaustive match; missing {}",
+                                missing.join(", ")
+                            ),
+                        });
+                    }
+                }
+                TTypeKind::Bool if covered_bools.len() != 2 => {
+                    let missing = [true, false]
+                        .iter()
+                        .filter(|b| !covered_bools.contains(b))
+                        .map(|b| b.to_string())
+                        .collect::<Vec<_>>();
+                    return Err(CheckError {
+                        span,
+                        message: format!(
+                            "non-exhaustive bool match; missing {}",
+                            missing.join(" and ")
+                        ),
+                    });
+                }
+                TTypeKind::Int | TTypeKind::Long => {
+                    return Err(CheckError {
+                        span,
+                        message: "integer matches need a '_' catch-all arm".to_owned(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        let result_ty = reachable_ty.unwrap_or(Ty::Never);
+        if let Some(want) = expected {
+            self.type_mismatch(result_ty, want, span)?;
+        }
+        Ok((
+            TExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms: typed_arms,
+            },
+            result_ty,
+        ))
+    }
+
     fn check_binary_expr(
         &mut self,
         op: BinaryOp,
@@ -1104,6 +2301,44 @@ impl Checker {
                 Ty::Bool,
             ));
         }
+        if op == BinaryOp::Coalesce {
+            let left_expected = if let Some(want) = expected {
+                Some(self.option_type(want, span))
+            } else {
+                None
+            };
+            let left = self.check_expr(left, left_expected)?;
+            let value_ty =
+                match self.types[left.ty.0].kind.clone() {
+                    TTypeKind::Option(value) => value,
+                    TTypeKind::Result(_, _) => return Err(CheckError {
+                        span,
+                        message:
+                            "'??' works on Option only; use match or convert the Result with .ok()"
+                                .to_owned(),
+                    }),
+                    _ => {
+                        return Err(CheckError {
+                            span,
+                            message: format!(
+                                "'??' requires Option<T>, found {}",
+                                self.type_name(left.ty)
+                            ),
+                        });
+                    }
+                };
+            let fallback = self.check_expr(right, Some(value_ty))?;
+            if fallback.ty != Ty::Never {
+                self.type_mismatch(fallback.ty, value_ty, right.span)?;
+            }
+            return Ok((
+                TExprKind::Coalesce {
+                    option: Box::new(left),
+                    fallback: Box::new(fallback),
+                },
+                value_ty,
+            ));
+        }
         let (l, r) = if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
             let (l, r) =
                 self.check_operand_pair(left, right, expected.filter(|t| t.is_numeric()))?;
@@ -1113,7 +2348,7 @@ impl Checker {
             if matches!(l.ty, Ty::Unit | Ty::Never) {
                 return Err(CheckError {
                     span,
-                    message: "equality requires int, long, or bool values".to_owned(),
+                    message: "equality requires values other than ()".to_owned(),
                 });
             }
             return Ok((
@@ -1217,7 +2452,12 @@ impl Checker {
             Ok((l, r))
         } else if !left_lit && !right_lit {
             let l = self.check_expr(left, None)?;
-            let r = self.check_expr(right, None)?;
+            let right_expected = if self.types[l.ty.0].is_sum() {
+                Some(l.ty)
+            } else {
+                None
+            };
+            let r = self.check_expr(right, right_expected)?;
             Ok((l, r))
         } else {
             let l = self.check_expr(left, None)?;
@@ -1285,8 +2525,8 @@ impl Checker {
                     span,
                     message: format!(
                         "if branches have different types: {} and {}; make both branches return the same type",
-                        then_ty.name(),
-                        else_ty.name()
+                        self.type_name(then_ty),
+                        self.type_name(else_ty)
                     ),
                 });
             };
@@ -1388,9 +2628,9 @@ impl Checker {
                 span,
                 message: format!(
                     "expected {}, found {}; cast explicitly with ({} )value",
-                    expected.name(),
-                    actual.name(),
-                    expected.name()
+                    self.type_name(expected),
+                    self.type_name(actual),
+                    self.type_name(expected)
                 )
                 .replace(" )", ")"),
             })
@@ -1402,10 +2642,10 @@ impl Checker {
             span,
             message: format!(
                 "cannot combine {} and {}; cast the left value to {} or the right value to {}",
-                left.name(),
-                right.name(),
-                right.name(),
-                left.name()
+                self.type_name(left),
+                self.type_name(right),
+                self.type_name(right),
+                self.type_name(left)
             ),
         }
     }
@@ -1455,18 +2695,6 @@ impl Checker {
             }
         }
         Ok(())
-    }
-}
-
-fn parse_ty(ty: &TypeAst) -> Result<Ty, CheckError> {
-    match ty.name.as_str() {
-        "int" => Ok(Ty::Int),
-        "long" => Ok(Ty::Long),
-        "bool" => Ok(Ty::Bool),
-        _ => Err(CheckError {
-            span: ty.span,
-            message: format!("unknown type '{}'; use int, long, or bool", ty.name),
-        }),
     }
 }
 
@@ -1562,6 +2790,7 @@ fn binary_spelling(op: BinaryOp) -> &'static str {
         BinaryOp::BitXor => "^",
         BinaryOp::Shl => "<<",
         BinaryOp::Shr => ">>",
+        BinaryOp::Coalesce => "??",
     }
 }
 

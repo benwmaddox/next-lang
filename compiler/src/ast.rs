@@ -8,13 +8,29 @@ pub struct Span {
 #[derive(Clone, Debug)]
 pub struct TypeAst {
     pub name: String,
+    pub args: Vec<TypeAst>,
     pub span: Span,
 }
 
 #[derive(Clone, Debug)]
 pub struct Program {
+    pub enums: Vec<EnumDecl>,
     pub functions: Vec<Function>,
     pub tests: Vec<Test>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumDecl {
+    pub name: String,
+    pub cases: Vec<EnumCase>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumCase {
+    pub name: String,
+    pub payload: Vec<TypeAst>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +120,7 @@ pub struct Expr {
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
+    Unit,
     Integer {
         magnitude: u128,
         negative: bool,
@@ -115,6 +132,31 @@ pub enum ExprKind {
         name: String,
         call_span: Span,
         args: Vec<Expr>,
+    },
+    QualifiedCase {
+        enum_name: String,
+        case_name: String,
+        case_span: Span,
+        args: Vec<Expr>,
+    },
+    MethodCall {
+        receiver: Box<Expr>,
+        name: String,
+        method_span: Span,
+        args: Vec<Expr>,
+    },
+    OptionalCall {
+        receiver: Box<Expr>,
+        name: String,
+        method_span: Span,
+        args: Vec<Expr>,
+    },
+    Try(Box<Expr>),
+    Return(Option<Box<Expr>>),
+    LoopExit(bool),
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
     },
     ToLong {
         value: Box<Expr>,
@@ -140,6 +182,26 @@ pub enum ExprKind {
         condition: Box<Expr>,
         then_block: Block,
         else_block: Option<Block>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Block,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum Pattern {
+    Wildcard,
+    Integer(Expr),
+    Bool(bool, Span),
+    Case {
+        enum_name: Option<String>,
+        name: String,
+        name_span: Span,
+        bindings: Vec<Option<(String, Span)>>,
     },
 }
 
@@ -172,4 +234,5 @@ pub enum BinaryOp {
     BitXor,
     Shl,
     Shr,
+    Coalesce,
 }

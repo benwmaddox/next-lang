@@ -14,9 +14,13 @@ pub enum TokenKind {
     Colon,
     Semicolon,
     Dot,
+    Question,
+    QuestionDot,
+    QuestionQuestion,
     Range,
     RangeInclusive,
     Arrow,
+    FatArrow,
     Plus,
     Minus,
     Star,
@@ -195,6 +199,8 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
 
         let (kind, width) = if bytes.get(pos..pos + 3) == Some(b"..=".as_slice()) {
             Some((TokenKind::RangeInclusive, 3))
+        } else if bytes.get(pos..pos + 2) == Some(b"=>".as_slice()) {
+            Some((TokenKind::FatArrow, 2))
         } else {
             match_two_or_one(bytes, pos)
         }
@@ -268,6 +274,8 @@ fn match_two_or_one(b: &[u8], p: usize) -> Option<(TokenKind, usize)> {
     if let Some(pair) = two {
         let kind = match pair {
             b"->" => Some(TokenKind::Arrow),
+            b"?." => Some(TokenKind::QuestionDot),
+            b"??" => Some(TokenKind::QuestionQuestion),
             b".." => Some(TokenKind::Range),
             b"+%" => Some(TokenKind::WrapPlus),
             b"-%" => Some(TokenKind::WrapMinus),
@@ -300,6 +308,7 @@ fn match_two_or_one(b: &[u8], p: usize) -> Option<(TokenKind, usize)> {
         b':' => TokenKind::Colon,
         b';' => TokenKind::Semicolon,
         b'.' => TokenKind::Dot,
+        b'?' => TokenKind::Question,
         b'+' => TokenKind::Plus,
         b'-' => TokenKind::Minus,
         b'*' => TokenKind::Star,
