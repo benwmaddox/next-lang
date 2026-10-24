@@ -298,11 +298,15 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - *Projections to every layer* tempt layer-specific special cases. Overrides change looks, never meaning.
 - *Solver time* (Z3) must stay out of ordinary builds.
 
+**Decided (2026-10-24)**
+
+- Recursion is opt-in: only functions marked `recursive` may call themselves, directly or through a cycle. A recursive cycle can't hold a growing value across its recursive call, and its depth is bounded on the native stack; going past the bound is a failure value, not a crash. Everything else stays recursion-free, so stack assignment stays simple.
+- Two types for text and bytes: `Text` is always valid UTF-8, and `Bytes` is raw data (DEFLATE's output, files, the network). Going from `Bytes` to `Text` is a checked step that returns `Result`.
+- Generics are copied per type (as Rust and C++ do): full speed, and LLVM sees concrete types, at a cost in code size and build time that the 3 s target has to absorb.
+- Servers, games and tools weigh equally: the three-program validation stays as written.
+
 **Open questions**
 
-- Recursion: allowed on functions marked `recursive`, with a native-stack bound, or banned? Goose allows it; Burin and AgentLang ban it.
-- Text: always UTF-8, with `Bytes` separate (needed for DEFLATE's output), or one type?
-- Generics: specialized per type (fast, larger binaries) or shared code (smaller, slower)?
 - Can development builds hold 3 s as programs grow, with per-module caching alone, or will they need a faster code generator for `-O0` (LLVM's FastISel, or splitting modules finer)?
 - The language's name (the folder's is a working one).
 
