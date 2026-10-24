@@ -1,6 +1,6 @@
 # Examples
 
-Four small programs, one per kind of use, written to the rules in [DESIGN.md](DESIGN.md) as they stand on 2026-10-24. The syntax is a proposal; the point is to see how the decided rules (bounds, no closures, C# number names, no implicit conversions, `long` indexes, scoped blocks, effects and capabilities) feel in ordinary code. Each example ends with the open points writing it brought up.
+Four small programs, one per kind of use, written to the rules in [DESIGN.md](DESIGN.md) as they stand on 2026-10-24. The syntax is a proposal; the point is to see how the decided rules (bounds, no closures, C# number names, no implicit conversions, `long` indexes, scoped blocks, effects and capabilities) feel in ordinary code, and to judge how clearly the code reads. Each example ends with the open points writing it brought up. Reviews of these examples are in [reviews/](reviews/) (`codex-r20`, `codex-r21`, `claude-ex-r1` and later).
 
 The overview's chat server (DESIGN.md, The language in one page) is a fifth.
 
@@ -11,17 +11,21 @@ An arcade game: a ship that turns, thrusts and fires, and rocks that split when 
 ```
 // rocks/state.nl
 const SCREEN = Vector2(960.0f, 540.0f)
-const TAU: float = 6.2831855f            // 2π, one full turn
+const TAU: float = 6.2831855f                // 2π, one full turn
+
+type Size = int 1..3                         // 3 is a big rock, 1 the smallest
+type Lives = int 0..3
 
 struct Ship {
     pos: Vector2 = SCREEN * 0.5f
     vel: Vector2 = Vector2.zero
-    angle: float 0.0f..TAU wrap = 0.0f   // radians; turning past 2π wraps to 0 (and below 0 to just under 2π)
-    cooldown: int 0..15 clamp = 0        // ticks until the next shot; counting down stops at 0
-    lives: int 0..3 = 3
+    angle: float 0.0f..TAU wrap = 0.0f       // radians; turning past 2π wraps to 0
+    cooldown: int 0..15 clamp = 0            // ticks until the next shot; counting down stops at 0
+    safe: int 0..120 clamp = 0               // ticks of invulnerability after a respawn (2 s)
+    lives: Lives = 3
 }
 
-struct Rock { pos: Vector2, vel: Vector2, size: int 1..3 }
+struct Rock { pos: Vector2, vel: Vector2, size: Size }
 struct Bullet { pos: Vector2, vel: Vector2, ttl: int 0..60 }
 
 struct Game {
@@ -29,7 +33,7 @@ struct Game {
     rocks: pool<Rock, 64>
     bullets: pool<Bullet, 32>
     score: long = 0
-    rng: Random = Random.seeded(7)     // in the state, so saves and replays include it
+    rng: Random = Random.seeded(7)           // in the state, so saves and replays include it
     over: bool = false
 }
 
@@ -39,7 +43,7 @@ global game: Game prefault = Game {}
 
 ```
 // rocks/tick.nl
-fn tick(input: Input) {                 // the host's entry point; it only passes the global on
+fn tick(input: Input) {                      // the host's entry point; it only passes the global on
     step(game, input)
 }
 
@@ -47,25 +51,22 @@ fn tick(input: Input) {                 // the host's entry point; it only passe
 fn step(g: write Game, input: Input) {
     if g.over { return }
     steer(g.ship, input)
-    if input.held(Key.Space) && g.ship.cooldown == 0 {
-        fire(g)
-    }
+    if input.held(Key.Space) && g.ship.cooldown == 0 { fire(g) }
     move_bullets(g)
     move_rocks(g)
     hit_rocks(g)
     hit_ship(g)
-    if g.rocks.count() == 0L {
-        spawn_wave(g, 4)
-    }
+    if g.rocks.count() == 0 { spawn_wave(g, 4) }
 }
 
 fn steer(ship: write Ship, input: Input) {
-    if input.held(Key.Left)  { ship.angle = ship.angle - 0.07f }
-    if input.held(Key.Right) { ship.angle = ship.angle + 0.07f }
-    if input.held(Key.Up)    { ship.vel = ship.vel + direction(ship.angle) * 0.15f }
-    ship.vel = ship.vel * 0.99f        // drag
+    if input.held(Key.Left)  { ship.angle -= 0.07f }
+    if input.held(Key.Right) { ship.angle += 0.07f }
+    if input.held(Key.Up)    { ship.vel += direction(ship.angle) * 0.15f }
+    ship.vel *= 0.99f                        // drag
     ship.pos = wrap_screen(ship.pos + ship.vel)
-    ship.cooldown = ship.cooldown - 1        // clamp: never below 0, no check needed
+    ship.cooldown -= 1                       // clamp: stops at 0
+    ship.safe -= 1
 }
 
 fn fire(g: write Game) {
@@ -76,21 +77,20 @@ fn fire(g: write Game) {
     }
     match g.bullets.add(shot) {
         ok(_) => { g.ship.cooldown = 15 }
-        err(Full) => {}                // 32 bullets in flight already: this shot just doesn't happen
+        err(Full) => {}                      // 32 bullets in flight already: no shot this time
     }
 }
 
 fn move_bullets(g: write Game) {
     // Removing from a pool while looping over it would invalidate the loop's view,
-    // so the ids are collected first. The list can't overflow: it holds at most
-    // as many ids as the pool has elements, and the compiler can prove it.
+    // so expired ids are collected and removed after the loop.
     var expired: list<g.bullets.Id, 32> = list {}
-    for b, id in g.bullets {             // b is a writable view of each bullet
+    for b, id in g.bullets {
         if b.ttl == 0 {
-            expired.push(id)               // expires before moving: a 60-tick bullet moves 60 times
+            expired.push(id)                 // can't overflow: at most one id per bullet
         } else {
             b.pos = wrap_screen(b.pos + b.vel)
-            b.ttl = b.ttl - 1
+            b.ttl -= 1
         }
     }
     for id in expired { g.bullets.remove(id) }
@@ -101,36 +101,41 @@ fn move_rocks(g: write Game) {
 }
 
 fn hit_rocks(g: write Game) {
-    var hit: list<g.rocks.Id, 64> = list {}       // each rock at most once: the inner loop breaks
-    var spent: set<g.bullets.Id, 32> = set {}     // a bullet stops at the first rock it hits
+    // Find every hit first, then remove all the hit rocks, then split them: that way the
+    // fragments get every slot the hit rocks freed.
+    var hit: list<g.rocks.Id, 64> = list {}
+    var spent: set<g.bullets.Id, 32> = set {}
     for r, rid in g.rocks {
         for b, bid in g.bullets {
             if !spent.contains(bid) && distance(r.pos, b.pos) < radius(r.size) {
-                hit.push(rid)
-                spent.add(bid)
+                hit.push(rid)                // each rock once: we break below
+                spent.add(bid)               // each bullet once: skipped above
                 break
             }
         }
     }
+    var broken: list<Rock, 64> = list {}     // copies of the hit rocks
     for rid in hit {
-        let r = match g.rocks.get(rid) {          // a copy of the rock, so it can be removed first
-            some(r) => r
-            none => continue
-        }
-        g.score = g.score + (long)points(r.size)
-        g.rocks.remove(rid)                        // free its slot before adding the fragments
-        split(g, r)
+        let r = g.rocks.get(rid) ?? continue
+        broken.push(r)
+        g.rocks.remove(rid)
     }
     for bid in spent { g.bullets.remove(bid) }
+    for r in broken {
+        g.score += points(r.size).to_long()
+        split(g, r)
+    }
 }
 
 fn hit_ship(g: write Game) {
+    if g.ship.safe > 0 { return }            // just respawned: can't be hit yet
     for r in g.rocks {
         if distance(r.pos, g.ship.pos) < radius(r.size) + 8.0f {
-            if g.ship.lives == 1 {
+            if g.ship.lives <= 1 {
+                g.ship.lives = 0
                 g.over = true
             } else {
-                g.ship = Ship { lives: g.ship.lives - 1 }   // back to the centre, one life fewer
+                g.ship = Ship { lives: g.ship.lives - 1, safe: 120 }   // back to the centre, one life fewer
             }
             return
         }
@@ -138,32 +143,32 @@ fn hit_ship(g: write Game) {
 }
 
 fn split(g: write Game, r: Rock) {
-    if r.size == 1 { return }                       // the smallest rocks just vanish
-    let smaller = (int 1..3)(r.size - 1)            // checked: r.size is 2 or 3 here, so this fits
+    if r.size == 1 { return }                // the smallest rocks just vanish
+    let smaller = (Size)(r.size - 1)         // proved to fit: r.size is 2 or 3 here
     for k in 0..2 {
         let turn = g.rng.next_float(-1.0f, 1.0f)
-        let child = Rock { pos: r.pos, vel: rotate(r.vel, turn) * 1.3f, size: smaller }
-        if g.rocks.add(child).is_err() {}           // the field is full: the fragment is dropped
-    }
+        discard g.rocks.add(Rock { pos: r.pos, vel: rotate(r.vel, turn) * 1.3f, size: smaller })
+    }                                        // discard: a full field just drops the fragment
 }
 
 fn spawn_wave(g: write Game, n: int 1..8) {
     for k in 0..n {
-        let edge = Vector2(g.rng.next_float(0.0f, SCREEN.x), 0.0f)   // rocks start at the top edge
+        let start = Vector2(g.rng.next_float(0.0f, SCREEN.x), 0.0f)   // along the top edge
         let vel = direction(g.rng.next_float(0.0f, TAU)) * 1.2f
-        if g.rocks.add(Rock { pos: edge, vel, size: 3 }).is_err() {}
+        discard g.rocks.add(Rock { pos: start, vel, size: 3 })
     }
 }
 
-fn direction(angle: float) -> Vector2 { Vector2(cos(angle), sin(angle)) }   // the language's own cos and sin: exact everywhere
-fn radius(size: int 1..3) -> float { (float)size * 12.0f }
-fn points(size: int 1..3) -> int { 400 / size }
+fn direction(angle: float) -> Vector2 { Vector2(cos(angle), sin(angle)) }   // the language's own cos and sin: repeatable on the same build and platform
+fn radius(size: Size) -> float { size.to_float() * 12.0f }
+fn points(size: Size) -> int { 400 / size }
 fn wrap_screen(p: Vector2) -> Vector2 { Vector2(modulo(p.x, SCREEN.x), modulo(p.y, SCREEN.y)) }
 ```
 
 ```
 // rocks/draw.nl
-fn draw(frame: Frame) {                 // may only read game; the compiler checks
+// At most 99 draw commands: a clear, 64 rocks, 32 bullets, the ship and the score.
+fn draw(frame: Frame max 100) {              // may only read game; the compiler checks
     frame.clear(Color.black)
     for r in game.rocks { frame.circle(r.pos, radius(r.size), Color.gray) }
     for b in game.bullets { frame.dot(b.pos, Color.white) }
@@ -171,7 +176,8 @@ fn draw(frame: Frame) {                 // may only read game; the compiler chec
     frame.text(Vector2(12.0f, 12.0f), score_line(game.score, game.ship.lives), Color.white)
 }
 
-fn score_line(score: long, lives: int 0..3) -> Ascii max 40 {
+// "Score " (6) + up to 20 for a long + "  Lives " (8) + 1 digit = at most 35.
+fn score_line(score: long, lives: Lives) -> Ascii max 40 {
     "Score " + str(score) + "  Lives " + str(lives)
 }
 ```
@@ -185,7 +191,26 @@ test "a bullet splits a big rock in two" {
     hit_rocks(g)
     expect g.rocks.count() == 2
     expect g.bullets.count() == 0
-    expect g.score == 133
+    expect g.score == 133                   // 400 / 3, rounded down
+}
+
+test "fragments use the slots of every rock hit in the same tick" {
+    var g = Game {}
+    for i in 0..62 { g.rocks.add(Rock { pos: Vector2(500.0f, 500.0f), vel: Vector2.zero, size: 1 }).unwrap() }
+    g.rocks.add(Rock { pos: Vector2(100.0f, 100.0f), vel: Vector2.zero, size: 3 }).unwrap()
+    g.rocks.add(Rock { pos: Vector2(300.0f, 100.0f), vel: Vector2.zero, size: 1 }).unwrap()
+    g.bullets.add(Bullet { pos: Vector2(100.0f, 100.0f), vel: Vector2.zero, ttl: 10 }).unwrap()
+    g.bullets.add(Bullet { pos: Vector2(300.0f, 100.0f), vel: Vector2.zero, ttl: 10 }).unwrap()
+    hit_rocks(g)
+    expect g.rocks.count() == 64              // 62 untouched + both fragments of the big one
+}
+
+test "the last life ends the game" {
+    var g = Game {}
+    g.ship.lives = 1
+    g.rocks.add(Rock { pos: g.ship.pos, vel: Vector2.zero, size: 3 }).unwrap()
+    hit_ship(g)
+    expect g.over && g.ship.lives == 0
 }
 
 test "the bullet limit holds" {
@@ -198,115 +223,95 @@ test "the bullet limit holds" {
 }
 ```
 
-**What it exercises:** removing a hit rock before adding its fragments (so its slot is free), expiring bullets before they move, ship collisions with lives and game over, waves; a `prefault` global with defaults in the struct definitions; a wrapping range on the ship's angle (`float 0.0f..TAU wrap`) and a clamping one on its cooldown (`int 0..15 clamp`); pools with typed ids; removing after the loop, not during it; `Full` handled at every `add`; parameter modes (`write`); a range cast that the compiler can prove (`(int 1..3)(r.size - 1)`); explicit casts (`(long)`, `(float)`); random state kept in the game state; a read-only `draw`; tests on a local `Game`.
+**What it exercises:** named refinements (`Size`, `Lives`) and a cast to one (`(Size)(r.size - 1)`); a wrapping range on the angle and clamping ones on the timers, with `+=` and `-=` applying them; removing every hit rock before adding fragments; expiring bullets before they move; a respawn grace period; `?? continue`; `discard` where dropping a value is intended; `Full` handled where it matters (`fire`); pools with typed ids; removing after a loop, not during it; a widening method (`.to_long()`); random state in the game state; a read-only `draw` with a declared draw-list capacity; tests on a local `Game`.
 
 **Open points it raised:**
 
-- *Parameter modes:* decided (2026-10-24): written before the type, `g: write Game` or `out: grow Text`; read is the default and isn't written.
-- *Pushes the compiler can prove safe:* DESIGN.md already lets a push or add that the compiler proves can't overflow skip the `Result` (Collections); `hit.push(rid)` and `spent.add(bid)` rely on it, and the compiler has to prove each holds at most as many ids as its pool.
-- *Element views in loops:* now in DESIGN.md: a loop variable over a collection the function may write (`for r in g.rocks`) is a writable view of each element, under the usual view rules (no removing from the collection inside the loop).
-- *Two meanings of `..`:* in a plain refinement (`int 0..100`) the range includes its end, a wrapping float range (`float 0.0f..TAU wrap`) excludes it; in a loop (`for k in 0..2`) it stops before it. The design should either say so plainly or use two spellings (Rust has `..` and `..=`).
 - *Restarting:* resetting the whole game (`g = Game {}`) replaces pools, which the design's Later list says needs a rule for generations.
+- *Two meanings of `..`:* in a plain refinement (`int 0..100`) the range includes its end, a wrapping float range excludes it, and in a loop (`for k in 0..2`) it stops before it. Still open in DESIGN.md.
+- *`Frame max 100`* is a guess at how `draw` declares its draw-list capacity.
 
 ## 2. A tool: logsum
 
-A command-line tool that reads a directory of web-server access logs and prints the most requested paths (among the first 20,000 distinct paths it meets) and the share of error responses. Each log can be large, so files are read line by line, never whole.
+A command-line tool that reads a directory of web-server access logs and prints the most requested paths (among the first 20,000 distinct paths it meets) and the share of error responses. Each log can be large, so files are read line by line, never whole, and all of them are counted into one set of totals, so a path's count is exact however many files it appears in.
 
 ```
 // logsum/main.nl
+type UrlPath = Ascii max 200
+
 enum ToolError { Usage, Io(IoError), TooManyFiles }
 
 struct Counts {
     lines: long = 0
-    responses: long = 0                            // lines that parsed
-    errors: long = 0                               // responses with status 500 to 599
-    paths: map<Ascii max 200, long, 20_000>        // counts for the first 20,000 distinct paths met; later new paths are counted in skipped
-    skipped: long = 0                              // lines that didn't parse, or paths past the map's capacity
+    responses: long = 0                      // lines that parsed
+    errors: long = 0                         // responses with status 500 to 599
+    paths: map<UrlPath, long, 20_000>        // the first 20,000 distinct paths; later new ones go to skipped
+    skipped: long = 0                        // lines that didn't parse, or new paths once the map is full
 }
 
 fn main(env: Env) -> Result<(), ToolError> {
     let dir = env.args().get(1) ?? return err(ToolError.Usage)
-    let files = match env.fs.list(dir, max 500) {   // a bounded listing
+    let files = match env.fs.list(dir, max 500) {
         ok(f) => f
         err(Full) => return err(ToolError.TooManyFiles)
         err(e) => return err(ToolError.Io(e))
     }
-
-    // One job per file, so files are read and counted in parallel; each job has its
-    // own stacks and waits on its own reads.
-    var jobs: list<Job<Counts>, 500> = list {}
-    for path in files {
-        jobs.push(spawn count_file(env.fs, path))
-    }
-
     var total = Counts {}
-    for j in jobs {
-        let c = j.join()?                  // join gives the job function's own Result; a crashed job fails the run
-        merge(total, c)
-    }
+    for path in files { count_file(env.fs, path, total)? }
     report(env.out, total)
     ok(())
 }
 
-fn count_file(fs: Fs, path: Path) -> Result<Counts, ToolError> {
-    var c = Counts {}
-    let file = fs.open(path).map_io()?      // IoError to ToolError: see the open points
-    for line in file.lines(max 4096) {         // each line is a temporary, freed every iteration; a read error ends the loop with err, passed up like open's
-        c.lines = c.lines + 1L
+fn count_file(fs: Fs, path: Path, c: write Counts) -> Result<(), ToolError> {
+    let file = io(fs.open(path))?
+    for line in file.lines(max 4096) {       // each line is a temporary, freed every iteration
+        let line = io(line)?                 // a read error ends the run with the error
+        c.lines += 1
         match parse(line) {
-            some(entry) => { c.responses = c.responses + 1L; add(c, entry) }
-            none => { c.skipped = c.skipped + 1L }
+            some(entry) => { c.responses += 1; count(c, entry) }
+            none => { c.skipped += 1 }
         }
     }
-    ok(c)
+    ok(())
 }
 
-struct Entry { path: Ascii max 200, status: int 100..599 }
+// The one place an IoError becomes a ToolError.
+fn io<T>(r: Result<T, IoError>) -> Result<T, ToolError> {
+    match r { ok(v) => ok(v), err(e) => err(ToolError.Io(e)) }
+}
+
+struct Entry { path: UrlPath, status: int 100..599 }
 
 // A line looks like: 203.0.113.9 - - [24/Oct/2026:10:12:01 +0000] "GET /r/12 HTTP/1.1" 200 512
 fn parse(line: Bytes max 4096) -> Option<Entry> {
     let request = line.between('"', '"') ?? return none
-    let path = request.split_at(' ', 1) ?? return none
-    let after = line.after_last('"') ?? return none
-    let status = after.trim().take_until(' ').parse_int() ?? return none
-    let ascii_path = match path.to_ascii() { ok(p) => p, err(_) => return none }   // a non-ASCII path: skipped
-    let short = ascii_path.limit(200) ?? return none         // a path longer than 200 bytes: skipped
-    let code = status.try_as<int 100..599>() ?? return none  // the Option form of a checked cast
-    some(Entry { path: short, status: code })
+    let raw_path = request.word(1) ?? return none          // "GET /r/12 HTTP/1.1" -> "/r/12"
+    let ascii = raw_path.to_ascii().ok() ?? return none     // not ASCII: skipped
+    let path = ascii.fit<UrlPath>() ?? return none          // over 200 bytes: skipped
+    let status = line.after_last('"')?.word(0)?.parse_int() ?? return none
+    let code = status.fit<int 100..599>() ?? return none    // fit: the Option form of a checked cast
+    some(Entry { path, status: code })
 }
 
-fn add(c: write Counts, e: Entry) {
-    if e.status >= 500 { c.errors = c.errors + 1L }
-    let n = c.paths.get(e.path) ?? 0L
-    if c.paths.set(e.path, n + 1L).is_err() {      // set fails only for a new key in a full map
-        c.skipped = c.skipped + 1L
-    }
-}
-
-fn merge(total: write Counts, part: Counts) {
-    total.lines = total.lines + part.lines
-    total.responses = total.responses + part.responses
-    total.errors = total.errors + part.errors
-    total.skipped = total.skipped + part.skipped
-    for path, n in part.paths {
-        let m = total.paths.get(path) ?? 0L
-        if total.paths.set(path, m + n).is_err() { total.skipped = total.skipped + n }
-    }
+fn count(c: write Counts, e: Entry) {
+    if e.status >= 500 { c.errors += 1 }
+    let n = c.paths.get(e.path) ?? 0
+    if c.paths.set(e.path, n + 1).is_err() { c.skipped += 1 }    // fails only for a new path in a full map
 }
 
 fn report(out: Out, c: Counts) {
-    let top = c.paths.top_by_value(20)                   // a list<map.Pair<Ascii max 200, long>, 20>: {key, value}
     out.line("lines   " + str(c.lines))
     out.line("errors  " + percent(c.errors, c.responses))
     out.line("skipped " + str(c.skipped))
-    for pair, i in top {
-        out.line(pad(str(i + 1L), 3) + " " + pad(str(pair.value), 10) + " " + pair.key)
+    for p, i in c.paths.top_by_value(20) {   // the 20 biggest counts, as {key, value} pairs
+        out.line(pad(str(i + 1), 3) + " " + pad(str(p.value), 10) + " " + p.key)
     }
 }
 
-fn percent(part: long, whole: long) -> Ascii max 32 {      // long enough for any long, a decimal point and %
-    if whole == 0L { return "0%" }
-    str_fixed((double)part * 100.0 / (double)whole, 1) + "%"
+// At most 25 characters, for the most extreme longs.
+fn percent(part: long, whole: long) -> Ascii max 32 {
+    if whole == 0 { return "0%" }
+    str_fixed(part.to_double() * 100.0 / whole.to_double(), 1) + "%"
 }
 ```
 
@@ -323,22 +328,28 @@ test "skips a line without a request" {
 
 test "a full path map counts what it drops" {
     var c = Counts {}
-    for i in 0L..20_001L { add(c, Entry { path: "/p/" + str(i), status: 200 }) }
-    expect c.paths.count() == 20_000L
-    expect c.skipped == 1L
+    for i in 0..20_001 { count(c, Entry { path: "/p/" + str(i), status: 200 }) }
+    expect c.paths.count() == 20_000
+    expect c.skipped == 1
+}
+
+test "a path's count is exact across files" {
+    var c = Counts {}
+    count(c, Entry { path: "/shared", status: 200 })                     // file A
+    for i in 0..19_999 { count(c, Entry { path: "/b/" + str(i), status: 200 }) }   // file B fills the map
+    for i in 0..1_000 { count(c, Entry { path: "/shared", status: 200 }) }
+    expect c.paths.get("/shared") == some(1_001)
+    expect c.skipped == 0
 }
 ```
 
-**What it exercises:** a bounded directory listing; one spawned job per file instead of a parallel loop, because the work does I/O; line-by-line reading with a declared line maximum, each line freed per iteration; `Bytes` to `Ascii` checked conversions; `Option`-returning parsing with `?? return none`, including a checked cast's `Option` form (`try_as`); a bounded `map` with its overflow counted, not lost silently; `long` counters and explicit casts to `double`.
+**What it exercises:** a named refinement (`UrlPath`); a bounded directory listing; line-by-line reading with each line freed per iteration; one set of totals passed down in `write` mode; one small generic function (`io`) for the single error conversion; `?.` chained into `??`; `fit`, the `Option` form of a checked cast; a bounded `map` with its overflow counted, not lost; `+=` on `long` counters with no literal suffixes; widening methods (`.to_double()`).
 
 **Open points it raised:**
 
-- *Parallel I/O:* `parallel for` bodies may have no effects, so a tool that reads many files uses `spawn` and `join`. That's fine, but the design should say so, and say how many spawned jobs can run at once (admission).
-- *Large fixed values:* each `Counts` holds a 20,000-entry map, several megabytes, and every job has one, then `join` copies it out. That's bounded and correct, but heavy; a tool like this may want each job to write into its own slot of a frozen batch instead.
-- *`.map_io()?`* converts an `IoError` into `ToolError`; the design has no rule yet for converting error types when passing them up with `?` (Rust uses a `From` conversion).
-- *Tuples:* `report` uses a named `{key, value}` pair from the map, since the design has no tuples; whether to add them is open.
-- *The busiest paths, really:* the map keeps the first 20,000 distinct paths and counts the rest as skipped, so a path that only becomes popular late can be missed. A real tool would use a bounded "heavy hitters" structure (one that keeps approximate counts for the most frequent keys in fixed space); the standard library could provide one.
-- *`try_as`:* the Option form of a checked cast needs a declared contract in the standard library.
+- *Error conversion:* `io(...)?` converts an `IoError` by hand; Rust does this automatically with `From`. One explicit helper per program reads fine here, but a larger program would want the rule in the language.
+- *Reading files in parallel:* this version reads the files one after another, which keeps every count exact and uses one map. Counting in parallel (one spawned job per file) would need either a first pass to choose the 20,000 paths and a second to count them, or a merge that accepts some loss; `parallel for` bodies can't do I/O, so it would use `spawn` and `join`. Worth doing only if measurements say reading is the bottleneck.
+- *The busiest paths, really:* keeping the first 20,000 distinct paths can miss one that becomes popular late; a bounded "heavy hitters" structure (approximate counts for the most frequent keys, in fixed space) would fix it, and the standard library could provide one.
 
 ## 3. A server API: messages with a rate limit
 
@@ -348,49 +359,47 @@ A JSON API over the chat server's database: list a room's messages a page at a t
 // chat-api/limits.nl
 // One token a second, up to 60 saved up. Exact: every request goes through the
 // writer (decided 2026-10-24 for v1; measured on the server benchmark).
+type Address = Ascii max 45                  // IPv6 text is at most 45 characters
+
 struct Bucket {
     tokens: int 0..60 clamp = 60
-    since: Instant                 // when the tokens were last topped up, by the writer's clock
+    since: Instant                           // the monotonic clock's time when tokens were last topped up
 }
 
-struct Limits {
-    by_address: map<Ascii max 45, Bucket, 100_000>     // IPv6 text is at most 45 characters
-}
+struct Limits { by_address: map<Address, Bucket, 100_000> }
 
 shared global limits: Limits = Limits {}
 
-// Returns true if the call may go ahead. Runs on the writer, against the latest version.
-// The time is the writer's own monotonic clock (one that never jumps back), read when the
-// transaction is applied, so a request that waited in the queue can't make time run backwards.
-fn take_token(address: Ascii max 45) -> bool {
-    let result = transaction {
-        let now = writer_clock()
-        let b = limits.by_address.get(address) ?? Bucket { since: now }
-        let whole = (now - b.since).whole_seconds()           // a long, never negative
-        let tokens = b.tokens + (int)min(whole, 60L)          // clamp keeps it at 60 at most
-        // Advance `since` by the whole seconds used, not to `now`, so the fraction
-        // of a second already waited isn't lost.
-        let since = if tokens >= 60 { now } else { b.since + Duration.seconds(whole) }
-        if tokens == 0 {
-            limits.by_address.set(address, Bucket { tokens: 0, since })?
-            ok(false)
-        } else {
-            limits.by_address.set(address, Bucket { tokens: tokens - 1, since })?
-            ok(true)                   // `?` above: a full map ends the transaction with err(Full)
-        }
-    }
-    match result {
-        ok(allowed) => allowed
-        err(Full) => false             // 100,000 addresses tracked: fail closed until pruned
-    }
+// The refill rule, on its own: pure, so it's easy to test. One token per whole second
+// waited; `since` moves on by those whole seconds only, so a part-second already
+// waited still counts next time.
+fn refill(b: Bucket, now: Instant) -> Bucket {
+    let secs = (now - b.since).whole_seconds()
+    if secs >= 60 { return Bucket { tokens: 60, since: now } }
+    Bucket { tokens: b.tokens + (int)secs, since: b.since + Duration.seconds(secs) }   // stored, so clamped to 60
 }
 
-// A task the server runs every minute: forget addresses that have been quiet for a
-// minute (their bucket would be full again anyway), so the map doesn't stay full.
-task every 60s prune_limits() {
+// May this address make a call now? Runs on the writer, against the latest version.
+// The time is read there, from the monotonic clock (which never jumps back), so a
+// request that waited in the queue can't make time run backwards.
+fn take_token(address: Address, clock: Clock) -> bool {
+    let result = transaction {
+        let now = clock.monotonic()
+        var b = refill(limits.by_address.get(address) ?? Bucket { since: now }, now)
+        let allowed = b.tokens > 0
+        if allowed { b.tokens -= 1 }
+        limits.by_address.set(address, b)?   // a full map ends the transaction with err(Full)
+        ok(allowed)
+    }
+    result.ok() ?? false                     // 100,000 addresses tracked: fail closed until pruned
+}
+
+// Every minute, forget addresses that have been quiet for a minute (their bucket
+// would be full again anyway), so the map doesn't stay full.
+task every 60s prune_limits(clock: Clock) {
     transaction {
-        let now = writer_clock()
-        limits.by_address.remove_where(.since < now - Duration.seconds(60))
+        let cutoff = clock.monotonic() - Duration.seconds(60)
+        limits.by_address.remove_where(.since < cutoff)
     }
 }
 ```
@@ -399,11 +408,11 @@ task every 60s prune_limits() {
 // chat-api/routes.nl
 struct MessageOut { key: Message.Key, author: Name, body: Body }   // the JSON shape
 
-enum ApiError { NotFound, TooMany, BadRequest }
+enum ApiError { NotFound, TooMany }
 
 api get_messages(room_key: Room.Key, before: Option<Message.Key>, req: Request,
-                 db: Db<Chat>) -> Result<list<MessageOut, 100>, ApiError> {
-    if !take_token(req.address) { return err(ApiError.TooMany) }
+                 db: Db<Chat>, clock: Clock) -> Result<list<MessageOut, 100>, ApiError> {
+    if !take_token(req.address, clock) { return err(ApiError.TooMany) }
     let rows = db.read {
         if Room.get(room_key).is_none() { return err(ApiError.NotFound) }   // leaves get_messages
         match before {
@@ -412,9 +421,7 @@ api get_messages(room_key: Room.Key, before: Option<Message.Key>, req: Request,
         }
     }
     var out: list<MessageOut, 100> = list {}
-    for m in rows {
-        out.push(MessageOut { key: m.key, author: m.author, body: m.body })   // can't overflow: limit(100)
-    }
+    for m in rows { out.push(MessageOut { key: m.key, author: m.author, body: m.body }) }   // can't overflow: limit(100)
     ok(out)
 }
 
@@ -423,45 +430,55 @@ fn respond(e: ApiError) -> Response {
     match e {
         NotFound => Response.status(404)
         TooMany => Response.status(429).header("Retry-After", "1")
-        BadRequest => Response.status(400)
     }
 }
 ```
 
 ```
 // chat-api/tests.nl
+// Each scenario starts from the program's initial state (empty limits, a fresh
+// in-memory database) and runs with a frozen clock that moves only when it advances it.
+
+test "refill tops up one token a second and keeps the fraction" {
+    let t0 = Instant.at_ms(0)
+    let b = Bucket { tokens: 0, since: t0 }
+    let later = refill(b, t0 + Duration.ms(2500))
+    expect later.tokens == 2
+    expect later.since == t0 + Duration.seconds(2)   // the half second carries over
+    expect refill(b, t0 + Duration.seconds(90)).tokens == 60
+}
+
 scenario "a reader pages back through history" {
     let db = Db.memory(Chat)
     let room = db.transaction { Room.add(Room { name: "General" }) }.unwrap()
     for i in 0..250 { db.transaction { Message.add(Message { room, author: "ann", body: "m" + str(i) }) }.unwrap() }
-    let first = call get_messages(room, none) from "198.51.100.1"
-    expect first.status == 200 && first.json.len() == 100L
-    let second = call get_messages(room, some(first.json.last().key)) from "198.51.100.1"
-    expect second.json.len() == 100L
+    let first = call get_messages(room, none) from "198.51.100.1" with db
+    expect first.status == 200 && first.json.len() == 100
+    let second = call get_messages(room, some(first.json.last().key)) from "198.51.100.1" with db
+    expect second.json.len() == 100
     expect second.json.first().key < first.json.last().key
 }
 
 scenario "one address is slowed down, another isn't, and recovers" {
-    // Scenarios run with a frozen clock; time moves only when the scenario advances it.
-    for i in 0..60 { expect (call get_messages(general, none) from "203.0.113.9").status == 200 }
-    expect (call get_messages(general, none) from "203.0.113.9").status == 429
-    expect (call get_messages(general, none) from "198.51.100.1").status == 200
+    let db = Db.memory(Chat)
+    let general = db.transaction { Room.add(Room { name: "General" }) }.unwrap()
+    for i in 0..60 { expect (call get_messages(general, none) from "203.0.113.9" with db).status == 200 }
+    expect (call get_messages(general, none) from "203.0.113.9" with db).status == 429
+    expect (call get_messages(general, none) from "198.51.100.1" with db).status == 200
     advance 3s
-    for i in 0..3 { expect (call get_messages(general, none) from "203.0.113.9").status == 200 }
-    expect (call get_messages(general, none) from "203.0.113.9").status == 429
+    for i in 0..3 { expect (call get_messages(general, none) from "203.0.113.9" with db).status == 200 }
+    expect (call get_messages(general, none) from "203.0.113.9" with db).status == 429
 }
 ```
 
-**What it exercises:** a `shared global` updated in a transaction on its writer; a monotonic writer clock (`Instant`, which never jumps back) and `Duration`, keeping the fraction of a second already waited; a `clamp` range on the token count; a scheduled task that prunes quiet addresses; a bounded `map` that fails closed when full; a database read with the query bounded by `limit(100)` and paging by key; a JSON result type generated from a struct; one function mapping errors to responses, headers included (`Retry-After`); a cursor that branches on `none` instead of using a maximum key; scenarios against an in-memory database with a frozen, advanceable clock.
+**What it exercises:** a pure helper (`refill`) split out of a transaction so it can be tested directly; a `shared global` updated in a transaction on its writer; the clock as a capability, read inside the transaction from its monotonic side; `Instant` and `Duration`; a `clamp` range on the token count; a scheduled task that prunes quiet addresses; a bounded `map` that fails closed when full; a database read bounded by `limit(100)` and paging by key; a JSON result type generated from a struct; one function mapping errors to responses, headers included; scenarios that start fresh, with a frozen, advanceable clock.
 
 **Open points it raised:**
 
-- *Every request writes shared state:* decided for v1 (2026-10-24): rate limits stay exact, through the writer, and the server benchmark measures what that costs. Per-worker approximate counts are the fallback if the writer becomes the bottleneck.
-- *A transaction that returns a value:* now in DESIGN.md: a transaction's value is its block's value, and `?` inside one aborts it (its changes are discarded) with the error.
-- *`return` inside a scoped block:* now in DESIGN.md: a `return` in a scoped block leaves the enclosing function, carried out through the generated helper.
-- *`api`:* decided (2026-10-24): JSON endpoints are their own kind, `api`, next to `page` (HTML) and `action` (form posts), with a typed result and one error-to-response function.
-- *Clocks:* `writer_clock()`, `Instant` and a scenario's `advance 3s` are new; DESIGN.md's Later list has the monotonic clock, and this suggests its shape.
+- *Clocks:* `clock.monotonic()`, `Instant` and a scenario's `advance 3s` are new; DESIGN.md's Later list has the monotonic clock, and this suggests its shape. Reading a capability inside a writer transaction should be allowed explicitly for the clock (it doesn't wait), even though other I/O isn't.
 - *Scheduled tasks:* `task every 60s` is new syntax for a recurring job; the design has jobs but not how they're scheduled.
+- *`result.ok() ?? false`:* turning a `Result` into an `Option` to use `??` reads well here because the only error is `Full`; with several errors a `match` says more.
+- *`call … from … with db`:* the scenario syntax for calling an `api` as a client would is a guess.
 
 ## 4. Compute: CRC-32
 
@@ -477,10 +494,10 @@ const TABLE: uint[256] = make_table()
 
 fn make_table() -> uint[256] {
     var t: uint[256] = fill(0u)
-    for i in 0L..256L {
+    for i in 0..256 {                        // an index: a long, from its use below
         var c = (uint)i
         for k in 0..8 {
-            c = if (c & 1u) != 0u { POLY ^ (c >> 1) } else { c >> 1 }
+            c = if (c & 1) != 0 { POLY ^ (c >> 1) } else { c >> 1 }
         }
         t[i] = c
     }
@@ -490,33 +507,33 @@ fn make_table() -> uint[256] {
 pub fn crc32(data: Bytes) -> uint {
     var crc = 0xFFFFFFFFu
     for b in data {
-        crc = TABLE[(long)((crc ^ (uint)b) & 0xFFu)] ^ (crc >> 8)
+        let i = (crc ^ b.to_uint()) & 0xFF   // below 256, so the lookup needs no bounds check
+        crc = TABLE[i.to_long()] ^ (crc >> 8)
     }
-    crc ^ 0xFFFFFFFFu
+    crc ^ 0xFFFFFFFF
 }
 
 fn crc32_bitwise(data: Bytes) -> uint {
     var crc = 0xFFFFFFFFu
     for b in data {
-        crc = crc ^ (uint)b
+        crc ^= b.to_uint()
         for k in 0..8 {
-            crc = if (crc & 1u) != 0u { POLY ^ (crc >> 1) } else { crc >> 1 }
+            crc = if (crc & 1) != 0 { POLY ^ (crc >> 1) } else { crc >> 1 }
         }
     }
-    crc ^ 0xFFFFFFFFu
+    crc ^ 0xFFFFFFFF
 }
 
-check crc32 == crc32_bitwise          // on generated inputs and the boundary cases: empty, one byte, long
+check crc32 == crc32_bitwise                // on generated inputs and the boundary cases: empty, one byte, long
 
 test "the standard check value" {
-    expect crc32("123456789".bytes()) == 0xCBF43926u
+    expect crc32("123456789".bytes()) == 0xCBF43926
 }
 ```
 
-**What it exercises:** compile-time evaluation of a constant table; `uint` and bit operations; casts that can't fail (`(uint)b` from a `byte`, `(long)` for an index), written anyway since there are no implicit conversions; `if` as an expression; a reference check; a known-answer test. The index `(crc ^ (uint)b) & 0xFFu` is provably below 256, so the table lookup carries no bounds check.
+**What it exercises:** compile-time evaluation of a constant table; `uint` and bit operations; widening methods (`b.to_uint()`, `i.to_long()`) where a cast used to be; unsuffixed literals taking `uint` from context; `^=`; `if` as an expression; a reference check; a known-answer test.
 
 **Open points it raised:**
 
-- *Casts that can't fail* (`(uint)b`, `(long)(... & 0xFFu)`) are noise in bit-heavy code. No implicit conversions is decided; a shorter spelling for "widen, can't fail", such as `b.u32`, may be worth it.
-- *`0L..256L`:* because indexes are `long`, the loop counter is `long`, while `0..8` is an `int` range. Ranges might take their type from what they index.
-- *The last expression of a block is its value* (`t`, `crc ^ 0xFFFFFFFFu`) in these examples, while the overview uses `return` and `ok(())`; one style should be chosen.
+- *Loop counter types:* `for i in 0..256` is used as an index, so it should be a `long`; this example assumes a loop's counter type comes from how it's used, which DESIGN.md doesn't say yet.
+- *The last expression of a block is its value* (`t`, `crc ^ 0xFFFFFFFF`), while other examples use `return`; DESIGN.md lists this as open.
