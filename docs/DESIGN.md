@@ -38,61 +38,92 @@ The design keeps what was measured to work in four weeks of building six languag
 | Two implementation stacks | crudspec (TypeScript + Go) | Double the upkeep | Drop |
 | Caches cleared on every write | crudspec | 17k to 0.6k pages/s at 50 posts/s | Drop |
 
-## Memory: data lives in tables, computing lives on stacks
+## Memory: data lives in a state tree, computing lives on stacks
 
-There are two lifetimes and no garbage collector: long-lived data in declared tables, everything temporary on scope stacks freed in one store.
+There are two lifetimes and no garbage collector: long-lived data in a declared tree of state, everything temporary on scope stacks freed in one store.
 
-**Tables** hold in-memory data that outlives a call (a game's world, a tool's index, a server's live state). A table is the language's one long-lived in-memory collection, and it comes in two layers (decided 2026-10-24): the plain table is all most code needs, and `shared` adds sharing across threads. Data kept in a database (SQLite, later others) isn't a table; it's a separate feature (see Databases).
-
-*Why tables at all:* with no garbage collector and no borrow checker, data that outlives a call, keeps changing and has many items needs a home. The usual answers are owned heap objects with borrow rules (Rust), reference counting (Swift), manual freeing (C) or pools of items named by ids (game engines' entity systems, Burin's and crudspec's entities). Tables are the last: links are ids, not pointers, so nothing can dangle and nothing needs a lifetime annotation.
-
-**The plain table: a bounded collection with safe ids**
+**State** holds in-memory data that outlives a call (a game's world, a tool's index, a server's live data). It's organised the way StasisLang organises it (decided 2026-10-24): one tree of structs, whose fields are values, nested structs and bounded collections. There are no standalone tables; what earlier drafts called a table is a `pool`, one kind of collection field. Data kept in a database (SQLite, later others) isn't state; it's a separate feature (see Databases).
 
 ```
-table Message max 100000 { room: Room.Id, author: User.Id, likes: Int, body: Text max 2000 }
+struct App {
+    cfg: Config
+    world: World
+}
+struct World {
+    units: pool<Unit, 4096>                  // stable slots with ids (units.Id)
+    tiles: Tile[64 * 64]                     // a fixed array, always 4,096 tiles
+    names: map<Text max 32, units.Id, 4096>  // name to unit
+    events: ring<Event, 1000>                // the last 1,000 events
+}
+struct Unit {
+    name: Text max 32
+    hp: Int 0..1000
+    inventory: list<Item, 8>                 // up to 8, inside each unit
+}
+global app: App                              // the program's state, reserved once at start
 ```
 
-- A table is rows of one record type, stored as one array per field (structure of arrays, as Stasis lowers it), so a loop that reads two fields streams through just those two arrays.
-- **Owned by one place:** a plain table belongs to a job (freed when the job ends: a checker's type cache, a request's scratch), to a thread (a game simulation that one thread runs), or to the program (declared at top level and alive for the whole run). Owning it for the program's whole run doesn't let every job touch it: a thread's or the program's plain table has a *home worker*, and only jobs scheduled on that worker may use it. A table that jobs on several workers need must be `shared`. Only its owner touches a plain table, so it's plain arrays: no writer, no snapshots, no counting, no locks.
-- **Fixed-size fields** (numbers, ids, enums, small records) sit in their column directly.
-- **Variable-size fields** (text, bytes) can't sit in a fixed-width column, and nothing that stores them ever moves bytes that are in use: there's no compaction, which would be a contained garbage collector, with pauses that grow with the data (decided 2026-10-24). Instead:
-  - *Small fields inline:* a field whose maximum is 64 bytes or less (`Text max 16` is up to 64 bytes) sits in its column at full size, with its length. No garbage, ever.
-  - *Larger fields in size classes:* the field's bytes go in a slot of the smallest class that fits: 128 bytes, 256, 512 and so on up to the class that holds the field's maximum. Each class is an array of equal slots with its own free list, as a memory allocator keeps. The column holds `{class, slot, length}`. A new value that fits the current slot is written in place; one that needs another class takes a slot from that class's free list and returns the old slot to its own. Nothing else moves, and no write ever waits for a cleanup.
-  - The cost is the space left unused inside slots: a 300-byte text in a 512-byte slot wastes 212 bytes, never more than half a slot.
-- **Typed ids:** rows refer to each other by `Item.Id`, 64 bits: a 32-bit slot and a 32-bit generation counter. The table it belongs to is part of the type, not stored in the id. Deleting a row bumps its slot's generation, so an old id no longer matches. Looking up an id returns `Option`: `none` for a stale id, never a dangling pointer. A slot whose generation reaches its maximum is retired, never reused, so wraparound can't make a stale id match again.
-- **Scoped ids:** a table a job or a function scope creates is made from a scope token (`let cache = table TypeEntry max 10000 in job`), its ids are typed by that token (`cache.TypeEntry.Id`), and they can't leave the scope or mix with another scope's. A top-level table exists once per program, so its type alone names it; several instances of one top-level table (one per tenant, say) would need an instance field and are left for later. Frozen tables and database rows have ids of their own (see Frozen tables, Databases), and no id of one kind can be used as another.
-- **A slot is a fixed position, never moved:** columns are indexed by slot, with holes where rows were deleted. Each slot has an occupied flag and its generation, and the table keeps a list of free slots for reuse. A lookup checks the slot is in range, occupied, and of the id's generation before reading any field. Rows are never moved to fill holes (moving the last row into a deleted one's place would silently change which record an id names). If dense storage pays later, it comes with an explicit slot-to-row map. Flags and generations are columns like any other, so snapshots carry them.
-- Invariants are declared on tables and checked on every write (see Correctness).
+*Why a state tree:* with no garbage collector and no borrow checker, data that outlives a call, keeps changing and has many items needs a home. The usual answers are owned heap objects with borrow rules (Rust), reference counting (Swift), manual freeing (C) or pools of items named by ids (game engines' entity systems, Burin's and crudspec's entities, Stasis's pools). This design takes the last, and Stasis's way of organising it: one root, nested structs, every collection with a capacity in its type. So:
 
-**Bounds** (decided 2026-10-24: every table is bounded)
+- **The whole state's size is in its type.** Every capacity is declared, so the compiler knows the most memory the state can need, reserves it once at start, and never moves it. That's the "every table is bounded" decision (2026-10-24), now applying to all state.
+- **Everything has a path.** `app.world.units[id].hp` names one value. `inspect` can read any path between steps, and a replay or a save snapshots the tree, as Stasis's `stasis inspect` and record and replay do.
+- **One concept, not several.** Structs, fixed arrays and collections nest freely; a pool is just a field.
 
-- **Declared:** a table declares its most rows (`max 100000`), and every variable-size field its maximum (`body: Text max 2000`). A table without them is a build error that names what's missing. A row maximum limits that table; how all tables together fit the process's memory is the admission budget's job (below).
-- **In bytes:** text maxima count code points, and a code point takes up to 4 bytes in UTF-8, so `body: Text max 2000` is up to 8,000 bytes a row: 100,000 rows can hold 800,000,000 live bytes of text. The compiler works in bytes from here on.
-- **A plain table's reservation:** rows × fixed fields (with flags, generations and inline fields), plus, for each variable-size field, every size class reserved for every row: since the classes double, their sizes add up to less than twice the largest, so a field's worst case is under rows × 2 × its maximum class. This is the worst case even if the rows' lengths shift between classes over time, since a class never needs more slots than there are rows. The table reserves this address space when it's created and commits pages as slots are used (as data stacks do), so its arrays never move and growing never copies. A game's table can commit its whole reservation up front (`table Unit max 4096 committed`), so play never touches the operating system.
-- **Full is an error to handle:** inserting into a full table, or writing a field past its maximum, returns `Result`, which the code must handle, unless the compiler proves it can't happen there (a loop inserting at most 500 rows into a fresh `max 500` table, say). A failed write leaves the table unchanged.
-- **Reported:** `inspect tables` lists, per table, the byte bound, the reserved address space and the committed memory, separately; for shared sets also the budget for old versions, and for frozen batches their totals. Admission counts a job's own tables toward its memory.
-- **Not on the data stacks:** a table's memory comes from its own reservation (jobs' tables from a per-worker pool of reservations). A job uses a stack only when it copies something out of a table; reading through a view copies nothing.
+**Collections** (all bounded; the capacity is part of the type)
 
-**Layer 1, `shared`: many threads read, one writer changes**
+| Type | What it is | Elements named by |
+| --- | --- | --- |
+| `T[N]` | a fixed array: always N elements | index `0 <= i < N` |
+| `list<T, N>` | up to N elements in order, with a count; push, pop, insert, remove | index, valid until the list changes shape |
+| `pool<T, N>` | up to N elements in stable slots (what tables were) | a typed id with a generation |
+| `map<K, V, N>`, `set<K, N>` | up to N keys, hashed | the key |
+| `queue<T, N>`, `ring<T, N>` | first in, first out; a ring overwrites its oldest | position |
+| `grid<T, W, H>` | a W × H fixed array with 2-D indexing | `(x, y)` |
 
-```
-shared tables Chat { table Room max 1000 { … }  table Message max 100000 { … } }
-```
+Adding to a full collection (or writing a field past its maximum) returns `Result`, which the code must handle, unless the compiler proves it can't happen there (a loop pushing at most 500 items into a fresh `list<T, 500>`, say). A failed write leaves the collection unchanged. A ring is the exception: it overwrites, by definition.
 
-- For in-memory data many jobs read at once while it keeps changing: a server's live state, a multiplayer game's world.
-- One writer per shared table set changes it; jobs send it changes and `transaction { }` blocks (Thread kinds and jobs). Readers on other threads read an immutable snapshot, pinned once per read phase, never per row (Burin's model; details in Tables across threads).
-- Everything about snapshots, pins, blocks, reclamation and transactions applies only to shared sets. A plain table pays none of it.
-- A shared set's memory is laid out differently (copy-on-write blocks, Tables across threads), so its bound is the sum of: the live maximum, laid out as a plain table's is (inline fields and size classes); slots and blocks freed but still visible to a pinned old version, which return to their free lists only when no pinned version can see them, capped by the budget for old versions readers still pin; and one transaction's scratch, the blocks it copies and the new slots it fills, capped by a per-set transaction budget, so a transaction whose whole batch would pass it is refused before anything is published. With no compaction, there's no garbage threshold to cross. `inspect tables` and admission count all three. It lives in RAM and is lost on a crash unless the program saves it (or keeps the data in a database instead).
+**Layout: structure of arrays, as Stasis lowers it**
 
-| | Plain table | `shared` tables | Database (separate feature) |
-| --- | --- | --- | --- |
-| Lives in | RAM | RAM | the database (disk) |
-| Who changes it | its owner (a job, or jobs on its home worker) | one writer | the database, through transactions |
-| Who reads it | its owner | any job, through a snapshot | any job, through queries |
-| Bound | rows and field maxima; reserved up front | the same, plus old versions | disk, plus an optional quota per deployment; field maxima and query limits keep memory bounded |
-| Survives a crash | no | no | yes |
-| Extra cost | none | snapshots, pins | a query per read |
-| Typical use | a cache, a game simulation, a tool's index | a server's live state, a shared game world | a server's records |
+- A collection of structs is stored as one array per field, so a loop that reads two fields streams through just those two arrays. `app.world.units[id].hp` reads the array `World_units_hp` at the id's slot.
+- **Nested fixed-capacity collections flatten:** each unit's `inventory: list<Item, 8>` becomes arrays of 4,096 × 8 items plus one count per unit, as Stasis flattens nested fixed arrays. So a collection inside a collection needs no pointers and no growing values; it's just more lanes.
+- **Fixed-size fields** (numbers, ids, enums, small records) sit in their array directly.
+- **Variable-size fields** (text, bytes) can't sit in a fixed-width array, and nothing that stores them ever moves bytes that are in use: there's no compaction, which would be a contained garbage collector, with pauses that grow with the data (decided 2026-10-24). Instead:
+  - *Small fields inline:* a field whose maximum is 64 bytes or less (`Text max 16` is up to 64 bytes) sits in its array at full size, with its length. No garbage, ever.
+  - *Larger fields in size classes:* the field's bytes go in a slot of the smallest class that fits: 128 bytes, 256, 512 and so on up to the class that holds the field's maximum. Each class is an array of equal slots with its own free list, as a memory allocator keeps. The field holds `{class, slot, length}`. A new value that fits the current slot is written in place; one that needs another class takes a slot from that class's free list and returns the old slot to its own. Nothing else moves, and no write ever waits for a cleanup.
+  - The cost is the space left unused inside slots. A value newly placed in a class uses more than half its slot (for values over 64 bytes), but a value shrunk in place can use less (a 300-byte text cut to 100 bytes in a 512-byte slot), and a 1-byte value in a 128-byte slot wastes almost all of it. The reservation bound below holds either way.
+
+**Pools and their ids**
+
+- **Typed ids:** a pool's elements are named by ids, 64 bits: a 32-bit slot and a 32-bit generation counter. The id's type names its pool (`units.Id`, written `Id<app.world.units>` where that's ambiguous), so an id from one pool can't be used with another, even of the same element type. Removing an element bumps its slot's generation, so an old id no longer matches. Looking up an id returns `Option`: `none` for a stale id, never a dangling pointer. A slot whose generation reaches its maximum is retired, never reused, so wraparound can't make a stale id match again.
+- **A slot is a fixed position, never moved:** a pool's arrays are indexed by slot, with holes where elements were removed. Each slot has an occupied flag and its generation, and the pool keeps a list of free slots for reuse. A lookup checks the slot is in range, occupied, and of the id's generation before reading any field. Elements are never moved to fill holes (moving the last one into a removed one's place would silently change which element an id names; Stasis's plain `pool` does that swap, and its `stable_pool` doesn't). Flags and generations are arrays like any other, so snapshots carry them.
+- A pool nested inside an array of structs (a pool per world in `worlds: World[4]`) would need its ids to carry the outer index; that's left for later. Frozen pools and database rows have ids of their own (see Frozen pools, Databases), and no id of one kind can be used as another.
+- Invariants are declared on state and checked on every write (see Correctness).
+
+**Who owns state**
+
+- **The program:** `global app: App` is reserved once at start and lives for the whole run. A global has a *home worker*, and only jobs scheduled on that worker may use it, so its arrays are plain memory: no writer, no snapshots, no counting, no locks. A game's simulation is the typical case.
+- **A job:** a job can make state of its own (`let scratch: CheckerState in job`), reserved from a per-worker pool of reservations and freed when the job ends: a type checker's cache, a request's working set. Its ids are typed by the job's scope (`scratch.types.Id`), so they can't leave the job or mix with another job's. Admission counts it toward the job's memory.
+- **Shared:** `shared global chat: Chat` is for data many jobs on many workers read while it keeps changing: a server's live data, a multiplayer game's world. One writer changes it; jobs send it changes and `transaction { }` blocks (Thread kinds and jobs), and readers on other workers read an immutable snapshot, pinned once per read phase, never per element (Burin's model; details in Shared state across threads). Everything about snapshots, pins, blocks, reclamation and transactions applies only to shared state; the other kinds pay none of it.
+- Several instances of one shared global (one per tenant, say) would need an instance field in its ids, and are left for later.
+
+**Bounds**
+
+- **Declared:** every collection has a capacity and every variable-size field a maximum; a missing one is a build error that names it. How all state together fits the process's memory is the admission budget's job.
+- **In bytes:** text maxima count code points, and a code point takes up to 4 bytes in UTF-8, so `body: Text max 2000` is up to 8,000 bytes: 100,000 messages can hold 800,000,000 live bytes of text. The compiler works in bytes from here on.
+- **Reservation:** for each collection, capacity × fixed fields (with flags, generations, counts and inline fields), plus, for each variable-size field, every size class reserved for every element: the classes double, so their sizes add up to less than twice the largest, and a field's worst case is under capacity × 2 × its largest class. That holds however lengths shift between classes over time. A class can't run out while a legal write needs a slot in it: an element moving into a class came from another one, so at most capacity − 1 others are in it. State reserves this address space at start (a job's, when the job makes it) and commits pages as they're used, as data stacks do, so its arrays never move and growing never copies. A game can commit its whole state up front (`global app: App committed`), so play never touches the operating system.
+- **Shared state's bound** is laid out the same way, plus slots and blocks freed but still visible to a pinned old version (returned to their free lists only when no pinned version can see them, capped by the budget for old versions) and one transaction's scratch, the blocks it copies and the new slots it fills (capped by a per-global transaction budget, so a transaction whose whole batch would pass it is refused before anything is published). It lives in RAM and is lost on a crash unless the program saves it (or keeps the data in a database instead).
+- **Reported:** `inspect state` lists, per path, the byte bound, the reserved address space and the committed memory, separately; for shared state also the budget for old versions, and for frozen batches their totals.
+- **Not on the data stacks:** state's memory comes from its own reservation. A job uses a stack only when it copies something out of state; reading through a view copies nothing.
+
+| | Program global | Job state | `shared global` | Database (separate feature) |
+| --- | --- | --- | --- | --- |
+| Lives in | RAM | RAM | RAM | the database (disk) |
+| Who changes it | jobs on its home worker | its job | one writer | the database, through transactions |
+| Who reads it | jobs on its home worker | its job | any job, through a snapshot | any job, through queries |
+| Bound | capacities and field maxima, reserved at start | the same, reserved per job | the same, plus old versions | disk, plus an optional quota per deployment |
+| Survives a crash | no (unless saved) | no | no (unless saved) | yes |
+| Extra cost | none | none | snapshots, pins | a query per read |
+| Typical use | a game simulation, a tool's index | a cache, a request's working set | a server's live data, a shared game world | a server's records |
 
 **Stacks** hold temporaries.
 
@@ -111,20 +142,20 @@ shared tables Chat { table Room max 1000 { … }  table Message max 100000 { …
 
 - `let b = a` copies `a`'s bytes; both stay usable. `let b = take a` moves it instead: no copy, and `a` can't be used after. Passing a growing value to a read parameter neither copies nor moves.
 - Returning a local moves it. When the local was built on the caller's destination (the usual case, which the compiler arranges when it can prove it safe) the move costs nothing; otherwise the result is copied from scratch onto the destination, and the bounds count both while the copy runs.
-- Returning a read-only parameter, or anything read from a table, copies it, since the function doesn't own those bytes. Views can be passed in but, like any reference, not returned in v1; returning a view would need a lifetime rule, which is left for later.
+- Returning a read-only parameter, or anything read from state, copies it, since the function doesn't own those bytes. Views can be passed in but, like any reference, not returned in v1; returning a view would need a lifetime rule, which is left for later.
 - Three cases the first implementation tests: `fn f(s: Text) -> Text { s }` copies; `fn f() -> Text { let t = build(); t }` builds `t` on the destination, no copy; and `acc = merge(acc, x)` in a loop copies down over `acc` (Loops can't quietly fill a stack).
 
-Between the two: a value moves from a stack into a table by copy (`create Item { … }`), and from a table onto a stack by reading fields. Reading a large field needn't copy: a function can take a read-only view of it (see Frozen tables). Database rows have no views: a query's result is copied onto the stack (see Databases).
+Between the two: a value moves from a stack into state by copy (`app.world.units.add(Unit { … })`), and from state onto a stack by reading fields. Reading a large field needn't copy: a function can take a read-only view of it (see Frozen pools). Database rows have no views: a query's result is copied onto the stack (see Databases).
 
-**Views of tables that can change:** a snapshot's or a frozen table's storage never changes, so views of them are safe for the whole read phase. A plain table (a job's, a thread's, the program's) or a builder is mutable. Adding a row can't move its arrays (they're reserved at the table's maximum), but deleting a row or replacing a text field can invalidate what a view points at. So a view's owner is the table's storage, not the row, and while any view of a mutable table is live, the compiler refuses the changes that can invalidate it: deleting rows (which frees their slots) and replacing a variable-size field (which writes over its slot or frees it). Adding rows is allowed. Writing a fixed-size field of a different row is allowed, because the overlap check proves it apart. The view must end first. And a view of a mutable table can't be live across a call that may suspend: while a job waits, another job on the same worker may change the table (a thread's or the program's table is used by every job on its home worker). The compiler refuses such a view and names the call.
+**Views of state that can change:** a snapshot's or a frozen pool's storage never changes, so views of them are safe for the whole read phase. Program state, job state and builders are mutable. Adding an element can't move a collection's arrays (they're reserved at its capacity), but removing an element or replacing a text field can invalidate what a view points at, and so can any change that shifts a `list`'s elements (an insert or remove in the middle). So a view's owner is the collection's storage, not the element, and while any view of a mutable collection is live, the compiler refuses the changes that can invalidate it: removing elements (which frees their slots), shifting a list, and replacing a variable-size field (which writes over its slot or frees it). Adding elements to a pool, or pushing onto the end of a list, is allowed. Writing a fixed-size field of a different element is allowed, because the overlap check proves it apart. The view must end first. And a view of mutable state can't be live across a call that may suspend: while a job waits, another job on the same worker may change it (a global is used by every job on its home worker). The compiler refuses such a view and names the call.
 
-*(Diagram in the shared Claude Doc: memory model · tables, snapshot, per-thread stacks.)*
+*(Diagram in the shared Claude Doc: memory model · tables (now state), snapshot, per-thread stacks.)*
 
-The writer changes tables and publishes snapshots that readers share; every job computes on its own stacks, freed in bulk.
+The writer changes shared state and publishes snapshots that readers share; every job computes on its own stacks, freed in bulk.
 
 ## Databases: a separate feature
 
-Data that must survive a crash, or that is bigger than RAM, lives in a database, not in a table (decided 2026-10-24). A database is a separate feature with its own rules, sharing only declarations with the rest of the language: the same records, refinements and permissions. SQLite comes first; Postgres and others can follow behind the same declarations.
+Data that must survive a crash, or that is bigger than RAM, lives in a database, not in state (decided 2026-10-24). A database is a separate feature with its own rules, sharing only declarations with the rest of the language: the same records, refinements and permissions. SQLite comes first; Postgres and others can follow behind the same declarations.
 
 ```
 database Chat: sqlite {
@@ -135,19 +166,19 @@ database Chat: sqlite {
 
 - **The only writer** (decided 2026-10-24): in v1 the program is the database's only writer. Quotas, field maxima and invariants are enforced by its own transactions, plus CHECK constraints in the schema as a second line. Other tools may read the database, but not write it.
 - **Typed queries:** reads and writes are written in the language and compile to SQL against the declared schema, as crudspec's do, with typed results (no rows of untyped values). There are no views into a database; results are copied onto the job's stacks.
-- **Query results are bounded:** field maxima bound one row, not how many come back, so every query that returns rows declares its most rows (`limit 50`), which, with the field maxima, gives its result's bound in bytes. A query without one is a build error. In v1 a result can be built as a list only from fixed-size fields (ids, numbers, keys), since a list holding text is a nested growing value. Rows with text are processed one at a time (`for m in query { … }`), each row's bytes a temporary freed when its iteration ends, or copied into a bounded table. If a result would pass its bound it's an error, and no partial result is visible.
-- **Keys, not ids:** a database row is named by a typed key (`Message.Key`, the row's integer primary key). Keys aren't table ids and can't be mixed with them; looking up a key returns `Option`, `none` if the row is gone. Keys are never reused, including after a restart or a migration, so a key saved elsewhere can't come to name a different row. SQLite's `AUTOINCREMENT` keeps the highest key issued, but forgets it if a migration drops and rebuilds the table, so a migration that rebuilds a table carries each table's highest issued key across, in the same transaction, before any insert (a test deletes the highest key, rebuilds, inserts, and checks the new key is higher). Running out of keys (2^63) is a `Full` error. A test deletes and reinserts and checks the new row gets a new key.
+- **Query results are bounded:** field maxima bound one row, not how many come back, so every query that returns rows declares its most rows (`limit 50`), which, with the field maxima, gives its result's bound in bytes. A query without one is a build error. In v1 a result can be built as a list only from fixed-size fields (ids, numbers, keys), since a list holding text is a nested growing value. Rows with text are processed one at a time (`for m in query { … }`), each row's bytes a temporary freed when its iteration ends, or copied into a bounded collection in state. If a result would pass its bound it's an error, and no partial result is visible.
+- **Keys, not ids:** a database row is named by a typed key (`Message.Key`, the row's integer primary key). Keys aren't pool ids and can't be mixed with them; looking up a key returns `Option`, `none` if the row is gone. Keys are never reused, including after a restart or a migration, so a key saved elsewhere can't come to name a different row. SQLite's `AUTOINCREMENT` keeps the highest key issued, but forgets it if a migration drops and rebuilds the table, so a migration that rebuilds a table carries each table's highest issued key across, in the same transaction, before any insert (a test deletes the highest key, rebuilds, inserts, and checks the new key is higher). Running out of keys (2^63) is a `Full` error. A test deletes and reinserts and checks the new row gets a new key.
 - **Effects:** database access is an effect (`db.read`, `db.write`) granted by a capability, so only code handed the database can reach it, and a function that queries isn't cacheable. A page loads its query results first; the cached, pure pieces that render them take the results as inputs and never query (see Effects and capabilities).
-- **A database block is one wait:** `db.read { … }` and `db.transaction { … }` are each one may-suspend call. The job waits once while the block's body runs on a database connection, and the queries inside the block don't suspend separately. The body may run queries and bounded computing, nothing that waits: no outside I/O, no sleeps, no nested `db.` blocks, which the compiler refuses. Cancelling a job inside a block closes its read transaction. For a transaction, cancellation before the commit rolls it back; if the commit has already happened or is under way, cleanup waits for the database to say whether it committed, and a committed transaction stays committed, as shared-table batches do. Either way the job's cleanup goes on only after that answer.
+- **A database block is one wait:** `db.read { … }` and `db.transaction { … }` are each one may-suspend call. The job waits once while the block's body runs on a database connection, and the queries inside the block don't suspend separately. The body may run queries and bounded computing, nothing that waits: no outside I/O, no sleeps, no nested `db.` blocks, which the compiler refuses. Cancelling a job inside a block closes its read transaction. For a transaction, cancellation before the commit rolls it back; if the commit has already happened or is under way, cleanup waits for the database to say whether it committed, and a committed transaction stays committed, as shared-state batches do. Either way the job's cleanup goes on only after that answer.
 - **Consistent reads:** `db.read { … }` runs its queries in one read transaction, so they all see one committed version (SQLite's WAL mode gives this). Since its body can't wait on anything else, it never holds a version open across an outside wait.
-- **Writes and transactions:** `db.transaction { … }` runs its checks and writes as one database transaction, all or nothing. For SQLite the runtime sends every write transaction through one writer connection, in order, so two jobs can't both sell the last item (the same reasoning as for shared tables). Postgres would use its own serializable transactions with a retry.
+- **Writes and transactions:** `db.transaction { … }` runs its checks and writes as one database transaction, all or nothing. For SQLite the runtime sends every write transaction through one writer connection, in order, so two jobs can't both sell the last item (the same reasoning as for shared state). Postgres would use its own serializable transactions with a retry.
 - **Bounds** (decided 2026-10-24): records declare no row count; a database grows with its disk. Field maxima stay in the schema, so a value copied out keeps its build-time byte bound, and queries keep `limit N`, so memory stays bounded however many rows there are. A deployment may set a disk quota for a database in configuration; past it, a write returns `Full` inside its transaction instead of failing with the database's own "disk full" error. At startup the runtime checks existing data against the field maxima; if a change lowered one below what's stored, the program refuses to start until a migration fixes the data. Data kept forever needs an archive or export plan; `inspect databases` warns when a database without a quota grows fast.
 - **Migrations:** a change to a database's declarations is planned from the diff (crudspec's approach) and runs at start (Development experience).
 - **Reported:** `inspect databases` lists each database's quota, if any, its current size and the rows per record.
 
 ## Threads and data stacks
 
-A fixed set of threads, one per core. Each job owns N data stacks that only it touches while it runs. So the common operations (push, free a scope, read a table) take no locks and no atomic operations (the special CPU instructions threads use to update shared memory safely, each costing far more than an ordinary store), and nothing mutable is shared.
+A fixed set of threads, one per core. Each job owns N data stacks that only it touches while it runs. So the common operations (push, free a scope, read state) take no locks and no atomic operations (the special CPU instructions threads use to update shared memory safely, each costing far more than an ordinary store), and nothing mutable is shared.
 
 ### Thread kinds and jobs
 
@@ -156,16 +187,16 @@ A fixed set of threads, one per core. Each job owns N data stacks that only it t
   - Only some calls can suspend, and the compiler knows which: every function has a *may suspend* property, inferred across calls like an effect. The calls that suspend directly are I/O (`net`, `fs`), `clock` sleeps, `spawn` joins, a parallel loop's join, and sending a change to a shared set's writer (it waits for the reply), and database queries and transactions. Before a call that may suspend, a function writes its cached stack tops back to memory, as it does before any call that can reach those stacks.
   - Each worker keeps a pool of free stack sets, so starting a job takes one from the pool, not a system call. The pool is sized by load, and a set's touched pages stay mapped when it goes back (time over memory).
   - A job doesn't move between workers in v1. That keeps every stack single-threaded, with no locks.
-  - **A snapshot pin never spans a wait,** with one exception below. Before a call that can suspend, the job's views of the snapshot must have ended (the compiler refuses a view live across such a call) and the runtime releases its pin. After the wait the job pins the then-current snapshot, so what follows is a new read phase that may see newer data. A waiting job therefore never holds old table versions alive, and can't stall the writer.
+  - **A snapshot pin never spans a wait,** with one exception below. Before a call that can suspend, the job's views of the snapshot must have ended (the compiler refuses a view live across such a call) and the runtime releases its pin. After the wait the job pins the then-current snapshot, so what follows is a new read phase that may see newer data. A waiting job therefore never holds old versions of shared state alive, and can't stall the writer.
   - **The exception, a parallel loop's join:** the chunks read the snapshot the caller had pinned, so the caller's pin is held, structured, until every chunk has stopped. Chunks use that root, never a newer one, and don't pin on their own. That retention counts against the slow-reader budget like any pin, and it's bounded by the loop's time limit.
   - **Time limits are enforced on waiting jobs too:** a job past its deadline is cancelled by the runtime, whether running or suspended (its pending I/O is cancelled), and goes through the job-failure steps. A running job notices at its next cancellation poll: loops that keep a step budget check it there, and loops that provably end (and so drop the budget) still poll a cancellation flag in the job's context every few thousand iterations, one load and compare. A foreign call that doesn't return can delay this; the deadline is enforced when it does.
   - **Admission:** a worker starts a new job only while committed memory and reserved address space stay under the configured limits; past them, a request gets a "busy, retry" response (HTTP 503 with `Retry-After` for servers) and other jobs wait in a bounded queue.
-- **The writer,** one per shared table set. It applies change batches in order and publishes snapshots (Burin's model). Workers send it change requests on a queue and wait (suspended) for the reply.
+- **The writer,** one per shared global. It applies change batches in order and publishes snapshots (Burin's model). Workers send it change requests on a queue and wait (suspended) for the reply.
 - **Transactions** (decided 2026-10-24): each change request is one batch, applied all or nothing. Changes that must succeed together go in one `transaction { … }`, which is sent as a single batch. Once the writer has committed a batch it stays committed: a job that fails later doesn't undo it, just as an email it sent can't be unsent.
-- **A transaction decides on the writer** (decided 2026-10-24; this is for shared tables, and databases have their own transactions, see Databases). If two jobs read the same snapshot showing one item in stock and each sends "set stock to zero, record a sale", both sales succeed. So a transaction's body, its checks as well as its writes, runs on the writer against the writer's latest version, as Burin's actions do. Inside it, reads see that latest version, not the job's snapshot. A transaction body can't suspend (no I/O, no waits) and has a step budget, so it can't stall the writer. Values the job computed earlier go in as arguments. The alternative, version-checked writes that reject a decision made on stale data and make the job retry, is left for later if writer time becomes the bottleneck.
-- **Inside a transaction:** the writer builds the batch as a private tentative version. Reads in the body see the latest published version plus the body's own earlier writes. If a check fails or the body fails, the tentative version is discarded and nothing was changed; on success the writer publishes it, then replies to the job. In v1 a transaction touches one table set.
+- **A transaction decides on the writer** (decided 2026-10-24; this is for shared state, and databases have their own transactions, see Databases). If two jobs read the same snapshot showing one item in stock and each sends "set stock to zero, record a sale", both sales succeed. So a transaction's body, its checks as well as its writes, runs on the writer against the writer's latest version, as Burin's actions do. Inside it, reads see that latest version, not the job's snapshot. A transaction body can't suspend (no I/O, no waits) and has a step budget, so it can't stall the writer. Values the job computed earlier go in as arguments. The alternative, version-checked writes that reject a decision made on stale data and make the job retry, is left for later if writer time becomes the bottleneck.
+- **Inside a transaction:** the writer builds the batch as a private tentative version. Reads in the body see the latest published version plus the body's own earlier writes. If a check fails or the body fails, the tentative version is discarded and nothing was changed; on success the writer publishes it, then replies to the job. In v1 a transaction touches one shared global.
 - **Sending vs writing:** a job sending a change or a transaction to the writer suspends until the reply (a may-suspend call). Writes inside a transaction body run on the writer itself and never suspend.
-- **Reads, two kinds:** ordinary reads of a shared set see the job's pinned snapshot; reads inside a transaction see the writer's tentative version. (Plain tables are read directly by their owner; databases are read through queries, see Databases.)
+- **Reads, two kinds:** ordinary reads of a shared set see the job's pinned snapshot; reads inside a transaction see the writer's tentative version. (Program and job state are read directly by their owner; databases are read through queries, see Databases.)
 - **Batch states:** queued, applying, then committed or aborted. If the sending job fails while its batch is queued, the batch is cancelled; if it's being applied, the writer finishes or aborts it and acknowledges before the job's cleanup frees the buffers the batch was sent from.
 - **Parallel loops** borrow the workers (fork and join) rather than starting threads.
 - The thread count is fixed at start (configured; the number of cores by default).
@@ -190,9 +221,10 @@ The compiler gives every function a **stack contract**, computed from its body a
 - **A worked example.** `render(rows)` returns a `Text` and calls `line(r)`, which also returns a `Text`. The bounds are part of the example, since the loop rule needs them:
 
   ```
-  table Row max 10000 { name: Text max 60, count: Int 0..999999 }
+  struct Row { name: Text max 60, count: Int 0..999999 }
+  shared global report: Report       // struct Report { rows: pool<Row, 10000> }
 
-  // rows: a read-only view of up to 500 rows of the Row table in the job's
+  // rows: a read-only view of up to 500 rows of report.rows in the job's
   // snapshot, not a value on a stack (a List<Row> on a stack would hold
   // growing Text inside it, which v1 refuses)
   fn render(rows: view Row max 500) -> Text max 40000 {  // a fresh result, on the caller's destination D
@@ -224,11 +256,11 @@ A bump stack frees nothing until its scope ends, so a careless loop can fill one
 - **Results go straight to where they're kept.** `out.append(f(x))` runs `f` in append mode (see the append contract in How the compiler assigns stacks), so keeping a result costs no copy and leaves no temporary to collapse.
 - **Rebuilding an outer value never traps the old one.** `s = s + piece` compiles to an append in place. Any other reassignment of an outer growing value (`acc = merge(acc, x)`) builds the new value on a scratch stack and copies it down over the old one. The memory stays bounded by two values, the old and the new, during the copy, never by the sum of all iterations; the compiler counts that two-value peak in the bounds and reports the copy in `inspect stacks`, since it costs time per iteration.
 - **A value a loop keeps growing must have a bound.** Either its type says so (`List<Hit> max 10000`, `Bytes max 1 MB`, `Text max 4000`), or the loop is counted over a bounded input and each iteration's growth is bounded (`for r in rows` with `rows: List<Row> max 500`, appending a `line(r): Text max 80` each time, is 500 × 80 code points). The bound is on what each iteration adds, so a helper that formats a piece declares its own result's maximum, separators included. Without either, it's a build error that names the value and the loop, and offers both fixes. At run time, an append past a declared maximum returns a `Result` the code must handle (`out.try_append(x)`), or is proved impossible.
-- **Bounds come from where data enters.** Request bodies, files, and table fields have declared maxima (`Text max N`, `Bytes max N` on the input or column; every table's are required), so a bound found at the edge carries through the code.
+- **Bounds come from where data enters.** Request bodies, files, and state and database fields have declared maxima (`Text max N`, `Bytes max N` on the input or field; state's and databases' are required), so a bound found at the edge carries through the code.
 - **The compiler adds it up.** From the bounds it computes each stack's worst case per entry point, which sizes reservations (N stacks per job). `inspect stacks` lists, per entry point, each stack's worst case and the lines that drive it, and every loop's growth per iteration. An entry point with something still unbounded (an untyped external call, say) is listed as such and gets the default reservation.
 - **Tests can pin it:** `expect stack_peak(handler) < 2 MB` fails a test when a change raises the worst case past a budget.
 - **Tools that read whole projects** bound their inputs too: a source tool declares the most files and bytes per batch it accepts, and a budget for the trees it keeps, rather than relying on the default reservation and failing.
-- **Nested growing values wait:** in v1 a growing value can't contain growing values on a stack (a `List<Text>` built on a stack, a record with two growing fields). The first implementation refuses them with an error suggesting a table or builder instead. The later design keeps two compiler-assigned stacks for such a value, one for its fixed-size descriptors (`{offset, length}` per element, offsets rather than pointers) and one for the elements' bytes. An element is frozen once it's added; changing it means rebuilding it at the end and updating its descriptor. Both stacks, alignment and any temporary copy count in the bound.
+- **Nested growing values wait:** in v1 a growing value can't contain growing values on a stack (a `List<Text>` built on a stack, a record with two growing fields). The first implementation refuses them with an error suggesting a collection in job state or a builder instead (state can nest bounded collections, since they flatten into arrays). The later design keeps two compiler-assigned stacks for such a value, one for its fixed-size descriptors (`{offset, length}` per element, offsets rather than pointers) and one for the elements' bytes. An element is frozen once it's added; changing it means rebuilding it at the end and updating its descriptor. Both stacks, alignment and any temporary copy count in the bound.
 
 ### Keeping it fast
 
@@ -243,11 +275,11 @@ A bump stack frees nothing until its scope ends, so a careless loop can fill one
 Nothing mutable is shared. Values cross in four ways:
 
 1. **Queues of flat values.** A flat value is one contiguous block with no pointers in it (data inline, typed ids instead of pointers), so sending is one copy into the queue and one onto the receiver's stack. Queues are bounded rings: one producer and one consumer where possible, with no locks; many producers to one consumer for workers sending to the writer.
-2. **Snapshots** of a shared table set (Tables across threads).
-3. **Frozen tables** (below).
+2. **Snapshots** of a shared global (Shared state across threads).
+3. **Frozen pools** (below).
 4. **Parallel loop inputs and results** (Parallel loops).
 
-A typed id means a row in a table, not a memory address, so it stays valid in any thread reading the same snapshot.
+A typed id means an element of a pool, not a memory address, so it stays valid in any thread reading the same snapshot.
 
 ### Parallel loops
 
@@ -258,35 +290,35 @@ A typed id means a row in a table, not a memory address, so it stays valid in an
 - **No nesting in v1:** a `parallel for` reached from inside another runs sequentially, so workers can't all end up waiting for work nobody can run. A worker waiting at a join runs other chunks of the same loop meanwhile.
 - Small loops run sequentially below a cost threshold, so a fork never costs more than it saves.
 
-### Tables across threads
+### Shared state across threads
 
-This section is about `shared` table sets only.
+This section is about `shared global` state only.
 
-- **One writer per shared table set.** Workers send change requests on a queue and get a reply (Burin's model); writes are batched.
-- **Snapshot cost proportional to what changed:** a table's columns and payload are stored in fixed blocks (4,096 rows, say). The blocks hang off a small tree (a radix tree: each level indexes into the next by part of the row number). A write copies the blocks it touches and the tree nodes on the path to them, and shares everything else with the previous version. Publishing is proportional to the blocks changed, not the table size.
-- **One version per table set:** every table in a set is published together under one root, so a reader never mixes one table's new rows with another's old ones. Shared sets are lost on a crash unless the program saves them.
+- **One writer per shared global.** Workers send change requests on a queue and get a reply (Burin's model); writes are batched.
+- **Snapshot cost proportional to what changed:** each collection's arrays and payload are stored in fixed blocks (4,096 rows, say). The blocks hang off a small tree (a radix tree: each level indexes into the next by part of the row number). A write copies the blocks it touches and the tree nodes on the path to them, and shares everything else with the previous version. Publishing is proportional to the blocks changed, not the state's size.
+- **One version per shared global:** everything in it is published together under one root, so a reader never mixes one collection's new elements with another's old ones. Shared sets are lost on a crash unless the program saves them.
 - **Publishing and pinning safely:** the writer finishes writing a version's blocks before publishing it. Taking a pin (reading the current root and counting it) and publishing a new root happen under one short runtime lock, so a reader can never pin a root the writer is freeing; the lock covers only those few instructions, never row reads. v1 uses this lock because it's simple and obviously right; a lock-free scheme can replace it if measurements show contention.
 - **Pinning:** a job pins the current root when it starts reading and unpins it when it ends or before it waits (Thread kinds and jobs): one pin per read phase, never per row or block.
 - **Freeing old blocks:** readers' pins keep a version's root alive; roots and tree nodes keep blocks alive. Each tree node and block has a count of the tree nodes or roots that point to it, kept by the writer alone, so no reader ever touches it. When an old root is neither current nor pinned, the writer drops it: it decrements the counts of what it points to, and frees each node or block whose count reaches zero, recursively. A block shared with the current version keeps a count above zero and stays. This costs work proportional to what the dropped version didn't share.
 - **Slow readers:** a pin lives only for a stretch of computing with no waits, or across a parallel loop's join (the one structured exception, Thread kinds and jobs), and both are bounded by the job's time limit, which cancellation polls enforce in every kind of loop. If pinned old versions still hold more memory than a budget, the writer pauses applying writes until they're released. A live view is never invalidated.
-- Plain tables (owned by one job, thread or the program) skip all of this: plain arrays, no counting.
+- Program and job state skip all of this: plain arrays, no counting.
 
-### Frozen tables: big shared data built in parallel
+### Frozen pools: big shared data built in parallel
 
 Many programs build a large structure once and then read it from many threads: a compiler's syntax trees (the TypeScript compiler's Go rewrite parses files in parallel, then several type-checker threads read the same trees), a game's level, a search index. Funnelling every node through one writer would be far too slow, and stacks die with their job. So (decided 2026-10-24):
 
-- **Build:** a job creates a *builder* table that only it owns: no writer, no snapshot, plain arrays. One file's syntax-tree nodes, for example, with child links as typed ids and source text as `{offset, length}` into the builder's payload blocks. Data-oriented compilers (Zig, Carbon) already store trees this way: compact and fast to walk.
+- **Build:** a job creates a *builder* pool that only it owns: no writer, no snapshot, plain arrays. One file's syntax-tree nodes, for example, with child links as typed ids and source text as `{offset, length}` into the builder's payload blocks. Data-oriented compilers (Zig, Carbon) already store trees this way: compact and fast to walk.
 - **Freeze:** `freeze b` ends the builder and turns its blocks into a read-only partition, published as one pointer, with no copy. The type system then refuses writes to it, and the old builder name is gone.
 - **Group:** a batch root lists the partitions (one per file). A frozen id is 64 bits: a 32-bit partition number and a 32-bit row. Frozen rows are never deleted, so no generation is needed. A node in file 3 can refer to a declaration in file 7.
-- **A batch is a token made first:** `let b = batch()` creates a unique, scoped batch token before any builder exists. The batch declares its most partitions (`batch(max 20000)`), and each builder its most rows and its most payload bytes, separately (`b.builder(Node, rows 2_000_000, bytes 8 MB)`). A builder may derive them from its input only through a formula its parser proves, for example at most one node per source byte plus one per error-recovery insertion, capped; the builder is checked against both maxima as it grows, and passing one fails it with `Full`. Each builder gets its partition number up front, so ids are final while they're built and freezing renumbers nothing. `inspect tables` reports the batch's total worst case, and admission counts it.
+- **A batch is a token made first:** `let b = batch()` creates a unique, scoped batch token before any builder exists. The batch declares its most partitions (`batch(max 20000)`), and each builder its most rows and its most payload bytes, separately (`b.builder(Node, rows 2_000_000, bytes 8 MB)`). A builder may derive them from its input only through a formula its parser proves, for example at most one node per source byte plus one per error-recovery insertion, capped; the builder is checked against both maxima as it grows, and passing one fails it with `Full`. Each builder gets its partition number up front, so ids are final while they're built and freezing renumbers nothing. `inspect state` reports the batch's total worst case, and admission counts it.
 - **Building in parallel:** the parent job makes the batch and one builder per file, then hands each builder to one chunk of a parallel loop. Handing it over moves the builder (as `take` moves a value), so exactly one chunk can write each partition and the partitions are disjoint. At the join the parent gets the builders back, freezes them, and publishes the batch root. There's no central writer and no copying per node.
-- **Ids can't cross batches:** the id's type names its batch token (`b.Node.Id`), and each `batch()` call makes a distinct token, even in a loop or in two calls of one function. So mixing ids from two batches is a build error, and since the token is scoped, ids can't escape it (they can't be stored in a table that outlives it or returned from its scope). A lookup still checks the partition and row against the batch's sizes (one compare each).
-- **References between partitions while building:** a builder can refer to its own rows by id at once. A reference to a row in another file isn't known until that file is parsed, so it's stored as a name and resolved in a pass after freezing (as compilers resolve names after parsing), which writes the found ids into a job-owned table of resolutions rather than into the frozen rows.
+- **Ids can't cross batches:** the id's type names its batch token (`b.Node.Id`), and each `batch()` call makes a distinct token, even in a loop or in two calls of one function. So mixing ids from two batches is a build error, and since the token is scoped, ids can't escape it (they can't be stored in state that outlives it or returned from its scope). A lookup still checks the partition and row against the batch's sizes (one compare each).
+- **References between partitions while building:** a builder can refer to its own rows by id at once. A reference to a row in another file isn't known until that file is parsed, so it's stored as a name and resolved in a pass after freezing (as compilers resolve names after parsing), which writes the found ids into a job-state map of resolutions rather than into the frozen rows.
 - **Read:** jobs pin the batch root once, as with snapshots; functions take read-only views of rows, text and lists as parameters, with no copying and no counting per node.
 - **Lifetime:** a frozen batch lives until the scope that created it ends (for example "check this project") and no job pins it; then its blocks are freed in bulk.
-- **Per-job caches:** each reading job keeps its own job-owned tables for what it computes (the TypeScript checkers each keep their own type caches the same way).
+- **Per-job caches:** each reading job keeps its own job state for what it computes (the TypeScript checkers each keep their own type caches the same way).
 
-Still off the table: many threads writing into one shared structure (a global interner that stores each distinct type once has to live on a writer, or be per-thread and merged after the phase); freezing part of a structure while changing the rest; pointers from a frozen table into a job's stack; counting per node.
+Still off the table: many threads writing into one shared structure (a global interner that stores each distinct type once has to live on a writer, or be per-thread and merged after the phase); freezing part of a structure while changing the rest; pointers from a frozen pool into a job's stack; counting per node.
 
 ### Targets
 
@@ -299,7 +331,7 @@ Still off the table: many threads writing into one shared structure (a global in
 | Send a 64-byte value through a queue | under 100 ns |
 | Parallel loop overhead (fork and join) | under 5 µs |
 | Independent chunks of one parallel loop, 4 cores | at least 3.5× one core (hardware reported with every timing) |
-| Publish a snapshot | proportional to blocks changed, not table size |
+| Publish a snapshot | proportional to blocks changed, not state size |
 | Freeze a builder | constant, whatever its size |
 
 ### Open questions
@@ -307,7 +339,7 @@ Still off the table: many threads writing into one shared structure (a global in
 - How many copies code size can bear, and when constant-base copies pay.
 - How large N grows in programs that use many libraries.
 - Parallel loops inside a game tick, keeping ticks deterministic and within their time budget.
-- The block size for table snapshots.
+- The block size for snapshots of shared state.
 - Whether jobs should ever move between workers (better balance, but stacks would then need to be safe to hand over).
 
 *(Diagram in the shared Claude Doc: threads · workers with their own stacks, one writer, snapshots.)*
@@ -350,7 +382,7 @@ Refinement types are the design's best lever: one declaration serves correctness
 - The compiler infers refinements by interval and sign analysis (Burin's sign analysis is a first version): `x: Int 0..100` plus `y: Int 0..100` is `Int 0..200`, with no overflow check.
 - Where it can't prove a refinement it asks for one of three things: a `check` (a runtime test with an error to handle), a stronger parameter type, or a rewrite. It never assumes silently.
 - A fact about a growing value's length (`i` is an `Index(a)`) holds until something can change that length: a grow of `a` itself, or a call that takes `a` in grow mode. The compiler sees both, since references are only parameters and two parameters never overlap when one changes; after either, the fact is gone and the index must be proved again.
-- Field relations and table invariants go to a solver (Z3, as crudspec does) only in a separate deep check, so ordinary builds stay fast.
+- Field relations and state invariants go to a solver (Z3, as crudspec does) only in a separate deep check, so ordinary builds stay fast.
 
 **What refinements buy, per goal:**
 
@@ -378,7 +410,7 @@ In crudspec today a field's size carries through: `title: Text max 80` is a CHEC
 | effect `db.write` | transaction | none | none | marked as a write tool | effect assertion | capability required |
 | a query's `limit 50` | `LIMIT 50` | a page size | paging controls | `maxItems` | 0, 50, 51 rows | the result's byte bound |
 
-The Database column applies to database records. Plain and shared tables check the same rules in memory instead, on every write (a field past its maximum, a value out of range, an invariant), with no SQL involved.
+The Database column applies to database records. State (program, job or shared) checks the same rules in memory instead, on every write (a field past its maximum, a value out of range, an invariant), with no SQL involved.
 
 **Rules for the projections:**
 
@@ -397,7 +429,7 @@ What a function may touch is part of its type, inferred across calls, and grante
 - A closed effect set: `db.read`, `db.write`, `fs.read`, `fs.write`, `net`, `clock`, `random`, `env`, `secret`, `log`, `spawn`. No effects means pure.
 - **Pure** means deterministic (the same inputs give the same result) with no effects. A pure function may still change or grow what it's handed through a write or grow parameter; those modes are part of its type, so callers and the compiler see them.
 - **Cacheable** is narrower than pure: no effects, every parameter read-only, and a result the function owns. Only cacheable functions may be cached, evaluated at compile time or used by cached page pieces, since skipping a call to one changes nothing but the time taken. A pure function that appends to its caller's list isn't cacheable: reusing a saved result would skip the append.
-- **Reading a snapshot is pure,** because the snapshot is an input: a function that reads tables takes the pinned snapshot as a read-only parameter (passed implicitly, like the context pointer), and its result depends on that version. Reading a plain table isn't: it's the owner's current state, which can change between two calls, so a function that reads a plain table isn't cacheable in v1 (a test checks that changing a row between calls can't reuse an old cached result). Database reads are effects (`db.read`). Parallel loop bodies and cached pieces may read the snapshot; a cache keys its entries by the snapshot's version, so a cached result never outlives the data it came from.
+- **Reading a snapshot is pure,** because the snapshot is an input: a function that reads shared state takes the pinned snapshot as a read-only parameter (passed implicitly, like the context pointer), and its result depends on that version. Reading program or job state isn't: it's the owner's current state, which can change between two calls, so a function that reads it isn't cacheable in v1 (a test checks that changing a row between calls can't reuse an old cached result). Database reads are effects (`db.read`). Parallel loop bodies and cached pieces may read the snapshot; a cache keys its entries by the snapshot's version, so a cached result never outlives the data it came from.
 - Effects are inferred. A function may state an upper bound; exceeding it is an error that shows the shortest call path to the effect.
 - Capabilities are values the entry point hands down (`Clock`, `Db`, `Http`), granted in the package manifest. A library can't reach the network unless a caller passes it a capability.
 - Burin's rule "pages call only pure functions" falls out of cacheability. Database queries are effects, so a page runs its queries first, with bounded, owned results, and its cached pieces take those results as inputs; a `db.read` can never sit inside a cached piece.
@@ -413,7 +445,7 @@ Testing is part of the language, because measured over four weeks, scenarios and
 - **Scenarios:** a named sequence of actions by named actors with expected outcomes, written against the app's own vocabulary. They're the language's integration tests and the change review's evidence.
 - **Reference checks:** `check fast == reference` holds an optimized function to a plain one, over generated inputs and the refinements' boundary cases. Burin's interpreter-versus-native, Rust-versus-SQL and fast-path-versus-fresh-render checks become one construct.
 - **Golden outputs:** a test may pin bytes (a page, a file); `accept` updates them after a reviewed diff.
-- **Invariants** on tables are checked on every write at run time, and optionally proved for every writer by the deep check.
+- **Invariants** on state are checked on every write at run time, and optionally proved for every writer by the deep check.
 - **Determinism:** fixed iteration order, and time and randomness only through capabilities. Any failing run is replayed from its inputs; a game tick or a server's write batch is a recorded step.
 - **Generated cases:** boundary values from refinements, every enum case, an outsider for every permission (previous section).
 - **Fuzzing:** random inputs within refinements, and random action sequences against the invariants.
@@ -425,8 +457,8 @@ The compiler doesn't try to out-optimize LLVM; it tells LLVM what the language k
 - **Facts for LLVM:** refinements and inferred ranges as `assume` and `range` attributes, non-negative values, `noalias` where it's proved (distinct stacks, parameters the call-site rule keeps apart), `smin`/`smax` for `min`/`max`, plain `add nsw` (an add LLVM may assume doesn't overflow) where overflow is ruled out. Every fact comes from a proof; none is assumed. In Burin these took DEFLATE from 0.70x to 0.85x of C (0.89x after later work).
 - **Loops that provably end** carry no step budget: counted up or down, or any counted part of an `and`. Long ones still poll for cancellation every few thousand iterations (one load and compare), so deadlines hold.
 - **Compile-time evaluation:** statements that depend only on constants run in the compiler; their tables become read-only data.
-- **Layout:** tables as one array per field; fixed-size data inline in its column, variable-size data in the table's payload blocks; enums sized to their largest case; typed ids 64 bits in v1 (narrower ids would weaken the generation check, so they wait for measurements).
-- **No steady-state allocation:** stacks and table storage are reused; a test asserts zero allocations on chosen paths, as Burin's hot-path test does.
+- **Layout:** collections as one array per field, nested collections flattened; fixed-size data inline, small text inline, larger text in size classes; enums sized to their largest case; typed ids 64 bits in v1 (narrower ids would weaken the generation check, so they wait for measurements).
+- **No steady-state allocation:** stacks and state are reserved once and reused; a test asserts zero allocations on chosen paths, as Burin's hot-path test does.
 - **Load what is used:** queries and loads guarded by the conditions around their uses; a per-request piece rendered once per page. Burin's +27% to +50%.
 - **Work at write time where reads dominate:** derived values and rendered pieces kept up to date by the writer, behind the same purity rules (a library, as Burin's caching becomes).
 - **One release pipeline:** LLVM with cross-language LTO, so the runtime's helpers inline into generated code.
@@ -436,12 +468,12 @@ The compiler doesn't try to out-optimize LLVM; it tells LLVM what the language k
 One compiler target, LLVM, for development and release alike: no JIT, no interpreter, no live swap, so nothing can drift between two back ends. A small edit is running again within 3 s (decided 2026-10-24).
 
 - **Development builds:** LLVM at `-O1`, no LTO, one object file per module cached by a hash of its source, its dependencies' interfaces, the generic copies it contains (each per-type copy is compiled into the module that first needs it, and its key includes the generic's source), and whatever compile-time evaluation read, so a one-function change rebuilds one object and relinks. Target: 3 s from save to running on a Campfire-sized program; release builds (`-O3`, LTO) under 30 s.
-- **Restart, not swap:** a change restarts the program. Database records survive, and a changed schema's migration, planned from the diff (crudspec), runs at start; plain and shared tables start empty (or from what the program saved).
+- **Restart, not swap:** a change restarts the program. Database records survive, and a changed schema's migration, planned from the diff (crudspec), runs at start; program and shared state start empty (or from what the program saved).
 - **What you test is what ships:** tests run on the same code generator as release, at the development optimization level, and in release mode in CI.
 - **Compile-time evaluation** covers some of what a REPL would: constant code runs in the compiler.
 - **One way to write each thing:** small syntax, inferred types, no imports inside a package (an app or library is a directory), one formatter.
 - **Errors that name the fix:** "did you mean" for names, keywords and attributes, the error at the slip's own line. Their quality is measured by seeding slips, as crudspec's mutation harness does (99% of misspelled names caught there).
-- **For agents:** `inspect` reports in JSON (API, effects, refinements, tables, call graph), and a change review that lists what a change widens: effects, permissions, refinements loosened, invariants dropped.
+- **For agents:** `inspect` reports in JSON (API, effects, refinements, state, call graph), and a change review that lists what a change widens: effects, permissions, refinements loosened, invariants dropped.
 - **Editor:** a language server from the start, sharing the compiler's code (Stasis's VS Code extension is the model).
 
 ## Concurrency and interop
@@ -474,10 +506,10 @@ The core is proved on four narrow programs, one per use plus compute, before any
 | Program | Baseline | Target | Kill if |
 | --- | --- | --- | --- |
 | DEFLATE and CRC-32 (compute) | a C version with precomputed tables, clang -O2, on Silesia's dickens (10.2 MB), one core, median of 9 | throughput 0.9x of C or better | under 0.75x after the facts work |
-| Parallel tool: parse and check a source corpus (builders, frozen tables, parallel loops) | a Rust version with the same algorithm and thread count | 0.9x of Rust's time or better, and 3x or more on 4 cores over 1 | under 0.7x of Rust, or under 2.5x scaling on 4 cores |
+| Parallel tool: parse and check a source corpus (builders, frozen pools, parallel loops) | a Rust version with the same algorithm and thread count | 0.9x of Rust's time or better, and 3x or more on 4 cores over 1 | under 0.7x of Rust, or under 2.5x scaling on 4 cores |
 | Campfire-class server (a SQLite database, pages, live updates) | Burin today; the optimized Rust port | Burin's pages/s within 10%, memory within 1.2x | under 0.7x of Burin, or over 2x its memory |
 | Waiting jobs (the same server with 10,000 requests suspended on a slow outside call, from fresh and from previously busy stack sets, with snapshots pinned by the running ones) | the Rust port with the same load | stated ceilings met: committed memory under 1 GB for the 10,000, address reservations within admission limits, excess requests answered with 503 | over 2x the Rust port's memory, or any crash or unbounded growth |
-| Game simulation (tables in memory, ticks) | Stasis ahead-of-time | equal speed; a small edit running again in 3 s | slower than 0.8x |
+| Game simulation (program state, ticks) | Stasis ahead-of-time | equal speed; a small edit running again in 3 s | slower than 0.8x |
 | Seeded slips (mutation harness) | crudspec's numbers | 99% of misspelled names caught at their line | under 95% |
 | Refinements on the four programs | the same programs without them | at least half of bounds and overflow checks gone; no slower build than 1.2x | builds over 2x slower, or no checks removed |
 | Agent changes (scenario-scored feature requests) | the same requests in Rust | equal or better correctness, fewer exchanges | worse on both (AgentLang's outcome) |
@@ -504,14 +536,14 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - Jobs can wait: I/O suspends a job, which keeps its own stacks, and the worker runs others meanwhile.
 - Running out of a data stack (or another runtime failure) fails the job, not the program; no `Result` on every push.
 - v1 targets 64-bit platforms only; WebAssembly and 32-bit come later.
-- Build-then-freeze tables for large data shared read-only across threads.
+- Build-then-freeze pools for large data shared read-only across threads.
 - A value a loop keeps growing must have a bound the compiler knows, and each iteration's temporaries are freed when it ends.
 - A failed job discards only its uncommitted batch; committed batches stay, and `transaction { }` groups changes that must succeed together.
 - A transaction's checks and writes run on the writer against its latest version, with no waits inside.
-- Every table declares its most rows and each variable-size field's maximum; inserting into a full table returns `Result`.
+- All state is bounded: every collection declares its capacity and each variable-size field its maximum; adding to a full collection returns `Result`.
 - Only this program writes its databases in v1; other tools may read them.
 - Database records have no row maximum; a deployment may set a disk quota (past it, writes return `Full`). Field maxima and query limits keep memory bounded.
-- Tables come in two layers: plain (owned by a job, or by a thread or the program with a home worker; plain arrays) and `shared` (one writer, snapshots). Databases are a separate feature, not a table layer: typed queries compiled to SQL, SQLite first.
+- State is a tree of structs with bounded collections (`T[N]`, `list`, `pool`, `map`, `set`, `queue`, `ring`, `grid`), as in StasisLang, owned by the program (a global with a home worker), a job, or shared (`shared global`: one writer, snapshots); no standalone tables. Databases are a separate feature, not state: typed queries compiled to SQL, SQLite first.
 
 **Open questions**
 
@@ -520,7 +552,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 
 **First steps**
 
-1. Tables and typed ids: in-memory tables with generation-checked ids, one array per field.
+1. State and typed ids: a global struct with fixed arrays, `list` and `pool` (generation-checked ids), laid out as one array per field, nested collections flattened.
 2. Goose-style stack assignment for growing values, replacing the helper arena: stack contracts (fresh-result and append), iteration scopes, bounds per entry point; `push`, text built from pieces, `out_byte` as a store and bump. Nested growing values are refused at first.
 3. Refinements on parameters and fields (range, length, membership, index), inferred through the sign analysis and emitted as LLVM facts. Measured on DEFLATE.
 4. `check fast == reference` and `test` blocks with `expect`.
@@ -530,9 +562,9 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 
 **Acceptance cases for steps 1 and 2** (from review 5; both steps use explicit `Text max` and counted-loop bounds, so they don't wait for step 3's inference)
 
-- *Step 1, fixed-size in-memory rows only* (no payload blocks, no snapshots yet): a live lookup succeeds; out-of-range and stale ids return `none`; deleting a row and reusing its slot doesn't change which row any other id names, and no row ever moves between slots; a slot set up near the maximum generation is retired, not reused; an id of another table's type is a build error; an insert at exactly the maximum succeeds and the next returns `Full` without changing the table; a field write past its maximum returns an error and changes nothing; a table without a row maximum or a field maximum is a build error. With payloads (still step 1, after fixed-size rows): a text that grows into a larger class moves to a slot from that class'"'"'s free list and frees its old one, and no other row'"'"'s bytes move; a class whose slots are all taken makes the write fail with `Full`, with no partial write; a write that would replace a field under a live view is refused at build time; a view of a plain table live across a may-suspend call is refused.
+- *Step 1, program state with fixed-size fields only* (no text yet, no snapshots): a live lookup succeeds; out-of-range and stale ids return `none`; deleting a row and reusing its slot doesn't change which row any other id names, and no row ever moves between slots; a slot set up near the maximum generation is retired, not reused; an id of another pool's type is a build error; an insert at exactly the maximum succeeds and the next returns `Full` without changing the pool; a field write past its maximum returns an error and changes nothing; a collection without a capacity or a field without a maximum is a build error. With payloads (still step 1, after fixed-size rows): a text that grows into a larger class moves to a slot from that class'"'"'s free list and frees its old one, and no other row'"'"'s bytes move; moving fields across classes with the collection at capacity always succeeds, and a freed slot is reused at once; a nested `list<Item, 8>` inside a pool flattens and its count is per element; a write that would replace a field under a live view is refused at build time; a view of program state live across a may-suspend call is refused.
 - *Step 2, copies and moves:* `fn f(s: Text) -> Text { s }` returns equal bytes and `s` stays usable; returning a local after reading it; a forced copy from scratch to the destination, with the peak counted while old and new coexist; `take` makes the source unusable, hands its stack slot and cleanup to the destination, and keeps the bytes alive until the destination's scope ends (a move that can't keep those rules is refused at first).
 - *Step 2, append and bounds:* exact output in fresh-result and append modes, including a four-byte UTF-8 character at the declared maximum; capacity checked before any store; a failed append leaves no partial result in the builder; in `render`, `str` appends while `name` is live without a second growing temporary on its stack, and N and the reported peak match the worked example; a nested call while live values occupy separated stacks gets a window that avoids them, and N is one more than the highest index used.
 - *Step 2, overlap and iteration cleanup:* `s = s + s` takes a safe fallback (or is refused); `out.append(f(out))` evaluates `f(out)` into separate scratch and finishes reading `out` before the append starts, or is refused; `continue` and `break` discard the iteration's scratch and keep the outer builder; a failed job's scratch is reset before its stack set is reused.
 
-**Later** (each needs acceptance cases before its own step; none blocks steps 1 and 2): databases (typed queries, transactions, disk quotas and startup checks, migrations); snapshot reclamation and freed slots held for pinned versions; SQLite read pins and transaction staging; native-stack admission and foreign-call margins; returned views with a lifetime rule; nested growing values; several published instances of one table set.
+**Later** (each needs acceptance cases before its own step; none blocks steps 1 and 2): databases (typed queries, transactions, disk quotas and startup checks, migrations); snapshot reclamation and freed slots held for pinned versions (a case that replaces or removes a field while an old version is pinned, checks its slot isn't reused until unpin, then the whole-batch budget check); `map`, `set`, `queue`, `ring` and `grid`; SQLite read pins and transaction staging; native-stack admission and foreign-call margins; returned views with a lifetime rule; nested growing values; several instances of one shared global; pools nested inside arrays of structs.
