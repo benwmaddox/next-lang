@@ -1,0 +1,1 @@
+main.nl:1:29: error: function 'value' can reach the end without a int; return a value on every path

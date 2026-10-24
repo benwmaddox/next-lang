@@ -41,3 +41,8 @@ docs/tasks/T02-report.md, as for T01.
 - Build errors: assigning to the counter; using it after the loop; a non-integer bound; `break`/`continue` outside a loop. A fresh body local each iteration; `break` and `continue` in nested loops; `return` from inside nested loops.
 - Every comparison operator in `expect`; a plain `bool` expectation; operands evaluated once and in order; short-circuiting inside `expect`; a failing step skips the rest of its test while later tests still run.
 - Several test files whose names sort opposite to their declaration order; duplicate names across files; a package with no `main`; an empty suite; tests calling functions; a test that prints (output captured and forwarded); the exact runtime failure location and the summary counts.
+
+## Follow-ups from the T01 review (Claude), small, do them first
+
+- Declare the failure function so LLVM knows it never returns and is rarely taken: `declare void @nl_fail(i32, i32, i32, i32) noreturn cold nounwind` in the IR, `_Noreturn` on the C definition, and mark every guard branch unlikely (branch weights, `!prof !{!"branch_weights", i32 1, i32 2000}` or `llvm.expect`), so the fast path is laid out straight.
+- A method that doesn't exist for a type (`5L.to_long()`, since `to_long` is only on `int`) currently reports "cannot combine int and long"; it should say `no method 'to_long' on long` and, where one exists, suggest the right one. Add a build-error case.

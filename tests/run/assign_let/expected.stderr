@@ -1,0 +1,1 @@
+main.nl:3:5: error: cannot assign to immutable 'let' binding 'total'; declare it with 'var'

@@ -1,0 +1,1 @@
+main.nl:4:13: error: cannot combine int and long; cast the left value to long or the right value to int

@@ -1,0 +1,1 @@
+main.nl:3:5: error: 'value' is already declared in this scope (first declared on line 2); choose another name

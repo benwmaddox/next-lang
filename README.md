@@ -1,7 +1,14 @@
 # next-lang (working name)
 
-A design for a general-purpose language that cares about correctness, ease of development, and CPU/memory efficiency: data in tables, computing on compiler-assigned data stacks, refinement types, effects, one LLVM target.
+A small Rust compiler that lowers the initial next-lang subset to LLVM IR and uses clang to build native programs. The current pipeline supports functions, `int`, `long` and `bool`, checked arithmetic and casts, `if`, calls, and `print`.
 
-It is a separate project from Burin (D:\code\burin), which continues as its own web language. This project borrows ideas and code from Burin and the other languages, but doesn't depend on them.
+Build and run the compiler in WSL:
 
-Only the design exists so far: [docs/DESIGN.md](docs/DESIGN.md).
+```sh
+CARGO_TARGET_DIR=$HOME/.cache/next-lang/target cargo build
+CARGO_TARGET_DIR=$HOME/.cache/next-lang/target cargo test
+```
+
+Use `nlc run <package-dir>` to compile and run a package, or `nlc build <package-dir> -o <file>` to write a native executable. A package is a directory containing one or more `.nl` files.
+
+The implementation status and remaining milestones are in [docs/PLAN.md](docs/PLAN.md); the full language design is in [docs/DESIGN.md](docs/DESIGN.md).
