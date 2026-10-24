@@ -1,27 +1,54 @@
-# T06: fixed arrays, lists and pools (milestone M2, part 1)
+# T06: fixed arrays and lists (milestone M2, part 1)
 
-Depends on T05. Same rules (docs/PLAN.md, T01's Architecture section). This is DESIGN.md's first step, fixed-size part: read DESIGN.md "Collections", "Layout: structure of arrays", "Pools and their ids" (including "Owner parameters in reusable definitions"), "Views of state that can change", "Bounds", and the step 1 acceptance cases under "First steps".
+Depends on T05. Same rules (docs/PLAN.md, T01's Architecture section). DESIGN.md's first step, fixed-size part; pools and owner parameters are T07 (split after docs/reviews/sol-T06-r1.md). Read DESIGN.md "Collections", "Layout: structure of arrays", "Views of state that can change", "Bounds", "Sizes, indexes and time", and the step 1 acceptance cases.
 
 ## Scope
 
-Collections as **locals and parameters only** (globals are T07), holding **fixed-size elements only**: scalars, enums, structs of those, and ids. No text in collections yet (M3).
+Fixed arrays and lists of **fixed-size elements** (scalars, enums, structs of those, and nested arrays and lists), as locals, parameters, struct fields and collection elements. No text in collections (M3), no globals (T08), no pools (T07).
 
-- **`T[N]`**: a fixed array, always N elements, `N` a constant. Created with a fill (`int[8] = fill(0)`) or element defaults. Indexing `a[i]` with `i: long` (indexes are `long`, DESIGN.md "Sizes, indexes and time"); an index the checker can't prove in range is checked at run time (a structured failure `index out of range`), and proven ones carry no check (use T04's interval analysis; `for i in 0..N` over an array is the common proven case). `a.len()` is a constant `long`.
-- **`list<T, N>`**: up to N elements in order with a count. `push` returns `Result<(), Full>`, `pop` returns `Option<T>`, `insert(i, x)`, `remove(i)` (shifts), `count()`, indexing. A push the checker can prove can't overflow may skip the `Result` (DESIGN.md: "can't overflow" pushes); otherwise ignoring the `Result` is a build error and `discard` is the explicit way to drop it.
-- **`pool<T, N>`** with **owner parameters** (DESIGN.md): `add(x) -> Result<Id<P>, Full>`, `get(id) -> Option<T>` (a copy), `remove(id)`, `count()`, `contains(id)`. Ids are 64 bits: a 32-bit slot and a 32-bit generation. A slot is a fixed position (holes, an occupied flag, a free list); removing bumps the generation; a stale id gives `none`; a slot whose generation reaches its maximum is retired. Each pool is a fresh owner; mixing two pools' ids is a build error naming both. Definitions that hold their own ids take an owner parameter (`struct Node<P> { parent: Option<Id<P>> }`), inferred at call sites.
-- **Layout:** a collection of structs is stored as one array per field (structure of arrays): `pool<Rock, 64>` holds an array of each field plus the flags and generations. Nested fixed-capacity collections inside an element flatten into more arrays (`inventory: list<Item, 8>` in each of 64 units becomes 64 × 8 items plus 64 counts).
-- **Loops and views:** `for x in coll` and `for x, i in coll` (`i` an index for arrays and lists, an id for pools). Over a collection the function may write, the loop variable is a writable view of each element. While a view of a collection is live, removing elements, `insert`/`remove` on a list, and anything else that would move or free elements is a build error; pushing onto the end of a list and adding to a pool are allowed (DESIGN.md "Views of state that can change").
-- **Bounds:** capacities are part of the type and must be constants; a collection without one is a build error. Local collections live on the native stack in this task (no data stacks yet, M3); a local collection bigger than 64 KB is a build error for now, saying it needs M3's data stacks.
-- `print` and `expect ==` work on collections (elements in order; pools in slot order with ids).
+## Declarations and construction
 
-## Acceptance cases (DESIGN.md step 1, the parts this task owns)
+- `var a: int[8] = fill(0)` (the fill is evaluated once and copied), `let grid: Cell[16] = fill(Cell {})`, or `int[8]` alone when the element type has a valid default for every field (T04's rule otherwise: a required field with no default and no fill is a build error). `var xs: list<Item, 32> = list {}` starts empty without constructing unused elements.
+- Capacities are constants. Zero is allowed; negative or non-constant capacities are build errors, and so is a total size whose element-count product overflows a `long`.
 
-- A live lookup succeeds; out-of-range and stale ids return `none`; removing an element and reusing its slot doesn't change which element any other id names, and no element moves between slots; a slot set up near the maximum generation is retired, not reused; an id from another pool is a build error.
-- Adding at exactly the capacity succeeds and the next returns `Full` without changing the collection; a list `insert` into a full list returns `Full` and changes nothing.
-- A view of a pool live while the loop removes from it is a build error; collecting ids and removing after the loop works.
-- A nested `list<Item, 8>` inside a pool element flattens, and its count is per element.
-- A self-linked `Node<P>` tree built in a pool; a helper taking `pool<Node<P>, N, P>` and returning `Id<P>`; two pools of the same plain struct; a helper returning an id of a pool that dies on return (build error).
-- Proven indexes carry no check (look for the absence of the guard in the emitted IR in one test) and unproven ones fail with `index out of range` at their line.
+## Operations (indexes, counts and lengths are refined `long`s)
+
+- **Arrays:** `a[i]` reads; `a[i] = v` writes (mutable storage only; the element's refinement applies); `a.len()` is a constant.
+- **Lists:** `push(x) -> Result<(), Full>`; `pop() -> Option<T>`; `insert(i, x) -> Result<(), Full>` with `0 <= i <= count`; `remove(i) -> T` with `0 <= i < count` (shifts the rest down); `count()`; `xs[i]` with `0 <= i < count`; `clear()`.
+- **Indexes:** an index the checker proves in range carries no check; otherwise it's checked at run time and fails through `nl_fail` with `index out of range`, before any store or capacity check. `for i in 0..a.len()` over an array is the common proven case.
+- **`Full` and `discard`:** `Full` is a prelude error type. A push or insert's `Result` must be used; `discard xs.push(x)` drops it explicitly, and `discard` accepts only a collection operation's expected `Full`, not any `Result`. When the checker proves a push can't overflow (a counting analysis: N pushes into a fresh `list<T, N>`, or pushes bounded by a loop over a collection of at most the remaining capacity), the `Result` may go unused and its failure branch is removed. The expression's type stays `Result` either way, so `match`, `?` and `unwrap` still work on it. Facts used for this end after any write or call that could change the count.
+
+## Loops and views
+
+- `for x in coll` and `for x, i in coll` (`i` the index). Iteration covers the elements present when the loop starts, in index order; elements pushed during the loop aren't visited.
+- Over a collection the function may write, `x` is a writable view of each element: writing `x.field` writes the collection. Over a read parameter or a `let` collection, views are read-only. `i` is immutable.
+- While a view is live (inside the loop, ended at every exit through T02/T03's cleanup edges: `break`, `continue`, `return`, `?`), anything that would move or free elements is a build error: `pop`, `insert`, `remove`, `clear`, assigning the whole collection, or passing it as `write` to a helper. Pushing onto the end is allowed. Writing a fixed-size field of a different, provably distinct element is allowed.
+
+## Places and overlap (extends T04)
+
+- Places now include indexes: `a[i]`, `a[i].f`, `units[k].inventory[j]`. Receivers, indexes and arguments are evaluated once, left to right.
+- Passing a whole collection and one of its elements, or two elements whose indexes aren't proven distinct, is a build error when either is `write`; provably distinct indexes or fields are fine, also through `write` parameters passed on.
+
+## Layout and nesting
+
+- A collection of structs is one array per field (structure of arrays); nested fixed-capacity collections flatten into more arrays (`inventory: list<Item, 8>` in each of 64 units becomes 64 × 8 items plus 64 counts). Show this in the emitted IR in one test (the field arrays, not an array of structs).
+- Local collections live on the native stack in this task. That's a temporary deviation from DESIGN.md (which puts values over 4 KB on a data stack, M3): until then, a local collection over 64 KB, counting padding, nested storage and any hidden copies, is a build error saying it needs M3. Allocas for loop-body locals must not pile up per iteration.
+- Small arrays and lists can be returned and passed by value through T01's signature lowering, and survive the scope that made them.
+
+## Printing and equality
+
+- `print` and `expect ==`: arrays and lists print as `[1, 2, 3]` (nested the same way). Equality compares lengths and active elements, never unused capacity or padding. T02's once-only operand capture still holds.
+
+## Acceptance cases
+
+- Construction: a fill evaluated once; a refined element type with and without a valid default; zero capacity; a negative or non-constant capacity (build errors); a size product overflow (build error).
+- Lists: push to exactly capacity then `Full` with contents unchanged; `pop` on empty gives `none`; insert at 0 and at `count`; insert into a full list gives `Full` and changes nothing; remove shifts; remove and index past `count` fail at their line.
+- Indexes: a proven index has no guard in the IR; an unproven one fails with `index out of range`; negative indexes; an `int` index needs a cast.
+- `discard`: allowed on a push, refused on a non-collection `Result`; an unused push `Result` without proof is a build error; the proven N-into-N case needs no handling and `match` on it still works.
+- Views: field writes through a loop variable reach storage; a push during iteration isn't visited; each forbidden operation under a live view (build error); the same operations after the loop work; nested loops.
+- Overlap: whole collection plus element; two unproven indexes; proven-distinct indexes allowed; both argument orders.
+- Nesting and layout: nested list counts are independent per element; the IR shows field arrays; a 70 KB local (build error).
+- Constants: arrays and lists in a `const` evaluated at compile time (extend T05) agree with run-time results.
 
 ## Report
 
