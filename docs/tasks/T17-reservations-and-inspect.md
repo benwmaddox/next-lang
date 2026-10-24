@@ -1,6 +1,6 @@
 # T17: per-entry-point reservations and inspect stacks (milestone M3, part 5)
 
-Depends on T16. Same rules. Read DESIGN.md "N stacks per job" (reservations sized per entry point) and "Loops can't quietly fill a stack" ("The compiler adds it up", "Tests can pin it").
+Depends on T16. Same rules. Read DESIGN.md "The job's data stack" (reservations sized per entry point) and "Loops can't quietly fill a stack" ("The compiler adds it up", "Tests can pin it").
 
 - **Worst case per stack, per entry point:** from the bounds the checker already has (maxima, counted loops, append contracts, reserved regions, the two-value peak of copy-down reassignments, large fixed values in regions), compute for each entry point (`main`, each `test`) the worst-case bytes on its data stack and on the native stack (frame sizes from LLVM, the deepest call chain; recursion isn't supported yet). An entry point with something it can't bound is reported as unbounded and gets the 64 MB default.
 - **Reservations follow:** the runtime reserves each stack at its computed worst case, rounded up to a page, instead of 64 MB, so most programs reserve far less.
@@ -12,7 +12,7 @@ Depends on T16. Same rules. Read DESIGN.md "N stacks per job" (reservations size
 ## Corrections from Sol's second M3 review (docs/reviews/sol-M3-r2.md), binding
 
 - Accounting counts, at each point, the caller's live storage, the callee's scratch, copy-down's old and new values, and a fixed margin for runtime helpers; function values use the maximum over every function that fits their type (T15 put byte bounds in function types).
-- The native stack: this task reserves a native stack per entry point from the computed bound (with a guard page and a helper margin) and switches to it for the job, or, if that's too much now, reports the bound only and the report says so; LLVM frame sizes come from the optimised target code actually built.
+- The native stack: this task computes and reports each entry point's native-stack bound (frame sizes from the optimised target code actually built, plus a helper margin), carried through calls via function values too, but does not yet reserve or switch to a per-job native stack; that comes with the job scheduler (deferred explicitly in PLAN.md).
 - `stack_peak(f)` is a conservative total in bytes across the data stack and the native stack, excluding page rounding; a function's caller-owned result counts in the caller.
 - T13's runtime-exhaustion test and this task's startup refusal of an undersized reservation stay separate tests.
 - Since the supported language has no legal unbounded source, the "unbounded entry point" case is an analysis-only test (a function with an unknown contract, such as a C binding stub) rather than a running program; unbounded loop growth is never allowed just to exercise the fallback.

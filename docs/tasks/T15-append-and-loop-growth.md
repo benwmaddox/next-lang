@@ -47,3 +47,28 @@ Expected: one data stack, no copies of lines; the stack's worst case is 40,000 (
 ## Report
 
 docs/tasks/T15-report.md.
+
+## Corrections from Sol's third M3 review (docs/reviews/sol-M3-r3.md), binding
+
+- **Fallible appends, concretely.** A producer that can fail returns a `Result`; appending it is written with `?` or handled explicitly:
+
+  ```
+  fn field(raw: Ascii max 40) -> Result<Ascii max 40, ParseError> { ... }
+
+  fn row(a: Ascii max 40, b: Ascii max 40) -> Result<Ascii max 100, ParseError> {
+      var out = Ascii.empty()
+      out += field(a)?             // append mode; on err, out is rolled back and the error returned
+      out += ","                   // proven to fit: plain +=
+      out += field(b)?
+      ok(out)
+  }
+
+  fn log_line(buf: grow Ascii max 4096, x: Ascii max 40) -> Result<(), Full> {
+      buf.try_append(field(x) ?? return ok(()))   // a capacity error is Full; a parse error is handled by ??
+  }
+  ```
+
+  - `out += producer()?` with capacity proven: the producer runs in append mode; on its `err`, the checkpoint is restored and `?` returns the error. With capacity not proven, `out.try_append(producer()?)` returns `Full` on capacity, with the checkpoint restored.
+  - When the producer's error type is itself `Full`, the two are told apart by where they come from: `?` on the producer's result passes its `Full` up; `try_append`'s own `Full` is its return value.
+  - Append mode replaces T14's evaluate-first path whenever the producer supports append mode; otherwise T14's path stays.
+  - Tests: a producer writing a prefix then failing (rolled back, error returned), then a successful reuse of the builder; the same with `try_append` failing on capacity after a prefix; `E = Full`.

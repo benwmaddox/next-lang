@@ -12,13 +12,13 @@ Today `emit_expr` returns one computed value; locals use entry-block allocas, ca
 
 - **One data stack per job** (per program run and per test child here): a writable reserved range (64 MB in this task; per-entry-point sizing is T17) whose pages are committed as they're touched, with an inaccessible guard page at its end. Growth is checked against the limit explicitly (one compare); passing it calls `nl_fail` with `data stack exhausted`. A failed reservation at startup is a clear startup failure.
 - **Regions:** a value placed on the data stack gets a region (a byte range), freed last in, first out with its scope. Fixed-size values over 4 KB (large local collections, temporaries for construction, printing, equality, payload extraction, sort scratch, large parameters and results) live in regions and are passed by address; under 4 KB they stay where they are now. T06's 64 KB build error goes away. Alignment and simultaneous caller and callee placements count.
-- Large temporaries that would sit above a still-growing value go on the native stack instead only if T14+ needs it; in this task no growing values exist yet.
+- Large fixed values always get a region on the data stack (a reserved builder below them is never in the way, since it grows inside its own reservation); there is no native-stack fallback for them. "Over 4 KB" means more than 4,096 bytes.
 
 ## Stack contracts and the hidden arguments
 
 - Extend T01's single `lower_signature` into complete argument and result-passing rules, used by definitions, ordinary calls, `?.` calls, calls through function values (T11) and the entry wrappers. Every function takes a hidden **context pointer** (the job's stack base, top and limit) and, where it needs them, the current **top** to place above and a **destination** for its result.
 - The **stack contract** per function: its **byte requirement** (the most bytes it and its callees can place above where it's called), and for a result, where it's built. Function types (T11) carry the largest requirement of any function that fits them.
-- **Tops in registers** (Goose's top caching): loaded at entry, written back before a call that can place on the stack and at exits, reloaded after such a call. A loop that places nothing new does no stack-table traffic per iteration: check the IR.
+- **Tops in registers** (Goose's top caching): loaded at entry, written back before a call that can place on the stack, before a call that may suspend (even one that places nothing), and at exits, reloaded after such a call. Calls through function values carry the native-stack bound as well as the data-stack requirement. A loop that places nothing new does no stack-table traffic per iteration: check the IR.
 - `nlc inspect contracts <package>` prints each function's byte requirement, parameter modes and result placement.
 
 ## Scopes and cleanup

@@ -41,3 +41,29 @@ docs/tasks/T16-report.md.
 - Copies of collections holding text copy the bytes, so a copy never depends on its source's slot arrays. Genuinely nested growing values (an unbounded list of texts) stay refused; bounded collections of bounded text are allowed. A local collection's push never moves a stack top.
 - More cases: nested collections of text; a copy surviving its source's cleanup; sorting a list of `Ascii` (with T12's built-in extended to `Ascii` by bytewise order); `Ascii` keys in maps and sets (T09's built-in extended).
 
+
+## Corrections from Sol's third M3 review (docs/reviews/sol-M3-r3.md), binding; they override the bullets above where they differ
+
+- **Failure-safe updates by staging:** a field update first writes and validates the new bytes in temporary storage on the data stack (counted in the bounds); then, if the new value fits the field's current slot (or its inline space), it's copied into that slot; only if it needs another class is a slot taken there and the old one freed. So a same-class replacement works even when every element of a full collection is in that class. A multi-field replacement stages every field before publishing any. Tests: a same-class replacement at capacity; an inline-field replacement; a replacement whose later field fails, leaving every old field intact.
+- **The worked example fixture, complete:**
+
+  ```
+  struct Row { name: Ascii max 60, count: int 0..=999999 }
+  fn render(rows: list<Row, 500>) -> Ascii max 40000 {       // rows is a read parameter: borrowed, not copied
+      var out = Ascii.empty()
+      for r in rows { out += line(r) }
+      out
+  }
+  fn line(r: Row) -> Ascii max 80 {
+      let name = ascii_upper(r.name)
+      name + ": " + str(r.count)
+  }
+  fn main() {
+      var rows: list<Row, 500> = list {}
+      for i in 0..500 { discard rows.push(Row { name: "row" + str(i), count: i }) }
+      print(render(rows).len())
+  }
+  ```
+
+  The rendering requirement above the caller-owned input is 40,000 (the result region) + 60 (`name`) + descriptors and alignment; the entry point's total also counts the `rows` list's own region in `main`.
+- The shrink and view acceptance cases above are replaced by this section's rules and the earlier correction (a shrinking value stays in its slot; view protection covers enclosing values).

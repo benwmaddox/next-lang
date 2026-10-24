@@ -38,3 +38,8 @@ Depends on T13. Same rules. Rewritten for the reserve-ahead decision (DESIGN.md 
 ## Report
 
 docs/tasks/T14-report.md.
+
+## Corrections from Sol's third M3 review (docs/reviews/sol-M3-r3.md), binding
+
+- "Finished" (packed tightly) means the compiler proves the value won't grow again anywhere it can reach, including through `take`, `grow` parameters and calls through function values. A value that might be passed to `grow` later gets a reserved region. Test: a moved builder grown after the move while another live builder sits above it (works, because it was reserved).
+- `noalias` (LLVM's promise that two pointers don't overlap) is emitted only where the compiler has proved the byte ranges distinct, including hidden destinations; being different values isn't proof by itself.
