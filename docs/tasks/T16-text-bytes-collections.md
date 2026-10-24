@@ -29,3 +29,14 @@ DESIGN.md's `render`/`line` example in its runnable T15 form now uses `list<Asci
 ## Report
 
 docs/tasks/T16-report.md.
+
+## Corrections from Sol's second M3 review (docs/reviews/sol-M3-r2.md), binding
+
+- Also: `Text bytes max N` (a byte budget on text) and a checked `Bytes` to `Ascii` conversion. Appends enforce both the code-point and the byte limit; a `write Text` change that keeps its code-point length can still need more bytes, and is checked.
+- Slices: `s.slice(a..b)` is a copy onto a data stack (bounded by the source's maximum); an out-of-range or non-boundary index fails at its line. `.bytes()` is a temporary read-only view, usable as an argument, never stored, returned or written through.
+- **Field updates are failure-safe:** a write that would exceed a field's maximum returns a handled error (`Full`) and leaves storage untouched; the new bytes are written into a fresh slot and validated before the descriptor is switched and the old slot freed, including when several fields are replaced at once.
+- A value that shrinks stays in its current slot (DESIGN.md allows this); it doesn't move back to a smaller class. Change the acceptance case accordingly.
+- View protection covers the collection and everything enclosing the viewed element, including indirect calls (T11), removal and shifting.
+- Size accounting counts descriptors, lengths, free lists, flags, alignment and every enclosing capacity; overflow in the multiplication, class rounding or page rounding is a build error.
+- Copies of collections holding text copy the bytes, so a copy never depends on its source's slot arrays. Genuinely nested growing values (an unbounded list of texts) stay refused; bounded collections of bounded text are allowed. A local collection's push never moves a stack top.
+- More cases: nested collections of text; a copy surviving its source's cleanup; sorting a list of `Ascii` (with T12's built-in extended to `Ascii` by bytewise order); `Ascii` keys in maps and sets (T09's built-in extended).

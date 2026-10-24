@@ -31,3 +31,10 @@ Depends on T13. Same rules. Binding points from docs/reviews/sol-T13-T14-r1.md. 
 ## Report
 
 docs/tasks/T14-report.md.
+
+## Corrections from Sol's second M3 review (docs/reviews/sol-M3-r2.md), binding
+
+- In T14, `try_append`'s argument is evaluated into scratch first and then appended, so rollback is simple; rollback after a producer has already written part of its output is T15's append mode.
+- Widening a maximum (`Ascii max 60` passed where `Ascii max 80` is expected) is free and implicit for read parameters and copies, since it can't lose anything; it's not a numeric conversion.
+- Job failures in this task are reservation exhaustion and the explicit failing forms already in the language (a failing checked cast, `unwrap`, overflow); exceeding a declared maximum never is.
+- Gap tests: a callee's window above a caller's growing values with a gap below them (moved from T13).

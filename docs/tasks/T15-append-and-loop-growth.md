@@ -43,3 +43,25 @@ fn line(name: Ascii max 60, count: int 0..=999999) -> Ascii max 80 {
 ## Report
 
 docs/tasks/T15-report.md.
+
+## Corrections from Sol's second M3 review (docs/reviews/sol-M3-r2.md), binding
+
+- **The fixture:** T15's runnable stand-in uses a counted loop over integers, not collections of `Ascii` (which are T16):
+
+  ```
+  fn render(n: int 0..=500) -> Ascii max 40000 {
+      var out = Ascii.empty()
+      for i in 0..n { out += line(i) }
+      out
+  }
+  fn line(i: int 0..=499) -> Ascii max 80 {
+      let name = ascii_upper(label(i))        // a real temporary on stack 1, as in DESIGN.md
+      name + ": " + str(i * 7)
+  }
+  fn label(i: int 0..=499) -> Ascii max 60 { "row" + str(i) }
+  ```
+
+  Keep DESIGN.md's explicit `let name = ascii_upper(...)` so the temporary exists and `k = 1`; the collection version of the example is T16's.
+- Append-mode failure: a fallible producer returns its error to the caller as an `err`, distinct from `Full`; in both cases the builder is rolled back even after a prefix was written. Test both.
+- `s = s + piece` becomes an in-place append only when `piece` doesn't read `s`; otherwise T14's overlap handling applies.
+- Function types carry each function's byte bounds per stack (not only its window and append flag), and calls through function values take the maximum over every function that fits; T17 relies on this.

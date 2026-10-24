@@ -34,3 +34,10 @@ Today `emit_expr` returns one computed value; locals use entry-block allocas, ca
 ## Report
 
 docs/tasks/T13-report.md, including `inspect contracts` output for a few functions.
+
+## Corrections from Sol's second M3 review (docs/reviews/sol-M3-r2.md), binding
+
+- N already includes the fixed-scratch stack; it's allocated only when a function uses it, and reported once, not "N plus one".
+- Each data stack is a writable range whose pages are committed as they're touched, with an inaccessible guard page at its end; growth is checked against the limit explicitly (one compare), and passing it calls `nl_fail`. `PROT_NONE` is only for the guard page.
+- The test-only reservation override is enabled by the `NLC_TEST_BUILD` switch the driver already passes for `nlc test` (compiler/src/driver.rs), not by a cargo-only runtime.
+- Tests about gaps between growing values' stacks move to T14, where growing values exist; T13's IR checks use the stack contract dump instead.
