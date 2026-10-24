@@ -17,3 +17,4 @@ Be specific and concrete; skip praise. Keep it under 1,500 words.
 
 Also answer this question from Ben in its own section ("Shared immutable data across threads"): many compilers share large immutable data between threads, e.g. the TypeScript compiler's Go rewrite (TypeScript 7, "Corsa"), which parses files in parallel and lets several type-checker threads read the same immutable syntax trees. Can this design do that reasonably, given per-thread stacks freed per scope, tables with one writer, and snapshots? If not as written, what is the smallest addition that would make it work efficiently, and what would still be off the table? Be concrete about lifetimes, memory layout and costs.
 Decisions added on 2026-10-24: recursion opt-in via `recursive`; Text (UTF-8) and Bytes are separate; generics copied per type; servers, games and tools weigh equally.
+Never create, switch or commit to git branches, and don't commit at all: Claude commits.
