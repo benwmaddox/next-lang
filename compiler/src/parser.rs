@@ -318,6 +318,26 @@ impl Parser<'_> {
                     self.skip_newlines();
                     args.push(self.type_name()?);
                 }
+            } else if name == "map" {
+                self.expect(
+                    &TokenKind::Comma,
+                    "expected a value type after the map key type",
+                )?;
+                self.skip_newlines();
+                args.push(self.type_name()?);
+                self.expect(
+                    &TokenKind::Comma,
+                    "expected a capacity after the map value type",
+                )?;
+                self.skip_newlines();
+                const_args.push(self.expression(8)?);
+            } else if name == "set" {
+                self.expect(
+                    &TokenKind::Comma,
+                    "expected a capacity after the set key type",
+                )?;
+                self.skip_newlines();
+                const_args.push(self.expression(8)?);
             } else {
                 while self.take(&TokenKind::Comma) {
                     self.skip_newlines();
@@ -892,7 +912,9 @@ impl Parser<'_> {
             }
             if self.allow_struct_literals && self.at(&TokenKind::LBrace) {
                 let name = match &expr.kind {
-                    ExprKind::Name(name) if matches!(name.as_str(), "list" | "pool") => {
+                    ExprKind::Name(name)
+                        if matches!(name.as_str(), "list" | "pool" | "map" | "set") =>
+                    {
                         Some(name.clone())
                     }
                     ExprKind::Name(name) if name.chars().next().is_some_and(char::is_uppercase) => {
@@ -931,6 +953,38 @@ impl Parser<'_> {
                         )?;
                         expr = Expr {
                             kind: ExprKind::PoolLiteral,
+                            span: expr.span,
+                        };
+                    } else if name == "map" {
+                        self.expect(&TokenKind::LBrace, "expected '{' after 'map'")?;
+                        self.skip_separators();
+                        if !self.at(&TokenKind::RBrace) {
+                            return Err(self.error_here(
+                                "map literals start empty; set values after construction",
+                            ));
+                        }
+                        self.expect(
+                            &TokenKind::RBrace,
+                            "expected '}' after the empty map literal",
+                        )?;
+                        expr = Expr {
+                            kind: ExprKind::MapLiteral,
+                            span: expr.span,
+                        };
+                    } else if name == "set" {
+                        self.expect(&TokenKind::LBrace, "expected '{' after 'set'")?;
+                        self.skip_separators();
+                        if !self.at(&TokenKind::RBrace) {
+                            return Err(self.error_here(
+                                "set literals start empty; add values after construction",
+                            ));
+                        }
+                        self.expect(
+                            &TokenKind::RBrace,
+                            "expected '}' after the empty set literal",
+                        )?;
+                        expr = Expr {
+                            kind: ExprKind::SetLiteral,
                             span: expr.span,
                         };
                     } else {
@@ -1007,6 +1061,7 @@ impl Parser<'_> {
                             | "len"
                             | "count"
                             | "add"
+                            | "set"
                             | "get"
                             | "contains"
                             | "push"

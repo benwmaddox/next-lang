@@ -318,7 +318,9 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
                 collect_constant_references_expr(arg, references);
             }
         }
-        TExprKind::PoolOp { receiver, args, .. } => {
+        TExprKind::PoolOp { receiver, args, .. }
+        | TExprKind::MapOp { receiver, args, .. }
+        | TExprKind::SetOp { receiver, args, .. } => {
             collect_constant_references_expr(receiver, references);
             for arg in args {
                 collect_constant_references_expr(arg, references);
@@ -367,6 +369,8 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
         | TExprKind::EmptyPool
+        | TExprKind::EmptyMap
+        | TExprKind::EmptySet
         | TExprKind::LoopExit(_) => {}
     }
 }
@@ -488,7 +492,9 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         } => expression_reads_global(receiver) || expression_reads_global(index),
         TExprKind::Fill { value, .. } => expression_reads_global(value),
         TExprKind::CollectionOp { receiver, args, .. }
-        | TExprKind::PoolOp { receiver, args, .. } => {
+        | TExprKind::PoolOp { receiver, args, .. }
+        | TExprKind::MapOp { receiver, args, .. }
+        | TExprKind::SetOp { receiver, args, .. } => {
             expression_reads_global(receiver) || args.iter().any(expression_reads_global)
         }
         TExprKind::StructConstruct { fields } => fields
@@ -521,7 +527,9 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         | TExprKind::LoopExit(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
-        | TExprKind::EmptyPool => false,
+        | TExprKind::EmptyPool
+        | TExprKind::EmptyMap
+        | TExprKind::EmptySet => false,
     }
 }
 
@@ -732,7 +740,9 @@ fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mu
                 collect_calls_expr(arg, calls, effects);
             }
         }
-        TExprKind::PoolOp { receiver, args, .. } => {
+        TExprKind::PoolOp { receiver, args, .. }
+        | TExprKind::MapOp { receiver, args, .. }
+        | TExprKind::SetOp { receiver, args, .. } => {
             collect_calls_expr(receiver, calls, effects);
             for arg in args {
                 collect_calls_expr(arg, calls, effects);
@@ -787,6 +797,8 @@ fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mu
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
         | TExprKind::EmptyPool
+        | TExprKind::EmptyMap
+        | TExprKind::EmptySet
         | TExprKind::LoopExit(_) => {}
     }
 }
@@ -832,6 +844,7 @@ struct Evaluator<'a> {
 enum ResolvedProjection {
     Field(usize),
     Index(usize),
+    MapIndex(usize),
     PoolIndex(usize),
 }
 
@@ -890,6 +903,7 @@ impl Evaluator<'_> {
                     capacity: *capacity,
                     is_list: *is_list,
                     is_pool: false,
+                    is_map: false,
                     proven: *proven,
                 });
                 place.ty = expr.ty;
@@ -909,7 +923,12 @@ impl Evaluator<'_> {
         for projection in &canonical.path {
             match projection {
                 TProjection::Field(index) => resolved.push(ResolvedProjection::Field(*index)),
-                TProjection::Index { index, is_pool, .. } => {
+                TProjection::Index {
+                    index,
+                    is_pool,
+                    is_map,
+                    ..
+                } => {
                     let value = match self.eval_expr(index, locals)? {
                         Outcome::Value(value) => value,
                         _ => {
@@ -925,6 +944,8 @@ impl Evaluator<'_> {
                     }
                     resolved.push(if *is_pool {
                         ResolvedProjection::PoolIndex(value as usize)
+                    } else if *is_map {
+                        ResolvedProjection::MapIndex(value as usize)
                     } else {
                         ResolvedProjection::Index(value as usize)
                     });
@@ -951,6 +972,9 @@ impl Evaluator<'_> {
                 }
                 (ResolvedProjection::Index(index), ConstValue::List(values)) => {
                     values.get(*index)?.clone()
+                }
+                (ResolvedProjection::MapIndex(index), ConstValue::Map(entries)) => {
+                    entries.get(*index)?.1.clone()
                 }
                 (ResolvedProjection::PoolIndex(index), ConstValue::Pool { slots, .. }) => {
                     slots.get(*index)?.as_ref()?.clone()
@@ -989,6 +1013,9 @@ impl Evaluator<'_> {
                 }
                 (ResolvedProjection::Index(index), ConstValue::List(values)) => {
                     values.get_mut(*index)
+                }
+                (ResolvedProjection::MapIndex(index), ConstValue::Map(entries)) => {
+                    entries.get_mut(*index).map(|entry| &mut entry.1)
                 }
                 (ResolvedProjection::PoolIndex(index), ConstValue::Pool { slots, .. }) => {
                     let slot = slots.get_mut(*index).ok_or_else(|| {
@@ -1172,6 +1199,131 @@ impl Evaluator<'_> {
                 })
             }
         }
+    }
+
+    fn eval_map_op(
+        &self,
+        op: MapOp,
+        map: &mut ConstValue,
+        args: Vec<ConstValue>,
+        key_ty: Ty,
+        _value_ty: Ty,
+        capacity: usize,
+        span: Span,
+    ) -> Result<ConstValue, EvalFailure> {
+        let ConstValue::Map(entries) = map else {
+            return Err(self.failure(span, "map operation receiver had the wrong value"));
+        };
+        let success = || ConstValue::Enum {
+            case_index: 0,
+            payload: vec![ConstValue::Unit],
+        };
+        let full = || ConstValue::Enum {
+            case_index: 1,
+            payload: vec![ConstValue::Enum {
+                case_index: 0,
+                payload: Vec::new(),
+            }],
+        };
+        let key = args
+            .first()
+            .ok_or_else(|| self.failure(span, "map operation was missing a key"))?;
+        let found = entries
+            .iter()
+            .position(|(stored, _)| self.values_equal(key_ty, stored, key));
+        Ok(match op {
+            MapOp::Get => {
+                match found.and_then(|index| entries.get(index).map(|entry| entry.1.clone())) {
+                    Some(value) => ConstValue::Enum {
+                        case_index: 0,
+                        payload: vec![value],
+                    },
+                    None => ConstValue::Enum {
+                        case_index: 1,
+                        payload: Vec::new(),
+                    },
+                }
+            }
+            MapOp::Set => {
+                let value = args
+                    .get(1)
+                    .cloned()
+                    .ok_or_else(|| self.failure(span, "map set was missing a value"))?;
+                if let Some(index) = found {
+                    entries[index].1 = value;
+                    success()
+                } else if entries.len() >= capacity {
+                    full()
+                } else {
+                    entries.push((key.clone(), value));
+                    success()
+                }
+            }
+            MapOp::Remove => match found {
+                Some(index) => ConstValue::Enum {
+                    case_index: 0,
+                    payload: vec![entries.remove(index).1],
+                },
+                None => ConstValue::Enum {
+                    case_index: 1,
+                    payload: Vec::new(),
+                },
+            },
+            MapOp::Contains => ConstValue::Bool(found.is_some()),
+            MapOp::Count => ConstValue::Integer(entries.len() as i128),
+        })
+    }
+
+    fn eval_set_op(
+        &self,
+        op: SetOp,
+        set: &mut ConstValue,
+        args: Vec<ConstValue>,
+        key_ty: Ty,
+        capacity: usize,
+        span: Span,
+    ) -> Result<ConstValue, EvalFailure> {
+        let ConstValue::Set(entries) = set else {
+            return Err(self.failure(span, "set operation receiver had the wrong value"));
+        };
+        let success = || ConstValue::Enum {
+            case_index: 0,
+            payload: vec![ConstValue::Unit],
+        };
+        let full = || ConstValue::Enum {
+            case_index: 1,
+            payload: vec![ConstValue::Enum {
+                case_index: 0,
+                payload: Vec::new(),
+            }],
+        };
+        let key = args
+            .first()
+            .ok_or_else(|| self.failure(span, "set operation was missing a key"))?;
+        let found = entries
+            .iter()
+            .position(|stored| self.values_equal(key_ty, stored, key));
+        Ok(match op {
+            SetOp::Add => {
+                if found.is_some() {
+                    success()
+                } else if entries.len() >= capacity {
+                    full()
+                } else {
+                    entries.push(key.clone());
+                    success()
+                }
+            }
+            SetOp::Remove => match found {
+                Some(index) => {
+                    entries.remove(index);
+                    ConstValue::Bool(true)
+                }
+                None => ConstValue::Bool(false),
+            },
+            SetOp::Contains => ConstValue::Bool(found.is_some()),
+            SetOp::Count => ConstValue::Integer(entries.len() as i128),
+        })
     }
 
     fn eval_constant(&mut self, id: usize, reference_span: Span) -> Result<ConstValue, CheckError> {
@@ -1414,6 +1566,8 @@ impl Evaluator<'_> {
                     source,
                     is_list,
                     is_pool,
+                    is_map,
+                    is_set,
                     body,
                     ..
                 } => {
@@ -1433,6 +1587,10 @@ impl Evaluator<'_> {
                         | TTypeKind::Pool {
                             element, capacity, ..
                         } => (capacity, element),
+                        TTypeKind::Map {
+                            value, capacity, ..
+                        } => (capacity, value),
+                        TTypeKind::Set { key, capacity } => (capacity, key),
                         _ => {
                             return Err(self.failure(
                                 stmt.span,
@@ -1455,6 +1613,8 @@ impl Evaluator<'_> {
                         let length = match (&collection, *is_list) {
                             (ConstValue::List(values), true) => values.len(),
                             (ConstValue::Array(values), false) => values.len(),
+                            (ConstValue::Map(entries), false) if *is_map => entries.len(),
+                            (ConstValue::Set(entries), false) if *is_set => entries.len(),
                             _ => {
                                 return Err(self.failure(
                                     stmt.span,
@@ -1492,10 +1652,51 @@ impl Evaluator<'_> {
                                 ConstValue::Integer(
                                     (((generation as u64) << 32) | index as u64) as i128,
                                 )
+                            } else if *is_map {
+                                let ConstValue::Map(entries) = self
+                                    .get_resolved_place(locals, root, &path)
+                                    .ok_or_else(|| {
+                                        self.failure(stmt.span, "map loop source could not be read")
+                                    })?
+                                else {
+                                    return Err(self.failure(
+                                        stmt.span,
+                                        "map loop source had the wrong value",
+                                    ));
+                                };
+                                entries
+                                    .get(index)
+                                    .ok_or_else(|| {
+                                        self.failure(
+                                            stmt.span,
+                                            "map loop key index was out of range",
+                                        )
+                                    })?
+                                    .0
+                                    .clone()
                             } else {
                                 ConstValue::Integer(index as i128)
                             };
                             set_local(locals, *index_id, id);
+                        }
+                        if *is_set {
+                            let ConstValue::Set(entries) = self
+                                .get_resolved_place(locals, root, &path)
+                                .ok_or_else(|| {
+                                    self.failure(stmt.span, "set loop source could not be read")
+                                })?
+                            else {
+                                return Err(
+                                    self.failure(stmt.span, "set loop source had the wrong value")
+                                );
+                            };
+                            set_local(
+                                locals,
+                                *id,
+                                entries.get(index).cloned().ok_or_else(|| {
+                                    self.failure(stmt.span, "set loop key index was out of range")
+                                })?,
+                            );
                         }
                         let index_expr = TExpr {
                             kind: TExprKind::Local(*counter_id),
@@ -1509,15 +1710,22 @@ impl Evaluator<'_> {
                             capacity,
                             is_list: *is_list,
                             is_pool: *is_pool,
+                            is_map: *is_map,
                             proven: true,
                         });
                         element_place.ty = element;
-                        let previous = self.views.insert(*id, element_place);
-                        let outcome = self.eval_block(body, locals);
-                        if let Some(previous) = previous {
-                            self.views.insert(*id, previous);
+                        let previous = if *is_set {
+                            None
                         } else {
-                            self.views.remove(id);
+                            self.views.insert(*id, element_place)
+                        };
+                        let outcome = self.eval_block(body, locals);
+                        if !*is_set {
+                            if let Some(previous) = previous {
+                                self.views.insert(*id, previous);
+                            } else {
+                                self.views.remove(id);
+                            }
                         }
                         match outcome? {
                             Outcome::Value(_) | Outcome::Continue => {}
@@ -1767,6 +1975,8 @@ impl Evaluator<'_> {
                     free: (0..capacity as u32).rev().collect(),
                 }
             }
+            TExprKind::EmptyMap => ConstValue::Map(Vec::new()),
+            TExprKind::EmptySet => ConstValue::Set(Vec::new()),
             TExprKind::CollectionOp {
                 op,
                 receiver,
@@ -1857,6 +2067,112 @@ impl Evaluator<'_> {
                             })?;
                     let result = self.eval_pool_op(*op, &mut pool, values, *capacity, expr.span)?;
                     self.set_resolved_place(locals, root, &path, pool)
+                        .map_err(|message| self.failure(expr.span, message))?;
+                    result
+                }
+            }
+            TExprKind::MapOp {
+                op,
+                receiver,
+                args,
+                capacity,
+                ..
+            } => {
+                let TTypeKind::Map { key, value, .. } = self.types[receiver.ty.0].kind else {
+                    return Err(
+                        self.failure(expr.span, "map operation receiver had the wrong type")
+                    );
+                };
+                if matches!(*op, MapOp::Count | MapOp::Get | MapOp::Contains) {
+                    let mut map = value_or_flow!(self.eval_expr(receiver, locals));
+                    if *op == MapOp::Count {
+                        let ConstValue::Map(entries) = map else {
+                            return Err(
+                                self.failure(expr.span, "map count receiver had the wrong value")
+                            );
+                        };
+                        ConstValue::Integer(entries.len() as i128)
+                    } else {
+                        let mut values = Vec::with_capacity(args.len());
+                        for arg in args {
+                            values.push(value_or_flow!(self.eval_expr(arg, locals)));
+                        }
+                        self.eval_map_op(*op, &mut map, values, key, value, *capacity, expr.span)?
+                    }
+                } else {
+                    let place = self.place_from_expr(receiver);
+                    let resolved = if let Some(place) = place.as_ref() {
+                        Some(self.resolve_place_indices(place, locals)?)
+                    } else {
+                        None
+                    };
+                    let mut values = Vec::with_capacity(args.len());
+                    for arg in args {
+                        values.push(value_or_flow!(self.eval_expr(arg, locals)));
+                    }
+                    let (root, path) = resolved
+                        .ok_or_else(|| self.failure(expr.span, "map operation requires a place"))?;
+                    let mut map =
+                        self.get_resolved_place(locals, root, &path)
+                            .ok_or_else(|| {
+                                self.failure(expr.span, "constant evaluator could not read a map")
+                            })?;
+                    let result =
+                        self.eval_map_op(*op, &mut map, values, key, value, *capacity, expr.span)?;
+                    self.set_resolved_place(locals, root, &path, map)
+                        .map_err(|message| self.failure(expr.span, message))?;
+                    result
+                }
+            }
+            TExprKind::SetOp {
+                op,
+                receiver,
+                args,
+                capacity,
+                ..
+            } => {
+                let TTypeKind::Set { key, .. } = self.types[receiver.ty.0].kind else {
+                    return Err(
+                        self.failure(expr.span, "set operation receiver had the wrong type")
+                    );
+                };
+                if matches!(*op, SetOp::Count | SetOp::Contains) {
+                    let mut set = value_or_flow!(self.eval_expr(receiver, locals));
+                    if *op == SetOp::Count {
+                        let ConstValue::Set(entries) = set else {
+                            return Err(
+                                self.failure(expr.span, "set count receiver had the wrong value")
+                            );
+                        };
+                        ConstValue::Integer(entries.len() as i128)
+                    } else {
+                        let mut values = Vec::with_capacity(args.len());
+                        for arg in args {
+                            values.push(value_or_flow!(self.eval_expr(arg, locals)));
+                        }
+                        self.eval_set_op(*op, &mut set, values, key, *capacity, expr.span)?
+                    }
+                } else {
+                    let place = self.place_from_expr(receiver);
+                    let resolved = if let Some(place) = place.as_ref() {
+                        Some(self.resolve_place_indices(place, locals)?)
+                    } else {
+                        None
+                    };
+                    let mut values = Vec::with_capacity(args.len());
+                    for arg in args {
+                        values.push(value_or_flow!(self.eval_expr(arg, locals)));
+                    }
+                    let (root, path) = resolved
+                        .ok_or_else(|| self.failure(expr.span, "set operation requires a place"))?;
+                    let mut set =
+                        self.get_resolved_place(locals, root, &path)
+                            .ok_or_else(|| {
+                                self.failure(expr.span, "constant evaluator could not read a set")
+                            })?;
+                    let result =
+                        self.eval_set_op(*op, &mut set, values, key, *capacity, expr.span)?;
+                    self.set_resolved_place(locals, root, &path, set)
                         .map_err(|message| self.failure(expr.span, message))?;
                     result
                 }
@@ -2333,6 +2649,39 @@ impl Evaluator<'_> {
                         .iter()
                         .zip(right_values)
                         .all(|(left, right)| self.values_equal(*element, left, right))
+            }
+            (
+                TTypeKind::Map {
+                    key,
+                    value,
+                    capacity,
+                },
+                ConstValue::Map(left_entries),
+                ConstValue::Map(right_entries),
+            ) => {
+                left_entries.len() == right_entries.len()
+                    && left_entries.len() <= *capacity
+                    && left_entries.iter().all(|(left_key, left_value)| {
+                        right_entries
+                            .iter()
+                            .find(|(right_key, _)| self.values_equal(*key, left_key, right_key))
+                            .is_some_and(|(_, right_value)| {
+                                self.values_equal(*value, left_value, right_value)
+                            })
+                    })
+            }
+            (
+                TTypeKind::Set { key, capacity },
+                ConstValue::Set(left_entries),
+                ConstValue::Set(right_entries),
+            ) => {
+                left_entries.len() == right_entries.len()
+                    && left_entries.len() <= *capacity
+                    && left_entries.iter().all(|left_key| {
+                        right_entries
+                            .iter()
+                            .any(|right_key| self.values_equal(*key, left_key, right_key))
+                    })
             }
             (
                 TTypeKind::Option(_) | TTypeKind::Result(..) | TTypeKind::Enum(_),

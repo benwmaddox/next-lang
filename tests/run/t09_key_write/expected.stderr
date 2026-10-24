@@ -1,0 +1,1 @@
+main.nl:4:32: error: cannot assign to loop counter 'key'; loop counters are immutable

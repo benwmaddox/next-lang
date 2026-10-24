@@ -1,0 +1,55 @@
+{1: 10, 5: 50, 9: 90, 13: 130}
+{1: 10, 5: 55, 9: 90, 13: 130}
+some(55)
+true
+true
+false
+{1: 10, 9: 90, 13: 130, 5: 56}
+true
+true
+true
+{1: 10, 9: 99, 13: 130, 5: 56}
+false
+{21: 210}
+true
+false
+{1: 10, 5: 50}
+some(50)
+true
+some(40)
+{PairKey { key: Key { left: 9, flag: false }, sequence: 2 }: 82, PairKey { key: Key { left: 11, flag: false }, sequence: 2 }: 92}
+some(82)
+some(80)
+true
+some(77)
+2
+some(77)
+some(88)
+{1: Value { score: 9 }, 2: Value { score: 11 }}
+true
+{1, 5, 9, 13}
+true
+true
+{5, 9, 13, 1}
+true
+4
+5
+9
+13
+1
+true
+true
+{2, 6}
+false
+{14}
+true
+true
+some(2)
+some(0)
+{-5: 6, 5000000000: 7}
+true
+some(7)
+some(6)
+{3: 30}
+{3}
+0

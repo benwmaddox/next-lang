@@ -1,0 +1,1 @@
+main.nl:4:39: error: cannot call 'map<int, int, 2>.set' while a map view is live; move the mutation after the loop

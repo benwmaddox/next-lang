@@ -87,6 +87,8 @@ struct Checker {
     refinement_ids: HashMap<(Ty, i128, i128, RefinePolicy), Ty>,
     generic_ids: HashMap<(u8, Ty, Ty), Ty>,
     collection_ids: HashMap<(u8, Ty, usize), Ty>,
+    map_ids: HashMap<(Ty, Ty, usize), Ty>,
+    set_ids: HashMap<(Ty, usize), Ty>,
     pool_ids: HashMap<(Ty, usize, usize), Ty>,
     id_ids: HashMap<usize, Ty>,
     ast_functions: Vec<Function>,
@@ -175,6 +177,8 @@ impl Checker {
             refinement_ids: HashMap::new(),
             generic_ids: HashMap::new(),
             collection_ids: HashMap::new(),
+            map_ids: HashMap::new(),
+            set_ids: HashMap::new(),
             pool_ids: HashMap::new(),
             id_ids: HashMap::new(),
             ast_functions: Vec::new(),
@@ -694,6 +698,81 @@ impl Checker {
                     ty.span,
                 )
             }
+            "map" if ty.args.len() == 2 && ty.const_args.len() == 1 && ty.range.is_none() => {
+                let key = self.parse_type(&ty.args[0])?;
+                let value = self.parse_type(&ty.args[1])?;
+                if self.type_contains_pool(key) || self.type_contains_pool(value) {
+                    return Err(CheckError {
+                        span: ty.span,
+                        message: "pools cannot appear in map keys or values; store ids instead and keep their pool alive".to_owned(),
+                    });
+                }
+                if !self.type_is_hashable(key, &mut std::collections::HashSet::new()) {
+                    return Err(CheckError {
+                        span: ty.args[0].span,
+                        message: format!(
+                            "map key type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
+                            self.type_name(key)
+                        ),
+                    });
+                }
+                let raw_capacity = self.capacity_value(&ty.const_args[0])?;
+                if raw_capacity < 0 {
+                    return Err(CheckError {
+                        span: ty.const_args[0].span,
+                        message: "map capacity cannot be negative; use zero or a positive constant"
+                            .to_owned(),
+                    });
+                }
+                if raw_capacity > i64::MAX as i128 {
+                    return Err(CheckError {
+                        span: ty.const_args[0].span,
+                        message: "collection size overflows long; reduce a capacity".to_owned(),
+                    });
+                }
+                let capacity = usize::try_from(raw_capacity).map_err(|_| CheckError {
+                    span: ty.const_args[0].span,
+                    message: "collection size overflows long; reduce a capacity".to_owned(),
+                })?;
+                self.intern_map(key, value, capacity, ty.span)
+            }
+            "set" if ty.args.len() == 1 && ty.const_args.len() == 1 && ty.range.is_none() => {
+                let key = self.parse_type(&ty.args[0])?;
+                if self.type_contains_pool(key) {
+                    return Err(CheckError {
+                        span: ty.span,
+                        message: "pools cannot appear in set elements; store ids instead and keep their pool alive".to_owned(),
+                    });
+                }
+                if !self.type_is_hashable(key, &mut std::collections::HashSet::new()) {
+                    return Err(CheckError {
+                        span: ty.args[0].span,
+                        message: format!(
+                            "set element type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
+                            self.type_name(key)
+                        ),
+                    });
+                }
+                let raw_capacity = self.capacity_value(&ty.const_args[0])?;
+                if raw_capacity < 0 {
+                    return Err(CheckError {
+                        span: ty.const_args[0].span,
+                        message: "set capacity cannot be negative; use zero or a positive constant"
+                            .to_owned(),
+                    });
+                }
+                if raw_capacity > i64::MAX as i128 {
+                    return Err(CheckError {
+                        span: ty.const_args[0].span,
+                        message: "collection size overflows long; reduce a capacity".to_owned(),
+                    });
+                }
+                let capacity = usize::try_from(raw_capacity).map_err(|_| CheckError {
+                    span: ty.const_args[0].span,
+                    message: "collection size overflows long; reduce a capacity".to_owned(),
+                })?;
+                self.intern_set(key, capacity, ty.span)
+            }
             "pool"
                 if (ty.args.len() == 1 || ty.args.len() == 2)
                     && ty.const_args.len() == 1
@@ -754,7 +833,7 @@ impl Checker {
                 };
                 self.instantiate_generic_struct(base, &ty.args, ty.span)?
             }
-            "Option" | "Result" | "list" | "pool" => {
+            "Option" | "Result" | "list" | "map" | "set" | "pool" => {
                 return Err(CheckError {
                     span: ty.span,
                     message: match ty.name.as_str() {
@@ -762,6 +841,8 @@ impl Checker {
                             "list types use list<T, capacity>; the capacity must be a constant"
                                 .to_owned()
                         }
+                        "map" => "map types use map<K, V, capacity>; the capacity must be a constant".to_owned(),
+                        "set" => "set types use set<K, capacity>; the capacity must be a constant".to_owned(),
                         "pool" => {
                             "pool types use pool<T, capacity> or pool<T, capacity, P>; the capacity must be a constant"
                                 .to_owned()
@@ -971,6 +1052,10 @@ impl Checker {
                 TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
                     visit(checker, *element, seen)
                 }
+                TTypeKind::Map { key, value, .. } => {
+                    visit(checker, *key, seen) || visit(checker, *value, seen)
+                }
+                TTypeKind::Set { key, .. } => visit(checker, *key, seen),
                 _ => false,
             }
         }
@@ -1015,6 +1100,11 @@ impl Checker {
                 TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
                     visit(checker, *element, seen, owners)
                 }
+                TTypeKind::Map { key, value, .. } => {
+                    visit(checker, *key, seen, owners);
+                    visit(checker, *value, seen, owners);
+                }
+                TTypeKind::Set { key, .. } => visit(checker, *key, seen, owners),
                 _ => {}
             }
         }
@@ -1296,6 +1386,19 @@ impl Checker {
                     span,
                 )
             }
+            TTypeKind::Map {
+                key,
+                value,
+                capacity,
+            } => {
+                let key = self.substitute_owner_type(key, substitutions, memo, span)?;
+                let value = self.substitute_owner_type(value, substitutions, memo, span)?;
+                self.intern_map(key, value, capacity, span)
+            }
+            TTypeKind::Set { key, capacity } => {
+                let key = self.substitute_owner_type(key, substitutions, memo, span)?;
+                self.intern_set(key, capacity, span)
+            }
             TTypeKind::Array { element, capacity } => {
                 let element = self.substitute_owner_type(element, substitutions, memo, span)?;
                 self.intern_collection(
@@ -1418,6 +1521,64 @@ impl Checker {
         });
         self.collection_ids.insert((kind, element, capacity), ty);
         ty
+    }
+
+    fn intern_map(&mut self, key: Ty, value: Ty, capacity: usize, span: Span) -> Ty {
+        if let Some(ty) = self.map_ids.get(&(key, value, capacity)) {
+            return *ty;
+        }
+        let ty = Ty(self.types.len());
+        self.types.push(TType {
+            name: format!(
+                "map<{}, {}, {}>",
+                self.type_name(key),
+                self.type_name(value),
+                capacity
+            ),
+            kind: TTypeKind::Map {
+                key,
+                value,
+                capacity,
+            },
+            span,
+        });
+        self.map_ids.insert((key, value, capacity), ty);
+        ty
+    }
+
+    fn intern_set(&mut self, key: Ty, capacity: usize, span: Span) -> Ty {
+        if let Some(ty) = self.set_ids.get(&(key, capacity)) {
+            return *ty;
+        }
+        let ty = Ty(self.types.len());
+        self.types.push(TType {
+            name: format!("set<{}, {}>", self.type_name(key), capacity),
+            kind: TTypeKind::Set { key, capacity },
+            span,
+        });
+        self.set_ids.insert((key, capacity), ty);
+        ty
+    }
+
+    fn type_is_hashable(&self, ty: Ty, active: &mut std::collections::HashSet<Ty>) -> bool {
+        if !active.insert(ty) {
+            return false;
+        }
+        let hashable = match &self.types[ty.0].kind {
+            TTypeKind::Refinement { base, .. } => self.type_is_hashable(*base, active),
+            TTypeKind::Int | TTypeKind::Long | TTypeKind::Bool | TTypeKind::Id { .. } => true,
+            TTypeKind::Struct(fields) => fields
+                .iter()
+                .all(|field| self.type_is_hashable(field.ty, active)),
+            TTypeKind::Enum(cases) => cases.iter().all(|case| {
+                case.payload
+                    .iter()
+                    .all(|payload| self.type_is_hashable(*payload, active))
+            }),
+            _ => false,
+        };
+        active.remove(&ty);
+        hashable
     }
 
     fn capacity_value(&self, expr: &Expr) -> Result<i128, CheckError> {
@@ -1545,6 +1706,21 @@ impl Checker {
                     payload
                 }
             }
+            TTypeKind::Map {
+                key,
+                value,
+                capacity,
+            } => {
+                let key_size = self.type_size_checked(*key, cache, span)?;
+                let value_size = self.type_size_checked(*value, cache, span)?;
+                let per_entry = checked_add(17, checked_add(key_size, value_size)?)?;
+                checked_add(16, checked_mul(*capacity as u128, per_entry)?)?
+            }
+            TTypeKind::Set { key, capacity } => {
+                let key_size = self.type_size_checked(*key, cache, span)?;
+                let per_entry = checked_add(17, key_size)?;
+                checked_add(16, checked_mul(*capacity as u128, per_entry)?)?
+            }
             TTypeKind::Pool {
                 element, capacity, ..
             } => {
@@ -1609,6 +1785,43 @@ impl Checker {
                         message: "pools cannot appear inside array or list elements; each repeated element would need a distinct owner".to_owned(),
                     });
                 }
+            }
+            match &definition.kind {
+                TTypeKind::Map { key, value, .. } => {
+                    if self.type_contains_pool(*key) || self.type_contains_pool(*value) {
+                        return Err(CheckError {
+                            span: definition.span,
+                            message: "pools cannot appear in map keys or values; store ids instead and keep their pool alive".to_owned(),
+                        });
+                    }
+                    if !self.type_is_hashable(*key, &mut std::collections::HashSet::new()) {
+                        return Err(CheckError {
+                            span: definition.span,
+                            message: format!(
+                                "map key type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
+                                self.type_name(*key)
+                            ),
+                        });
+                    }
+                }
+                TTypeKind::Set { key, .. } => {
+                    if self.type_contains_pool(*key) {
+                        return Err(CheckError {
+                            span: definition.span,
+                            message: "pools cannot appear in set elements; store ids instead and keep their pool alive".to_owned(),
+                        });
+                    }
+                    if !self.type_is_hashable(*key, &mut std::collections::HashSet::new()) {
+                        return Err(CheckError {
+                            span: definition.span,
+                            message: format!(
+                                "set element type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
+                                self.type_name(*key)
+                            ),
+                        });
+                    }
+                }
+                _ => {}
             }
             let mut cache = vec![None; self.types.len()];
             let size = self.type_size_checked(Ty(id), &mut cache, definition.span)?;
@@ -1800,6 +2013,8 @@ impl Checker {
                 TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
                     vec![*element]
                 }
+                TTypeKind::Map { key, value, .. } => vec![*key, *value],
+                TTypeKind::Set { key, .. } => vec![*key],
                 TTypeKind::Refinement { .. } => Vec::new(),
                 _ => Vec::new(),
             };
@@ -2428,6 +2643,16 @@ impl Checker {
                         op: PoolOp::Add,
                         proven_success,
                         ..
+                    }
+                    | TExprKind::MapOp {
+                        op: MapOp::Set,
+                        proven_success,
+                        ..
+                    }
+                    | TExprKind::SetOp {
+                        op: SetOp::Add,
+                        proven_success,
+                        ..
                     } => Some(*proven_success),
                     _ => None,
                 };
@@ -2463,6 +2688,16 @@ impl Checker {
                     }
                     | TExprKind::PoolOp {
                         op: PoolOp::Add,
+                        proven_success,
+                        ..
+                    }
+                    | TExprKind::MapOp {
+                        op: MapOp::Set,
+                        proven_success,
+                        ..
+                    }
+                    | TExprKind::SetOp {
+                        op: SetOp::Add,
                         proven_success,
                         ..
                     } => Some(*proven_success),
@@ -2576,7 +2811,10 @@ impl Checker {
                 self.record_nested_facts(binding.id, &[], &typed_value);
                 if matches!(
                     self.types[ty.0].kind,
-                    TTypeKind::List { .. } | TTypeKind::Pool { .. }
+                    TTypeKind::List { .. }
+                        | TTypeKind::Pool { .. }
+                        | TTypeKind::Map { .. }
+                        | TTypeKind::Set { .. }
                 ) {
                     let key = CollectionCountKey {
                         root: binding.id,
@@ -2584,7 +2822,10 @@ impl Checker {
                     };
                     if matches!(
                         &typed_value.kind,
-                        TExprKind::EmptyList | TExprKind::EmptyPool
+                        TExprKind::EmptyList
+                            | TExprKind::EmptyPool
+                            | TExprKind::EmptyMap
+                            | TExprKind::EmptySet
                     ) {
                         self.collection_counts.insert(key, 0);
                     } else {
@@ -2641,7 +2882,13 @@ impl Checker {
                 if self.active_views.iter().any(|view| {
                     let view = self.canonical_place(view);
                     places_overlap(&view, &target_place)
-                        && !places_proven_prefix(&view, &target_place)
+                        && (!places_proven_prefix(&view, &target_place)
+                            || (*op == AssignOp::Set
+                                && view.path.len() == target_place.path.len()
+                                && matches!(
+                                    view.path.last(),
+                                    Some(TProjection::Index { is_map: true, .. })
+                                )))
                 }) {
                     return Err(CheckError {
                         span: stmt.span,
@@ -2831,6 +3078,14 @@ impl Checker {
                             op: PoolOp::Add,
                             proven_success: false,
                             ..
+                        } | TExprKind::MapOp {
+                            op: MapOp::Set,
+                            proven_success: false,
+                            ..
+                        } | TExprKind::SetOp {
+                            op: SetOp::Add,
+                            proven_success: false,
+                            ..
                         }
                     ) {
                         let message = if matches!(&typed.kind, TExprKind::PoolOp { .. }) {
@@ -2917,34 +3172,63 @@ impl Checker {
                 body,
             } => {
                 let typed_collection = self.check_expr(collection, None)?;
-                let (element, capacity, is_list, is_pool, pool_owner) = match self.types
-                    [typed_collection.ty.0]
-                    .kind
-                {
-                    TTypeKind::Array { element, capacity } => {
-                        (element, capacity, false, false, None)
-                    }
-                    TTypeKind::List { element, capacity } => (element, capacity, true, false, None),
-                    TTypeKind::Pool {
-                        element,
-                        capacity,
-                        owner,
-                    } => (element, capacity, false, true, Some(owner)),
-                    _ => {
-                        return Err(CheckError {
-                            span: collection.span,
-                            message: format!(
-                                "{} is not an array, list, or pool; collection loops need a fixed collection",
-                                self.type_name(typed_collection.ty)
-                            ),
-                        });
-                    }
-                };
+                let (element, capacity, is_list, is_pool, is_map, is_set, pool_owner, map_key) =
+                    match self.types[typed_collection.ty.0].kind {
+                        TTypeKind::Array { element, capacity } => {
+                            (element, capacity, false, false, false, false, None, None)
+                        }
+                        TTypeKind::List { element, capacity } => {
+                            (element, capacity, true, false, false, false, None, None)
+                        }
+                        TTypeKind::Pool {
+                            element,
+                            capacity,
+                            owner,
+                        } => (
+                            element,
+                            capacity,
+                            false,
+                            true,
+                            false,
+                            false,
+                            Some(owner),
+                            None,
+                        ),
+                        TTypeKind::Map {
+                            key,
+                            value,
+                            capacity,
+                        } => (value, capacity, false, false, true, false, None, Some(key)),
+                        TTypeKind::Set { key, capacity } => {
+                            (key, capacity, false, false, false, true, None, None)
+                        }
+                        _ => {
+                            return Err(CheckError {
+                                span: collection.span,
+                                message: format!(
+                                    "{} is not an array, list, or pool; collection loops need a fixed collection",
+                                    self.type_name(typed_collection.ty)
+                                ),
+                            });
+                        }
+                    };
+                if is_map && index_name.is_none() {
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message: "map iteration needs both value and key names: use 'for value, key in map'".to_owned(),
+                    });
+                }
+                if is_set && index_name.is_some() {
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message: "set iteration binds one key: use 'for key in set'".to_owned(),
+                    });
+                }
                 let source = self.resolve_place(collection).map_err(|_| CheckError {
                     span: collection.span,
                     message: "collection iteration needs a local, parameter, or field place; bind the value to a local first".to_owned(),
                 })?;
-                let writable = self.place_is_mutable(&source);
+                let writable = self.place_is_mutable(&source) && !is_set;
                 let before_counts = self.collection_counts.clone();
                 let iterations = if is_list {
                     self.collection_count_key(&source)
@@ -2966,7 +3250,9 @@ impl Checker {
                 self.next_local += 1;
                 let binding = self.declare(name, element, writable, stmt.span, false)?;
                 let index_id = if let Some(index_name) = index_name {
-                    let index_ty = if let Some(owner) = pool_owner {
+                    let index_ty = if let Some(key) = map_key {
+                        key
+                    } else if let Some(owner) = pool_owner {
                         self.intern_id(owner, stmt.span)
                     } else {
                         Ty::Long
@@ -2990,17 +3276,24 @@ impl Checker {
                     capacity,
                     is_list,
                     is_pool,
+                    is_map,
                     proven: true,
                 });
                 element_place.ty = element;
-                self.view_bindings.insert(binding.id, element_place.clone());
-                self.active_views.push(element_place);
+                if is_set {
+                    self.active_views.push(source.clone());
+                } else {
+                    self.view_bindings.insert(binding.id, element_place.clone());
+                    self.active_views.push(element_place);
+                }
                 self.loop_depth += 1;
                 let typed_body = self.check_block(body, true, None)?;
                 let after_body_counts = self.collection_counts.clone();
                 self.loop_depth -= 1;
                 self.active_views.pop();
-                self.view_bindings.remove(&binding.id);
+                if !is_set {
+                    self.view_bindings.remove(&binding.id);
+                }
                 self.finish_loop_push_proofs(
                     before_counts,
                     after_body_counts,
@@ -3021,6 +3314,8 @@ impl Checker {
                     source,
                     is_list,
                     is_pool,
+                    is_map,
+                    is_set,
                     body: typed_body,
                 }
             }
@@ -3034,7 +3329,8 @@ impl Checker {
                     } | TExprKind::PoolOp {
                         op: PoolOp::Add,
                         ..
-                    }
+                    } | TExprKind::MapOp { op: MapOp::Set, .. }
+                        | TExprKind::SetOp { op: SetOp::Add, .. }
                 ) {
                     return Err(CheckError { span: value.span, message: "discard accepts only a collection push or insert result with error type Full".to_owned() });
                 }
@@ -3179,7 +3475,10 @@ impl Checker {
                 })
             }
             ExprKind::Name(name) => self.find_binding(name).map(|binding| binding.ty),
-            ExprKind::ListLiteral | ExprKind::PoolLiteral => None,
+            ExprKind::ListLiteral
+            | ExprKind::PoolLiteral
+            | ExprKind::MapLiteral
+            | ExprKind::SetLiteral => None,
             ExprKind::Call { name, .. } => {
                 if name == "print" {
                     Some(Ty::Unit)
@@ -3471,7 +3770,10 @@ impl Checker {
                 self.collect_loop_constraints_expr(receiver, counter, None, constraints);
                 self.collect_loop_constraints_expr(index, counter, Some(Ty::Long), constraints);
             }
-            ExprKind::ListLiteral | ExprKind::PoolLiteral => {}
+            ExprKind::ListLiteral
+            | ExprKind::PoolLiteral
+            | ExprKind::MapLiteral
+            | ExprKind::SetLiteral => {}
             ExprKind::StructInit { fields, .. } => {
                 for field in fields {
                     self.collect_loop_constraints_expr(&field.value, counter, None, constraints);
@@ -3950,6 +4252,282 @@ impl Checker {
                 ));
             }
         }
+        if let TTypeKind::Map {
+            key,
+            value,
+            capacity,
+        } = self.types[typed_collection.ty.0].kind
+        {
+            let op = match name {
+                "get" => MapOp::Get,
+                "set" => MapOp::Set,
+                "remove" => MapOp::Remove,
+                "contains" => MapOp::Contains,
+                "count" => MapOp::Count,
+                _ => {
+                    return Err(CheckError {
+                        span: method_span,
+                        message: format!(
+                            "no method '{}' on {}; available methods: get, set, remove, contains, count",
+                            name,
+                            self.type_name(typed_collection.ty)
+                        ),
+                    });
+                }
+            };
+            let expected_args = match op {
+                MapOp::Set => 2,
+                MapOp::Count => 0,
+                _ => 1,
+            };
+            if args.len() != expected_args {
+                return Err(CheckError {
+                    span: method_span,
+                    message: format!(
+                        "method '{}.{}' takes {} argument(s), but got {}",
+                        self.type_name(typed_collection.ty),
+                        name,
+                        expected_args,
+                        args.len()
+                    ),
+                });
+            }
+            let mut receiver_place = if matches!(op, MapOp::Set | MapOp::Remove) {
+                let place = self.resolve_place(receiver).map_err(|_| CheckError {
+                    span: receiver.span,
+                    message: "a map mutation needs a var, write parameter, or writable map view"
+                        .to_owned(),
+                })?;
+                if !self.place_is_mutable(&place) {
+                    return Err(CheckError {
+                        span: receiver.span,
+                        message:
+                            "a map mutation needs mutable storage; use var or pass it as write"
+                                .to_owned(),
+                    });
+                }
+                if self.active_views.iter().any(|view| {
+                    let receiver = self.canonical_place(&place);
+                    let view = self.canonical_place(view);
+                    places_may_prefix(&receiver, &view) || places_may_prefix(&view, &receiver)
+                }) {
+                    return Err(CheckError {
+                        span: method_span,
+                        message: format!(
+                            "cannot call '{}.{}' while a map view is live; move the mutation after the loop",
+                            self.type_name(typed_collection.ty),
+                            name
+                        ),
+                    });
+                }
+                Some(place)
+            } else {
+                None
+            };
+            let typed_args = match op {
+                MapOp::Set => vec![
+                    self.check_store(&args[0], key)?,
+                    self.check_store(&args[1], value)?,
+                ],
+                MapOp::Get | MapOp::Remove | MapOp::Contains => {
+                    vec![self.check_store(&args[0], key)?]
+                }
+                MapOp::Count => Vec::new(),
+            };
+            let result = match op {
+                MapOp::Get | MapOp::Remove => self.option_type(value, method_span),
+                MapOp::Set => {
+                    let full = self.type_ids["Full"];
+                    self.intern_generic(
+                        2,
+                        Ty::Unit,
+                        full,
+                        "Result<(), Full>".to_owned(),
+                        method_span,
+                        TTypeKind::Result(Ty::Unit, full),
+                    )
+                }
+                MapOp::Contains => Ty::Bool,
+                MapOp::Count => self.intern_refinement(
+                    Ty::Long,
+                    TypeRangeAst {
+                        lower: 0,
+                        upper: capacity as i128,
+                        inclusive: true,
+                        span: method_span,
+                    },
+                    RefinePolicy::Checked,
+                    method_span,
+                )?,
+            };
+            if let Some(want) = expected {
+                self.type_mismatch(result, want, span)?;
+            }
+            let count_key = receiver_place
+                .as_ref()
+                .and_then(|place| self.collection_count_key(place));
+            let count_proven = count_key
+                .as_ref()
+                .and_then(|key| self.collection_counts.get(key))
+                .is_some_and(|count| *count < capacity);
+            let proven_success = op == MapOp::Set && count_proven;
+            if let Some(place) = receiver_place.as_mut() {
+                if op == MapOp::Set {
+                    if let Some(key) = count_key {
+                        if proven_success {
+                            let current = self.collection_counts.get(&key).copied().unwrap_or(0);
+                            self.collection_counts
+                                .insert(key, current.saturating_add(1).min(capacity));
+                        } else {
+                            self.collection_counts.insert(key, capacity);
+                        }
+                    }
+                } else {
+                    self.invalidate_collection_counts(place);
+                }
+                self.invalidate_place(place);
+            }
+            return Ok((
+                TExprKind::MapOp {
+                    op,
+                    receiver: Box::new(typed_collection),
+                    args: typed_args,
+                    capacity,
+                    proven_success,
+                },
+                result,
+            ));
+        }
+        if let TTypeKind::Set { key, capacity } = self.types[typed_collection.ty.0].kind {
+            let op = match name {
+                "add" => SetOp::Add,
+                "remove" => SetOp::Remove,
+                "contains" => SetOp::Contains,
+                "count" => SetOp::Count,
+                _ => {
+                    return Err(CheckError {
+                        span: method_span,
+                        message: format!(
+                            "no method '{}' on {}; available methods: add, remove, contains, count",
+                            name,
+                            self.type_name(typed_collection.ty)
+                        ),
+                    });
+                }
+            };
+            let expected_args = usize::from(op != SetOp::Count);
+            if args.len() != expected_args {
+                return Err(CheckError {
+                    span: method_span,
+                    message: format!(
+                        "method '{}.{}' takes {} argument(s), but got {}",
+                        self.type_name(typed_collection.ty),
+                        name,
+                        expected_args,
+                        args.len()
+                    ),
+                });
+            }
+            let mut receiver_place = if matches!(op, SetOp::Add | SetOp::Remove) {
+                let place = self.resolve_place(receiver).map_err(|_| CheckError {
+                    span: receiver.span,
+                    message: "a set mutation needs mutable storage; use var or pass it as write"
+                        .to_owned(),
+                })?;
+                if !self.place_is_mutable(&place) {
+                    return Err(CheckError {
+                        span: receiver.span,
+                        message:
+                            "a set mutation needs mutable storage; use var or pass it as write"
+                                .to_owned(),
+                    });
+                }
+                if self.active_views.iter().any(|view| {
+                    let receiver = self.canonical_place(&place);
+                    let view = self.canonical_place(view);
+                    places_may_prefix(&receiver, &view) || places_may_prefix(&view, &receiver)
+                }) {
+                    return Err(CheckError {
+                        span: method_span,
+                        message: format!(
+                            "cannot call '{}.{}' while a set view is live; move the mutation after the loop",
+                            self.type_name(typed_collection.ty),
+                            name
+                        ),
+                    });
+                }
+                Some(place)
+            } else {
+                None
+            };
+            let typed_args = if op == SetOp::Add || op == SetOp::Remove || op == SetOp::Contains {
+                vec![self.check_store(&args[0], key)?]
+            } else {
+                Vec::new()
+            };
+            let result = match op {
+                SetOp::Add => {
+                    let full = self.type_ids["Full"];
+                    self.intern_generic(
+                        2,
+                        Ty::Unit,
+                        full,
+                        "Result<(), Full>".to_owned(),
+                        method_span,
+                        TTypeKind::Result(Ty::Unit, full),
+                    )
+                }
+                SetOp::Remove | SetOp::Contains => Ty::Bool,
+                SetOp::Count => self.intern_refinement(
+                    Ty::Long,
+                    TypeRangeAst {
+                        lower: 0,
+                        upper: capacity as i128,
+                        inclusive: true,
+                        span: method_span,
+                    },
+                    RefinePolicy::Checked,
+                    method_span,
+                )?,
+            };
+            if let Some(want) = expected {
+                self.type_mismatch(result, want, span)?;
+            }
+            let count_key = receiver_place
+                .as_ref()
+                .and_then(|place| self.collection_count_key(place));
+            let count_proven = count_key
+                .as_ref()
+                .and_then(|key| self.collection_counts.get(key))
+                .is_some_and(|count| *count < capacity);
+            let proven_success = op == SetOp::Add && count_proven;
+            if let Some(place) = receiver_place.as_mut() {
+                if op == SetOp::Add {
+                    if let Some(key) = count_key {
+                        if proven_success {
+                            let current = self.collection_counts.get(&key).copied().unwrap_or(0);
+                            self.collection_counts
+                                .insert(key, current.saturating_add(1).min(capacity));
+                        } else {
+                            self.collection_counts.insert(key, capacity);
+                        }
+                    }
+                } else {
+                    self.invalidate_collection_counts(place);
+                }
+                self.invalidate_place(place);
+            }
+            return Ok((
+                TExprKind::SetOp {
+                    op,
+                    receiver: Box::new(typed_collection),
+                    args: typed_args,
+                    capacity,
+                    proven_success,
+                },
+                result,
+            ));
+        }
         if let TTypeKind::List { element, capacity } = self.types[typed_collection.ty.0].kind {
             let op = match name {
                 "push" => CollectionOp::Push,
@@ -4023,7 +4601,7 @@ impl Checker {
             ) && self.active_views.iter().any(|view| {
                 let view = self.canonical_place(view);
                 let receiver = self.canonical_place(&receiver_place);
-                places_may_prefix(&receiver, &view)
+                places_may_prefix(&receiver, &view) || places_may_prefix(&view, &receiver)
             }) {
                 return Err(CheckError {
                     span: method_span,
@@ -4930,6 +5508,28 @@ impl Checker {
                 };
                 (TExprKind::EmptyPool, ty)
             }
+            ExprKind::MapLiteral => {
+                let Some(ty) =
+                    expected.filter(|ty| matches!(self.types[ty.0].kind, TTypeKind::Map { .. }))
+                else {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "cannot infer the key, value, and capacity for 'map {}'; add a map<K, V, N> type annotation".to_owned(),
+                    });
+                };
+                (TExprKind::EmptyMap, ty)
+            }
+            ExprKind::SetLiteral => {
+                let Some(ty) =
+                    expected.filter(|ty| matches!(self.types[ty.0].kind, TTypeKind::Set { .. }))
+                else {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "cannot infer the key and capacity for 'set {}'; add a set<K, N> type annotation".to_owned(),
+                    });
+                };
+                (TExprKind::EmptySet, ty)
+            }
             ExprKind::StructInit { name, fields } => {
                 let Some(base_ty) = self.type_ids.get(name).copied() else {
                     return Err(CheckError {
@@ -5172,12 +5772,14 @@ impl Checker {
                             self.types[arg.ty.0].kind,
                             TTypeKind::Array { .. }
                                 | TTypeKind::List { .. }
+                                | TTypeKind::Map { .. }
+                                | TTypeKind::Set { .. }
                                 | TTypeKind::Pool { .. }
                         )
                     {
                         return Err(CheckError {
                             span: args[0].span,
-                            message: "print supports int, long, bool, enum, struct, array, list, and pool values"
+                            message: "print supports int, long, bool, enum, struct, array, list, map, set, and pool values"
                                 .to_owned(),
                         });
                     }
@@ -5259,10 +5861,23 @@ impl Checker {
                                 return Err(CheckError { span: arg.span, message: "a write argument must be a var, a field of a var, or another write parameter".to_owned() });
                             }
                             let canonical = self.canonical_place(&place);
+                            let write_collection = matches!(
+                                self.types[place.ty.0].kind,
+                                TTypeKind::Map { .. } | TTypeKind::Set { .. }
+                            );
                             if self.active_views.iter().any(|view| {
                                 let view = self.canonical_place(view);
+                                let replaces_map_value = view.path.len() == canonical.path.len()
+                                    && view.path.last().is_some_and(|projection| {
+                                        matches!(
+                                            projection,
+                                            TProjection::Index { is_map: true, .. }
+                                        )
+                                    });
                                 places_overlap(&view, &canonical)
-                                    && !places_proven_prefix(&view, &canonical)
+                                    && (write_collection
+                                        || replaces_map_value
+                                        || !places_proven_prefix(&view, &canonical))
                             }) {
                                 return Err(CheckError { span: arg.span, message: "cannot pass storage containing a live collection view as write".to_owned() });
                             }
@@ -6475,6 +7090,8 @@ impl Checker {
             ExprKind::Name(_)
             | ExprKind::ListLiteral
             | ExprKind::PoolLiteral
+            | ExprKind::MapLiteral
+            | ExprKind::SetLiteral
             | ExprKind::Unit
             | ExprKind::Integer { .. }
             | ExprKind::Bool(_)
@@ -6645,6 +7262,7 @@ impl Checker {
                     capacity,
                     is_list,
                     is_pool: false,
+                    is_map: false,
                     proven,
                 });
                 place.ty = element;
@@ -6725,6 +7343,7 @@ impl Checker {
         }
         match self.types[ty.0].kind {
             TTypeKind::List { capacity, .. } | TTypeKind::Pool { capacity, .. } => Some(capacity),
+            TTypeKind::Map { capacity, .. } | TTypeKind::Set { capacity, .. } => Some(capacity),
             _ => None,
         }
     }
@@ -6803,6 +7422,8 @@ impl Checker {
                 | ExprKind::Name(_)
                 | ExprKind::ListLiteral
                 | ExprKind::PoolLiteral
+                | ExprKind::MapLiteral
+                | ExprKind::SetLiteral
                 | ExprKind::LoopExit(_) => true,
                 ExprKind::Match { scrutinee, arms } => {
                     if !expr(checker, scrutinee, counts) {
@@ -7755,6 +8376,34 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
                 collect_global_expr_effects(argument, effects, functions);
             }
         }
+        TExprKind::MapOp {
+            op, receiver, args, ..
+        } => {
+            collect_global_expr_effects(receiver, effects, functions);
+            if let Some(path) = global_path_from_expr(receiver) {
+                match op {
+                    MapOp::Set | MapOp::Remove => effects.add_write(path, true),
+                    MapOp::Get | MapOp::Contains | MapOp::Count => {}
+                }
+            }
+            for argument in args {
+                collect_global_expr_effects(argument, effects, functions);
+            }
+        }
+        TExprKind::SetOp {
+            op, receiver, args, ..
+        } => {
+            collect_global_expr_effects(receiver, effects, functions);
+            if let Some(path) = global_path_from_expr(receiver) {
+                match op {
+                    SetOp::Add | SetOp::Remove => effects.add_write(path, true),
+                    SetOp::Contains | SetOp::Count => {}
+                }
+            }
+            for argument in args {
+                collect_global_expr_effects(argument, effects, functions);
+            }
+        }
         TExprKind::Construct { args, .. } => {
             for argument in args {
                 collect_global_expr_effects(argument, effects, functions);
@@ -7812,7 +8461,9 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         | TExprKind::LoopExit(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
-        | TExprKind::EmptyPool => {}
+        | TExprKind::EmptyPool
+        | TExprKind::EmptyMap
+        | TExprKind::EmptySet => {}
     }
 }
 
@@ -7942,7 +8593,9 @@ fn visit_global_calls_expr(
         }
         TExprKind::Fill { value, .. } => visit_global_calls_expr(value, active_views, check)?,
         TExprKind::CollectionOp { receiver, args, .. }
-        | TExprKind::PoolOp { receiver, args, .. } => {
+        | TExprKind::PoolOp { receiver, args, .. }
+        | TExprKind::MapOp { receiver, args, .. }
+        | TExprKind::SetOp { receiver, args, .. } => {
             visit_global_calls_expr(receiver, active_views, check)?;
             for argument in args {
                 visit_global_calls_expr(argument, active_views, check)?;
@@ -7992,6 +8645,8 @@ fn visit_global_calls_expr(
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
         | TExprKind::EmptyPool
+        | TExprKind::EmptyMap
+        | TExprKind::EmptySet
         | TExprKind::LoopExit(_) => {}
     }
     Ok(())

@@ -1,0 +1,1 @@
+main.nl:4:32: error: cannot call 'set<int, 2>.remove' while a set view is live; move the mutation after the loop

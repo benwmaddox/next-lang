@@ -247,6 +247,8 @@ pub enum ExprKind {
     },
     ListLiteral,
     PoolLiteral,
+    MapLiteral,
+    SetLiteral,
     Fit {
         value: Box<Expr>,
         ty: TypeAst,

@@ -55,6 +55,15 @@ pub enum TTypeKind {
         element: Ty,
         capacity: usize,
     },
+    Map {
+        key: Ty,
+        value: Ty,
+        capacity: usize,
+    },
+    Set {
+        key: Ty,
+        capacity: usize,
+    },
     Id {
         owner: usize,
     },
@@ -215,6 +224,8 @@ pub enum ConstValue {
     Struct(Vec<ConstValue>),
     Array(Vec<ConstValue>),
     List(Vec<ConstValue>),
+    Map(Vec<(ConstValue, ConstValue)>),
+    Set(Vec<ConstValue>),
     Pool {
         slots: Vec<Option<ConstValue>>,
         generations: Vec<u32>,
@@ -319,6 +330,8 @@ pub enum TStmtKind {
         source: TPlace,
         is_list: bool,
         is_pool: bool,
+        is_map: bool,
+        is_set: bool,
         body: TBlock,
     },
     Discard(TExpr),
@@ -349,6 +362,7 @@ pub enum TProjection {
         capacity: usize,
         is_list: bool,
         is_pool: bool,
+        is_map: bool,
         proven: bool,
     },
 }
@@ -410,6 +424,23 @@ pub enum CollectionOp {
 pub enum PoolOp {
     Add,
     Get,
+    Remove,
+    Contains,
+    Count,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapOp {
+    Get,
+    Set,
+    Remove,
+    Contains,
+    Count,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetOp {
+    Add,
     Remove,
     Contains,
     Count,
@@ -479,6 +510,8 @@ pub enum TExprKind {
     EmptyArray,
     EmptyList,
     EmptyPool,
+    EmptyMap,
+    EmptySet,
     CollectionOp {
         op: CollectionOp,
         receiver: Box<TExpr>,
@@ -488,6 +521,20 @@ pub enum TExprKind {
     },
     PoolOp {
         op: PoolOp,
+        receiver: Box<TExpr>,
+        args: Vec<TExpr>,
+        capacity: usize,
+        proven_success: bool,
+    },
+    MapOp {
+        op: MapOp,
+        receiver: Box<TExpr>,
+        args: Vec<TExpr>,
+        capacity: usize,
+        proven_success: bool,
+    },
+    SetOp {
+        op: SetOp,
         receiver: Box<TExpr>,
         args: Vec<TExpr>,
         capacity: usize,

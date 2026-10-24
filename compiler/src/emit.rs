@@ -73,6 +73,34 @@ pub fn emit(program: &TProgram) -> String {
                     ty.name
                 ));
             }
+            TTypeKind::Map {
+                key,
+                value,
+                capacity,
+            } => {
+                out.push_str(&format!(
+                    "%nl.ty.{id} = type <{{ i64, i64, [{} x i1], [{} x i64], [{} x i64], [{} x {}], [{} x {}] }}> ; {}\n",
+                    capacity,
+                    capacity,
+                    capacity,
+                    capacity,
+                    llvm_type(*key, &program.types),
+                    capacity,
+                    llvm_type(*value, &program.types),
+                    ty.name
+                ));
+            }
+            TTypeKind::Set { key, capacity } => {
+                out.push_str(&format!(
+                    "%nl.ty.{id} = type <{{ i64, i64, [{} x i1], [{} x i64], [{} x i64], [{} x {}] }}> ; {}\n",
+                    capacity,
+                    capacity,
+                    capacity,
+                    capacity,
+                    llvm_type(*key, &program.types),
+                    ty.name
+                ));
+            }
             TTypeKind::Pool {
                 element, capacity, ..
             } => {
@@ -199,6 +227,7 @@ pub fn emit(program: &TProgram) -> String {
         " }".to_owned(),
         "[".to_owned(),
         "]".to_owned(),
+        "{".to_owned(),
         "pool{".to_owned(),
         ":".to_owned(),
         " => ".to_owned(),
@@ -400,13 +429,10 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
             collect_expect_sources_expr(index, sources);
         }
         TExprKind::Fill { value, .. } => collect_expect_sources_expr(value, sources),
-        TExprKind::CollectionOp { receiver, args, .. } => {
-            collect_expect_sources_expr(receiver, sources);
-            for arg in args {
-                collect_expect_sources_expr(arg, sources);
-            }
-        }
-        TExprKind::PoolOp { receiver, args, .. } => {
+        TExprKind::CollectionOp { receiver, args, .. }
+        | TExprKind::PoolOp { receiver, args, .. }
+        | TExprKind::MapOp { receiver, args, .. }
+        | TExprKind::SetOp { receiver, args, .. } => {
             collect_expect_sources_expr(receiver, sources);
             for arg in args {
                 collect_expect_sources_expr(arg, sources);
@@ -473,7 +499,9 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         | TExprKind::LoopExit(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
-        | TExprKind::EmptyPool => {}
+        | TExprKind::EmptyPool
+        | TExprKind::EmptyMap
+        | TExprKind::EmptySet => {}
     }
 }
 
@@ -535,6 +563,20 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
                         .iter()
                         .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
                         .sum::<usize>(),
+                ),
+                TTypeKind::Map {
+                    key,
+                    value,
+                    capacity,
+                } => 16usize.saturating_add(
+                    capacity.saturating_mul(
+                        17usize
+                            .saturating_add(type_size(*key, types, cache))
+                            .saturating_add(type_size(*value, types, cache)),
+                    ),
+                ),
+                TTypeKind::Set { key, capacity } => 16usize.saturating_add(
+                    capacity.saturating_mul(17usize.saturating_add(type_size(*key, types, cache))),
                 ),
                 TTypeKind::Pool {
                     element, capacity, ..
@@ -603,6 +645,22 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
                 unreachable!("list constant has a non-list value")
             };
             collection_constant(*element, *capacity, values, true, types)
+        }
+        TTypeKind::Map {
+            key,
+            value: value_ty,
+            capacity,
+        } => {
+            let ConstValue::Map(entries) = value else {
+                unreachable!("map constant has a non-map value")
+            };
+            map_constant(*key, *value_ty, *capacity, entries, types)
+        }
+        TTypeKind::Set { key, capacity } => {
+            let ConstValue::Set(entries) = value else {
+                unreachable!("set constant has a non-set value")
+            };
+            set_constant(*key, *capacity, entries, types)
         }
         TTypeKind::Pool {
             element, capacity, ..
@@ -743,6 +801,178 @@ fn collection_constant(
         .to_owned()
 }
 
+fn hash_fold(hash: u64, value: u64) -> u64 {
+    (hash ^ value).wrapping_mul(1_099_511_628_211)
+}
+
+fn constant_hash(ty: Ty, value: &ConstValue, types: &[TType]) -> u64 {
+    fn fold(ty: Ty, value: &ConstValue, types: &[TType], hash: &mut u64) {
+        match &types[ty.0].kind {
+            TTypeKind::Refinement { base, .. } => fold(*base, value, types, hash),
+            TTypeKind::Int => {
+                let ConstValue::Integer(value) = value else {
+                    unreachable!()
+                };
+                *hash = hash_fold(*hash, (*value as i32 as i64) as u64);
+            }
+            TTypeKind::Long | TTypeKind::Id { .. } => {
+                let ConstValue::Integer(value) = value else {
+                    unreachable!()
+                };
+                *hash = hash_fold(*hash, *value as i64 as u64);
+            }
+            TTypeKind::Bool => {
+                let ConstValue::Bool(value) = value else {
+                    unreachable!()
+                };
+                *hash = hash_fold(*hash, u64::from(*value));
+            }
+            TTypeKind::Struct(fields) => {
+                let ConstValue::Struct(values) = value else {
+                    unreachable!()
+                };
+                for (field, value) in fields.iter().zip(values) {
+                    fold(field.ty, value, types, hash);
+                }
+            }
+            TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
+                let ConstValue::Enum {
+                    case_index,
+                    payload,
+                } = value
+                else {
+                    unreachable!()
+                };
+                *hash = hash_fold(*hash, *case_index as u64);
+                for (field_ty, value) in
+                    types[ty.0].cases()[*case_index].payload.iter().zip(payload)
+                {
+                    fold(*field_ty, value, types, hash);
+                }
+            }
+            _ => unreachable!("unhashable type reached constant hashing"),
+        }
+    }
+    let mut hash = 1_469_598_103_934_665_603;
+    fold(ty, value, types, &mut hash);
+    hash
+}
+
+fn hash_index(capacity: usize, hashes: &[u64]) -> Vec<i64> {
+    let mut index = vec![0i64; capacity];
+    if capacity == 0 {
+        return index;
+    }
+    for (entry, hash) in hashes.iter().enumerate() {
+        let mut slot = (*hash as usize) % capacity;
+        while index[slot] != 0 {
+            slot = (slot + 1) % capacity;
+        }
+        index[slot] = entry as i64 + 1;
+    }
+    index
+}
+
+fn map_constant(
+    key_ty: Ty,
+    value_ty: Ty,
+    capacity: usize,
+    entries: &[(ConstValue, ConstValue)],
+    types: &[TType],
+) -> String {
+    let hashes = entries
+        .iter()
+        .map(|(key, _)| constant_hash(key_ty, key, types))
+        .collect::<Vec<_>>();
+    let index = hash_index(capacity, &hashes);
+    let active = (0..capacity)
+        .map(|slot| format!("i1 {}", slot < entries.len()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let hashes_text = (0..capacity)
+        .map(|slot| format!("i64 {}", hashes.get(slot).copied().unwrap_or(0)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let index_text = index
+        .iter()
+        .map(|v| format!("i64 {v}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let keys_text = (0..capacity)
+        .map(|slot| {
+            let value = entries
+                .get(slot)
+                .map(|entry| llvm_constant(key_ty, &entry.0, types))
+                .unwrap_or_else(|| "zeroinitializer".to_owned());
+            format!("{} {value}", llvm_type(key_ty, types))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values_text = (0..capacity)
+        .map(|slot| {
+            let value = entries
+                .get(slot)
+                .map(|entry| llvm_constant(value_ty, &entry.1, types))
+                .unwrap_or_else(|| "zeroinitializer".to_owned());
+            format!("{} {value}", llvm_type(value_ty, types))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "<{{ i64 {}, i64 {}, [{} x i1] [{active}], [{} x i64] [{hashes_text}], [{} x i64] [{index_text}], [{} x {}] [{keys_text}], [{} x {}] [{values_text}] }}>",
+        entries.len(),
+        entries.len(),
+        capacity,
+        capacity,
+        capacity,
+        capacity,
+        llvm_type(key_ty, types),
+        capacity,
+        llvm_type(value_ty, types)
+    )
+}
+
+fn set_constant(key_ty: Ty, capacity: usize, entries: &[ConstValue], types: &[TType]) -> String {
+    let hashes = entries
+        .iter()
+        .map(|key| constant_hash(key_ty, key, types))
+        .collect::<Vec<_>>();
+    let index = hash_index(capacity, &hashes);
+    let active = (0..capacity)
+        .map(|slot| format!("i1 {}", slot < entries.len()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let hashes_text = (0..capacity)
+        .map(|slot| format!("i64 {}", hashes.get(slot).copied().unwrap_or(0)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let index_text = index
+        .iter()
+        .map(|v| format!("i64 {v}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let keys_text = (0..capacity)
+        .map(|slot| {
+            let value = entries
+                .get(slot)
+                .map(|key| llvm_constant(key_ty, key, types))
+                .unwrap_or_else(|| "zeroinitializer".to_owned());
+            format!("{} {value}", llvm_type(key_ty, types))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "<{{ i64 {}, i64 {}, [{} x i1] [{active}], [{} x i64] [{hashes_text}], [{} x i64] [{index_text}], [{} x {}] [{keys_text}] }}>",
+        entries.len(),
+        entries.len(),
+        capacity,
+        capacity,
+        capacity,
+        capacity,
+        llvm_type(key_ty, types)
+    )
+}
+
 fn enum_payload_bytes(
     ty: Ty,
     case_index: usize,
@@ -814,6 +1044,73 @@ fn serialize_constant(
             };
             bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
             serialize_collection(*element, *capacity, values, true, types, bytes, cache);
+        }
+        TTypeKind::Map {
+            key,
+            value: value_ty,
+            capacity,
+        } => {
+            let ConstValue::Map(entries) = value else {
+                unreachable!("map value has a non-map constant")
+            };
+            bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            for index in 0..*capacity {
+                bytes.push(u8::from(index < entries.len()));
+            }
+            let hashes = entries
+                .iter()
+                .map(|(key_value, _)| constant_hash(*key, key_value, types))
+                .collect::<Vec<_>>();
+            let table = hash_index(*capacity, &hashes);
+            for index in 0..*capacity {
+                bytes.extend_from_slice(&hashes.get(index).copied().unwrap_or(0).to_le_bytes());
+            }
+            for slot in table {
+                bytes.extend_from_slice(&slot.to_le_bytes());
+            }
+            for index in 0..*capacity {
+                if let Some((key_value, _)) = entries.get(index) {
+                    serialize_constant(*key, key_value, types, bytes, cache);
+                } else {
+                    bytes.resize(bytes.len() + type_size(*key, types, cache), 0);
+                }
+            }
+            for index in 0..*capacity {
+                if let Some((_, value_value)) = entries.get(index) {
+                    serialize_constant(*value_ty, value_value, types, bytes, cache);
+                } else {
+                    bytes.resize(bytes.len() + type_size(*value_ty, types, cache), 0);
+                }
+            }
+        }
+        TTypeKind::Set { key, capacity } => {
+            let ConstValue::Set(entries) = value else {
+                unreachable!("set value has a non-set constant")
+            };
+            bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+            for index in 0..*capacity {
+                bytes.push(u8::from(index < entries.len()));
+            }
+            let hashes = entries
+                .iter()
+                .map(|key_value| constant_hash(*key, key_value, types))
+                .collect::<Vec<_>>();
+            let table = hash_index(*capacity, &hashes);
+            for index in 0..*capacity {
+                bytes.extend_from_slice(&hashes.get(index).copied().unwrap_or(0).to_le_bytes());
+            }
+            for slot in table {
+                bytes.extend_from_slice(&slot.to_le_bytes());
+            }
+            for index in 0..*capacity {
+                if let Some(key_value) = entries.get(index) {
+                    serialize_constant(*key, key_value, types, bytes, cache);
+                } else {
+                    bytes.resize(bytes.len() + type_size(*key, types, cache), 0);
+                }
+            }
         }
         TTypeKind::Pool { .. } => unreachable!("pool-valued constants are rejected"),
         TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
@@ -1099,11 +1396,17 @@ impl<'a> FunctionEmitter<'a> {
                     TTypeKind::Array { element, .. }
                     | TTypeKind::List { element, .. }
                     | TTypeKind::Pool { element, .. } => element,
+                    TTypeKind::Map { value, .. } => value,
+                    TTypeKind::Set { key, .. } => key,
                     _ => unreachable!("typed collection loop has a collection source"),
                 };
                 self.record_slot(*id, element);
                 if let Some(index_id) = index_id {
-                    self.record_slot(*index_id, Ty::Long);
+                    let index_ty = match self.program.types[collection.ty.0].kind {
+                        TTypeKind::Map { key, .. } => key,
+                        _ => Ty::Long,
+                    };
+                    self.record_slot(*index_id, index_ty);
                 }
                 self.record_slot(*counter_id, Ty::Long);
                 self.collect_expr(collection);
@@ -1146,13 +1449,10 @@ impl<'a> FunctionEmitter<'a> {
                 self.collect_expr(index);
             }
             TExprKind::Fill { value, .. } => self.collect_expr(value),
-            TExprKind::CollectionOp { receiver, args, .. } => {
-                self.collect_expr(receiver);
-                for arg in args {
-                    self.collect_expr(arg);
-                }
-            }
-            TExprKind::PoolOp { receiver, args, .. } => {
+            TExprKind::CollectionOp { receiver, args, .. }
+            | TExprKind::PoolOp { receiver, args, .. }
+            | TExprKind::MapOp { receiver, args, .. }
+            | TExprKind::SetOp { receiver, args, .. } => {
                 self.collect_expr(receiver);
                 for arg in args {
                     self.collect_expr(arg);
@@ -1231,7 +1531,9 @@ impl<'a> FunctionEmitter<'a> {
             | TExprKind::LoopExit(_)
             | TExprKind::EmptyArray
             | TExprKind::EmptyList
-            | TExprKind::EmptyPool => {}
+            | TExprKind::EmptyPool
+            | TExprKind::EmptyMap
+            | TExprKind::EmptySet => {}
         }
     }
 
@@ -1262,28 +1564,53 @@ impl<'a> FunctionEmitter<'a> {
         index: &str,
         lane: usize,
     ) -> String {
-        let (capacity, offset, element) = match self.program.types[collection_ty.0].kind {
-            TTypeKind::Array { element, capacity } => (capacity, 0, element),
-            TTypeKind::List { element, capacity } => (capacity, 1, element),
-            TTypeKind::Pool {
-                element, capacity, ..
-            } => (capacity, 5, element),
-            _ => unreachable!("collection lane pointer requires an array, list, or pool"),
-        };
-        let lane_ty = collection_lane_types(element, &self.program.types)[lane];
+        let (capacity, offset, element, aggregate_lane) =
+            match self.program.types[collection_ty.0].kind {
+                TTypeKind::Array { element, capacity } => (capacity, 0, element, false),
+                TTypeKind::List { element, capacity } => (capacity, 1, element, false),
+                TTypeKind::Pool {
+                    element, capacity, ..
+                } => (capacity, 5, element, false),
+                TTypeKind::Map {
+                    value, capacity, ..
+                } => (
+                    capacity,
+                    6,
+                    value,
+                    matches!(self.program.types[value.0].kind, TTypeKind::Struct(_)),
+                ),
+                TTypeKind::Set { key, capacity } => (capacity, 5, key, false),
+                _ => unreachable!("collection lane pointer requires a fixed collection"),
+            };
         let lane_ptr = self.temp();
         self.instruction(format!(
             "{lane_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 {}",
             self.lltype(collection_ty),
             lane + offset
         ));
-        let result = self.temp();
-        self.instruction(format!(
-            "{result} = getelementptr inbounds [{} x {}], ptr {lane_ptr}, i32 0, i64 {index}",
-            capacity,
-            self.lltype(lane_ty)
-        ));
-        result
+        if aggregate_lane {
+            let item_ptr = self.temp();
+            self.instruction(format!(
+                "{item_ptr} = getelementptr inbounds [{} x {}], ptr {lane_ptr}, i32 0, i64 {index}",
+                capacity,
+                self.lltype(element)
+            ));
+            let result = self.temp();
+            self.instruction(format!(
+                "{result} = getelementptr inbounds {}, ptr {item_ptr}, i32 0, i32 {lane}",
+                self.lltype(element)
+            ));
+            result
+        } else {
+            let lane_ty = collection_lane_types(element, &self.program.types)[lane];
+            let item_ptr = self.temp();
+            self.instruction(format!(
+                "{item_ptr} = getelementptr inbounds [{} x {}], ptr {lane_ptr}, i32 0, i64 {index}",
+                capacity,
+                self.lltype(lane_ty)
+            ));
+            item_ptr
+        }
     }
 
     fn emit_collection_element(&mut self, collection_ty: Ty, pointer: &str, index: &str) -> String {
@@ -1291,6 +1618,8 @@ impl<'a> FunctionEmitter<'a> {
             TTypeKind::Array { element, .. }
             | TTypeKind::List { element, .. }
             | TTypeKind::Pool { element, .. } => element,
+            TTypeKind::Map { value, .. } => value,
+            TTypeKind::Set { key, .. } => key,
             _ => unreachable!(),
         };
         if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
@@ -1333,6 +1662,7 @@ impl<'a> FunctionEmitter<'a> {
             TTypeKind::Array { element, .. }
             | TTypeKind::List { element, .. }
             | TTypeKind::Pool { element, .. } => element,
+            TTypeKind::Map { value, .. } => value,
             _ => unreachable!(),
         };
         if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
@@ -1396,6 +1726,935 @@ impl<'a> FunctionEmitter<'a> {
             self.lltype(pool_ty)
         ));
         result
+    }
+
+    fn emit_map_meta_ptr(&mut self, map_ty: Ty, pointer: &str, field: usize) -> String {
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 {field}",
+            self.lltype(map_ty)
+        ));
+        result
+    }
+
+    fn emit_map_array_ptr(
+        &mut self,
+        map_ty: Ty,
+        pointer: &str,
+        field: usize,
+        capacity: usize,
+        element_ty: Ty,
+        index: &str,
+    ) -> String {
+        let array = self.emit_map_meta_ptr(map_ty, pointer, field);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = getelementptr inbounds [{} x {}], ptr {array}, i32 0, i64 {index}",
+            capacity,
+            self.lltype(element_ty)
+        ));
+        result
+    }
+
+    fn emit_map_entry_ptr(
+        &mut self,
+        map_ty: Ty,
+        pointer: &str,
+        index: &str,
+        is_value: bool,
+    ) -> String {
+        let (capacity, field, element) = match self.program.types[map_ty.0].kind {
+            TTypeKind::Map {
+                key,
+                value,
+                capacity,
+            } => (
+                capacity,
+                if is_value { 6 } else { 5 },
+                if is_value { value } else { key },
+            ),
+            TTypeKind::Set { key, capacity } => (capacity, 5, key),
+            _ => unreachable!("map entry pointer requires a map or set"),
+        };
+        self.emit_map_array_ptr(map_ty, pointer, field, capacity, element, index)
+    }
+
+    fn emit_hash_fold(&mut self, ty: Ty, value: &str, hash: &str) -> String {
+        match &self.program.types[ty.0].kind {
+            TTypeKind::Refinement { base, .. } => self.emit_hash_fold(*base, value, hash),
+            TTypeKind::Int => {
+                let widened = self.temp();
+                self.instruction(format!("{widened} = sext i32 {value} to i64"));
+                self.emit_hash_word(hash, &widened)
+            }
+            TTypeKind::Long | TTypeKind::Id { .. } => self.emit_hash_word(hash, value),
+            TTypeKind::Bool => {
+                let widened = self.temp();
+                self.instruction(format!("{widened} = zext i1 {value} to i64"));
+                self.emit_hash_word(hash, &widened)
+            }
+            TTypeKind::Struct(fields) => {
+                let mut current = hash.to_owned();
+                for (index, field) in fields.iter().enumerate() {
+                    let item = self.temp();
+                    self.instruction(format!(
+                        "{item} = extractvalue {} {value}, {index}",
+                        self.lltype(ty)
+                    ));
+                    current = self.emit_hash_fold(field.ty, &item, &current);
+                }
+                current
+            }
+            TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
+                let tag = self.emit_tag(ty, value);
+                let wide_tag = self.temp();
+                self.instruction(format!("{wide_tag} = zext i32 {tag} to i64"));
+                let with_tag = self.emit_hash_word(hash, &wide_tag);
+                let cases = self.program.types[ty.0].cases();
+                let labels = (0..cases.len())
+                    .map(|_| self.new_label("hash.case"))
+                    .collect::<Vec<_>>();
+                let invalid = self.new_label("hash.invalid");
+                let merge = self.new_label("hash.end");
+                let switch = labels
+                    .iter()
+                    .enumerate()
+                    .map(|(index, label)| format!("i32 {index}, label %{label}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.terminate(format!("switch i32 {tag}, label %{invalid} [ {switch} ]"));
+                self.start_block(&invalid);
+                self.terminate("unreachable");
+                let mut incoming = Vec::new();
+                for (case_index, case) in cases.iter().enumerate() {
+                    self.start_block(&labels[case_index]);
+                    let mut current = with_tag.clone();
+                    for field_index in 0..case.payload.len() {
+                        let field = self.emit_payload(ty, value, case_index, field_index).1;
+                        current = self.emit_hash_fold(case.payload[field_index], &field, &current);
+                    }
+                    let predecessor = self.current_label.clone();
+                    self.terminate(format!("br label %{merge}"));
+                    incoming.push((current, predecessor));
+                }
+                self.start_block(&merge);
+                let result = self.temp();
+                let values = incoming
+                    .iter()
+                    .map(|(value, predecessor)| format!("[ {value}, %{predecessor} ]"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.instruction(format!("{result} = phi i64 {values}"));
+                result
+            }
+            _ => unreachable!("unhashable key reached native hashing"),
+        }
+    }
+
+    fn emit_hash_word(&mut self, hash: &str, word: &str) -> String {
+        let mixed = self.temp();
+        self.instruction(format!("{mixed} = xor i64 {hash}, {word}"));
+        let result = self.temp();
+        self.instruction(format!("{result} = mul i64 {mixed}, 1099511628211"));
+        result
+    }
+
+    fn emit_hash(&mut self, ty: Ty, value: &str) -> String {
+        self.emit_hash_fold(ty, value, "1469598103934665603")
+    }
+
+    fn emit_map_lookup(
+        &mut self,
+        map_ty: Ty,
+        pointer: &str,
+        key_ty: Ty,
+        key: &str,
+        capacity: usize,
+    ) -> (String, String, String) {
+        if capacity == 0 {
+            return ("-1".to_owned(), "-1".to_owned(), "0".to_owned());
+        }
+        let hash = self.emit_hash(key_ty, key);
+        let entry_out = self.entry_alloca(Ty::Long);
+        let bucket_out = self.entry_alloca(Ty::Long);
+        let first_tombstone = self.entry_alloca(Ty::Long);
+        let slot_ptr = self.entry_alloca(Ty::Long);
+        let probe_ptr = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 -1, ptr {entry_out}, align 1"));
+        self.instruction(format!("store i64 -1, ptr {bucket_out}, align 1"));
+        self.instruction(format!("store i64 -1, ptr {first_tombstone}, align 1"));
+        self.instruction(format!("store i64 0, ptr {probe_ptr}, align 1"));
+        let initial_slot = self.temp();
+        self.instruction(format!("{initial_slot} = urem i64 {hash}, {capacity}"));
+        self.instruction(format!("store i64 {initial_slot}, ptr {slot_ptr}, align 1"));
+        let condition = self.new_label("map.lookup.cond");
+        let inspect = self.new_label("map.lookup.inspect");
+        let empty = self.new_label("map.lookup.empty");
+        let tombstone = self.new_label("map.lookup.tombstone");
+        let occupied = self.new_label("map.lookup.occupied");
+        let live = self.new_label("map.lookup.live");
+        let found = self.new_label("map.lookup.found");
+        let advance = self.new_label("map.lookup.advance");
+        let done = self.new_label("map.lookup.done");
+        self.terminate(format!("br label %{condition}"));
+        self.start_block(&condition);
+        let probe = self.temp();
+        self.instruction(format!("{probe} = load i64, ptr {probe_ptr}, align 1"));
+        let within = self.temp();
+        self.instruction(format!("{within} = icmp ult i64 {probe}, {capacity}"));
+        self.terminate(format!("br i1 {within}, label %{inspect}, label %{done}"));
+        self.start_block(&inspect);
+        let slot = self.temp();
+        self.instruction(format!("{slot} = load i64, ptr {slot_ptr}, align 1"));
+        let bucket_ptr = self.emit_map_array_ptr(map_ty, pointer, 4, capacity, Ty::Long, &slot);
+        let bucket = self.temp();
+        self.instruction(format!("{bucket} = load i64, ptr {bucket_ptr}, align 1"));
+        let is_empty = self.temp();
+        self.instruction(format!("{is_empty} = icmp eq i64 {bucket}, 0"));
+        self.terminate(format!(
+            "br i1 {is_empty}, label %{empty}, label %{occupied}"
+        ));
+        self.start_block(&empty);
+        let first = self.temp();
+        self.instruction(format!(
+            "{first} = load i64, ptr {first_tombstone}, align 1"
+        ));
+        let has_tombstone = self.temp();
+        self.instruction(format!("{has_tombstone} = icmp sge i64 {first}, 0"));
+        let candidate = self.temp();
+        self.instruction(format!(
+            "{candidate} = select i1 {has_tombstone}, i64 {first}, i64 {slot}"
+        ));
+        self.instruction(format!("store i64 {candidate}, ptr {bucket_out}, align 1"));
+        self.terminate(format!("br label %{done}"));
+        self.start_block(&occupied);
+        let is_tombstone = self.temp();
+        self.instruction(format!("{is_tombstone} = icmp slt i64 {bucket}, 0"));
+        self.terminate(format!(
+            "br i1 {is_tombstone}, label %{tombstone}, label %{live}"
+        ));
+        self.start_block(&tombstone);
+        let previous_tombstone = self.temp();
+        self.instruction(format!(
+            "{previous_tombstone} = load i64, ptr {first_tombstone}, align 1"
+        ));
+        let first_empty = self.temp();
+        self.instruction(format!(
+            "{first_empty} = icmp slt i64 {previous_tombstone}, 0"
+        ));
+        let keep = self.temp();
+        self.instruction(format!(
+            "{keep} = select i1 {first_empty}, i64 {slot}, i64 {previous_tombstone}"
+        ));
+        self.instruction(format!("store i64 {keep}, ptr {first_tombstone}, align 1"));
+        self.terminate(format!("br label %{advance}"));
+        self.start_block(&live);
+        let is_live = self.temp();
+        self.instruction(format!("{is_live} = icmp sgt i64 {bucket}, 0"));
+        let continue_label = self.new_label("map.lookup.continue");
+        self.terminate(format!(
+            "br i1 {is_live}, label %{continue_label}, label %{advance}"
+        ));
+        self.start_block(&continue_label);
+        let entry = self.temp();
+        self.instruction(format!("{entry} = sub i64 {bucket}, 1"));
+        let stored_hash_ptr =
+            self.emit_map_array_ptr(map_ty, pointer, 3, capacity, Ty::Long, &entry);
+        let stored_hash = self.temp();
+        self.instruction(format!(
+            "{stored_hash} = load i64, ptr {stored_hash_ptr}, align 1"
+        ));
+        let same_hash = self.temp();
+        self.instruction(format!("{same_hash} = icmp eq i64 {stored_hash}, {hash}"));
+        let compare = self.new_label("map.lookup.compare");
+        self.terminate(format!(
+            "br i1 {same_hash}, label %{compare}, label %{advance}"
+        ));
+        self.start_block(&compare);
+        let stored_key_ptr = self.emit_map_entry_ptr(map_ty, pointer, &entry, false);
+        let stored_key = self.temp();
+        self.instruction(format!(
+            "{stored_key} = load {}, ptr {stored_key_ptr}, align 1",
+            self.lltype(key_ty)
+        ));
+        let equal = self.emit_binary(BinaryOp::Eq, key_ty, &stored_key, key, Span::default());
+        self.terminate(format!("br i1 {equal}, label %{found}, label %{advance}"));
+        self.start_block(&found);
+        self.instruction(format!("store i64 {entry}, ptr {entry_out}, align 1"));
+        self.instruction(format!("store i64 {slot}, ptr {bucket_out}, align 1"));
+        self.terminate(format!("br label %{done}"));
+        self.start_block(&advance);
+        let next_slot = self.temp();
+        self.instruction(format!("{next_slot} = add i64 {slot}, 1"));
+        let wraps = self.temp();
+        self.instruction(format!("{wraps} = icmp eq i64 {next_slot}, {capacity}"));
+        let wrapped_slot = self.temp();
+        self.instruction(format!(
+            "{wrapped_slot} = select i1 {wraps}, i64 0, i64 {next_slot}"
+        ));
+        self.instruction(format!("store i64 {wrapped_slot}, ptr {slot_ptr}, align 1"));
+        let next_probe = self.temp();
+        self.instruction(format!("{next_probe} = add i64 {probe}, 1"));
+        self.instruction(format!("store i64 {next_probe}, ptr {probe_ptr}, align 1"));
+        self.terminate(format!("br label %{condition}"));
+        self.start_block(&done);
+        let result_entry = self.temp();
+        let result_bucket = self.temp();
+        self.instruction(format!(
+            "{result_entry} = load i64, ptr {entry_out}, align 1"
+        ));
+        self.instruction(format!(
+            "{result_bucket} = load i64, ptr {bucket_out}, align 1"
+        ));
+        let has_bucket = self.temp();
+        self.instruction(format!("{has_bucket} = icmp sge i64 {result_bucket}, 0"));
+        let tombstone = self.temp();
+        self.instruction(format!(
+            "{tombstone} = load i64, ptr {first_tombstone}, align 1"
+        ));
+        let has_tombstone = self.temp();
+        self.instruction(format!("{has_tombstone} = icmp sge i64 {tombstone}, 0"));
+        let no_bucket = self.temp();
+        self.instruction(format!("{no_bucket} = xor i1 {has_bucket}, true"));
+        let use_tombstone = self.temp();
+        self.instruction(format!(
+            "{use_tombstone} = and i1 {has_tombstone}, {no_bucket}"
+        ));
+        let final_bucket = self.temp();
+        self.instruction(format!(
+            "{final_bucket} = select i1 {use_tombstone}, i64 {tombstone}, i64 {result_bucket}"
+        ));
+        (result_entry, final_bucket, hash)
+    }
+
+    fn emit_map_compact(
+        &mut self,
+        map_ty: Ty,
+        pointer: &str,
+        capacity: usize,
+        value_ty: Option<Ty>,
+    ) {
+        if capacity == 0 {
+            return;
+        }
+        let end_ptr = self.emit_map_meta_ptr(map_ty, pointer, 1);
+        let old_end = self.temp();
+        self.instruction(format!("{old_end} = load i64, ptr {end_ptr}, align 1"));
+        let source_ptr = self.entry_alloca(Ty::Long);
+        let destination_ptr = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {source_ptr}, align 1"));
+        self.instruction(format!("store i64 0, ptr {destination_ptr}, align 1"));
+        let condition = self.new_label("map.compact.cond");
+        let inspect = self.new_label("map.compact.inspect");
+        let copy = self.new_label("map.compact.copy");
+        let skip = self.new_label("map.compact.skip");
+        let copied = self.new_label("map.compact.copied");
+        let moved = self.new_label("map.compact.moved");
+        let step = self.new_label("map.compact.step");
+        let done = self.new_label("map.compact.done");
+        self.terminate(format!("br label %{condition}"));
+        self.start_block(&condition);
+        let source = self.temp();
+        self.instruction(format!("{source} = load i64, ptr {source_ptr}, align 1"));
+        let within = self.temp();
+        self.instruction(format!("{within} = icmp ult i64 {source}, {old_end}"));
+        self.terminate(format!("br i1 {within}, label %{inspect}, label %{done}"));
+        self.start_block(&inspect);
+        let active_ptr = self.emit_map_array_ptr(map_ty, pointer, 2, capacity, Ty::Bool, &source);
+        let active = self.temp();
+        self.instruction(format!("{active} = load i1, ptr {active_ptr}, align 1"));
+        self.terminate(format!("br i1 {active}, label %{copy}, label %{skip}"));
+        self.start_block(&copy);
+        let destination = self.temp();
+        self.instruction(format!(
+            "{destination} = load i64, ptr {destination_ptr}, align 1"
+        ));
+        let key_ty = match self.program.types[map_ty.0].kind {
+            TTypeKind::Map { key, .. } | TTypeKind::Set { key, .. } => key,
+            _ => unreachable!(),
+        };
+        let key_source = self.emit_map_entry_ptr(map_ty, pointer, &source, false);
+        let key_value = self.temp();
+        self.instruction(format!(
+            "{key_value} = load {}, ptr {key_source}, align 1",
+            self.lltype(key_ty)
+        ));
+        let key_destination = self.emit_map_entry_ptr(map_ty, pointer, &destination, false);
+        self.instruction(format!(
+            "store {} {key_value}, ptr {key_destination}, align 1",
+            self.lltype(key_ty)
+        ));
+        let hash_source = self.emit_map_array_ptr(map_ty, pointer, 3, capacity, Ty::Long, &source);
+        let hash_value = self.temp();
+        self.instruction(format!(
+            "{hash_value} = load i64, ptr {hash_source}, align 1"
+        ));
+        let hash_destination =
+            self.emit_map_array_ptr(map_ty, pointer, 3, capacity, Ty::Long, &destination);
+        self.instruction(format!(
+            "store i64 {hash_value}, ptr {hash_destination}, align 1"
+        ));
+        if let Some(value_ty) = value_ty {
+            let value_source = self.emit_map_entry_ptr(map_ty, pointer, &source, true);
+            let value = self.temp();
+            self.instruction(format!(
+                "{value} = load {}, ptr {value_source}, align 1",
+                self.lltype(value_ty)
+            ));
+            let value_destination = self.emit_map_entry_ptr(map_ty, pointer, &destination, true);
+            self.instruction(format!(
+                "store {} {value}, ptr {value_destination}, align 1",
+                self.lltype(value_ty)
+            ));
+        }
+        let active_destination =
+            self.emit_map_array_ptr(map_ty, pointer, 2, capacity, Ty::Bool, &destination);
+        self.instruction(format!("store i1 true, ptr {active_destination}, align 1"));
+        let same = self.temp();
+        self.instruction(format!("{same} = icmp eq i64 {source}, {destination}"));
+        self.terminate(format!("br i1 {same}, label %{copied}, label %{moved}"));
+        self.start_block(&moved);
+        let inactive_source =
+            self.emit_map_array_ptr(map_ty, pointer, 2, capacity, Ty::Bool, &source);
+        self.instruction(format!("store i1 false, ptr {inactive_source}, align 1"));
+        self.terminate(format!("br label %{step}"));
+        self.start_block(&copied);
+        self.terminate(format!("br label %{step}"));
+        self.start_block(&step);
+        let destination = self.temp();
+        self.instruction(format!(
+            "{destination} = load i64, ptr {destination_ptr}, align 1"
+        ));
+        let next_destination = self.temp();
+        self.instruction(format!("{next_destination} = add i64 {destination}, 1"));
+        self.instruction(format!(
+            "store i64 {next_destination}, ptr {destination_ptr}, align 1"
+        ));
+        let source = self.temp();
+        self.instruction(format!("{source} = load i64, ptr {source_ptr}, align 1"));
+        let next_source = self.temp();
+        self.instruction(format!("{next_source} = add i64 {source}, 1"));
+        self.instruction(format!(
+            "store i64 {next_source}, ptr {source_ptr}, align 1"
+        ));
+        self.terminate(format!("br label %{condition}"));
+        self.start_block(&skip);
+        let source = self.temp();
+        self.instruction(format!("{source} = load i64, ptr {source_ptr}, align 1"));
+        let next_source = self.temp();
+        self.instruction(format!("{next_source} = add i64 {source}, 1"));
+        self.instruction(format!(
+            "store i64 {next_source}, ptr {source_ptr}, align 1"
+        ));
+        self.terminate(format!("br label %{condition}"));
+        self.start_block(&done);
+        let new_end = self.temp();
+        self.instruction(format!(
+            "{new_end} = load i64, ptr {destination_ptr}, align 1"
+        ));
+        let count_ptr = self.emit_map_meta_ptr(map_ty, pointer, 0);
+        self.instruction(format!("store i64 {new_end}, ptr {count_ptr}, align 1"));
+        self.instruction(format!("store i64 {new_end}, ptr {end_ptr}, align 1"));
+        let bucket_clear_ptr = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {bucket_clear_ptr}, align 1"));
+        let clear_cond = self.new_label("map.compact.clear.cond");
+        let clear_body = self.new_label("map.compact.clear.body");
+        let clear_done = self.new_label("map.compact.clear.done");
+        self.terminate(format!("br label %{clear_cond}"));
+        self.start_block(&clear_cond);
+        let clear_index = self.temp();
+        self.instruction(format!(
+            "{clear_index} = load i64, ptr {bucket_clear_ptr}, align 1"
+        ));
+        let clear_more = self.temp();
+        self.instruction(format!(
+            "{clear_more} = icmp ult i64 {clear_index}, {capacity}"
+        ));
+        self.terminate(format!(
+            "br i1 {clear_more}, label %{clear_body}, label %{clear_done}"
+        ));
+        self.start_block(&clear_body);
+        let bucket = self.emit_map_array_ptr(map_ty, pointer, 4, capacity, Ty::Long, &clear_index);
+        self.instruction(format!("store i64 0, ptr {bucket}, align 1"));
+        let clear_next = self.temp();
+        self.instruction(format!("{clear_next} = add i64 {clear_index}, 1"));
+        self.instruction(format!(
+            "store i64 {clear_next}, ptr {bucket_clear_ptr}, align 1"
+        ));
+        self.terminate(format!("br label %{clear_cond}"));
+        self.start_block(&clear_done);
+        let rehash_index_ptr = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {rehash_index_ptr}, align 1"));
+        let rehash_cond = self.new_label("map.compact.rehash.cond");
+        let rehash_body = self.new_label("map.compact.rehash.body");
+        let probe_cond = self.new_label("map.compact.probe.cond");
+        let probe_body = self.new_label("map.compact.probe.body");
+        let probe_advance = self.new_label("map.compact.probe.advance");
+        let rehash_done = self.new_label("map.compact.rehash.done");
+        let all_rehashed = self.new_label("map.compact.rehash.all_done");
+        self.terminate(format!("br label %{rehash_cond}"));
+        self.start_block(&rehash_cond);
+        let rehash_index = self.temp();
+        self.instruction(format!(
+            "{rehash_index} = load i64, ptr {rehash_index_ptr}, align 1"
+        ));
+        let rehash_more = self.temp();
+        self.instruction(format!(
+            "{rehash_more} = icmp ult i64 {rehash_index}, {new_end}"
+        ));
+        self.terminate(format!(
+            "br i1 {rehash_more}, label %{rehash_body}, label %{all_rehashed}"
+        ));
+        self.start_block(&rehash_body);
+        let stored_hash_ptr =
+            self.emit_map_array_ptr(map_ty, pointer, 3, capacity, Ty::Long, &rehash_index);
+        let stored_hash = self.temp();
+        self.instruction(format!(
+            "{stored_hash} = load i64, ptr {stored_hash_ptr}, align 1"
+        ));
+        let initial = self.temp();
+        self.instruction(format!("{initial} = urem i64 {stored_hash}, {capacity}"));
+        let rehash_slot_ptr = self.entry_alloca(Ty::Long);
+        let rehash_probe_ptr = self.entry_alloca(Ty::Long);
+        self.instruction(format!(
+            "store i64 {initial}, ptr {rehash_slot_ptr}, align 1"
+        ));
+        self.instruction(format!("store i64 0, ptr {rehash_probe_ptr}, align 1"));
+        self.terminate(format!("br label %{probe_cond}"));
+        self.start_block(&probe_cond);
+        let rehash_slot = self.temp();
+        self.instruction(format!(
+            "{rehash_slot} = load i64, ptr {rehash_slot_ptr}, align 1"
+        ));
+        let rehash_bucket_ptr =
+            self.emit_map_array_ptr(map_ty, pointer, 4, capacity, Ty::Long, &rehash_slot);
+        let rehash_bucket = self.temp();
+        self.instruction(format!(
+            "{rehash_bucket} = load i64, ptr {rehash_bucket_ptr}, align 1"
+        ));
+        let empty_bucket = self.temp();
+        self.instruction(format!("{empty_bucket} = icmp eq i64 {rehash_bucket}, 0"));
+        let probe = self.temp();
+        self.instruction(format!(
+            "{probe} = load i64, ptr {rehash_probe_ptr}, align 1"
+        ));
+        let probe_bound = self.temp();
+        self.instruction(format!("{probe_bound} = icmp ult i64 {probe}, {capacity}"));
+        let can_insert = self.temp();
+        self.instruction(format!(
+            "{can_insert} = and i1 {empty_bucket}, {probe_bound}"
+        ));
+        self.terminate(format!(
+            "br i1 {can_insert}, label %{probe_body}, label %{probe_advance}"
+        ));
+        self.start_block(&probe_body);
+        let encoded = self.temp();
+        self.instruction(format!("{encoded} = add i64 {rehash_index}, 1"));
+        self.instruction(format!(
+            "store i64 {encoded}, ptr {rehash_bucket_ptr}, align 1"
+        ));
+        self.terminate(format!("br label %{rehash_done}"));
+        self.start_block(&probe_advance);
+        let continue_label = self.new_label("map.compact.probe.next");
+        self.terminate(format!(
+            "br i1 {probe_bound}, label %{continue_label}, label %{rehash_done}"
+        ));
+        self.start_block(&continue_label);
+        let rehash_slot = self.temp();
+        self.instruction(format!(
+            "{rehash_slot} = load i64, ptr {rehash_slot_ptr}, align 1"
+        ));
+        let next_slot = self.temp();
+        self.instruction(format!("{next_slot} = add i64 {rehash_slot}, 1"));
+        let wraps = self.temp();
+        self.instruction(format!("{wraps} = icmp eq i64 {next_slot}, {capacity}"));
+        let wrapped = self.temp();
+        self.instruction(format!(
+            "{wrapped} = select i1 {wraps}, i64 0, i64 {next_slot}"
+        ));
+        self.instruction(format!(
+            "store i64 {wrapped}, ptr {rehash_slot_ptr}, align 1"
+        ));
+        let probe = self.temp();
+        self.instruction(format!(
+            "{probe} = load i64, ptr {rehash_probe_ptr}, align 1"
+        ));
+        let next_probe = self.temp();
+        self.instruction(format!("{next_probe} = add i64 {probe}, 1"));
+        self.instruction(format!(
+            "store i64 {next_probe}, ptr {rehash_probe_ptr}, align 1"
+        ));
+        self.terminate(format!("br label %{probe_cond}"));
+        self.start_block(&rehash_done);
+        let rehash_index = self.temp();
+        self.instruction(format!(
+            "{rehash_index} = load i64, ptr {rehash_index_ptr}, align 1"
+        ));
+        let next_index = self.temp();
+        self.instruction(format!("{next_index} = add i64 {rehash_index}, 1"));
+        self.instruction(format!(
+            "store i64 {next_index}, ptr {rehash_index_ptr}, align 1"
+        ));
+        self.terminate(format!("br label %{rehash_cond}"));
+        self.start_block(&all_rehashed);
+    }
+
+    fn emit_map_insert_entry(
+        &mut self,
+        map_ty: Ty,
+        pointer: &str,
+        key_ty: Ty,
+        key: &str,
+        hash: &str,
+        bucket: &str,
+        value_ty: Option<Ty>,
+        value: Option<&str>,
+        capacity: usize,
+    ) {
+        debug_assert!(capacity > 0);
+        let end_ptr = self.emit_map_meta_ptr(map_ty, pointer, 1);
+        let end = self.temp();
+        self.instruction(format!("{end} = load i64, ptr {end_ptr}, align 1"));
+        let needs_compaction = self.temp();
+        self.instruction(format!(
+            "{needs_compaction} = icmp uge i64 {end}, {capacity}"
+        ));
+        let compact = self.new_label("map.insert.compact");
+        let append = self.new_label("map.insert.append");
+        let ready = self.new_label("map.insert.ready");
+        self.terminate(format!(
+            "br i1 {needs_compaction}, label %{compact}, label %{append}"
+        ));
+        self.start_block(&append);
+        let append_pred = self.current_label.clone();
+        self.terminate(format!("br label %{ready}"));
+        self.start_block(&compact);
+        let value_kind = match self.program.types[map_ty.0].kind {
+            TTypeKind::Map { value, .. } => Some(value),
+            TTypeKind::Set { .. } => None,
+            _ => unreachable!(),
+        };
+        self.emit_map_compact(map_ty, pointer, capacity, value_kind);
+        let (_, compact_bucket, _) = self.emit_map_lookup(map_ty, pointer, key_ty, key, capacity);
+        let compact_pred = self.current_label.clone();
+        self.terminate(format!("br label %{ready}"));
+        self.start_block(&ready);
+        let final_bucket = self.temp();
+        self.instruction(format!(
+            "{final_bucket} = phi i64 [ {bucket}, %{append_pred} ], [ {compact_bucket}, %{compact_pred} ]"
+        ));
+        let entry = self.temp();
+        self.instruction(format!("{entry} = load i64, ptr {end_ptr}, align 1"));
+        let key_ptr = self.emit_map_entry_ptr(map_ty, pointer, &entry, false);
+        self.instruction(format!(
+            "store {} {key}, ptr {key_ptr}, align 1",
+            self.lltype(key_ty)
+        ));
+        let hash_ptr = self.emit_map_array_ptr(map_ty, pointer, 3, capacity, Ty::Long, &entry);
+        self.instruction(format!("store i64 {hash}, ptr {hash_ptr}, align 1"));
+        let active_ptr = self.emit_map_array_ptr(map_ty, pointer, 2, capacity, Ty::Bool, &entry);
+        self.instruction(format!("store i1 true, ptr {active_ptr}, align 1"));
+        if let (Some(value_ty), Some(value)) = (value_ty, value) {
+            let value_ptr = self.emit_map_entry_ptr(map_ty, pointer, &entry, true);
+            self.instruction(format!(
+                "store {} {value}, ptr {value_ptr}, align 1",
+                self.lltype(value_ty)
+            ));
+        }
+        let encoded = self.temp();
+        self.instruction(format!("{encoded} = add i64 {entry}, 1"));
+        let bucket_ptr =
+            self.emit_map_array_ptr(map_ty, pointer, 4, capacity, Ty::Long, &final_bucket);
+        self.instruction(format!("store i64 {encoded}, ptr {bucket_ptr}, align 1"));
+        let count_ptr = self.emit_map_meta_ptr(map_ty, pointer, 0);
+        let count = self.temp();
+        self.instruction(format!("{count} = load i64, ptr {count_ptr}, align 1"));
+        let count_next = self.temp();
+        self.instruction(format!("{count_next} = add i64 {count}, 1"));
+        self.instruction(format!("store i64 {count_next}, ptr {count_ptr}, align 1"));
+        let end_next = self.temp();
+        self.instruction(format!("{end_next} = add i64 {entry}, 1"));
+        self.instruction(format!("store i64 {end_next}, ptr {end_ptr}, align 1"));
+    }
+
+    fn emit_map_op(
+        &mut self,
+        expr: &TExpr,
+        op: MapOp,
+        receiver: &TExpr,
+        args: &[TExpr],
+        capacity: usize,
+        proven_success: bool,
+    ) -> String {
+        let map_ty = receiver.ty;
+        let (key_ty, value_ty) = match self.program.types[map_ty.0].kind {
+            TTypeKind::Map { key, value, .. } => (key, value),
+            _ => unreachable!(),
+        };
+        let pointer = if Self::expr_place(receiver).is_some() {
+            self.emit_place_pointer_expr(receiver)
+        } else {
+            let value = self.emit_expr(receiver);
+            if self.terminated {
+                return String::new();
+            }
+            let pointer = self.entry_alloca(map_ty);
+            self.instruction(format!(
+                "store {} {value}, ptr {pointer}, align 1",
+                self.lltype(map_ty)
+            ));
+            pointer
+        };
+        if self.terminated {
+            return String::new();
+        }
+        if op == MapOp::Count {
+            return self.emit_collection_count(map_ty, &pointer);
+        }
+        let mut values = Vec::with_capacity(args.len());
+        for arg in args {
+            values.push(self.emit_expr(arg));
+            if self.terminated {
+                return String::new();
+            }
+        }
+        let (entry, bucket, hash) =
+            self.emit_map_lookup(map_ty, &pointer, key_ty, &values[0], capacity);
+        match op {
+            MapOp::Get | MapOp::Remove => {
+                let found = self.temp();
+                self.instruction(format!("{found} = icmp sge i64 {entry}, 0"));
+                let present = self.new_label("map.get.present");
+                let absent = self.new_label("map.get.absent");
+                let merge = self.new_label("map.get.end");
+                self.terminate(format!("br i1 {found}, label %{present}, label %{absent}"));
+                self.start_block(&absent);
+                let none = self.emit_construct_values(expr.ty, 1, Vec::new());
+                let absent_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&present);
+                let value_ptr = self.emit_map_entry_ptr(map_ty, &pointer, &entry, true);
+                let value = self.temp();
+                self.instruction(format!(
+                    "{value} = load {}, ptr {value_ptr}, align 1",
+                    self.lltype(value_ty)
+                ));
+                if op == MapOp::Remove {
+                    let active_ptr =
+                        self.emit_map_array_ptr(map_ty, &pointer, 2, capacity, Ty::Bool, &entry);
+                    self.instruction(format!("store i1 false, ptr {active_ptr}, align 1"));
+                    let bucket_ptr =
+                        self.emit_map_array_ptr(map_ty, &pointer, 4, capacity, Ty::Long, &bucket);
+                    self.instruction(format!("store i64 -1, ptr {bucket_ptr}, align 1"));
+                    let count_ptr = self.emit_map_meta_ptr(map_ty, &pointer, 0);
+                    let count = self.temp();
+                    self.instruction(format!("{count} = load i64, ptr {count_ptr}, align 1"));
+                    let next = self.temp();
+                    self.instruction(format!("{next} = sub i64 {count}, 1"));
+                    self.instruction(format!("store i64 {next}, ptr {count_ptr}, align 1"));
+                }
+                let some = self.emit_construct_values(expr.ty, 0, vec![(value_ty, value)]);
+                let present_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&merge);
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = phi {} [ {none}, %{absent_pred} ], [ {some}, %{present_pred} ]",
+                    self.lltype(expr.ty)
+                ));
+                result
+            }
+            MapOp::Contains => {
+                let found = self.temp();
+                self.instruction(format!("{found} = icmp sge i64 {entry}, 0"));
+                found
+            }
+            MapOp::Set => {
+                let found = self.temp();
+                self.instruction(format!("{found} = icmp sge i64 {entry}, 0"));
+                let update = self.new_label("map.set.update");
+                let insert_or_full = self.new_label("map.set.new");
+                let merge = self.new_label("map.set.end");
+                self.terminate(format!(
+                    "br i1 {found}, label %{update}, label %{insert_or_full}"
+                ));
+                self.start_block(&update);
+                let value_ptr = self.emit_map_entry_ptr(map_ty, &pointer, &entry, true);
+                self.instruction(format!(
+                    "store {} {}, ptr {value_ptr}, align 1",
+                    self.lltype(value_ty),
+                    values[1]
+                ));
+                let ok = self.emit_construct_values(expr.ty, 0, vec![(Ty::Unit, String::new())]);
+                let update_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&insert_or_full);
+                let insert = self.new_label("map.set.insert");
+                let full = self.new_label("map.set.full");
+                if proven_success {
+                    self.terminate(format!("br label %{insert}"));
+                } else {
+                    let count = self.emit_collection_count(map_ty, &pointer);
+                    let is_full = self.temp();
+                    self.instruction(format!("{is_full} = icmp uge i64 {count}, {capacity}"));
+                    self.terminate(format!("br i1 {is_full}, label %{full}, label %{insert}"));
+                }
+                self.start_block(&full);
+                let error_ty = self.program.types[expr.ty.0].cases()[1].payload[0];
+                let full_value = self.emit_construct_values(error_ty, 0, Vec::new());
+                let failed = self.emit_construct_values(expr.ty, 1, vec![(error_ty, full_value)]);
+                let full_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&insert);
+                if capacity > 0 {
+                    self.emit_map_insert_entry(
+                        map_ty,
+                        &pointer,
+                        key_ty,
+                        &values[0],
+                        &hash,
+                        &bucket,
+                        Some(value_ty),
+                        Some(&values[1]),
+                        capacity,
+                    );
+                }
+                let inserted =
+                    self.emit_construct_values(expr.ty, 0, vec![(Ty::Unit, String::new())]);
+                let insert_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&merge);
+                let result = self.temp();
+                self.instruction(format!("{result} = phi {} [ {ok}, %{update_pred} ], [ {failed}, %{full_pred} ], [ {inserted}, %{insert_pred} ]", self.lltype(expr.ty)));
+                result
+            }
+            MapOp::Count => unreachable!(),
+        }
+    }
+
+    fn emit_set_op(
+        &mut self,
+        expr: &TExpr,
+        op: SetOp,
+        receiver: &TExpr,
+        args: &[TExpr],
+        capacity: usize,
+        proven_success: bool,
+    ) -> String {
+        let set_ty = receiver.ty;
+        let key_ty = match self.program.types[set_ty.0].kind {
+            TTypeKind::Set { key, .. } => key,
+            _ => unreachable!(),
+        };
+        let pointer = if Self::expr_place(receiver).is_some() {
+            self.emit_place_pointer_expr(receiver)
+        } else {
+            let value = self.emit_expr(receiver);
+            if self.terminated {
+                return String::new();
+            }
+            let pointer = self.entry_alloca(set_ty);
+            self.instruction(format!(
+                "store {} {value}, ptr {pointer}, align 1",
+                self.lltype(set_ty)
+            ));
+            pointer
+        };
+        if self.terminated {
+            return String::new();
+        }
+        if op == SetOp::Count {
+            return self.emit_collection_count(set_ty, &pointer);
+        }
+        let key = self.emit_expr(&args[0]);
+        if self.terminated {
+            return String::new();
+        }
+        let (entry, bucket, hash) = self.emit_map_lookup(set_ty, &pointer, key_ty, &key, capacity);
+        match op {
+            SetOp::Contains => {
+                let found = self.temp();
+                self.instruction(format!("{found} = icmp sge i64 {entry}, 0"));
+                found
+            }
+            SetOp::Remove => {
+                let found = self.temp();
+                self.instruction(format!("{found} = icmp sge i64 {entry}, 0"));
+                let remove = self.new_label("set.remove");
+                let absent = self.new_label("set.absent");
+                let merge = self.new_label("set.remove.end");
+                self.terminate(format!("br i1 {found}, label %{remove}, label %{absent}"));
+                self.start_block(&remove);
+                let active_ptr =
+                    self.emit_map_array_ptr(set_ty, &pointer, 2, capacity, Ty::Bool, &entry);
+                self.instruction(format!("store i1 false, ptr {active_ptr}, align 1"));
+                let bucket_ptr =
+                    self.emit_map_array_ptr(set_ty, &pointer, 4, capacity, Ty::Long, &bucket);
+                self.instruction(format!("store i64 -1, ptr {bucket_ptr}, align 1"));
+                let count_ptr = self.emit_map_meta_ptr(set_ty, &pointer, 0);
+                let count = self.temp();
+                self.instruction(format!("{count} = load i64, ptr {count_ptr}, align 1"));
+                let next = self.temp();
+                self.instruction(format!("{next} = sub i64 {count}, 1"));
+                self.instruction(format!("store i64 {next}, ptr {count_ptr}, align 1"));
+                let removed_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&absent);
+                let absent_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&merge);
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = phi i1 [ true, %{removed_pred} ], [ false, %{absent_pred} ]"
+                ));
+                result
+            }
+            SetOp::Add => {
+                let found = self.temp();
+                self.instruction(format!("{found} = icmp sge i64 {entry}, 0"));
+                let present = self.new_label("set.add.present");
+                let new = self.new_label("set.add.new");
+                let merge = self.new_label("set.add.end");
+                self.terminate(format!("br i1 {found}, label %{present}, label %{new}"));
+                self.start_block(&present);
+                let ok_present =
+                    self.emit_construct_values(expr.ty, 0, vec![(Ty::Unit, String::new())]);
+                let present_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&new);
+                let insert = self.new_label("set.add.insert");
+                let full = self.new_label("set.add.full");
+                if proven_success {
+                    self.terminate(format!("br label %{insert}"));
+                } else {
+                    let count = self.emit_collection_count(set_ty, &pointer);
+                    let is_full = self.temp();
+                    self.instruction(format!("{is_full} = icmp uge i64 {count}, {capacity}"));
+                    self.terminate(format!("br i1 {is_full}, label %{full}, label %{insert}"));
+                }
+                self.start_block(&full);
+                let error_ty = self.program.types[expr.ty.0].cases()[1].payload[0];
+                let full_value = self.emit_construct_values(error_ty, 0, Vec::new());
+                let failed = self.emit_construct_values(expr.ty, 1, vec![(error_ty, full_value)]);
+                let full_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&insert);
+                if capacity > 0 {
+                    self.emit_map_insert_entry(
+                        set_ty, &pointer, key_ty, &key, &hash, &bucket, None, None, capacity,
+                    );
+                }
+                let inserted =
+                    self.emit_construct_values(expr.ty, 0, vec![(Ty::Unit, String::new())]);
+                let insert_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&merge);
+                let result = self.temp();
+                self.instruction(format!("{result} = phi {} [ {ok_present}, %{present_pred} ], [ {failed}, %{full_pred} ], [ {inserted}, %{insert_pred} ]", self.lltype(expr.ty)));
+                result
+            }
+            SetOp::Count => unreachable!(),
+        }
     }
 
     fn emit_pool_init(&mut self, pool_ty: Ty) -> String {
@@ -2037,6 +3296,7 @@ impl<'a> FunctionEmitter<'a> {
                 TTypeKind::Array { element, .. }
                 | TTypeKind::List { element, .. }
                 | TTypeKind::Pool { element, .. } => element,
+                TTypeKind::Map { value, .. } => value,
                 _ => unreachable!(),
             };
             current_ty = element;
@@ -2071,9 +3331,14 @@ impl<'a> FunctionEmitter<'a> {
                     }
                     current_ty = field_ty;
                 }
-                TProjection::Index { index, proven, .. } => {
+                TProjection::Index {
+                    index,
+                    is_map,
+                    proven,
+                    ..
+                } => {
                     let index_value = self.emit_expr(index);
-                    if !*proven {
+                    if !*proven && !*is_map {
                         self.emit_index_guard(
                             current_ty,
                             &pointer,
@@ -2086,9 +3351,15 @@ impl<'a> FunctionEmitter<'a> {
                         TTypeKind::Array { element, .. }
                         | TTypeKind::List { element, .. }
                         | TTypeKind::Pool { element, .. } => element,
+                        TTypeKind::Map { value, .. } if *is_map => value,
                         _ => unreachable!("typed place index crosses only collection storage"),
                     };
-                    if matches!(self.program.types[element.0].kind, TTypeKind::Struct(_)) {
+                    if *is_map && matches!(self.program.types[element.0].kind, TTypeKind::Struct(_))
+                    {
+                        soa = Some((current_ty, pointer.clone(), index_value));
+                    } else if *is_map {
+                        pointer = self.emit_map_entry_ptr(current_ty, &pointer, &index_value, true);
+                    } else if matches!(self.program.types[element.0].kind, TTypeKind::Struct(_)) {
                         soa = Some((current_ty, pointer.clone(), index_value));
                     } else {
                         pointer = self.emit_collection_lane_pointer(
@@ -2160,6 +3431,7 @@ impl<'a> FunctionEmitter<'a> {
                     capacity: *capacity,
                     is_list: *is_list,
                     is_pool: false,
+                    is_map: false,
                     proven: *proven,
                 });
                 place.ty = expr.ty;
@@ -2187,12 +3459,15 @@ impl<'a> FunctionEmitter<'a> {
                         TTypeKind::Struct(fields) => fields[*index].ty,
                         _ => return None,
                     },
-                    TProjection::Index { .. } => match self.program.types[current_ty.0].kind {
-                        TTypeKind::Array { element, .. }
-                        | TTypeKind::List { element, .. }
-                        | TTypeKind::Pool { element, .. } => element,
-                        _ => return None,
-                    },
+                    TProjection::Index { is_map, .. } => {
+                        match self.program.types[current_ty.0].kind {
+                            TTypeKind::Array { element, .. }
+                            | TTypeKind::List { element, .. }
+                            | TTypeKind::Pool { element, .. } => element,
+                            TTypeKind::Map { value, .. } if *is_map => value,
+                            _ => return None,
+                        }
+                    }
                 };
             }
             let TProjection::Index { index, .. } = place.path.last()? else {
@@ -2202,6 +3477,7 @@ impl<'a> FunctionEmitter<'a> {
                 TTypeKind::Array { element, .. }
                 | TTypeKind::List { element, .. }
                 | TTypeKind::Pool { element, .. } => element,
+                TTypeKind::Map { value, .. } => value,
                 _ => return None,
             };
             if matches!(self.program.types[element.0].kind, TTypeKind::Struct(_)) {
@@ -2405,6 +3681,8 @@ impl<'a> FunctionEmitter<'a> {
                 source,
                 is_list,
                 is_pool,
+                is_map,
+                is_set,
                 body,
             } => self.emit_for_each(
                 *id,
@@ -2414,6 +3692,8 @@ impl<'a> FunctionEmitter<'a> {
                 source,
                 *is_list,
                 *is_pool,
+                *is_map,
+                *is_set,
                 body,
             ),
             TStmtKind::Discard(value) => {
@@ -2537,6 +3817,8 @@ impl<'a> FunctionEmitter<'a> {
         source: &TPlace,
         is_list: bool,
         is_pool: bool,
+        is_map: bool,
+        is_set: bool,
         body: &TBlock,
     ) {
         let collection_ptr = self.emit_place_pointer(source);
@@ -2544,7 +3826,9 @@ impl<'a> FunctionEmitter<'a> {
         let capacity = match self.program.types[collection_ty.0].kind {
             TTypeKind::Array { capacity, .. }
             | TTypeKind::List { capacity, .. }
-            | TTypeKind::Pool { capacity, .. } => capacity,
+            | TTypeKind::Pool { capacity, .. }
+            | TTypeKind::Map { capacity, .. }
+            | TTypeKind::Set { capacity, .. } => capacity,
             _ => unreachable!("typed foreach collection"),
         };
         if is_pool {
@@ -2647,11 +3931,17 @@ impl<'a> FunctionEmitter<'a> {
         }
         let snapshot = if is_list {
             self.emit_collection_count(collection_ty, &collection_ptr)
+        } else if is_map || is_set {
+            let end_ptr = self.emit_map_meta_ptr(collection_ty, &collection_ptr, 1);
+            let end = self.temp();
+            self.instruction(format!("{end} = load i64, ptr {end_ptr}, align 1"));
+            end
         } else {
             capacity.to_string()
         };
         self.instruction(format!("store i64 0, ptr %local.{counter_id}, align 1"));
         let condition = self.new_label("foreach.cond");
+        let check = self.new_label("foreach.check");
         let body_label = self.new_label("foreach.body");
         let latch = self.new_label("foreach.latch");
         let exit = self.new_label("foreach.exit");
@@ -2664,24 +3954,79 @@ impl<'a> FunctionEmitter<'a> {
         let within = self.temp();
         self.instruction(format!("{within} = icmp ult i64 {current}, {snapshot}"));
         self.terminate(format!(
-            "br i1 {within}, label %{body_label}, label %{exit}"
+            "br i1 {within}, label %{}, label %{exit}",
+            if is_map || is_set {
+                &check
+            } else {
+                &body_label
+            }
         ));
+        if is_map || is_set {
+            self.start_block(&check);
+            let active_ptr = self.emit_map_array_ptr(
+                collection_ty,
+                &collection_ptr,
+                2,
+                capacity,
+                Ty::Bool,
+                &current,
+            );
+            let active = self.temp();
+            self.instruction(format!("{active} = load i1, ptr {active_ptr}, align 1"));
+            self.terminate(format!(
+                "br i1 {active}, label %{body_label}, label %{latch}"
+            ));
+        }
         self.start_block(&body_label);
-        if let Some(index_id) = index_id {
+        if is_map {
+            let (_, key_ty, _) = match self.program.types[collection_ty.0].kind {
+                TTypeKind::Map { key, value, .. } => (collection_ty, key, value),
+                _ => unreachable!(),
+            };
+            let key_ptr = self.emit_map_entry_ptr(collection_ty, &collection_ptr, &current, false);
+            let key = self.temp();
+            self.instruction(format!(
+                "{key} = load {}, ptr {key_ptr}, align 1",
+                self.lltype(key_ty)
+            ));
+            if let Some(index_id) = index_id {
+                self.instruction(format!(
+                    "store {} {key}, ptr %local.{index_id}, align 1",
+                    self.lltype(key_ty)
+                ));
+            }
+        } else if is_set {
+            let key_ty = match self.program.types[collection_ty.0].kind {
+                TTypeKind::Set { key, .. } => key,
+                _ => unreachable!(),
+            };
+            let key_ptr = self.emit_map_entry_ptr(collection_ty, &collection_ptr, &current, false);
+            let key = self.temp();
+            self.instruction(format!(
+                "{key} = load {}, ptr {key_ptr}, align 1",
+                self.lltype(key_ty)
+            ));
+            self.instruction(format!(
+                "store {} {key}, ptr %local.{id}, align 1",
+                self.lltype(key_ty)
+            ));
+        } else if let Some(index_id) = index_id {
             let index = self.temp();
             self.instruction(format!(
                 "{index} = load i64, ptr %local.{counter_id}, align 1"
             ));
             self.instruction(format!("store i64 {index}, ptr %local.{index_id}, align 1"));
         }
-        self.views.insert(
-            id,
-            ViewInfo {
-                collection_ty,
-                collection_ptr,
-                counter_id,
-            },
-        );
+        if !is_set {
+            self.views.insert(
+                id,
+                ViewInfo {
+                    collection_ty,
+                    collection_ptr,
+                    counter_id,
+                },
+            );
+        }
         self.loops.push(LoopTargets {
             latch: latch.clone(),
             exit: exit.clone(),
@@ -3081,6 +4426,13 @@ impl<'a> FunctionEmitter<'a> {
             self.emit_print_collection(ty, value);
             return;
         }
+        if matches!(
+            self.program.types[ty.0].kind,
+            TTypeKind::Map { .. } | TTypeKind::Set { .. }
+        ) {
+            self.emit_print_map_set(ty, value);
+            return;
+        }
         match ty {
             Ty::Int => self.instruction(format!("call void @nl_print_int_raw(i32 {value})")),
             Ty::Long => self.instruction(format!("call void @nl_print_long_raw(i64 {value})")),
@@ -3204,6 +4556,90 @@ impl<'a> FunctionEmitter<'a> {
         self.terminate(format!("br label %{cond}"));
         self.start_block(&done);
         self.print_text("]");
+    }
+
+    fn emit_print_map_set(&mut self, ty: Ty, value: &str) {
+        let pointer = self.entry_alloca(ty);
+        self.instruction(format!(
+            "store {} {value}, ptr {pointer}, align 1",
+            self.lltype(ty)
+        ));
+        let capacity = match self.program.types[ty.0].kind {
+            TTypeKind::Map { capacity, .. } | TTypeKind::Set { capacity, .. } => capacity,
+            _ => unreachable!(),
+        };
+        let end_ptr = self.emit_map_meta_ptr(ty, &pointer, 1);
+        let end = self.temp();
+        self.instruction(format!("{end} = load i64, ptr {end_ptr}, align 1"));
+        let counter = self.entry_alloca(Ty::Long);
+        let first = self.entry_alloca(Ty::Bool);
+        self.instruction(format!("store i64 0, ptr {counter}, align 1"));
+        self.instruction(format!("store i1 true, ptr {first}, align 1"));
+        let condition = self.new_label("print.map.cond");
+        let inspect = self.new_label("print.map.inspect");
+        let print = self.new_label("print.map.item");
+        let advance = self.new_label("print.map.advance");
+        let done = self.new_label("print.map.done");
+        self.print_text("{");
+        self.terminate(format!("br label %{condition}"));
+        self.start_block(&condition);
+        let index = self.temp();
+        self.instruction(format!("{index} = load i64, ptr {counter}, align 1"));
+        let more = self.temp();
+        self.instruction(format!("{more} = icmp ult i64 {index}, {end}"));
+        self.terminate(format!("br i1 {more}, label %{inspect}, label %{done}"));
+        self.start_block(&inspect);
+        let active_ptr = self.emit_map_array_ptr(ty, &pointer, 2, capacity, Ty::Bool, &index);
+        let active = self.temp();
+        self.instruction(format!("{active} = load i1, ptr {active_ptr}, align 1"));
+        self.terminate(format!("br i1 {active}, label %{print}, label %{advance}"));
+        self.start_block(&print);
+        let is_first = self.temp();
+        self.instruction(format!("{is_first} = load i1, ptr {first}, align 1"));
+        let separator = self.new_label("print.map.separator");
+        let item = self.new_label("print.map.item.value");
+        self.terminate(format!(
+            "br i1 {is_first}, label %{item}, label %{separator}"
+        ));
+        self.start_block(&separator);
+        self.print_text(", ");
+        self.terminate(format!("br label %{item}"));
+        self.start_block(&item);
+        self.instruction(format!("store i1 false, ptr {first}, align 1"));
+        match self.program.types[ty.0].kind {
+            TTypeKind::Map { key, value, .. } => {
+                let key_ptr = self.emit_map_entry_ptr(ty, &pointer, &index, false);
+                let key_value = self.temp();
+                self.instruction(format!(
+                    "{key_value} = load {}, ptr {key_ptr}, align 1",
+                    self.lltype(key)
+                ));
+                self.emit_print_value(key, &key_value);
+                self.print_text(": ");
+                let item_value = self.emit_collection_element(ty, &pointer, &index);
+                self.emit_print_value(value, &item_value);
+            }
+            TTypeKind::Set { key, .. } => {
+                let key_ptr = self.emit_map_entry_ptr(ty, &pointer, &index, false);
+                let key_value = self.temp();
+                self.instruction(format!(
+                    "{key_value} = load {}, ptr {key_ptr}, align 1",
+                    self.lltype(key)
+                ));
+                self.emit_print_value(key, &key_value);
+            }
+            _ => unreachable!(),
+        }
+        self.terminate(format!("br label %{advance}"));
+        self.start_block(&advance);
+        let current = self.temp();
+        self.instruction(format!("{current} = load i64, ptr {counter}, align 1"));
+        let next = self.temp();
+        self.instruction(format!("{next} = add i64 {current}, 1"));
+        self.instruction(format!("store i64 {next}, ptr {counter}, align 1"));
+        self.terminate(format!("br label %{condition}"));
+        self.start_block(&done);
+        self.print_text("}");
     }
 
     fn emit_print_pool(&mut self, ty: Ty, value: &str) {
@@ -3581,6 +5017,12 @@ impl<'a> FunctionEmitter<'a> {
     fn emit_structural_equal(&mut self, ty: Ty, left: &str, right: &str) -> String {
         if matches!(
             self.program.types[ty.0].kind,
+            TTypeKind::Map { .. } | TTypeKind::Set { .. }
+        ) {
+            return self.emit_map_set_equal(ty, left, right);
+        }
+        if matches!(
+            self.program.types[ty.0].kind,
             TTypeKind::Array { .. } | TTypeKind::List { .. } | TTypeKind::Pool { .. }
         ) {
             if matches!(self.program.types[ty.0].kind, TTypeKind::Pool { .. }) {
@@ -3680,6 +5122,126 @@ impl<'a> FunctionEmitter<'a> {
             .join(", ");
         self.instruction(format!("{result} = phi i1 {values}"));
         result
+    }
+
+    fn emit_map_set_equal(&mut self, ty: Ty, left: &str, right: &str) -> String {
+        let left_ptr = self.entry_alloca(ty);
+        let right_ptr = self.entry_alloca(ty);
+        self.instruction(format!(
+            "store {} {left}, ptr {left_ptr}, align 1",
+            self.lltype(ty)
+        ));
+        self.instruction(format!(
+            "store {} {right}, ptr {right_ptr}, align 1",
+            self.lltype(ty)
+        ));
+        let (capacity, key_ty, value_ty) = match self.program.types[ty.0].kind {
+            TTypeKind::Map {
+                key,
+                value,
+                capacity,
+            } => (capacity, key, Some(value)),
+            TTypeKind::Set { key, capacity } => (capacity, key, None),
+            _ => unreachable!(),
+        };
+        let left_count_ptr = self.emit_map_meta_ptr(ty, &left_ptr, 0);
+        let right_count_ptr = self.emit_map_meta_ptr(ty, &right_ptr, 0);
+        let left_count = self.temp();
+        let right_count = self.temp();
+        self.instruction(format!(
+            "{left_count} = load i64, ptr {left_count_ptr}, align 1"
+        ));
+        self.instruction(format!(
+            "{right_count} = load i64, ptr {right_count_ptr}, align 1"
+        ));
+        let counts_equal = self.temp();
+        self.instruction(format!(
+            "{counts_equal} = icmp eq i64 {left_count}, {right_count}"
+        ));
+        let equal_ptr = self.entry_alloca(Ty::Bool);
+        self.instruction(format!("store i1 {counts_equal}, ptr {equal_ptr}, align 1"));
+        let index_ptr = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {index_ptr}, align 1"));
+        let left_end_ptr = self.emit_map_meta_ptr(ty, &left_ptr, 1);
+        let left_end = self.temp();
+        self.instruction(format!(
+            "{left_end} = load i64, ptr {left_end_ptr}, align 1"
+        ));
+        let condition = self.new_label("map.eq.cond");
+        let inspect = self.new_label("map.eq.inspect");
+        let compare = self.new_label("map.eq.compare");
+        let skip = self.new_label("map.eq.skip");
+        let done = self.new_label("map.eq.done");
+        self.terminate(format!("br label %{condition}"));
+        self.start_block(&condition);
+        let index = self.temp();
+        self.instruction(format!("{index} = load i64, ptr {index_ptr}, align 1"));
+        let more = self.temp();
+        self.instruction(format!("{more} = icmp ult i64 {index}, {left_end}"));
+        self.terminate(format!("br i1 {more}, label %{inspect}, label %{done}"));
+        self.start_block(&inspect);
+        let active_ptr = self.emit_map_array_ptr(ty, &left_ptr, 2, capacity, Ty::Bool, &index);
+        let active = self.temp();
+        self.instruction(format!("{active} = load i1, ptr {active_ptr}, align 1"));
+        self.terminate(format!("br i1 {active}, label %{compare}, label %{skip}"));
+        self.start_block(&compare);
+        let key_ptr = self.emit_map_entry_ptr(ty, &left_ptr, &index, false);
+        let key = self.temp();
+        self.instruction(format!(
+            "{key} = load {}, ptr {key_ptr}, align 1",
+            self.lltype(key_ty)
+        ));
+        let (found_entry, _, _) = self.emit_map_lookup(ty, &right_ptr, key_ty, &key, capacity);
+        let found = self.temp();
+        self.instruction(format!("{found} = icmp sge i64 {found_entry}, 0"));
+        let matched = if let Some(value_ty) = value_ty {
+            let compare_value = self.new_label("map.eq.value");
+            let missing = self.new_label("map.eq.missing");
+            let value_merge = self.new_label("map.eq.value.end");
+            self.terminate(format!(
+                "br i1 {found}, label %{compare_value}, label %{missing}"
+            ));
+            self.start_block(&missing);
+            let missing_pred = self.current_label.clone();
+            self.terminate(format!("br label %{value_merge}"));
+            self.start_block(&compare_value);
+            let left_value = self.emit_collection_element(ty, &left_ptr, &index);
+            let right_value = self.emit_collection_element(ty, &right_ptr, &found_entry);
+            let equal = self.emit_binary(
+                BinaryOp::Eq,
+                value_ty,
+                &left_value,
+                &right_value,
+                Span::default(),
+            );
+            let value_pred = self.current_label.clone();
+            self.terminate(format!("br label %{value_merge}"));
+            self.start_block(&value_merge);
+            let result = self.temp();
+            self.instruction(format!(
+                "{result} = phi i1 [ false, %{missing_pred} ], [ {equal}, %{value_pred} ]"
+            ));
+            result
+        } else {
+            found
+        };
+        let previous = self.temp();
+        self.instruction(format!("{previous} = load i1, ptr {equal_ptr}, align 1"));
+        let next_equal = self.temp();
+        self.instruction(format!("{next_equal} = and i1 {previous}, {matched}"));
+        self.instruction(format!("store i1 {next_equal}, ptr {equal_ptr}, align 1"));
+        self.terminate(format!("br label %{skip}"));
+        self.start_block(&skip);
+        let current = self.temp();
+        self.instruction(format!("{current} = load i64, ptr {index_ptr}, align 1"));
+        let next = self.temp();
+        self.instruction(format!("{next} = add i64 {current}, 1"));
+        self.instruction(format!("store i64 {next}, ptr {index_ptr}, align 1"));
+        self.terminate(format!("br label %{condition}"));
+        self.start_block(&done);
+        let equal = self.temp();
+        self.instruction(format!("{equal} = load i1, ptr {equal_ptr}, align 1"));
+        equal
     }
 
     fn emit_collection_equal(&mut self, ty: Ty, left: &str, right: &str) -> String {
@@ -4049,7 +5611,10 @@ impl<'a> FunctionEmitter<'a> {
                 }
             }
             TExprKind::Fill { value, capacity } => self.emit_fill(expr.ty, value, *capacity),
-            TExprKind::EmptyArray | TExprKind::EmptyList => "zeroinitializer".to_owned(),
+            TExprKind::EmptyArray
+            | TExprKind::EmptyList
+            | TExprKind::EmptyMap
+            | TExprKind::EmptySet => "zeroinitializer".to_owned(),
             TExprKind::EmptyPool => self.emit_pool_init(expr.ty),
             TExprKind::CollectionOp {
                 op,
@@ -4065,6 +5630,20 @@ impl<'a> FunctionEmitter<'a> {
                 capacity,
                 proven_success,
             } => self.emit_pool_op(expr, *op, receiver, args, *capacity, *proven_success),
+            TExprKind::MapOp {
+                op,
+                receiver,
+                args,
+                capacity,
+                proven_success,
+            } => self.emit_map_op(expr, *op, receiver, args, *capacity, *proven_success),
+            TExprKind::SetOp {
+                op,
+                receiver,
+                args,
+                capacity,
+                proven_success,
+            } => self.emit_set_op(expr, *op, receiver, args, *capacity, *proven_success),
             TExprKind::OptionalToLong(receiver) => self.emit_optional_to_long(expr, receiver),
             TExprKind::Field {
                 receiver,
