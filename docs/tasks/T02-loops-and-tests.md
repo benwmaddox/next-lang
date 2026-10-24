@@ -24,3 +24,20 @@ Depends on T01. Same rules as T01 (read it and docs/PLAN.md).
 ## Report
 
 docs/tasks/T02-report.md, as for T01.
+
+## Decisions from Sol's review (docs/reviews/sol-T02-r1.md), all binding
+
+- **Counter typing:** body uses count as constraints before defaulting: `for i in 0..2 { f(i) }` with `fn f(x: long)` makes `i` a `long`. An explicit counter type and typed bounds constrain the same type; incompatible constraints need a cast, never implicit widening. Unsuffixed bound literals take the counter's type; computed bounds keep T01's typing.
+- **Counter scope:** the counter is immutable and visible only in the body; nested loops may shadow it. `break`/`continue` target the nearest loop; outside a loop they're build errors. A loop's type is `()`; a `return` inside a loop that might run zero times doesn't satisfy a function's required result.
+- **Cleanup points:** the per-iteration cleanup hook must also cover `return` out of any number of enclosing loops, not just the latch and `break`/`continue`.
+- **Test bodies:** any T01/T02 statement (calls, loops, `print`) is allowed; `expect` may appear in nested blocks inside a test but is a build error in ordinary functions; `return` directly in a test is a build error. `expect` needs a `bool`. A parenthesised comparison still shows both sides; any other failing `bool` shows its source text and `false`. Show the source of the `expect` with leading indentation stripped.
+- **Entry points:** `nlc test` accepts a package with no `main`; if `main` exists it's checked but not run. `nlc run`/`build` check test bodies but don't run them. An empty suite prints `0 passed, 0 failed` and exits 0. Any build error stops all tests.
+- **Exit codes:** `nlc test` keeps T01's codes: 0 all passed, 1 a test failed, 2 a build error (so the duplicate-name case expects 2), 3 a tool failure. `tests/test/` cases get an `expected.stderr` too, normalised as in T01.
+- **Output routing:** each test child's stdout and stderr are captured; the harness prints the test's status line, then forwards the captured output to the matching stream, before the next test. Status lines, `expect` details and the summary go to stdout. A child that dies abnormally gets a named failure detail. Arithmetic failures still go through `nl_fail`. `expect` operands are captured as typed values and never evaluated again for the message. Test entry functions use the shared signature-lowering path.
+
+## More acceptance cases (from the same review)
+
+- Bounds with side effects are evaluated once, left to right, even when the range is empty; changing a variable used in the bound inside the body doesn't change the end. Equal endpoints; negative bounds; a single-element range at `int`'s and `long`'s maximum, with and without `continue` (not billions of iterations).
+- Build errors: assigning to the counter; using it after the loop; a non-integer bound; `break`/`continue` outside a loop. A fresh body local each iteration; `break` and `continue` in nested loops; `return` from inside nested loops.
+- Every comparison operator in `expect`; a plain `bool` expectation; operands evaluated once and in order; short-circuiting inside `expect`; a failing step skips the rest of its test while later tests still run.
+- Several test files whose names sort opposite to their declaration order; duplicate names across files; a package with no `main`; an empty suite; tests calling functions; a test that prints (output captured and forwarded); the exact runtime failure location and the summary counts.
