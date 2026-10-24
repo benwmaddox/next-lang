@@ -34,7 +34,7 @@ A summary of the whole design, with a small complete program. Each piece points 
 - **One declaration, every layer:** a field's `max 80` is also the database's check, the form's limit and the API's schema (One declaration, every layer).
 - **Tests in the language:** `test` blocks with `expect`, scenarios, `check fast == reference` (Correctness tools).
 
-**A small program: a chat server.** A package is a directory; every file in it sees every other, with no imports. Each line here is meant to be one the compiler, as designed, would accept; comments say what it relies on.
+**A small program: a chat server.** More examples (a game, a command-line tool, a JSON API with a rate limit, and a CRC-32 routine) are in [EXAMPLES.md](EXAMPLES.md). A package is a directory; every file in it sees every other, with no imports. Each line here is meant to be one the compiler, as designed, would accept; comments say what it relies on.
 
 ```
 // chat/model.nl: the data
