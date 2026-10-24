@@ -65,3 +65,13 @@ docs/tasks/T15-report.md.
 - Append-mode failure: a fallible producer returns its error to the caller as an `err`, distinct from `Full`; in both cases the builder is rolled back even after a prefix was written. Test both.
 - `s = s + piece` becomes an in-place append only when `piece` doesn't read `s`; otherwise T14's overlap handling applies.
 - Function types carry each function's byte bounds per stack (not only its window and append flag), and calls through function values take the maximum over every function that fits; T17 relies on this.
+
+## Ben's stack-count decision (2026-10-24), overrides anything above
+
+DESIGN.md "Few stacks, used well": **one data stack per job by default, at most two.** Where this task says "N data stacks", "fixed scratch stack", "window k = 1 on stack 1" or "N = 2", read it under these rules:
+
+- Finished values share the current stack in last-in-first-out order; only a value still growing while something above it is alive must be on top.
+- There is **no separate fixed-scratch stack**: a large fixed-size temporary goes on top of the current data stack when nothing below it will grow during its lifetime, otherwise on the native stack.
+- **Build above, then slide down:** something built while a value below it is still growing is built just past that value's end, then moved down onto it. A second data stack is used only when such a piece could exceed 4 KB; never more than two.
+- The worked example (`render`/`line`) runs on **one stack, N = 1**: `name` and `line`'s result are built above `out`'s end and the result slides down. Its worst case is 40,000 + 60 + 80 = 40,140 bytes plus page rounding (T17's numbers).
+- `inspect contracts` / `inspect stacks` list every slide-down site and its worst-case copy size.

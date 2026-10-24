@@ -40,3 +40,13 @@ docs/tasks/T16-report.md.
 - Size accounting counts descriptors, lengths, free lists, flags, alignment and every enclosing capacity; overflow in the multiplication, class rounding or page rounding is a build error.
 - Copies of collections holding text copy the bytes, so a copy never depends on its source's slot arrays. Genuinely nested growing values (an unbounded list of texts) stay refused; bounded collections of bounded text are allowed. A local collection's push never moves a stack top.
 - More cases: nested collections of text; a copy surviving its source's cleanup; sorting a list of `Ascii` (with T12's built-in extended to `Ascii` by bytewise order); `Ascii` keys in maps and sets (T09's built-in extended).
+
+## Ben's stack-count decision (2026-10-24), overrides anything above
+
+DESIGN.md "Few stacks, used well": **one data stack per job by default, at most two.** Where this task says "N data stacks", "fixed scratch stack", "window k = 1 on stack 1" or "N = 2", read it under these rules:
+
+- Finished values share the current stack in last-in-first-out order; only a value still growing while something above it is alive must be on top.
+- There is **no separate fixed-scratch stack**: a large fixed-size temporary goes on top of the current data stack when nothing below it will grow during its lifetime, otherwise on the native stack.
+- **Build above, then slide down:** something built while a value below it is still growing is built just past that value's end, then moved down onto it. A second data stack is used only when such a piece could exceed 4 KB; never more than two.
+- The worked example (`render`/`line`) runs on **one stack, N = 1**: `name` and `line`'s result are built above `out`'s end and the result slides down. Its worst case is 40,000 + 60 + 80 = 40,140 bytes plus page rounding (T17's numbers).
+- `inspect contracts` / `inspect stacks` list every slide-down site and its worst-case copy size.
