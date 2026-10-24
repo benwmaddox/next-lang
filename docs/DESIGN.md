@@ -188,7 +188,7 @@ global app: App                              // the program's state, reserved on
 
 **Collections** (all bounded; the capacity is part of the type)
 
-- **Collections are ordinary values.** A bounded collection has a fixed worst-case size (its capacity, with its text's size classes), so it can be a local, a field, a parameter (as a view, or in write or grow mode) or a result, like any fixed-size value. A local one goes on the fixed-scratch stack when it's over 4 KB (How the compiler assigns stacks), is committed only as it's used, and is freed with its scope. Pushing into a local `list` never moves a stack top: its space was set aside when it was declared, so it isn't a growing value and needs no stack of its own. A loop variable over a collection the function may write (`for r in g.rocks`) is a writable view of each element, under the usual view rules: the loop may change the element's fields, but not remove elements from the collection or shift it.
+- **Collections are ordinary values.** A bounded collection has a fixed worst-case size (its capacity, with its text's size classes), so it can be a local, a field, a parameter (as a view, or in write or grow mode) or a result, like any fixed-size value. A local one over 4 KB goes on top of the job's data stack (Few stacks, used well), is committed only as it's used, and is freed with its scope. Pushing into a local `list` never moves a stack top: its space was set aside when it was declared, so it isn't a growing value and needs no stack of its own. A loop variable over a collection the function may write (`for r in g.rocks`) is a writable view of each element, under the usual view rules: the loop may change the element's fields, but not remove elements from the collection or shift it.
 
 | Type | What it is | Elements named by |
 | --- | --- | --- |
@@ -279,7 +279,7 @@ Adding to a full collection (or writing a field past its maximum) returns `Resul
 
 **Stacks** hold temporaries.
 
-- Each job (a request, a tick, a task) runs on N data stacks, each a large reserved address range with a bump pointer. N is computed by the compiler.
+- Each job (a request, a tick, a task) runs on one data stack, or two when a big temporary is built while a value below it grows (Few stacks, used well), each a reserved address range with a bump pointer.
 - At most one growing value per stack, always on top of it (Goose's rule). The compiler picks each growing value's stack (see How the compiler assigns stacks). So growth is a pointer moving up, nothing moves, and positions stay valid.
 - Fixed-size values sit in registers or the native stack; small arrays too (up to 4 KB, as Burin's helpers do).
 - A scope's memory is freed by setting its stacks back: one store each. Kept pages stay mapped for the next job (time over memory).
@@ -330,7 +330,7 @@ database Chat: sqlite {
 
 ## Threads and data stacks
 
-A fixed set of threads, one per core. Each job owns N data stacks that only it touches while it runs. So the common operations (push, free a scope, read state) take no locks and no atomic operations (the special CPU instructions threads use to update shared memory safely, each costing far more than an ordinary store), and nothing mutable is shared.
+A fixed set of threads, one per core. Each job owns one or two data stacks that only it touches while it runs. So the common operations (push, free a scope, read state) take no locks and no atomic operations (the special CPU instructions threads use to update shared memory safely, each costing far more than an ordinary store), and nothing mutable is shared.
 
 ### Thread kinds and jobs
 
@@ -355,7 +355,16 @@ A fixed set of threads, one per core. Each job owns N data stacks that only it t
 
 ### N stacks per job
 
-- N is computed at build time per entry point (a request handler, a job, a tick, a parallel loop's body): the highest stack index any call chain from it can use, counting each function's window, the destinations of returned values and the fixed-scratch stack. Counting only how many growing values are live at once isn't enough, since windows are consecutive and can leave gaps.
+**Few stacks, used well** (decided 2026-10-24; this replaces "N stacks, one per value growing at once" and the separate fixed-scratch stack). Ben's direction: some stacks, but not many in parallel, making better use of the stack you're on.
+
+- **One data stack per job by default.** Everything temporary goes on it in last-in-first-out order, like ordinary stack frames.
+- **Finished values share it.** Only a value that is *still growing while something above it is alive* needs to be on top. A value that's done growing is just a block like any local, and later values stack above it.
+- **No separate fixed-scratch stack.** A large fixed-size temporary (a big local collection, a sort's scratch) goes on top of the current data stack when nothing below it will grow during its lifetime; otherwise on the native stack.
+- **Build above, then slide down.** When something must be built while a value below it is still growing (`line` building `name` while `render`'s `out` is open), it's built just past the growing value's end on the same stack; the finished piece is then moved down onto the growing value's end, and the space above freed. That's a copy of the piece, cheap for small pieces.
+- **A second data stack only for big temporaries:** when the piece built above a growing value could be larger than a threshold (4 KB by default), the compiler puts it on a second stack instead, so a big append doesn't pay a big copy. **At most two data stacks per job.** Where a program would need more, the compiler slides down instead, and `inspect stacks` lists each slide-down site with its worst-case copy size.
+- The stack contract (below) still records each function's window and destinations; with these rules windows are almost always 0 or 1, and N is 1 or 2.
+
+- N is computed at build time per entry point (a request handler, a job, a tick, a parallel loop's body): the highest stack index any call chain from it can use, counting each function's window and the destinations of returned values; with the few-stacks rules it's 1 or 2. Counting only how many growing values are live at once isn't enough, since windows are consecutive and can leave gaps.
 - Each stack is a reserved address range with a guard page (an unmapped page that traps if touched) at its end. Pages are committed on first touch and kept between jobs (time over memory). They're given back only when a stack's high-water mark stays far above its use, or on request.
 - **Reservations are sized per entry point, per stack.** Because growth is bounded (Loops can't quietly fill a stack), the compiler computes each stack's worst case for an entry point and reserves that, rounded up to a page. Only an entry point with an unbounded source left (see that section) gets the default reservation, 64 MB per stack, configurable.
 - **Address space and memory, worked out:** a process can address 128 TiB on 64-bit Windows and Linux. A request handler whose stacks are bounded at 1 MB each, with N = 8, reserves 8 MB per job: 100,000 waiting jobs reserve 0.8 TB. With the 64 MB default instead, 100,000 jobs would reserve 51 TB, so admission control (Thread kinds and jobs) caps how many jobs with default reservations may exist at once. Committed memory is separate: a waiting job that touched one 4 KiB page on each of 8 stacks holds 32 KiB plus its native stack, so 10,000 such jobs hold over 312 MiB before their native stacks. These are estimates; the server validation measures them.
@@ -387,20 +396,20 @@ The compiler gives every function a **stack contract**, computed from its body a
       return out
   }
   fn line(r: view Row) -> Ascii max 80 {  // 60 + 2 for ": " + up to 6 digits = 68, within 80
-      let name = ascii_upper(r.name)      // a temporary Ascii on base + 0, the same length as r.name
+      let name = ascii_upper(r.name)      // a temporary just past out's end, the same length as r.name
       return name + ": " + str(r.count)
   }
   ```
 
-  A request handler with its first free stack at 0 calls `render` with destination 0 and base 1. `render` calls `line` in append mode on `out`, with base 1, so `ascii_upper`'s temporary goes on stack 1 and `line`'s output is written past `out`'s end on stack 0. When `line` returns, `render` moves `out`'s end over the new bytes, and stack 1 goes back to where the iteration started: one store. This entry point uses stacks 0 and 1, so N = 2, as long as `ascii_upper` uses only stack 1 for scratch and `str` formats its digits straight onto its destination (out's end on stack 0) with no growing scratch of its own, while `name` still occupies stack 1; their contracts say so, and if `str` needed scratch, N and the peak would be worked out again.
+  A request handler calls `render` with its destination on the job's data stack. `render` builds `out` there and calls `line` in append mode on `out`. With the few-stacks rules (Few stacks, used well), `line` builds `name` just past `out`'s end on the same stack, then its result (`name + ": " + str(...)`, at most 80 bytes) just past `name`, then slides that result down onto `out`'s end, overwriting `name`, which is no longer needed; `render` moves `out`'s end over it, and the space above goes back. One data stack, N = 1, at the cost of copying each line (at most 80 bytes) once. If `line`'s pieces could be larger than the slide-down threshold (4 KB), the compiler would put `name` on a second stack instead, as the original version of this example did, and N would be 2.
 
-  The bounds add up, and each helper's result bound is part of its contract. `ascii_upper` changes only the letters a to z, so its result has exactly its input's length, and `": "` and `str`'s digits are ASCII too, so `line`'s result is `Ascii`. 500 rows × at most 80 bytes is 40,000 bytes, `render`'s declared maximum, so stack 0 needs 40,000 bytes plus page rounding, and stack 1 needs `ascii_upper`'s result, at most 60 bytes.
+  The bounds add up, and each helper's result bound is part of its contract. `ascii_upper` changes only the letters a to z, so its result has exactly its input's length, and `": "` and `str`'s digits are ASCII too, so `line`'s result is `Ascii`. 500 rows × at most 80 bytes is 40,000 bytes, `render`'s declared maximum; the data stack's worst case is that plus one line's temporaries above it (`name`, 60 bytes, and the result being built, 80), 40,140 bytes, plus page rounding.
 
   The same example with `name: Text max 60` shows what `Ascii` saves. Text maxima count code points of up to 4 bytes, so stack 0 would need 160,000 bytes. And a full Unicode `upper` can lengthen text (`ß` becomes `SS`, so 60 of them become 120); its contract says so (at most 3 times the input's code points), which would make `line` need `Text max 200` and stack 0 need 400,000 bytes.
 - **Passing the base:** a hidden argument by default. A function is also compiled for a constant base (its stack addresses fixed offsets from the context pointer) only when it's small or hot and called with that base; at most two copies of any function, and the compiler reports code-size growth from copies.
 - **Recursion** (opt-in, on functions marked `recursive`, decided 2026-10-24): a recursive cycle may not hold a growing value across its recursive call, since that would need a stack per call; the compiler refuses it and names the value. Every recursive call checks the native stack against a byte budget (one compare, like the data stacks); passing it fails the job. That bounds bytes, not just depth.
 - **The native stack** (the ordinary call stack that holds return addresses, locals and small arrays): each job has its own, reserved from its entry point's worst case. Without recursion that worst case is known at build time, because every function's frame size is (LLVM reports it) and the deepest call chain is in the call graph. With recursion it's that plus the recursion budget. Before a recursive call the check reserves room for the call's frame and everything it can call without recursing; before a foreign call it checks for a fixed margin (64 KB by default, configurable per binding), since C's use is unknown. The native reservation and its touched pages count in admission and in the waiting-jobs measurement.
-- Fixed values over 4 KB go on the fixed-scratch stack, never on top of a growing one.
+- Fixed values over 4 KB go on top of the current data stack when nothing below them will grow during their lifetime, otherwise on the native stack, never on top of a growing value.
 
 ### Loops can't quietly fill a stack
 
