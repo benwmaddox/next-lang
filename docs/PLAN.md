@@ -18,7 +18,7 @@ tests/                  language tests: one directory per program, with expected
 docs/                   DESIGN.md, EXAMPLES.md, PLAN.md, tasks/, reviews/
 ```
 
-Commands (in WSL): `cargo build`, `cargo test` (the compiler's own tests and the language tests), and `nlc run <dir>` / `nlc test <dir>` on a package directory. The Cargo target directory lives in the WSL home (`CARGO_TARGET_DIR=~/.cache/next-lang/target`), not on the Windows drive, so builds stay fast.
+Commands (in WSL; Codex itself runs inside WSL, with its own settings in `~/.codex-nl` and the binary in `~/.local/codex-nl`): `cargo build`, `cargo test` (the compiler's own tests and the language tests), and `nlc run <dir>` / `nlc test <dir>` on a package directory. The Cargo target directory lives in the WSL home (`CARGO_TARGET_DIR=~/.cache/next-lang/target`), not on the Windows drive, so builds stay fast.
 
 ## Milestones
 

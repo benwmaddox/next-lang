@@ -8,7 +8,7 @@ The smallest whole path from source to a running native program: functions, scal
 
 ## Build environment
 
-Everything runs in WSL (Ubuntu): `wsl -e bash -lc '...'` from Windows, with the repository at `/mnt/d/code/next-lang`. Use `CARGO_TARGET_DIR=$HOME/.cache/next-lang/target`. clang 18 and lld are installed (`/usr/bin/clang`). Rust is 1.93 in WSL.
+You run inside WSL (Ubuntu), in the repository at `/mnt/d/code/next-lang`; run commands directly (cargo, clang), not through `wsl`. Use `CARGO_TARGET_DIR=$HOME/.cache/next-lang/target`. clang 18 and lld are installed (`/usr/bin/clang`). Rust is 1.93 in WSL.
 
 ## Architecture (required, because later milestones build on it)
 
