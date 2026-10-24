@@ -1,0 +1,21 @@
+true
+2
+pool{0:1 => Rock { value: 10 }, 1:1 => Rock { value: 20 }}
+Rock { value: 11 }
+Rock { value: 11 }
+true
+true
+false
+Rock { value: 21 }
+pool{0:2 => Rock { value: 99 }, 1:1 => Rock { value: 21 }}
+true
+Rock { value: 6 }
+1
+6
+Rock { value: 7 }
+2
+1
+true
+true
+1
+true

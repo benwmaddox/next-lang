@@ -12,7 +12,7 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> Result<Program, ParseError> {
         tokens,
         pos: 0,
         source,
-        pending_type_gt: false,
+        allow_struct_literals: true,
     }
     .program()
 }
@@ -21,7 +21,7 @@ struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
     source: &'a str,
-    pending_type_gt: bool,
+    allow_struct_literals: bool,
 }
 
 impl Parser<'_> {
@@ -63,6 +63,7 @@ impl Parser<'_> {
     fn struct_decl(&mut self) -> Result<StructDecl, ParseError> {
         let start = self.expect_word("struct", "expected 'struct'")?.span;
         let (name, _) = self.expect_ident("expected a struct name")?;
+        let generic_params = self.generic_params()?;
         self.skip_newlines();
         self.expect(&TokenKind::LBrace, "expected '{' after the struct name")?;
         self.skip_separators();
@@ -92,6 +93,7 @@ impl Parser<'_> {
         self.expect(&TokenKind::RBrace, "expected '}' to close the struct")?;
         Ok(StructDecl {
             name,
+            generic_params,
             fields,
             span: start,
         })
@@ -202,6 +204,7 @@ impl Parser<'_> {
             .expect_word("fn", "expected a function declaration starting with 'fn'")?
             .span;
         let (name, _) = self.expect_ident("expected a function name after 'fn'")?;
+        let generic_params = self.generic_params()?;
         self.expect(&TokenKind::LParen, "expected '(' after the function name")?;
         let mut params = Vec::new();
         self.skip_newlines();
@@ -245,6 +248,7 @@ impl Parser<'_> {
         let body = self.block()?;
         Ok(Function {
             name,
+            generic_params,
             params,
             result,
             body,
@@ -265,27 +269,29 @@ impl Parser<'_> {
                 span: self.tokens[self.pos.saturating_sub(2)].span,
             });
         }
-        let (name, span) = self.expect_ident("expected a type name")?;
+        let (mut name, span) = self.expect_ident("expected a type name")?;
+        while self.take(&TokenKind::Dot) {
+            let (part, _) = self.expect_ident("expected a name after '.' in a type path")?;
+            name.push('.');
+            name.push_str(&part);
+        }
         let mut args = Vec::new();
         let mut const_args = Vec::new();
         if self.take(&TokenKind::Lt) {
             args.push(self.type_name()?);
-            if name == "list" && self.take(&TokenKind::Comma) {
+            if matches!(name.as_str(), "list" | "pool") && self.take(&TokenKind::Comma) {
                 const_args.push(self.expression(8)?);
+                if name == "pool" && self.take(&TokenKind::Comma) {
+                    self.skip_newlines();
+                    args.push(self.type_name()?);
+                }
             } else {
                 while self.take(&TokenKind::Comma) {
                     self.skip_newlines();
                     args.push(self.type_name()?);
                 }
             }
-            if self.pending_type_gt {
-                self.pending_type_gt = false;
-            } else if self.take(&TokenKind::Gt) {
-            } else if self.take(&TokenKind::Shr) {
-                self.pending_type_gt = true;
-            } else {
-                return Err(self.error_here("expected '>' after generic type arguments"));
-            }
+            self.expect_type_gt("expected '>' after generic type arguments")?;
         }
         let range = if matches!(self.peek().kind, TokenKind::Number(_) | TokenKind::Minus) {
             let lower = self.range_bound()?;
@@ -337,6 +343,28 @@ impl Parser<'_> {
             policy,
             span,
         })
+    }
+
+    fn generic_params(&mut self) -> Result<Vec<String>, ParseError> {
+        if !self.take(&TokenKind::Lt) {
+            return Ok(Vec::new());
+        }
+        let mut params = Vec::new();
+        loop {
+            let (name, span) = self.expect_ident("expected a generic parameter name")?;
+            if params.contains(&name) {
+                return Err(ParseError {
+                    span,
+                    message: format!("generic parameter '{}' is repeated", name),
+                });
+            }
+            params.push(name);
+            if !self.take(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect_type_gt("expected '>' after generic parameters")?;
+        Ok(params)
     }
 
     fn range_bound(&mut self) -> Result<i128, ParseError> {
@@ -525,6 +553,7 @@ impl Parser<'_> {
             TokenKind::StarEq => Some(AssignOp::Mul),
             TokenKind::SlashEq => Some(AssignOp::Div),
             TokenKind::PercentEq => Some(AssignOp::Rem),
+            TokenKind::ShrEq => Some(AssignOp::Shr),
             _ => None,
         };
         if let Some(op) = assignment {
@@ -592,7 +621,11 @@ impl Parser<'_> {
                     message: "range loops have one counter; use 'for value, index in collection' for collection iteration".to_owned(),
                 });
             }
-            let end = self.expression(0)?;
+            let allow_struct_literals = self.allow_struct_literals;
+            self.allow_struct_literals = false;
+            let end = self.expression(0);
+            self.allow_struct_literals = allow_struct_literals;
+            let end = end?;
             self.skip_newlines();
             let body = self.block()?;
             Ok(Stmt {
@@ -824,9 +857,11 @@ impl Parser<'_> {
                 };
                 continue;
             }
-            if self.at(&TokenKind::LBrace) {
+            if self.allow_struct_literals && self.at(&TokenKind::LBrace) {
                 let name = match &expr.kind {
-                    ExprKind::Name(name) if name == "list" => Some(name.clone()),
+                    ExprKind::Name(name) if matches!(name.as_str(), "list" | "pool") => {
+                        Some(name.clone())
+                    }
                     ExprKind::Name(name) if name.chars().next().is_some_and(char::is_uppercase) => {
                         Some(name.clone())
                     }
@@ -847,6 +882,22 @@ impl Parser<'_> {
                         )?;
                         expr = Expr {
                             kind: ExprKind::ListLiteral,
+                            span: expr.span,
+                        };
+                    } else if name == "pool" {
+                        self.expect(&TokenKind::LBrace, "expected '{' after 'pool'")?;
+                        self.skip_separators();
+                        if !self.at(&TokenKind::RBrace) {
+                            return Err(self.error_here(
+                                "pool literals start empty; add values after construction",
+                            ));
+                        }
+                        self.expect(
+                            &TokenKind::RBrace,
+                            "expected '}' after the empty pool literal",
+                        )?;
+                        expr = Expr {
+                            kind: ExprKind::PoolLiteral,
                             span: expr.span,
                         };
                     } else {
@@ -896,11 +947,7 @@ impl Parser<'_> {
                 };
                 if method == "fit" && self.take(&TokenKind::Lt) {
                     let ty = self.type_name()?;
-                    if self.pending_type_gt {
-                        self.pending_type_gt = false;
-                    } else {
-                        self.expect(&TokenKind::Gt, "expected '>' after the fit type")?;
-                    }
+                    self.expect_type_gt("expected '>' after the fit type")?;
                     self.expect(&TokenKind::LParen, "expected '()' after the fit type")?;
                     self.expect(&TokenKind::RParen, "fit takes no arguments")?;
                     let span = expr.span;
@@ -926,6 +973,9 @@ impl Parser<'_> {
                             | "is_err"
                             | "len"
                             | "count"
+                            | "add"
+                            | "get"
+                            | "contains"
                             | "push"
                             | "pop"
                             | "insert"
@@ -1254,6 +1304,34 @@ impl Parser<'_> {
         } else {
             Err(self.error_here(message))
         }
+    }
+
+    fn expect_type_gt(&mut self, message: &str) -> Result<Token, ParseError> {
+        let token = self.peek().clone();
+        let split_count = match &token.kind {
+            TokenKind::Shr => Some(2),
+            TokenKind::ShrEq => Some(3),
+            _ => None,
+        };
+        if let Some(split_count) = split_count {
+            let pieces = (0..split_count)
+                .map(|index| Token {
+                    kind: if index < 2 {
+                        TokenKind::Gt
+                    } else {
+                        TokenKind::Eq
+                    },
+                    span: Span {
+                        col: token.span.col + index,
+                        ..token.span
+                    },
+                    start_offset: token.start_offset + index,
+                    end_offset: token.start_offset + index + 1,
+                })
+                .collect::<Vec<_>>();
+            self.tokens.splice(self.pos..=self.pos, pieces);
+        }
+        self.expect(&TokenKind::Gt, message)
     }
 
     fn take(&mut self, kind: &TokenKind) -> bool {

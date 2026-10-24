@@ -255,6 +255,12 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
                 collect_constant_references_expr(arg, references);
             }
         }
+        TExprKind::PoolOp { receiver, args, .. } => {
+            collect_constant_references_expr(receiver, references);
+            for arg in args {
+                collect_constant_references_expr(arg, references);
+            }
+        }
         TExprKind::StructConstruct { fields } => {
             for (_, value) in fields {
                 collect_constant_references_expr(value, references);
@@ -296,6 +302,7 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::Local(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
+        | TExprKind::EmptyPool
         | TExprKind::LoopExit(_) => {}
     }
 }
@@ -495,6 +502,12 @@ fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mu
                 collect_calls_expr(arg, calls, effects);
             }
         }
+        TExprKind::PoolOp { receiver, args, .. } => {
+            collect_calls_expr(receiver, calls, effects);
+            for arg in args {
+                collect_calls_expr(arg, calls, effects);
+            }
+        }
         TExprKind::StructConstruct { fields } => {
             for (_, value) in fields {
                 collect_calls_expr(value, calls, effects);
@@ -542,6 +555,7 @@ fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mu
         | TExprKind::Constant(_)
         | TExprKind::EmptyArray
         | TExprKind::EmptyList
+        | TExprKind::EmptyPool
         | TExprKind::LoopExit(_) => {}
     }
 }
@@ -586,6 +600,7 @@ struct Evaluator<'a> {
 enum ResolvedProjection {
     Field(usize),
     Index(usize),
+    PoolIndex(usize),
 }
 
 impl Evaluator<'_> {
@@ -642,6 +657,7 @@ impl Evaluator<'_> {
                     constant,
                     capacity: *capacity,
                     is_list: *is_list,
+                    is_pool: false,
                     proven: *proven,
                 });
                 place.ty = expr.ty;
@@ -661,7 +677,7 @@ impl Evaluator<'_> {
         for projection in &canonical.path {
             match projection {
                 TProjection::Field(index) => resolved.push(ResolvedProjection::Field(*index)),
-                TProjection::Index { index, .. } => {
+                TProjection::Index { index, is_pool, .. } => {
                     let value = match self.eval_expr(index, locals)? {
                         Outcome::Value(value) => value,
                         _ => {
@@ -675,7 +691,11 @@ impl Evaluator<'_> {
                     if value < 0 || value > usize::MAX as i128 {
                         return Err(self.failure(index.span, "index out of range"));
                     }
-                    resolved.push(ResolvedProjection::Index(value as usize));
+                    resolved.push(if *is_pool {
+                        ResolvedProjection::PoolIndex(value as usize)
+                    } else {
+                        ResolvedProjection::Index(value as usize)
+                    });
                 }
             }
         }
@@ -699,6 +719,9 @@ impl Evaluator<'_> {
                 }
                 (ResolvedProjection::Index(index), ConstValue::List(values)) => {
                     values.get(*index)?.clone()
+                }
+                (ResolvedProjection::PoolIndex(index), ConstValue::Pool { slots, .. }) => {
+                    slots.get(*index)?.as_ref()?.clone()
                 }
                 _ => return None,
             };
@@ -734,6 +757,16 @@ impl Evaluator<'_> {
                 }
                 (ResolvedProjection::Index(index), ConstValue::List(values)) => {
                     values.get_mut(*index)
+                }
+                (ResolvedProjection::PoolIndex(index), ConstValue::Pool { slots, .. }) => {
+                    let slot = slots.get_mut(*index).ok_or_else(|| {
+                        "constant evaluator assignment path was invalid".to_owned()
+                    })?;
+                    if tail.is_empty() {
+                        *slot = Some(replacement);
+                        return Ok(());
+                    }
+                    slot.as_mut()
                 }
                 _ => None,
             }
@@ -817,6 +850,96 @@ impl Evaluator<'_> {
                 return Err(self.failure(span, "collection operation receiver had the wrong value"));
             }
         })
+    }
+
+    fn eval_pool_op(
+        &self,
+        op: PoolOp,
+        pool: &mut ConstValue,
+        args: Vec<ConstValue>,
+        capacity: usize,
+        span: Span,
+    ) -> Result<ConstValue, EvalFailure> {
+        let ConstValue::Pool {
+            slots,
+            generations,
+            free,
+        } = pool
+        else {
+            return Err(self.failure(span, "pool operation receiver had the wrong value"));
+        };
+        let option_none = || ConstValue::Enum {
+            case_index: 1,
+            payload: Vec::new(),
+        };
+        let result_full = || ConstValue::Enum {
+            case_index: 1,
+            payload: vec![ConstValue::Enum {
+                case_index: 0,
+                payload: Vec::new(),
+            }],
+        };
+        match op {
+            PoolOp::Count => Ok(ConstValue::Integer(
+                slots.iter().filter(|slot| slot.is_some()).count() as i128,
+            )),
+            PoolOp::Add => {
+                if slots.len() != capacity || generations.len() != capacity || free.is_empty() {
+                    return Ok(result_full());
+                }
+                let slot = free.pop().expect("nonempty free list");
+                let index = slot as usize;
+                if index >= capacity || slots[index].is_some() {
+                    return Err(self.failure(span, "constant pool free list was inconsistent"));
+                }
+                slots[index] = Some(args[0].clone());
+                let id = ((generations[index] as u64) << 32) | slot as u64;
+                Ok(ConstValue::Enum {
+                    case_index: 0,
+                    payload: vec![ConstValue::Integer(id as i128)],
+                })
+            }
+            PoolOp::Get | PoolOp::Remove | PoolOp::Contains => {
+                let id = match &args[0] {
+                    ConstValue::Integer(id) => *id as u64,
+                    _ => {
+                        return Err(
+                            self.failure(span, "pool id did not have an integer representation")
+                        );
+                    }
+                };
+                let slot = (id & u32::MAX as u64) as usize;
+                let generation = (id >> 32) as u32;
+                let valid = slot < capacity
+                    && slots.get(slot).is_some_and(Option::is_some)
+                    && generations
+                        .get(slot)
+                        .is_some_and(|actual| *actual == generation);
+                if op == PoolOp::Contains {
+                    return Ok(ConstValue::Bool(valid));
+                }
+                if !valid {
+                    return Ok(option_none());
+                }
+                if op == PoolOp::Get {
+                    return Ok(ConstValue::Enum {
+                        case_index: 0,
+                        payload: vec![slots[slot].as_ref().unwrap().clone()],
+                    });
+                }
+                let value = slots[slot].take().expect("validated occupied slot");
+                if generations[slot] >= u32::MAX - 1 {
+                    generations[slot] = u32::MAX;
+                } else {
+                    generations[slot] += 1;
+                    free.push(slot as u32);
+                }
+                Ok(ConstValue::Enum {
+                    case_index: 0,
+                    payload: vec![value],
+                })
+            }
+        }
     }
 
     fn eval_constant(&mut self, id: usize, reference_span: Span) -> Result<ConstValue, CheckError> {
@@ -960,6 +1083,7 @@ impl Evaluator<'_> {
                             AssignOp::Mul => BinaryOp::Mul,
                             AssignOp::Div => BinaryOp::Div,
                             AssignOp::Rem => BinaryOp::Rem,
+                            AssignOp::Shr => BinaryOp::Shr,
                             AssignOp::Set => unreachable!(),
                         };
                         self.eval_binary(binary_op, *ty, old, rhs, *operator_span)?
@@ -1057,6 +1181,7 @@ impl Evaluator<'_> {
                     counter_id,
                     source,
                     is_list,
+                    is_pool,
                     body,
                     ..
                 } => {
@@ -1069,18 +1194,13 @@ impl Evaluator<'_> {
                                     "constant evaluator could not read a collection loop source",
                                 )
                             })?;
-                    let length = match (&collection, *is_list) {
-                        (ConstValue::List(values), true) => values.len(),
-                        (ConstValue::Array(values), false) => values.len(),
-                        _ => {
-                            return Err(self
-                                .failure(stmt.span, "collection loop source had the wrong value"));
-                        }
-                    };
                     let collection_ty = source.ty;
                     let (capacity, element) = match self.types[collection_ty.0].kind {
                         TTypeKind::Array { element, capacity }
-                        | TTypeKind::List { element, capacity } => (capacity, element),
+                        | TTypeKind::List { element, capacity }
+                        | TTypeKind::Pool {
+                            element, capacity, ..
+                        } => (capacity, element),
                         _ => {
                             return Err(self.failure(
                                 stmt.span,
@@ -1088,11 +1208,62 @@ impl Evaluator<'_> {
                             ));
                         }
                     };
-                    for index in 0..length {
+                    let snapshot = if *is_pool {
+                        match &collection {
+                            ConstValue::Pool { slots, .. } => {
+                                slots.iter().map(Option::is_some).collect::<Vec<_>>()
+                            }
+                            _ => {
+                                return Err(
+                                    self.failure(stmt.span, "pool loop source had the wrong value")
+                                );
+                            }
+                        }
+                    } else {
+                        let length = match (&collection, *is_list) {
+                            (ConstValue::List(values), true) => values.len(),
+                            (ConstValue::Array(values), false) => values.len(),
+                            _ => {
+                                return Err(self.failure(
+                                    stmt.span,
+                                    "collection loop source had the wrong value",
+                                ));
+                            }
+                        };
+                        vec![true; length]
+                    };
+                    for (index, present_at_start) in snapshot.into_iter().enumerate() {
+                        if !present_at_start {
+                            continue;
+                        }
                         self.step(stmt.span)?;
                         set_local(locals, *counter_id, ConstValue::Integer(index as i128));
                         if let Some(index_id) = index_id {
-                            set_local(locals, *index_id, ConstValue::Integer(index as i128));
+                            let id = if *is_pool {
+                                let pool = self
+                                    .get_resolved_place(locals, root, &path)
+                                    .ok_or_else(|| {
+                                        self.failure(
+                                            stmt.span,
+                                            "constant evaluator could not read a pool loop source",
+                                        )
+                                    })?;
+                                let ConstValue::Pool { generations, .. } = pool else {
+                                    return Err(self.failure(
+                                        stmt.span,
+                                        "pool loop source had the wrong value",
+                                    ));
+                                };
+                                let generation = *generations.get(index).ok_or_else(|| {
+                                    self.failure(stmt.span, "pool loop slot was out of range")
+                                })?;
+                                ConstValue::Integer(
+                                    (((generation as u64) << 32) | index as u64) as i128,
+                                )
+                            } else {
+                                ConstValue::Integer(index as i128)
+                            };
+                            set_local(locals, *index_id, id);
                         }
                         let index_expr = TExpr {
                             kind: TExprKind::Local(*counter_id),
@@ -1105,6 +1276,7 @@ impl Evaluator<'_> {
                             constant: None,
                             capacity,
                             is_list: *is_list,
+                            is_pool: *is_pool,
                             proven: true,
                         });
                         element_place.ty = element;
@@ -1337,6 +1509,17 @@ impl Evaluator<'_> {
             }
             TExprKind::EmptyArray => ConstValue::Array(Vec::new()),
             TExprKind::EmptyList => ConstValue::List(Vec::new()),
+            TExprKind::EmptyPool => {
+                let capacity = match self.types[expr.ty.0].kind {
+                    TTypeKind::Pool { capacity, .. } => capacity,
+                    _ => 0,
+                };
+                ConstValue::Pool {
+                    slots: vec![None; capacity],
+                    generations: vec![1; capacity],
+                    free: (0..capacity as u32).rev().collect(),
+                }
+            }
             TExprKind::CollectionOp {
                 op,
                 receiver,
@@ -1390,6 +1573,46 @@ impl Evaluator<'_> {
                 self.set_resolved_place(locals, root, &path, collection)
                     .map_err(|message| self.failure(expr.span, message))?;
                 result
+            }
+            TExprKind::PoolOp {
+                op,
+                receiver,
+                args,
+                capacity,
+                ..
+            } => {
+                if *op == PoolOp::Count {
+                    let pool = value_or_flow!(self.eval_expr(receiver, locals));
+                    let ConstValue::Pool { slots, .. } = pool else {
+                        return Err(
+                            self.failure(expr.span, "pool count receiver had the wrong value")
+                        );
+                    };
+                    ConstValue::Integer(slots.iter().filter(|slot| slot.is_some()).count() as i128)
+                } else {
+                    let place = self.place_from_expr(receiver);
+                    let resolved = if let Some(place) = place.as_ref() {
+                        Some(self.resolve_place_indices(place, locals)?)
+                    } else {
+                        None
+                    };
+                    let mut values = Vec::with_capacity(args.len());
+                    for arg in args {
+                        values.push(value_or_flow!(self.eval_expr(arg, locals)));
+                    }
+                    let (root, path) = resolved.ok_or_else(|| {
+                        self.failure(expr.span, "pool operation requires a place")
+                    })?;
+                    let mut pool =
+                        self.get_resolved_place(locals, root, &path)
+                            .ok_or_else(|| {
+                                self.failure(expr.span, "constant evaluator could not read a pool")
+                            })?;
+                    let result = self.eval_pool_op(*op, &mut pool, values, *capacity, expr.span)?;
+                    self.set_resolved_place(locals, root, &path, pool)
+                        .map_err(|message| self.failure(expr.span, message))?;
+                    result
+                }
             }
             TExprKind::StructConstruct { fields } => {
                 let count = match &self.types[expr.ty.0].kind {
@@ -1702,7 +1925,7 @@ impl Evaluator<'_> {
         span: Span,
     ) -> Result<ConstValue, EvalFailure> {
         if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
-            let equal = left == right;
+            let equal = self.values_equal(ty, &left, &right);
             return Ok(ConstValue::Bool(if op == BinaryOp::Eq {
                 equal
             } else {
@@ -1806,6 +2029,93 @@ impl Evaluator<'_> {
         };
         Ok(ConstValue::Integer(result))
     }
+
+    fn values_equal(&self, ty: Ty, left: &ConstValue, right: &ConstValue) -> bool {
+        match (&self.types[ty.0].kind, left, right) {
+            (TTypeKind::Refinement { base, .. }, _, _) => self.values_equal(*base, left, right),
+            (
+                TTypeKind::Pool {
+                    element, capacity, ..
+                },
+                ConstValue::Pool {
+                    slots: left_slots,
+                    generations: left_generations,
+                    ..
+                },
+                ConstValue::Pool {
+                    slots: right_slots,
+                    generations: right_generations,
+                    ..
+                },
+            ) => {
+                if left_slots.len() != *capacity
+                    || right_slots.len() != *capacity
+                    || left_generations.len() != *capacity
+                    || right_generations.len() != *capacity
+                {
+                    return false;
+                }
+                (0..*capacity).all(|slot| match (&left_slots[slot], &right_slots[slot]) {
+                    (None, None) => true,
+                    (Some(left), Some(right)) => {
+                        left_generations[slot] == right_generations[slot]
+                            && self.values_equal(*element, left, right)
+                    }
+                    _ => false,
+                })
+            }
+            (
+                TTypeKind::Struct(fields),
+                ConstValue::Struct(left_fields),
+                ConstValue::Struct(right_fields),
+            ) => {
+                fields.len() == left_fields.len()
+                    && fields.len() == right_fields.len()
+                    && fields.iter().enumerate().all(|(index, field)| {
+                        self.values_equal(field.ty, &left_fields[index], &right_fields[index])
+                    })
+            }
+            (
+                TTypeKind::Array { element, capacity } | TTypeKind::List { element, capacity },
+                ConstValue::Array(left_values) | ConstValue::List(left_values),
+                ConstValue::Array(right_values) | ConstValue::List(right_values),
+            ) => {
+                left_values.len() == right_values.len()
+                    && left_values.len() <= *capacity
+                    && left_values
+                        .iter()
+                        .zip(right_values)
+                        .all(|(left, right)| self.values_equal(*element, left, right))
+            }
+            (
+                TTypeKind::Option(_) | TTypeKind::Result(..) | TTypeKind::Enum(_),
+                ConstValue::Enum {
+                    case_index: left_case,
+                    payload: left_payload,
+                },
+                ConstValue::Enum {
+                    case_index: right_case,
+                    payload: right_payload,
+                },
+            ) => {
+                if left_case != right_case {
+                    return false;
+                }
+                let cases = self.types[ty.0].cases();
+                let Some(case) = cases.get(*left_case) else {
+                    return false;
+                };
+                case.payload.len() == left_payload.len()
+                    && case.payload.len() == right_payload.len()
+                    && case
+                        .payload
+                        .iter()
+                        .zip(left_payload.iter().zip(right_payload))
+                        .all(|(field, (left, right))| self.values_equal(*field, left, right))
+            }
+            _ => left == right,
+        }
+    }
 }
 
 fn set_local(locals: &mut Vec<Option<ConstValue>>, id: usize, value: ConstValue) {
@@ -1859,5 +2169,174 @@ fn wrap_base(value: i128, width: i128) -> i128 {
         (value as i32) as i128
     } else {
         (value as i64) as i128
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    fn evaluator(types: &[TType]) -> Evaluator<'_> {
+        Evaluator {
+            declarations: &[],
+            functions: &[],
+            types,
+            values: Vec::new(),
+            states: Vec::new(),
+            active_constants: Vec::new(),
+            views: HashMap::new(),
+            steps: 0,
+        }
+    }
+
+    #[test]
+    fn pool_rejects_out_of_range_ids_and_retires_max_generation_slots() {
+        let evaluator = evaluator(&[]);
+        let mut pool = ConstValue::Pool {
+            slots: vec![Some(ConstValue::Integer(7))],
+            generations: vec![1],
+            free: Vec::new(),
+        };
+        let out_of_range = evaluator
+            .eval_pool_op(
+                PoolOp::Get,
+                &mut pool,
+                vec![ConstValue::Integer(1)],
+                1,
+                Span::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            out_of_range,
+            ConstValue::Enum {
+                case_index: 1,
+                payload: Vec::new(),
+            }
+        );
+        assert_eq!(
+            pool,
+            ConstValue::Pool {
+                slots: vec![Some(ConstValue::Integer(7))],
+                generations: vec![1],
+                free: Vec::new(),
+            }
+        );
+
+        let generation = u32::MAX - 1;
+        let id = ((generation as u64) << 32) as i128;
+        let mut near_retirement = ConstValue::Pool {
+            slots: vec![Some(ConstValue::Integer(9))],
+            generations: vec![generation],
+            free: Vec::new(),
+        };
+        let removed = evaluator
+            .eval_pool_op(
+                PoolOp::Remove,
+                &mut near_retirement,
+                vec![ConstValue::Integer(id)],
+                1,
+                Span::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            removed,
+            ConstValue::Enum {
+                case_index: 0,
+                payload: vec![ConstValue::Integer(9)],
+            }
+        );
+        assert_eq!(
+            near_retirement,
+            ConstValue::Pool {
+                slots: vec![None],
+                generations: vec![u32::MAX],
+                free: Vec::new(),
+            }
+        );
+        let full = evaluator
+            .eval_pool_op(
+                PoolOp::Add,
+                &mut near_retirement,
+                vec![ConstValue::Integer(10)],
+                1,
+                Span::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            full,
+            ConstValue::Enum {
+                case_index: 1,
+                payload: vec![ConstValue::Enum {
+                    case_index: 0,
+                    payload: Vec::new(),
+                }],
+            }
+        );
+        assert_eq!(
+            near_retirement,
+            ConstValue::Pool {
+                slots: vec![None],
+                generations: vec![u32::MAX],
+                free: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn pool_equality_ignores_free_list_and_vacant_generations() {
+        let mut types = vec![
+            TType {
+                name: "int".to_owned(),
+                kind: TTypeKind::Int,
+                span: Span::default(),
+            },
+            TType {
+                name: "long".to_owned(),
+                kind: TTypeKind::Long,
+                span: Span::default(),
+            },
+            TType {
+                name: "bool".to_owned(),
+                kind: TTypeKind::Bool,
+                span: Span::default(),
+            },
+            TType {
+                name: "()".to_owned(),
+                kind: TTypeKind::Unit,
+                span: Span::default(),
+            },
+            TType {
+                name: "never".to_owned(),
+                kind: TTypeKind::Never,
+                span: Span::default(),
+            },
+        ];
+        types.push(TType {
+            name: "pool<int, 2>".to_owned(),
+            kind: TTypeKind::Pool {
+                element: Ty::Int,
+                capacity: 2,
+                owner: 0,
+            },
+            span: Span::default(),
+        });
+        let evaluator = evaluator(&types);
+        let left = ConstValue::Pool {
+            slots: vec![Some(ConstValue::Integer(7)), None],
+            generations: vec![3, 10],
+            free: vec![1],
+        };
+        let right = ConstValue::Pool {
+            slots: vec![Some(ConstValue::Integer(7)), None],
+            generations: vec![3, 99],
+            free: vec![0],
+        };
+        assert!(evaluator.values_equal(Ty(5), &left, &right));
+        let different_live_generation = ConstValue::Pool {
+            slots: vec![Some(ConstValue::Integer(7)), None],
+            generations: vec![4, 99],
+            free: vec![0],
+        };
+        assert!(!evaluator.values_equal(Ty(5), &left, &different_live_generation));
     }
 }

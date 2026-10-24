@@ -31,6 +31,8 @@ struct Binding {
     mode: ParamMode,
     span: Span,
     loop_counter: bool,
+    owner: Option<usize>,
+    scope_depth: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -59,13 +61,33 @@ struct Checker {
     files: Vec<String>,
     require_main: bool,
     signatures: HashMap<String, Signature>,
+    function_signatures: HashMap<usize, Signature>,
+    generic_functions: HashMap<String, Function>,
+    generic_function_owner_placeholders: HashMap<(String, String), usize>,
+    function_owner_substitutions: HashMap<usize, HashMap<String, usize>>,
+    function_capacity_substitutions: HashMap<usize, HashMap<String, usize>>,
+    current_generic_capacities: HashMap<String, usize>,
+    generic_specializations: HashMap<(String, Vec<String>), usize>,
+    capacity_instantiations: std::collections::HashSet<(String, Vec<usize>)>,
     types: Vec<TType>,
     type_ids: HashMap<String, Ty>,
     preferred_type_names: HashMap<Ty, String>,
     struct_decls: HashMap<Ty, StructDecl>,
+    generic_struct_owners: HashMap<Ty, HashMap<String, usize>>,
+    specialized_struct_base: HashMap<Ty, Ty>,
+    specialized_struct_owners: HashMap<Ty, Vec<usize>>,
+    struct_specialization_ids: HashMap<(Ty, Vec<usize>), Ty>,
+    current_generic_owners: HashMap<String, usize>,
+    owner_labels: HashMap<usize, String>,
+    owner_scope_depths: HashMap<usize, usize>,
+    current_external_owners: std::collections::HashSet<usize>,
+    next_owner: usize,
+    pending_owner: Option<(String, usize)>,
     refinement_ids: HashMap<(Ty, i128, i128, RefinePolicy), Ty>,
     generic_ids: HashMap<(u8, Ty, Ty), Ty>,
     collection_ids: HashMap<(u8, Ty, usize), Ty>,
+    pool_ids: HashMap<(Ty, usize, usize), Ty>,
+    id_ids: HashMap<usize, Ty>,
     ast_functions: Vec<Function>,
     ast_tests: Vec<Test>,
     ast_constants: Vec<ConstDecl>,
@@ -96,6 +118,14 @@ impl Checker {
             files,
             require_main,
             signatures: HashMap::new(),
+            function_signatures: HashMap::new(),
+            generic_functions: HashMap::new(),
+            generic_function_owner_placeholders: HashMap::new(),
+            function_owner_substitutions: HashMap::new(),
+            function_capacity_substitutions: HashMap::new(),
+            current_generic_capacities: HashMap::new(),
+            generic_specializations: HashMap::new(),
+            capacity_instantiations: std::collections::HashSet::new(),
             types: vec![
                 TType {
                     name: "int".to_owned(),
@@ -126,9 +156,21 @@ impl Checker {
             type_ids: HashMap::new(),
             preferred_type_names: HashMap::new(),
             struct_decls: HashMap::new(),
+            generic_struct_owners: HashMap::new(),
+            specialized_struct_base: HashMap::new(),
+            specialized_struct_owners: HashMap::new(),
+            struct_specialization_ids: HashMap::new(),
+            current_generic_owners: HashMap::new(),
+            owner_labels: HashMap::new(),
+            owner_scope_depths: HashMap::new(),
+            current_external_owners: std::collections::HashSet::new(),
+            next_owner: 0,
+            pending_owner: None,
             refinement_ids: HashMap::new(),
             generic_ids: HashMap::new(),
             collection_ids: HashMap::new(),
+            pool_ids: HashMap::new(),
+            id_ids: HashMap::new(),
             ast_functions: Vec::new(),
             ast_tests: Vec::new(),
             ast_constants: Vec::new(),
@@ -181,7 +223,19 @@ impl Checker {
                     });
                 }
                 let id = self.ast_constants.len();
+                let saved_pending = self.pending_owner.take();
+                if constant.ty.name == "pool" {
+                    let owner = self.fresh_owner(constant.name.clone());
+                    self.pending_owner = Some((constant.name.clone(), owner));
+                }
                 let ty = self.parse_type(&constant.ty)?;
+                self.pending_owner = saved_pending;
+                if self.type_contains_pool(ty) {
+                    return Err(CheckError {
+                        span: constant.ty.span,
+                        message: "pool-containing constants are not supported; use a local pool while evaluating a constant function".to_owned(),
+                    });
+                }
                 self.constant_ids.insert(constant.name.clone(), id);
                 self.constant_types.push(ty);
                 self.ast_constants.push(constant);
@@ -201,11 +255,18 @@ impl Checker {
                         .to_owned(),
                     });
                 }
-                if self.signatures.contains_key(&function.name) {
+                if self.signatures.contains_key(&function.name)
+                    || self.generic_functions.contains_key(&function.name)
+                {
                     return Err(CheckError {
                         span: function.span,
                         message: format!("function '{}' is declared more than once", function.name),
                     });
+                }
+                if !function.generic_params.is_empty() {
+                    self.generic_functions
+                        .insert(function.name.clone(), function);
+                    continue;
                 }
                 let params = function
                     .params
@@ -223,8 +284,10 @@ impl Checker {
                     .map(|ty| self.parse_type(ty))
                     .transpose()?
                     .unwrap_or(Ty::Unit);
+                let signature = Signature { id, params, result };
                 self.signatures
-                    .insert(function.name.clone(), Signature { id, params, result });
+                    .insert(function.name.clone(), signature.clone());
+                self.function_signatures.insert(id, signature);
                 self.ast_functions.push(function);
             }
             for test in p.tests {
@@ -245,8 +308,10 @@ impl Checker {
             self.check_entry()?;
         }
         let mut functions = Vec::with_capacity(self.ast_functions.len() + self.ast_tests.len());
-        for id in 0..self.ast_functions.len() {
+        let mut id = 0;
+        while id < self.ast_functions.len() {
             functions.push(self.check_function(id)?);
+            id += 1;
         }
         let mut tests = Vec::with_capacity(self.ast_tests.len());
         for index in 0..self.ast_tests.len() {
@@ -393,6 +458,17 @@ impl Checker {
             .collect::<Vec<_>>();
         for declaration in declarations {
             let ty = self.type_ids[&declaration.name];
+            let saved_generic_owners = self.current_generic_owners.clone();
+            let mut generic_owners = HashMap::new();
+            for parameter in &declaration.generic_params {
+                let owner = self.fresh_owner(format!("{}.{}", declaration.name, parameter));
+                generic_owners.insert(parameter.clone(), owner);
+            }
+            if !generic_owners.is_empty() {
+                self.generic_struct_owners
+                    .insert(ty, generic_owners.clone());
+            }
+            self.current_generic_owners = generic_owners;
             let mut names = HashMap::<String, Span>::new();
             let mut fields = Vec::new();
             for field in &declaration.fields {
@@ -405,9 +481,19 @@ impl Checker {
                         ),
                     });
                 }
+                let old_pending = self.pending_owner.take();
+                if old_pending.is_none() {
+                    let owner = self.fresh_owner(format!("{}.{}", declaration.name, field.name));
+                    self.pending_owner =
+                        Some((format!("{}.{}", declaration.name, field.name), owner));
+                } else {
+                    self.pending_owner = old_pending.clone();
+                }
+                let field_ty = self.parse_type(&field.ty);
+                self.pending_owner = old_pending;
                 fields.push(TField {
                     name: field.name.clone(),
-                    ty: self.parse_type(&field.ty)?,
+                    ty: field_ty?,
                 });
                 if fields
                     .last()
@@ -418,6 +504,7 @@ impl Checker {
             }
             self.types[ty.0].kind = TTypeKind::Struct(fields);
             self.struct_decls.insert(ty, declaration);
+            self.current_generic_owners = saved_generic_owners;
         }
         Ok(())
     }
@@ -474,6 +561,21 @@ impl Checker {
     }
 
     fn parse_type(&mut self, ty: &TypeAst) -> Result<Ty, CheckError> {
+        if ty.name == "Id" && ty.args.len() == 1 && ty.const_args.is_empty() {
+            let owner = self.owner_from_ast(&ty.args[0])?;
+            if ty.range.is_some() {
+                return Err(CheckError {
+                    span: ty.span,
+                    message: "ids cannot be range refined".to_owned(),
+                });
+            }
+            return Ok(self.intern_id(owner, ty.span));
+        }
+        if ty.name.ends_with(".Id") && ty.args.is_empty() && ty.const_args.is_empty() {
+            let owner_path = ty.name.strip_suffix(".Id").unwrap_or(&ty.name);
+            let owner = self.resolve_owner_path(owner_path, ty.span)?;
+            return Ok(self.intern_id(owner, ty.span));
+        }
         let mut result = match ty.name.as_str() {
             "int" if ty.args.is_empty() && ty.const_args.is_empty() => {
                 if let Some(range) = ty.range {
@@ -520,6 +622,12 @@ impl Checker {
             }
             "list" if ty.args.len() == 1 && ty.const_args.len() == 1 && ty.range.is_none() => {
                 let element = self.parse_type(&ty.args[0])?;
+                if self.type_contains_pool(element) {
+                    return Err(CheckError {
+                        span: ty.args[0].span,
+                        message: "pools cannot appear inside array or list elements; each repeated element would need a distinct owner".to_owned(),
+                    });
+                }
                 let capacity = self.capacity_value(&ty.const_args[0])?;
                 if capacity < 0 {
                     return Err(CheckError {
@@ -547,12 +655,76 @@ impl Checker {
                     ty.span,
                 )
             }
-            "Option" | "Result" | "list" => {
+            "pool"
+                if (ty.args.len() == 1 || ty.args.len() == 2)
+                    && ty.const_args.len() == 1
+                    && ty.range.is_none() =>
+            {
+                let element = self.parse_type(&ty.args[0])?;
+                if self.type_contains_pool(element) {
+                    return Err(CheckError {
+                        span: ty.args[0].span,
+                        message: "a pool element cannot itself contain a pool; fixed slots cannot give nested pools distinct owners".to_owned(),
+                    });
+                }
+                let capacity = self.capacity_value(&ty.const_args[0])?;
+                if capacity < 0 {
+                    return Err(CheckError {
+                        span: ty.const_args[0].span,
+                        message:
+                            "pool capacity cannot be negative; use zero or a positive constant"
+                                .to_owned(),
+                    });
+                }
+                if capacity > i64::MAX as i128 {
+                    return Err(CheckError {
+                        span: ty.const_args[0].span,
+                        message: "collection size overflows long; reduce a capacity".to_owned(),
+                    });
+                }
+                if capacity > (u32::MAX as i128) + 1 {
+                    return Err(CheckError {
+                        span: ty.const_args[0].span,
+                        message: "pool capacity exceeds the 32-bit slot limit; reduce the capacity"
+                            .to_owned(),
+                    });
+                }
+                let capacity = usize::try_from(capacity).map_err(|_| CheckError {
+                    span: ty.const_args[0].span,
+                    message: "collection size overflows long; reduce a capacity".to_owned(),
+                })?;
+                let owner = if ty.args.len() == 2 {
+                    self.owner_from_ast(&ty.args[1])?
+                } else if let Some((_, owner)) = &self.pending_owner {
+                    *owner
+                } else {
+                    return Err(CheckError {
+                        span: ty.span,
+                        message: "a pool type needs an owner; declare it as a named local or write the owner parameter as the third type argument"
+                            .to_owned(),
+                    });
+                };
+                self.intern_pool(element, capacity, owner, ty.span)
+            }
+            name if !ty.args.is_empty() && ty.const_args.is_empty() && ty.range.is_none() => {
+                let Some(base) = self.type_ids.get(name).copied() else {
+                    return Err(CheckError {
+                        span: ty.span,
+                        message: format!("unknown type '{}'; declare it with struct", name),
+                    });
+                };
+                self.instantiate_generic_struct(base, &ty.args, ty.span)?
+            }
+            "Option" | "Result" | "list" | "pool" => {
                 return Err(CheckError {
                     span: ty.span,
                     message: match ty.name.as_str() {
                         "list" => {
                             "list types use list<T, capacity>; the capacity must be a constant"
+                                .to_owned()
+                        }
+                        "pool" => {
+                            "pool types use pool<T, capacity> or pool<T, capacity, P>; the capacity must be a constant"
                                 .to_owned()
                         }
                         "Option" => {
@@ -597,6 +769,12 @@ impl Checker {
             })?,
         };
         for cap_expr in &ty.array_caps {
+            if self.type_contains_pool(result) {
+                return Err(CheckError {
+                    span: cap_expr.span,
+                    message: "pools cannot appear inside array or list elements; each repeated element would need a distinct owner".to_owned(),
+                });
+            }
             let capacity = self.capacity_value(cap_expr)?;
             if capacity < 0 {
                 return Err(CheckError {
@@ -633,6 +811,528 @@ impl Checker {
                         .to_owned(),
             });
         }
+        Ok(result)
+    }
+
+    fn fresh_owner(&mut self, label: impl Into<String>) -> usize {
+        let id = self.next_owner;
+        self.next_owner += 1;
+        self.owner_labels.insert(id, label.into());
+        id
+    }
+
+    fn localize_embedded_pool_owners(
+        &mut self,
+        ty: Ty,
+        root_name: &str,
+        span: Span,
+    ) -> Result<Ty, CheckError> {
+        fn collect(
+            checker: &Checker,
+            ty: Ty,
+            path: &mut Vec<String>,
+            active: &mut std::collections::HashSet<Ty>,
+            owners: &mut Vec<(usize, String)>,
+        ) {
+            if !active.insert(ty) {
+                return;
+            }
+            match &checker.types[ty.0].kind {
+                TTypeKind::Pool { owner, .. } => {
+                    owners.push((*owner, path.join(".")));
+                }
+                TTypeKind::Struct(fields) => {
+                    for field in fields {
+                        path.push(field.name.clone());
+                        collect(checker, field.ty, path, active, owners);
+                        path.pop();
+                    }
+                }
+                TTypeKind::Option(inner) => collect(checker, *inner, path, active, owners),
+                TTypeKind::Result(ok, err) => {
+                    collect(checker, *ok, path, active, owners);
+                    collect(checker, *err, path, active, owners);
+                }
+                TTypeKind::Enum(cases) => {
+                    for case in cases {
+                        for payload in &case.payload {
+                            collect(checker, *payload, path, active, owners);
+                        }
+                    }
+                }
+                TTypeKind::Array { .. } | TTypeKind::List { .. } => {}
+                _ => {}
+            }
+            active.remove(&ty);
+        }
+
+        let mut declarations = Vec::new();
+        collect(
+            self,
+            ty,
+            &mut Vec::new(),
+            &mut std::collections::HashSet::new(),
+            &mut declarations,
+        );
+        let generic_owners = self
+            .generic_struct_owners
+            .values()
+            .flat_map(|owners| owners.values().copied())
+            .chain(self.current_generic_owners.values().copied())
+            .collect::<std::collections::HashSet<_>>();
+        let mut substitutions = HashMap::new();
+        for (old, path) in declarations {
+            if generic_owners.contains(&old) || substitutions.contains_key(&old) {
+                continue;
+            }
+            let field_path = if path.is_empty() {
+                root_name.to_owned()
+            } else {
+                format!("{root_name}.{path}")
+            };
+            let owner = self.fresh_owner(field_path);
+            self.owner_scope_depths
+                .insert(owner, self.scope_ids.len().saturating_sub(1));
+            substitutions.insert(old, owner);
+        }
+        if substitutions.is_empty() {
+            return Ok(ty);
+        }
+        let mut memo = HashMap::new();
+        self.substitute_owner_type(ty, &substitutions, &mut memo, span)
+    }
+
+    fn type_contains_pool(&self, ty: Ty) -> bool {
+        fn visit(checker: &Checker, ty: Ty, seen: &mut std::collections::HashSet<Ty>) -> bool {
+            if !seen.insert(ty) {
+                return false;
+            }
+            match &checker.types[ty.0].kind {
+                TTypeKind::Pool { .. } => true,
+                TTypeKind::Struct(fields) => {
+                    fields.iter().any(|field| visit(checker, field.ty, seen))
+                }
+                TTypeKind::Enum(cases) => cases
+                    .iter()
+                    .flat_map(|case| case.payload.iter())
+                    .any(|ty| visit(checker, *ty, seen)),
+                TTypeKind::Option(inner) => visit(checker, *inner, seen),
+                TTypeKind::Result(ok, err) => {
+                    visit(checker, *ok, seen) || visit(checker, *err, seen)
+                }
+                TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
+                    visit(checker, *element, seen)
+                }
+                _ => false,
+            }
+        }
+        visit(self, ty, &mut std::collections::HashSet::new())
+    }
+
+    fn owners_in_type(&self, ty: Ty) -> std::collections::HashSet<usize> {
+        fn visit(
+            checker: &Checker,
+            ty: Ty,
+            seen: &mut std::collections::HashSet<Ty>,
+            owners: &mut std::collections::HashSet<usize>,
+        ) {
+            if !seen.insert(ty) {
+                return;
+            }
+            match &checker.types[ty.0].kind {
+                TTypeKind::Id { owner } => {
+                    owners.insert(*owner);
+                }
+                TTypeKind::Pool { element, owner, .. } => {
+                    owners.insert(*owner);
+                    visit(checker, *element, seen, owners);
+                }
+                TTypeKind::Struct(fields) => {
+                    for field in fields {
+                        visit(checker, field.ty, seen, owners);
+                    }
+                }
+                TTypeKind::Enum(cases) => {
+                    for case in cases {
+                        for payload in &case.payload {
+                            visit(checker, *payload, seen, owners);
+                        }
+                    }
+                }
+                TTypeKind::Option(inner) => visit(checker, *inner, seen, owners),
+                TTypeKind::Result(ok, err) => {
+                    visit(checker, *ok, seen, owners);
+                    visit(checker, *err, seen, owners);
+                }
+                TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
+                    visit(checker, *element, seen, owners)
+                }
+                _ => {}
+            }
+        }
+        let mut owners = std::collections::HashSet::new();
+        visit(self, ty, &mut std::collections::HashSet::new(), &mut owners);
+        owners
+    }
+
+    fn fresh_pool_value(&self, value: &TExpr) -> bool {
+        if !self.type_contains_pool(value.ty) {
+            return true;
+        }
+        match &value.kind {
+            TExprKind::EmptyPool => true,
+            TExprKind::StructConstruct { fields } => fields.iter().all(|(_, field)| {
+                !self.type_contains_pool(field.ty) || self.fresh_pool_value(field)
+            }),
+            TExprKind::Construct { args, .. } => args
+                .iter()
+                .all(|field| !self.type_contains_pool(field.ty) || self.fresh_pool_value(field)),
+            _ => false,
+        }
+    }
+
+    fn check_owner_lifetime(
+        &self,
+        ty: Ty,
+        destination_depth: Option<usize>,
+        span: Span,
+    ) -> Result<(), CheckError> {
+        for owner in self.owners_in_type(ty) {
+            if self.current_external_owners.contains(&owner) {
+                continue;
+            }
+            let owner_depth = self.owner_scope_depths.get(&owner).copied().unwrap_or(0);
+            if destination_depth.is_none_or(|depth| owner_depth > depth) {
+                let label = self
+                    .owner_labels
+                    .get(&owner)
+                    .map(String::as_str)
+                    .unwrap_or("local pool");
+                return Err(CheckError {
+                    span,
+                    message: format!(
+                        "pool owner '{}' does not live long enough for this value; ids cannot outlive their pool",
+                        label
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn owner_from_ast(&self, owner_ast: &TypeAst) -> Result<usize, CheckError> {
+        self.resolve_owner_path(&owner_ast.name, owner_ast.span)
+    }
+
+    fn resolve_owner_path(&self, path: &str, span: Span) -> Result<usize, CheckError> {
+        if let Some(owner) = self.current_generic_owners.get(path) {
+            return Ok(*owner);
+        }
+        if let Some((name, owner)) = &self.pending_owner {
+            if name == path || name.rsplit('.').next() == Some(path) {
+                return Ok(*owner);
+            }
+        }
+        if !path.contains('.') {
+            if let Some(binding) = self.find_binding(path) {
+                if let Some(owner) = binding.owner {
+                    return Ok(owner);
+                }
+            }
+        } else {
+            let mut parts = path.split('.');
+            if let Some(root) = parts.next() {
+                if let Some(binding) = self.find_binding(root) {
+                    let mut ty = binding.ty;
+                    for part in parts {
+                        let TTypeKind::Struct(fields) = &self.types[ty.0].kind else {
+                            return Err(CheckError {
+                                span,
+                                message: format!("'{}' is not a pool owner path", path),
+                            });
+                        };
+                        let Some(field) = fields.iter().find(|field| field.name == part) else {
+                            return Err(CheckError {
+                                span,
+                                message: format!(
+                                    "unknown owner path '{}'; check the field name",
+                                    path
+                                ),
+                            });
+                        };
+                        ty = field.ty;
+                    }
+                    if let TTypeKind::Pool { owner, .. } = self.types[ty.0].kind {
+                        return Ok(owner);
+                    }
+                }
+            }
+        }
+        Err(CheckError {
+            span,
+            message: format!(
+                "unknown pool owner '{}'; use a pool name or owner parameter",
+                path
+            ),
+        })
+    }
+
+    fn intern_id(&mut self, owner: usize, span: Span) -> Ty {
+        if let Some(ty) = self.id_ids.get(&owner) {
+            return *ty;
+        }
+        let label = self
+            .owner_labels
+            .get(&owner)
+            .cloned()
+            .unwrap_or_else(|| "P".to_owned());
+        let ty = Ty(self.types.len());
+        self.types.push(TType {
+            name: format!("Id<{label}>"),
+            kind: TTypeKind::Id { owner },
+            span,
+        });
+        self.id_ids.insert(owner, ty);
+        ty
+    }
+
+    fn intern_pool(&mut self, element: Ty, capacity: usize, owner: usize, span: Span) -> Ty {
+        let key = (element, capacity, owner);
+        if let Some(ty) = self.pool_ids.get(&key) {
+            return *ty;
+        }
+        let label = self
+            .owner_labels
+            .get(&owner)
+            .cloned()
+            .unwrap_or_else(|| "P".to_owned());
+        let ty = Ty(self.types.len());
+        self.types.push(TType {
+            name: format!("pool<{}, {}, {}>", self.type_name(element), capacity, label),
+            kind: TTypeKind::Pool {
+                element,
+                capacity,
+                owner,
+            },
+            span,
+        });
+        self.pool_ids.insert(key, ty);
+        ty
+    }
+
+    fn instantiate_generic_struct(
+        &mut self,
+        base: Ty,
+        args: &[TypeAst],
+        span: Span,
+    ) -> Result<Ty, CheckError> {
+        let Some(params) = self.generic_struct_owners.get(&base).cloned() else {
+            return Err(CheckError {
+                span,
+                message: format!("'{}' is not a generic struct", self.type_name(base)),
+            });
+        };
+        if args.len() != params.len() {
+            return Err(CheckError {
+                span,
+                message: format!(
+                    "struct '{}' expects {} owner parameter(s), got {}",
+                    self.type_name(base),
+                    params.len(),
+                    args.len()
+                ),
+            });
+        }
+        let owners = args
+            .iter()
+            .map(|arg| self.owner_from_ast(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        let cache_key = (base, owners.clone());
+        if let Some(ty) = self.struct_specialization_ids.get(&cache_key) {
+            return Ok(*ty);
+        }
+        let substitutions = params
+            .keys()
+            .zip(owners.iter())
+            .map(|(name, owner)| (*params.get(name).unwrap(), *owner))
+            .collect::<HashMap<_, _>>();
+        let TTypeKind::Struct(fields) = self.types[base.0].kind.clone() else {
+            return Err(CheckError {
+                span,
+                message: format!("'{}' is not a struct", self.type_name(base)),
+            });
+        };
+        let mut copied = Vec::with_capacity(fields.len());
+        for field in fields {
+            copied.push(TField {
+                name: field.name,
+                ty: self.substitute_owner_type(
+                    field.ty,
+                    &substitutions,
+                    &mut HashMap::new(),
+                    span,
+                )?,
+            });
+        }
+        let label = args
+            .iter()
+            .map(|arg| {
+                self.owner_labels
+                    .get(&self.owner_from_ast(arg).unwrap_or(0))
+                    .cloned()
+                    .unwrap_or_else(|| arg.name.clone())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let ty = Ty(self.types.len());
+        self.types.push(TType {
+            name: format!("{}<{}>", self.types[base.0].name, label),
+            kind: TTypeKind::Struct(copied),
+            span,
+        });
+        self.specialized_struct_base.insert(ty, base);
+        self.specialized_struct_owners.insert(ty, owners);
+        self.struct_specialization_ids.insert(cache_key, ty);
+        Ok(ty)
+    }
+
+    fn substitute_owner_type(
+        &mut self,
+        ty: Ty,
+        substitutions: &HashMap<usize, usize>,
+        memo: &mut HashMap<Ty, Ty>,
+        span: Span,
+    ) -> Result<Ty, CheckError> {
+        if let Some(found) = memo.get(&ty) {
+            return Ok(*found);
+        }
+        let kind = self.types[ty.0].kind.clone();
+        let result = match kind {
+            TTypeKind::Id { owner } => {
+                self.intern_id(*substitutions.get(&owner).unwrap_or(&owner), span)
+            }
+            TTypeKind::Option(inner) => {
+                let inner = self.substitute_owner_type(inner, substitutions, memo, span)?;
+                self.option_type(inner, span)
+            }
+            TTypeKind::Result(ok, err) => {
+                let ok = self.substitute_owner_type(ok, substitutions, memo, span)?;
+                let err = self.substitute_owner_type(err, substitutions, memo, span)?;
+                self.intern_generic(
+                    2,
+                    ok,
+                    err,
+                    format!("Result<{}, {}>", self.type_name(ok), self.type_name(err)),
+                    span,
+                    TTypeKind::Result(ok, err),
+                )
+            }
+            TTypeKind::List { element, capacity } => {
+                let element = self.substitute_owner_type(element, substitutions, memo, span)?;
+                self.intern_collection(
+                    1,
+                    element,
+                    capacity,
+                    format!("list<{}, {}>", self.type_name(element), capacity),
+                    span,
+                )
+            }
+            TTypeKind::Array { element, capacity } => {
+                let element = self.substitute_owner_type(element, substitutions, memo, span)?;
+                self.intern_collection(
+                    0,
+                    element,
+                    capacity,
+                    format!("{}[{}]", self.type_name(element), capacity),
+                    span,
+                )
+            }
+            TTypeKind::Pool {
+                element,
+                capacity,
+                owner,
+            } => {
+                let element = self.substitute_owner_type(element, substitutions, memo, span)?;
+                self.intern_pool(
+                    element,
+                    capacity,
+                    *substitutions.get(&owner).unwrap_or(&owner),
+                    span,
+                )
+            }
+            TTypeKind::Struct(fields) => {
+                let mut replaced = Vec::with_capacity(fields.len());
+                for field in &fields {
+                    replaced.push(TField {
+                        name: field.name.clone(),
+                        ty: self.substitute_owner_type(field.ty, substitutions, memo, span)?,
+                    });
+                }
+                if replaced
+                    .iter()
+                    .zip(fields.iter())
+                    .all(|(a, b)| a.ty == b.ty)
+                {
+                    ty
+                } else {
+                    let base = self.specialized_struct_base.get(&ty).copied().unwrap_or(ty);
+                    let owners = self
+                        .specialized_struct_owners
+                        .get(&ty)
+                        .cloned()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|owner| *substitutions.get(owner).unwrap_or(owner))
+                        .collect::<Vec<_>>();
+                    if !owners.is_empty() {
+                        if let Some(existing) = self
+                            .struct_specialization_ids
+                            .get(&(base, owners.clone()))
+                            .copied()
+                        {
+                            existing
+                        } else {
+                            let labels = owners
+                                .iter()
+                                .map(|owner| {
+                                    self.owner_labels
+                                        .get(owner)
+                                        .cloned()
+                                        .unwrap_or_else(|| "P".to_owned())
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let new_ty = Ty(self.types.len());
+                            self.types.push(TType {
+                                name: format!("{}<{}>", self.types[base.0].name, labels),
+                                kind: TTypeKind::Struct(replaced),
+                                span,
+                            });
+                            self.specialized_struct_base.insert(new_ty, base);
+                            self.specialized_struct_owners
+                                .insert(new_ty, owners.clone());
+                            self.struct_specialization_ids
+                                .insert((base, owners), new_ty);
+                            new_ty
+                        }
+                    } else {
+                        let new_ty = Ty(self.types.len());
+                        self.types.push(TType {
+                            name: format!("{}<owner>", self.types[ty.0].name),
+                            kind: TTypeKind::Struct(replaced),
+                            span,
+                        });
+                        self.specialized_struct_base.insert(new_ty, base);
+                        if let Some(owners) = self.specialized_struct_owners.get(&ty).cloned() {
+                            self.specialized_struct_owners.insert(new_ty, owners);
+                        }
+                        new_ty
+                    }
+                }
+            }
+            _ => ty,
+        };
+        memo.insert(ty, result);
         Ok(result)
     }
 
@@ -679,6 +1379,9 @@ impl Checker {
                 ExprKind::Name(name) => {
                     if active.contains(name) {
                         return None;
+                    }
+                    if let Some(value) = checker.current_generic_capacities.get(name) {
+                        return Some(*value as i128);
                     }
                     let decl = checker
                         .programs
@@ -783,6 +1486,29 @@ impl Checker {
                     payload
                 }
             }
+            TTypeKind::Pool {
+                element, capacity, ..
+            } => {
+                let lanes = match &self.types[element.0].kind {
+                    TTypeKind::Struct(fields) => {
+                        fields.iter().map(|field| field.ty).collect::<Vec<_>>()
+                    }
+                    _ => vec![*element],
+                };
+                let mut payload = 0u128;
+                for lane in lanes {
+                    payload = checked_add(
+                        payload,
+                        checked_mul(
+                            self.type_size_checked(lane, cache, span)?,
+                            *capacity as u128,
+                        )?,
+                    )?;
+                }
+                // occupied flags, generations, reusable-slot stack, active and free counts.
+                checked_add(16 + (*capacity as u128) * 9, payload)?
+            }
+            TTypeKind::Id { .. } => 8,
             TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
                 let mut payload = 0u128;
                 for case in self.types[ty.0].cases() {
@@ -815,6 +1541,16 @@ impl Checker {
 
     fn check_all_type_sizes(&self) -> Result<(), CheckError> {
         for (id, definition) in self.types.iter().enumerate().skip(5) {
+            if let TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } =
+                &definition.kind
+            {
+                if self.type_contains_pool(*element) {
+                    return Err(CheckError {
+                        span: definition.span,
+                        message: "pools cannot appear inside array or list elements; each repeated element would need a distinct owner".to_owned(),
+                    });
+                }
+            }
             let mut cache = vec![None; self.types.len()];
             let size = self.type_size_checked(Ty(id), &mut cache, definition.span)?;
             if size > i64::MAX as u128 {
@@ -1055,7 +1791,28 @@ impl Checker {
 
     fn check_function(&mut self, id: usize) -> Result<TFunction, CheckError> {
         let function = self.ast_functions[id].clone();
-        let signature = self.signatures[&function.name].clone();
+        let signature = self.function_signatures[&id].clone();
+        if self.type_contains_pool(signature.result) {
+            return Err(CheckError {
+                span: function.span,
+                message: "a value containing a pool cannot be returned; pool owners cannot escape a function".to_owned(),
+            });
+        }
+        let saved_external_owners = std::mem::take(&mut self.current_external_owners);
+        let saved_generic_owners = std::mem::replace(
+            &mut self.current_generic_owners,
+            self.function_owner_substitutions
+                .get(&id)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        let saved_generic_capacities = std::mem::replace(
+            &mut self.current_generic_capacities,
+            self.function_capacity_substitutions
+                .get(&id)
+                .cloned()
+                .unwrap_or_default(),
+        );
         self.current_function = id;
         self.current_return = signature.result;
         self.current_is_test = false;
@@ -1082,6 +1839,16 @@ impl Checker {
                 param.span,
                 false,
             )?;
+            if self.type_contains_pool(ty)
+                && !matches!(self.types[ty.0].kind, TTypeKind::Pool { .. })
+                && param.mode == ParamMode::Read
+            {
+                return Err(CheckError {
+                    span: param.span,
+                    message: "a value containing a pool cannot be passed by value; borrow the pool directly or pass the enclosing value as write".to_owned(),
+                });
+            }
+            self.current_external_owners.extend(self.owners_in_type(ty));
             params.push(TParam {
                 id: binding.id,
                 name: binding.name,
@@ -1118,6 +1885,9 @@ impl Checker {
             }
         }
         self.locals.clear();
+        self.current_external_owners = saved_external_owners;
+        self.current_generic_owners = saved_generic_owners;
+        self.current_generic_capacities = saved_generic_capacities;
         Ok(TFunction {
             id,
             name: function.name,
@@ -1207,14 +1977,30 @@ impl Checker {
         let tail = if let Some(expr) = &block.tail {
             if expected == Some(Ty::Unit) {
                 let typed = self.check_expr(expr, None)?;
-                if let TExprKind::CollectionOp {
-                    op: CollectionOp::Push | CollectionOp::Insert,
-                    proven_success,
-                    ..
-                } = &typed.kind
-                {
+                let unhandled_collection = match &typed.kind {
+                    TExprKind::CollectionOp {
+                        op: CollectionOp::Push | CollectionOp::Insert,
+                        proven_success,
+                        ..
+                    }
+                    | TExprKind::PoolOp {
+                        op: PoolOp::Add,
+                        proven_success,
+                        ..
+                    } => Some(*proven_success),
+                    _ => None,
+                };
+                if let Some(proven_success) = unhandled_collection {
                     if !proven_success {
-                        return Err(CheckError { span: expr.span, message: "this collection operation returns Result<(), Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended".to_owned() });
+                        let message = if matches!(&typed.kind, TExprKind::PoolOp { .. }) {
+                            "this pool add returns Result<Id, Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                        } else {
+                            "this collection operation returns Result<(), Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                        };
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: message.to_owned(),
+                        });
                     }
                     statements.push(TStmt {
                         kind: TStmtKind::Expr(typed),
@@ -1227,7 +2013,32 @@ impl Checker {
             } else if let Some(target) = expected {
                 Some(Box::new(self.check_store(expr, target)?))
             } else {
-                Some(Box::new(self.check_expr(expr, None)?))
+                let typed = self.check_expr(expr, None)?;
+                let unhandled = match &typed.kind {
+                    TExprKind::CollectionOp {
+                        op: CollectionOp::Push | CollectionOp::Insert,
+                        proven_success,
+                        ..
+                    }
+                    | TExprKind::PoolOp {
+                        op: PoolOp::Add,
+                        proven_success,
+                        ..
+                    } => Some(*proven_success),
+                    _ => None,
+                };
+                if unhandled == Some(false) {
+                    let message = if matches!(&typed.kind, TExprKind::PoolOp { .. }) {
+                        "this pool add returns Result<Id, Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                    } else {
+                        "this collection operation returns Result<(), Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                    };
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: message.to_owned(),
+                    });
+                }
+                Some(Box::new(typed))
             }
         } else {
             None
@@ -1260,10 +2071,29 @@ impl Checker {
                 annotation,
                 value,
             } => {
-                let annotated = annotation
+                let old_pending = self.pending_owner.take();
+                let pending = annotation.as_ref().is_some_and(|ty| ty.name == "pool");
+                if pending {
+                    let owner = self.fresh_owner(name.clone());
+                    self.owner_scope_depths
+                        .insert(owner, self.scope_ids.len().saturating_sub(1));
+                    self.pending_owner = Some((name.clone(), owner));
+                }
+                let parsed_annotated = annotation
                     .as_ref()
                     .map(|ty| self.parse_type(ty))
-                    .transpose()?;
+                    .transpose();
+                let declared_owner = self.pending_owner.as_ref().map(|(_, owner)| *owner);
+                self.pending_owner = old_pending;
+                let mut annotated = parsed_annotated?;
+                if !pending {
+                    if let Some(ty) = annotated {
+                        if self.type_contains_pool(ty) {
+                            annotated =
+                                Some(self.localize_embedded_pool_owners(ty, name, stmt.span)?);
+                        }
+                    }
+                }
                 let typed_value = if let Some(target) = annotated {
                     self.check_store(value, target)?
                 } else {
@@ -1273,17 +2103,48 @@ impl Checker {
                     return Err(CheckError { span: value.span, message: "a binding needs a value; functions and if expressions used here must return int, long, or bool".to_owned() });
                 }
                 let ty = annotated.unwrap_or(typed_value.ty);
+                let scope_depth = self.scope_ids.len().saturating_sub(1);
+                if self.type_contains_pool(ty) && !self.fresh_pool_value(&typed_value) {
+                    return Err(CheckError {
+                        span: value.span,
+                        message: "a value containing a pool cannot be copied; initialize a fresh pool owner".to_owned(),
+                    });
+                }
+                self.check_owner_lifetime(typed_value.ty, Some(scope_depth), value.span)?;
+                if let TTypeKind::Pool { owner, .. } = self.types[ty.0].kind {
+                    if let Some(declared_owner) = declared_owner {
+                        if owner != declared_owner {
+                            return Err(CheckError {
+                                span: annotation.as_ref().map_or(stmt.span, |ty| ty.span),
+                                message: format!(
+                                    "a new pool '{}' cannot be attached to owner '{}'; declare the owner in its own pool type",
+                                    name,
+                                    self.owner_labels
+                                        .get(&owner)
+                                        .map(String::as_str)
+                                        .unwrap_or("another pool")
+                                ),
+                            });
+                        }
+                    }
+                }
                 let binding = self.declare(name, ty, *mutable, stmt.span, false)?;
                 if let Some(range) = self.expr_range(&typed_value) {
                     self.facts.insert((binding.id, Vec::new()), range);
                 }
                 self.record_nested_facts(binding.id, &[], &typed_value);
-                if matches!(self.types[ty.0].kind, TTypeKind::List { .. }) {
+                if matches!(
+                    self.types[ty.0].kind,
+                    TTypeKind::List { .. } | TTypeKind::Pool { .. }
+                ) {
                     let key = CollectionCountKey {
                         root: binding.id,
                         fields: Vec::new(),
                     };
-                    if matches!(&typed_value.kind, TExprKind::EmptyList) {
+                    if matches!(
+                        &typed_value.kind,
+                        TExprKind::EmptyList | TExprKind::EmptyPool
+                    ) {
                         self.collection_counts.insert(key, 0);
                     } else {
                         self.collection_counts.remove(&key);
@@ -1348,6 +2209,12 @@ impl Checker {
                                 .to_owned(),
                     });
                 }
+                if *op == AssignOp::Set && self.type_contains_pool(place.ty) {
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message: "a value containing a pool cannot be replaced or assigned; pool copies and resets are not supported".to_owned(),
+                    });
+                }
                 let (typed_value, assigned_range) = if *op == AssignOp::Set {
                     let stored = self.check_store(value, place.ty)?;
                     let range = self.expr_range(&stored);
@@ -1376,6 +2243,11 @@ impl Checker {
                     let range = self.expr_range(&stored);
                     (typed_value, range)
                 };
+                let destination_depth = self
+                    .binding_by_id(place.root)
+                    .map(|binding| binding.scope_depth)
+                    .unwrap_or(0);
+                self.check_owner_lifetime(typed_value.ty, Some(destination_depth), value.span)?;
                 if *op != AssignOp::Set {
                     let bop = assign_binary(*op);
                     self.check_binary_types(bop, place.ty, typed_value.ty, *operator_span)?;
@@ -1453,7 +2325,15 @@ impl Checker {
                                     .to_owned(),
                             });
                         }
-                        Some(self.check_store(expr, self.current_return)?)
+                        if self.type_contains_pool(self.current_return) {
+                            return Err(CheckError {
+                                span: expr.span,
+                                message: "a value containing a pool cannot be returned; pool owners cannot escape a function".to_owned(),
+                            });
+                        }
+                        let value = self.check_store(expr, self.current_return)?;
+                        self.check_owner_lifetime(value.ty, None, expr.span)?;
+                        Some(value)
                     }
                     None => {
                         if self.current_return != Ty::Unit {
@@ -1500,13 +2380,27 @@ impl Checker {
                     }
                 } else {
                     let typed = self.check_expr(expr, None)?;
-                    if let TExprKind::CollectionOp {
-                        op: CollectionOp::Push | CollectionOp::Insert,
-                        proven_success: false,
-                        ..
-                    } = typed.kind
-                    {
-                        return Err(CheckError { span: expr.span, message: "this collection operation returns Result<(), Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended".to_owned() });
+                    if matches!(
+                        typed.kind,
+                        TExprKind::CollectionOp {
+                            op: CollectionOp::Push | CollectionOp::Insert,
+                            proven_success: false,
+                            ..
+                        } | TExprKind::PoolOp {
+                            op: PoolOp::Add,
+                            proven_success: false,
+                            ..
+                        }
+                    ) {
+                        let message = if matches!(&typed.kind, TExprKind::PoolOp { .. }) {
+                            "this pool add returns Result<Id, Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                        } else {
+                            "this collection operation returns Result<(), Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                        };
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: message.to_owned(),
+                        });
                     }
                     TStmtKind::Expr(typed)
                 }
@@ -1582,14 +2476,24 @@ impl Checker {
                 body,
             } => {
                 let typed_collection = self.check_expr(collection, None)?;
-                let (element, capacity, is_list) = match self.types[typed_collection.ty.0].kind {
-                    TTypeKind::Array { element, capacity } => (element, capacity, false),
-                    TTypeKind::List { element, capacity } => (element, capacity, true),
+                let (element, capacity, is_list, is_pool, pool_owner) = match self.types
+                    [typed_collection.ty.0]
+                    .kind
+                {
+                    TTypeKind::Array { element, capacity } => {
+                        (element, capacity, false, false, None)
+                    }
+                    TTypeKind::List { element, capacity } => (element, capacity, true, false, None),
+                    TTypeKind::Pool {
+                        element,
+                        capacity,
+                        owner,
+                    } => (element, capacity, false, true, Some(owner)),
                     _ => {
                         return Err(CheckError {
                             span: collection.span,
                             message: format!(
-                                "{} is not an array or list; collection loops need a fixed collection",
+                                "{} is not an array, list, or pool; collection loops need a fixed collection",
                                 self.type_name(typed_collection.ty)
                             ),
                         });
@@ -1621,15 +2525,20 @@ impl Checker {
                 self.next_local += 1;
                 let binding = self.declare(name, element, writable, stmt.span, false)?;
                 let index_id = if let Some(index_name) = index_name {
+                    let index_ty = if let Some(owner) = pool_owner {
+                        self.intern_id(owner, stmt.span)
+                    } else {
+                        Ty::Long
+                    };
                     Some(
-                        self.declare(index_name, Ty::Long, false, stmt.span, true)?
+                        self.declare(index_name, index_ty, false, stmt.span, true)?
                             .id,
                     )
                 } else {
                     None
                 };
                 let index_expr = TExpr {
-                    kind: TExprKind::Local(index_id.unwrap_or(counter_id)),
+                    kind: TExprKind::Local(counter_id),
                     ty: Ty::Long,
                     span: stmt.span,
                 };
@@ -1639,6 +2548,7 @@ impl Checker {
                     constant: None,
                     capacity,
                     is_list,
+                    is_pool,
                     proven: true,
                 });
                 element_place.ty = element;
@@ -1669,6 +2579,7 @@ impl Checker {
                     collection: typed_collection,
                     source,
                     is_list,
+                    is_pool,
                     body: typed_body,
                 }
             }
@@ -1678,6 +2589,9 @@ impl Checker {
                     typed.kind,
                     TExprKind::CollectionOp {
                         op: CollectionOp::Push | CollectionOp::Insert,
+                        ..
+                    } | TExprKind::PoolOp {
+                        op: PoolOp::Add,
                         ..
                     }
                 ) {
@@ -1815,8 +2729,16 @@ impl Checker {
             ExprKind::Integer { .. } => None,
             ExprKind::Bool(_) => Some(Ty::Bool),
             ExprKind::Name(name) if shadowed_counter == Some(name.as_str()) => None,
+            ExprKind::Name(name) if self.current_generic_capacities.contains_key(name) => {
+                let value = self.current_generic_capacities[name];
+                Some(if value <= i32::MAX as usize {
+                    Ty::Int
+                } else {
+                    Ty::Long
+                })
+            }
             ExprKind::Name(name) => self.find_binding(name).map(|binding| binding.ty),
-            ExprKind::ListLiteral => None,
+            ExprKind::ListLiteral | ExprKind::PoolLiteral => None,
             ExprKind::Call { name, .. } => {
                 if name == "print" {
                     Some(Ty::Unit)
@@ -1908,6 +2830,23 @@ impl Checker {
                     }
                     (TTypeKind::List { element, .. }, "pop") => {
                         Some(self.option_type(element, expr.span))
+                    }
+                    (TTypeKind::Pool { element, .. }, "get" | "remove") => {
+                        Some(self.option_type(element, expr.span))
+                    }
+                    (TTypeKind::Pool { .. }, "contains") => Some(Ty::Bool),
+                    (TTypeKind::Pool { .. }, "count") => Some(Ty::Long),
+                    (TTypeKind::Pool { owner, .. }, "add") => {
+                        let id_ty = self.intern_id(owner, expr.span);
+                        let full_ty = self.type_ids["Full"];
+                        Some(self.intern_generic(
+                            2,
+                            id_ty,
+                            full_ty,
+                            format!("Result<{}, Full>", self.type_name(id_ty)),
+                            expr.span,
+                            TTypeKind::Result(id_ty, full_ty),
+                        ))
                     }
                     _ => None,
                 }
@@ -2091,7 +3030,7 @@ impl Checker {
                 self.collect_loop_constraints_expr(receiver, counter, None, constraints);
                 self.collect_loop_constraints_expr(index, counter, Some(Ty::Long), constraints);
             }
-            ExprKind::ListLiteral => {}
+            ExprKind::ListLiteral | ExprKind::PoolLiteral => {}
             ExprKind::StructInit { fields, .. } => {
                 for field in fields {
                     self.collect_loop_constraints_expr(&field.value, counter, None, constraints);
@@ -2402,6 +3341,153 @@ impl Checker {
         span: Span,
     ) -> Result<(TExprKind, Ty), CheckError> {
         let typed_collection = self.check_expr(receiver, None)?;
+        if let TTypeKind::Pool {
+            element,
+            capacity,
+            owner,
+        } = self.types[typed_collection.ty.0].kind
+        {
+            let op = match name {
+                "add" => PoolOp::Add,
+                "get" => PoolOp::Get,
+                "remove" => PoolOp::Remove,
+                "contains" => PoolOp::Contains,
+                "count" => PoolOp::Count,
+                _ => {
+                    return Err(CheckError {
+                        span: method_span,
+                        message: format!(
+                            "no method '{}' on {}; available methods: add, get, remove, contains, count",
+                            name,
+                            self.type_name(typed_collection.ty)
+                        ),
+                    });
+                }
+            };
+            let expected_args = usize::from(op != PoolOp::Count);
+            if args.len() != expected_args {
+                return Err(CheckError {
+                    span: method_span,
+                    message: format!(
+                        "method '{}.{}' takes {} argument(s), but got {}",
+                        self.type_name(typed_collection.ty),
+                        name,
+                        expected_args,
+                        args.len()
+                    ),
+                });
+            }
+            let mut receiver_place = if matches!(op, PoolOp::Add | PoolOp::Remove) {
+                let place = self.resolve_place(receiver).map_err(|_| CheckError {
+                    span: receiver.span,
+                    message: "a pool mutation needs a var, write parameter, or writable pool view"
+                        .to_owned(),
+                })?;
+                if !self.place_is_mutable(&place) {
+                    return Err(CheckError {
+                        span: receiver.span,
+                        message:
+                            "a pool mutation needs mutable storage; use var or pass it as write"
+                                .to_owned(),
+                    });
+                }
+                if op == PoolOp::Remove
+                    && self.active_views.iter().any(|view| {
+                        places_may_prefix(
+                            &self.canonical_place(&place),
+                            &self.canonical_place(view),
+                        )
+                    })
+                {
+                    return Err(CheckError {
+                        span: method_span,
+                        message: "cannot remove from a pool while a collection view is live; collect ids and remove after the loop".to_owned(),
+                    });
+                }
+                Some(place)
+            } else {
+                None
+            };
+            let typed_args = match op {
+                PoolOp::Add => vec![self.check_store(&args[0], element)?],
+                PoolOp::Get | PoolOp::Remove | PoolOp::Contains => {
+                    let id_ty = self.intern_id(owner, args[0].span);
+                    vec![self.check_store(&args[0], id_ty)?]
+                }
+                PoolOp::Count => Vec::new(),
+            };
+            let result = match op {
+                PoolOp::Add => {
+                    let id_ty = self.intern_id(owner, method_span);
+                    let full_ty = self.type_ids["Full"];
+                    self.intern_generic(
+                        2,
+                        id_ty,
+                        full_ty,
+                        format!("Result<{}, Full>", self.type_name(id_ty)),
+                        method_span,
+                        TTypeKind::Result(id_ty, full_ty),
+                    )
+                }
+                PoolOp::Get | PoolOp::Remove => self.option_type(element, method_span),
+                PoolOp::Contains => Ty::Bool,
+                PoolOp::Count => self.intern_refinement(
+                    Ty::Long,
+                    TypeRangeAst {
+                        lower: 0,
+                        upper: capacity as i128,
+                        inclusive: true,
+                        span: method_span,
+                    },
+                    RefinePolicy::Checked,
+                    method_span,
+                )?,
+            };
+            if let Some(want) = expected {
+                self.type_mismatch(result, want, span)?;
+            }
+            let count_key = receiver_place
+                .as_ref()
+                .and_then(|place| self.collection_count_key(place));
+            let loop_proven = count_key.as_ref().is_some_and(|key| {
+                self.loop_push_proofs
+                    .iter()
+                    .any(|proofs| proofs.contains(key))
+            });
+            let count_proven = loop_proven
+                || (self.loop_depth == 0
+                    && count_key
+                        .as_ref()
+                        .and_then(|key| self.collection_counts.get(key))
+                        .is_some_and(|count| *count < capacity));
+            let proven_success = op == PoolOp::Add && count_proven;
+            if let Some(place) = receiver_place.as_mut() {
+                if op == PoolOp::Add {
+                    if let Some(key) = count_key {
+                        let count = self.collection_counts.get(&key).copied().unwrap_or(0);
+                        if proven_success {
+                            self.collection_counts
+                                .insert(key, count.saturating_add(1).min(capacity));
+                        } else {
+                            self.collection_counts.insert(key, capacity);
+                        }
+                    }
+                } else if op == PoolOp::Remove {
+                    self.invalidate_collection_counts(place);
+                }
+                self.invalidate_place(place);
+            }
+            return Ok((
+                TExprKind::PoolOp {
+                    op,
+                    receiver: Box::new(typed_collection),
+                    args: typed_args,
+                    capacity,
+                    proven_success,
+                },
+                result,
+            ));
+        }
         if let TTypeKind::Array {
             element: _,
             capacity,
@@ -2790,6 +3876,350 @@ impl Checker {
         Ok(expr)
     }
 
+    fn instantiate_generic_function(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        span: Span,
+    ) -> Result<(usize, HashMap<String, usize>), CheckError> {
+        let function = self.generic_functions[name].clone();
+        if args.len() != function.params.len() {
+            return Err(CheckError {
+                span,
+                message: format!(
+                    "function '{}' takes {} argument(s), but got {}",
+                    name,
+                    function.params.len(),
+                    args.len()
+                ),
+            });
+        }
+        let generic_names = function
+            .generic_params
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let mut owner_substitutions = HashMap::<String, usize>::new();
+        let mut capacity_substitutions = HashMap::<String, usize>::new();
+        for (parameter, argument) in function.params.iter().zip(args) {
+            let Some(actual_ty) = self.natural_expr_type(argument) else {
+                continue;
+            };
+            self.unify_generic_type(
+                &parameter.ty,
+                actual_ty,
+                &generic_names,
+                &mut owner_substitutions,
+                &mut capacity_substitutions,
+                argument.span,
+            )?;
+        }
+        for parameter in &function.generic_params {
+            if !owner_substitutions.contains_key(parameter)
+                && !capacity_substitutions.contains_key(parameter)
+            {
+                return Err(CheckError {
+                    span,
+                    message: format!(
+                        "cannot infer generic parameter '{}'; pass a pool or id that determines it",
+                        parameter
+                    ),
+                });
+            }
+        }
+        let capacity_key = function
+            .generic_params
+            .iter()
+            .filter_map(|parameter| capacity_substitutions.get(parameter).copied())
+            .collect::<Vec<_>>();
+        let key = function
+            .generic_params
+            .iter()
+            .filter_map(|parameter| {
+                capacity_substitutions
+                    .get(parameter)
+                    .map(|capacity| format!("{}=capacity{}", parameter, capacity))
+            })
+            .collect::<Vec<_>>();
+        if let Some(id) = self
+            .generic_specializations
+            .get(&(name.to_owned(), key.clone()))
+        {
+            return Ok((*id, owner_substitutions));
+        }
+        let capacity_identity = (name.to_owned(), capacity_key.clone());
+        if !self.capacity_instantiations.contains(&capacity_identity)
+            && self.capacity_instantiations.len() >= 10_000
+        {
+            return Err(CheckError {
+                span,
+                message: "generic capacity instantiation limit (10,000) exceeded; reduce the number of distinct capacity arguments".to_owned(),
+            });
+        }
+        self.capacity_instantiations.insert(capacity_identity);
+        let mut owner_placeholders = HashMap::new();
+        for parameter in &function.generic_params {
+            if !owner_substitutions.contains_key(parameter) {
+                continue;
+            }
+            let placeholder_key = (name.to_owned(), parameter.clone());
+            let placeholder = if let Some(owner) = self
+                .generic_function_owner_placeholders
+                .get(&placeholder_key)
+                .copied()
+            {
+                owner
+            } else {
+                let owner = self.fresh_owner(format!("{name}.{parameter}"));
+                self.generic_function_owner_placeholders
+                    .insert(placeholder_key, owner);
+                owner
+            };
+            owner_placeholders.insert(parameter.clone(), placeholder);
+        }
+        let id = self.ast_functions.len();
+        let previous_owners =
+            std::mem::replace(&mut self.current_generic_owners, owner_placeholders.clone());
+        let previous_capacities = std::mem::replace(
+            &mut self.current_generic_capacities,
+            capacity_substitutions.clone(),
+        );
+        let params = function
+            .params
+            .iter()
+            .map(|parameter| {
+                Ok(ParamSignature {
+                    ty: self.parse_type(&parameter.ty)?,
+                    mode: parameter.mode,
+                })
+            })
+            .collect::<Result<Vec<_>, CheckError>>();
+        let result = function
+            .result
+            .as_ref()
+            .map(|result| self.parse_type(result))
+            .transpose();
+        self.current_generic_owners = previous_owners;
+        self.current_generic_capacities = previous_capacities;
+        let params = params?;
+        let result = result?.unwrap_or(Ty::Unit);
+        if self.type_contains_pool(result) {
+            return Err(CheckError {
+                span: function.span,
+                message: "a value containing a pool cannot be returned; pool owners cannot escape a function".to_owned(),
+            });
+        }
+        let mut specialized = function;
+        specialized.generic_params.clear();
+        specialized.name = format!("{}$instance{}", name, id);
+        self.ast_functions.push(specialized);
+        self.function_signatures
+            .insert(id, Signature { id, params, result });
+        self.function_owner_substitutions
+            .insert(id, owner_placeholders);
+        self.function_capacity_substitutions
+            .insert(id, capacity_substitutions);
+        self.generic_specializations
+            .insert((name.to_owned(), key), id);
+        Ok((id, owner_substitutions))
+    }
+
+    fn substitute_signature_owners(
+        &mut self,
+        signature: Signature,
+        substitutions: &HashMap<usize, usize>,
+        span: Span,
+    ) -> Result<Signature, CheckError> {
+        if substitutions.is_empty() {
+            return Ok(signature);
+        }
+        let mut memo = HashMap::new();
+        let mut params = Vec::with_capacity(signature.params.len());
+        for parameter in signature.params {
+            params.push(ParamSignature {
+                ty: self.substitute_owner_type(parameter.ty, substitutions, &mut memo, span)?,
+                mode: parameter.mode,
+            });
+        }
+        let result =
+            self.substitute_owner_type(signature.result, substitutions, &mut memo, span)?;
+        Ok(Signature {
+            id: signature.id,
+            params,
+            result,
+        })
+    }
+
+    fn unify_generic_type(
+        &self,
+        pattern: &TypeAst,
+        actual: Ty,
+        generic_names: &std::collections::HashSet<String>,
+        owners: &mut HashMap<String, usize>,
+        capacities: &mut HashMap<String, usize>,
+        span: Span,
+    ) -> Result<(), CheckError> {
+        let owner_pattern = |ast: &TypeAst| {
+            generic_names.contains(&ast.name) && ast.args.is_empty() && ast.const_args.is_empty()
+        };
+        let bind_owner = |parameter: &str,
+                          owner: usize,
+                          owners: &mut HashMap<String, usize>|
+         -> Result<(), CheckError> {
+            if let Some(previous) = owners.insert(parameter.to_owned(), owner) {
+                if previous != owner {
+                    let expected = self
+                        .owner_labels
+                        .get(&previous)
+                        .map(String::as_str)
+                        .unwrap_or("one pool");
+                    let got = self
+                        .owner_labels
+                        .get(&owner)
+                        .map(String::as_str)
+                        .unwrap_or("another pool");
+                    return Err(CheckError {
+                        span,
+                        message: format!(
+                            "generic owner '{}' was inferred as both '{}' and '{}'; pass ids from one pool",
+                            parameter, expected, got
+                        ),
+                    });
+                }
+            }
+            Ok(())
+        };
+        let bind_capacity = |parameter: &str,
+                             capacity: usize,
+                             capacities: &mut HashMap<String, usize>|
+         -> Result<(), CheckError> {
+            if let Some(previous) = capacities.insert(parameter.to_owned(), capacity) {
+                if previous != capacity {
+                    return Err(CheckError {
+                        span,
+                        message: format!(
+                            "generic capacity '{}' was inferred as both {} and {}; pass pools with matching capacities",
+                            parameter, previous, capacity
+                        ),
+                    });
+                }
+            }
+            Ok(())
+        };
+
+        match pattern.name.as_str() {
+            "pool" => {
+                let TTypeKind::Pool {
+                    element,
+                    capacity,
+                    owner,
+                } = self.types[actual.0].kind
+                else {
+                    return Ok(());
+                };
+                if let Some(Expr {
+                    kind: ExprKind::Name(parameter),
+                    ..
+                }) = pattern.const_args.first()
+                {
+                    if generic_names.contains(parameter) {
+                        bind_capacity(parameter, capacity, capacities)?;
+                    }
+                }
+                if let Some(owner_ast) = pattern.args.get(1).filter(|owner| owner_pattern(owner)) {
+                    bind_owner(&owner_ast.name, owner, owners)?;
+                }
+                if let Some(element_pattern) = pattern.args.first() {
+                    self.unify_generic_type(
+                        element_pattern,
+                        element,
+                        generic_names,
+                        owners,
+                        capacities,
+                        span,
+                    )?;
+                }
+            }
+            "Id" => {
+                if let TTypeKind::Id { owner } = self.types[actual.0].kind {
+                    if let Some(owner_ast) =
+                        pattern.args.first().filter(|owner| owner_pattern(owner))
+                    {
+                        bind_owner(&owner_ast.name, owner, owners)?;
+                    }
+                }
+            }
+            "Option" => {
+                if let (TTypeKind::Option(actual), Some(pattern)) =
+                    (&self.types[actual.0].kind, pattern.args.first())
+                {
+                    self.unify_generic_type(
+                        pattern,
+                        *actual,
+                        generic_names,
+                        owners,
+                        capacities,
+                        span,
+                    )?;
+                }
+            }
+            "Result" => {
+                if let TTypeKind::Result(ok, err) = self.types[actual.0].kind {
+                    if let Some(pattern) = pattern.args.first() {
+                        self.unify_generic_type(
+                            pattern,
+                            ok,
+                            generic_names,
+                            owners,
+                            capacities,
+                            span,
+                        )?;
+                    }
+                    if let Some(pattern) = pattern.args.get(1) {
+                        self.unify_generic_type(
+                            pattern,
+                            err,
+                            generic_names,
+                            owners,
+                            capacities,
+                            span,
+                        )?;
+                    }
+                }
+            }
+            name if !pattern.args.is_empty() => {
+                if let Some(base) = self.type_ids.get(name).copied() {
+                    let actual_base = self
+                        .specialized_struct_base
+                        .get(&actual)
+                        .copied()
+                        .unwrap_or(actual);
+                    if actual_base == base {
+                        let actual_owners = self
+                            .specialized_struct_owners
+                            .get(&actual)
+                            .cloned()
+                            .unwrap_or_default();
+                        let params = self
+                            .struct_decls
+                            .get(&base)
+                            .map(|declaration| declaration.generic_params.clone())
+                            .unwrap_or_default();
+                        for ((pattern, parameter), owner) in
+                            pattern.args.iter().zip(params).zip(actual_owners)
+                        {
+                            if owner_pattern(pattern) {
+                                bind_owner(&parameter, owner, owners)?;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn check_expr(&mut self, expr: &Expr, expected: Option<Ty>) -> Result<TExpr, CheckError> {
         let (kind, ty) = match &expr.kind {
             ExprKind::Unit => {
@@ -2844,7 +4274,23 @@ impl Checker {
                 (TExprKind::Bool(*value), Ty::Bool)
             }
             ExprKind::Name(name) => {
-                if let Some(binding) = self.find_binding(name) {
+                if let Some(value) = self.current_generic_capacities.get(name).copied() {
+                    let ty = expected
+                        .filter(|ty| self.is_numeric(*ty))
+                        .map(|ty| self.base_type(ty))
+                        .unwrap_or(if value <= i32::MAX as usize {
+                            Ty::Int
+                        } else {
+                            Ty::Long
+                        });
+                    if value > i128::MAX as usize {
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: "generic capacity does not fit long".to_owned(),
+                        });
+                    }
+                    (TExprKind::Integer(value as i128), ty)
+                } else if let Some(binding) = self.find_binding(name) {
                     if let Some(want) = expected {
                         self.type_mismatch(binding.ty, want, expr.span)?;
                     }
@@ -3026,13 +4472,27 @@ impl Checker {
                 };
                 (TExprKind::EmptyList, ty)
             }
+            ExprKind::PoolLiteral => {
+                let Some(ty) =
+                    expected.filter(|ty| matches!(self.types[ty.0].kind, TTypeKind::Pool { .. }))
+                else {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "cannot infer the capacity and owner for 'pool {}'; add a pool<T, N> type annotation".to_owned(),
+                    });
+                };
+                (TExprKind::EmptyPool, ty)
+            }
             ExprKind::StructInit { name, fields } => {
-                let Some(ty) = self.type_ids.get(name).copied() else {
+                let Some(base_ty) = self.type_ids.get(name).copied() else {
                     return Err(CheckError {
                         span: expr.span,
                         message: format!("unknown struct '{}'; declare it with struct", name),
                     });
                 };
+                let ty = expected
+                    .filter(|expected| self.specialized_struct_base.get(expected) == Some(&base_ty))
+                    .unwrap_or(base_ty);
                 let TTypeKind::Struct(type_fields) = self.types[ty.0].kind.clone() else {
                     return Err(CheckError {
                         span: expr.span,
@@ -3041,7 +4501,7 @@ impl Checker {
                 };
                 let declaration = self
                     .struct_decls
-                    .get(&ty)
+                    .get(&base_ty)
                     .cloned()
                     .expect("struct declaration recorded");
                 let mut supplied = HashMap::<usize, Span>::new();
@@ -3263,12 +4723,14 @@ impl Checker {
                         && !matches!(self.types[arg.ty.0].kind, TTypeKind::Struct(_))
                         && !matches!(
                             self.types[arg.ty.0].kind,
-                            TTypeKind::Array { .. } | TTypeKind::List { .. }
+                            TTypeKind::Array { .. }
+                                | TTypeKind::List { .. }
+                                | TTypeKind::Pool { .. }
                         )
                     {
                         return Err(CheckError {
                             span: args[0].span,
-                            message: "print supports int, long, bool, enum, struct, array, and list values"
+                            message: "print supports int, long, bool, enum, struct, array, list, and pool values"
                                 .to_owned(),
                         });
                     }
@@ -3284,7 +4746,31 @@ impl Checker {
                         Ty::Unit,
                     )
                 } else {
-                    let Some(signature) = self.signatures.get(name).cloned() else {
+                    let signature = if self.generic_functions.contains_key(name) {
+                        let (id, actual_owners) =
+                            self.instantiate_generic_function(name, args, *call_span)?;
+                        let placeholders = self
+                            .function_owner_substitutions
+                            .get(&id)
+                            .cloned()
+                            .unwrap_or_default();
+                        let owner_remap = placeholders
+                            .iter()
+                            .filter_map(|(parameter, placeholder)| {
+                                actual_owners
+                                    .get(parameter)
+                                    .map(|actual| (*placeholder, *actual))
+                            })
+                            .collect::<HashMap<_, _>>();
+                        let signature = self.substitute_signature_owners(
+                            self.function_signatures[&id].clone(),
+                            &owner_remap,
+                            *call_span,
+                        )?;
+                        signature
+                    } else if let Some(signature) = self.signatures.get(name).cloned() {
+                        signature
+                    } else {
                         return Err(self.unknown_function(name, *call_span));
                     };
                     if args.len() != signature.params.len() {
@@ -3333,7 +4819,10 @@ impl Checker {
                             }) {
                                 return Err(CheckError { span: arg.span, message: "cannot pass storage containing a live collection view as write".to_owned() });
                             }
-                            if place.ty != param.ty {
+                            let same_embedded_pool_shape = self.type_contains_pool(param.ty)
+                                && self.specialized_struct_base.get(&place.ty) == Some(&param.ty)
+                                && !self.specialized_struct_owners.contains_key(&place.ty);
+                            if place.ty != param.ty && !same_embedded_pool_shape {
                                 return Err(CheckError {
                                     span: arg.span,
                                     message: format!(
@@ -3345,7 +4834,11 @@ impl Checker {
                             }
                             self.invalidate_place(&place);
                             self.invalidate_collection_counts(&place);
-                            typed_args.push(self.check_expr(arg, Some(param.ty))?);
+                            if same_embedded_pool_shape {
+                                typed_args.push(self.check_expr(arg, None)?);
+                            } else {
+                                typed_args.push(self.check_expr(arg, Some(param.ty))?);
+                            }
                         } else {
                             typed_args.push(self.check_store(arg, param.ty)?);
                         }
@@ -4534,6 +6027,7 @@ impl Checker {
             }
             ExprKind::Name(_)
             | ExprKind::ListLiteral
+            | ExprKind::PoolLiteral
             | ExprKind::Unit
             | ExprKind::Integer { .. }
             | ExprKind::Bool(_)
@@ -4561,6 +6055,7 @@ impl Checker {
         span: Span,
         loop_counter: bool,
     ) -> Result<Binding, CheckError> {
+        let scope_depth = self.locals.len().saturating_sub(1);
         let scope = self.locals.last_mut().expect("function scope exists");
         if let Some(previous) = scope.get(name) {
             return Err(CheckError {
@@ -4579,6 +6074,11 @@ impl Checker {
             mode,
             span,
             loop_counter,
+            owner: match self.types[ty.0].kind {
+                TTypeKind::Pool { owner, .. } => Some(owner),
+                _ => None,
+            },
+            scope_depth,
         };
         self.next_local += 1;
         scope.insert(name.to_owned(), binding.clone());
@@ -4689,6 +6189,7 @@ impl Checker {
                     constant,
                     capacity,
                     is_list,
+                    is_pool: false,
                     proven,
                 });
                 place.ty = element;
@@ -4766,7 +6267,7 @@ impl Checker {
             };
         }
         match self.types[ty.0].kind {
-            TTypeKind::List { capacity, .. } => Some(capacity),
+            TTypeKind::List { capacity, .. } | TTypeKind::Pool { capacity, .. } => Some(capacity),
             _ => None,
         }
     }
@@ -4795,7 +6296,7 @@ impl Checker {
                     args,
                     ..
                 } => {
-                    if name == "push" {
+                    if matches!(name.as_str(), "push" | "add") {
                         if let Ok(place) = checker.resolve_place(receiver) {
                             if let Some(key) = checker.collection_count_key(&place) {
                                 *counts.entry(key).or_insert(0) += 1;
@@ -4844,6 +6345,7 @@ impl Checker {
                 | ExprKind::Bool(_)
                 | ExprKind::Name(_)
                 | ExprKind::ListLiteral
+                | ExprKind::PoolLiteral
                 | ExprKind::LoopExit(_) => true,
                 ExprKind::Match { scrutinee, arms } => {
                     if !expr(checker, scrutinee, counts) {
@@ -5092,6 +6594,7 @@ impl Checker {
 
     fn unknown_function(&self, name: &str, span: Span) -> CheckError {
         let mut candidates = self.signatures.keys().cloned().collect::<Vec<_>>();
+        candidates.extend(self.generic_functions.keys().cloned());
         candidates.push("print".to_owned());
         if let Some(suggestion) = close_name(name, &candidates) {
             CheckError {
@@ -5113,6 +6616,33 @@ impl Checker {
         {
             Ok(())
         } else {
+            if let (
+                TTypeKind::Id {
+                    owner: actual_owner,
+                },
+                TTypeKind::Id {
+                    owner: expected_owner,
+                },
+            ) = (&self.types[actual.0].kind, &self.types[expected.0].kind)
+            {
+                let actual_name = self
+                    .owner_labels
+                    .get(actual_owner)
+                    .map(String::as_str)
+                    .unwrap_or("other");
+                let expected_name = self
+                    .owner_labels
+                    .get(expected_owner)
+                    .map(String::as_str)
+                    .unwrap_or("expected");
+                return Err(CheckError {
+                    span,
+                    message: format!(
+                        "expected {}.Id, got {}.Id; ids belong to their declaring pools",
+                        expected_name, actual_name
+                    ),
+                });
+            }
             Err(CheckError {
                 span,
                 message: format!(
@@ -5456,7 +6986,10 @@ fn places_overlap(a: &TPlace, b: &TPlace) -> bool {
                     constant: Some(y), ..
                 },
             ) => x == y,
-            (TProjection::Index { .. }, TProjection::Index { .. }) => true,
+            (
+                TProjection::Index { is_pool: left, .. },
+                TProjection::Index { is_pool: right, .. },
+            ) => left == right,
             _ => false,
         }
     }
@@ -5646,6 +7179,7 @@ fn assign_binary(op: AssignOp) -> BinaryOp {
         AssignOp::Mul => BinaryOp::Mul,
         AssignOp::Div => BinaryOp::Div,
         AssignOp::Rem => BinaryOp::Rem,
+        AssignOp::Shr => BinaryOp::Shr,
         AssignOp::Set => unreachable!(),
     }
 }
@@ -5658,6 +7192,7 @@ fn assign_spelling(op: AssignOp) -> &'static str {
         AssignOp::Mul => "*",
         AssignOp::Div => "/",
         AssignOp::Rem => "%",
+        AssignOp::Shr => ">>",
     }
 }
 

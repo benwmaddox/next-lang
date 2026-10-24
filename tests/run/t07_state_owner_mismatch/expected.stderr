@@ -1,0 +1,1 @@
+main.nl:8:35: error: expected right.nodes.Id, got left.nodes.Id; ids belong to their declaring pools

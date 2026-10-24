@@ -1,0 +1,1 @@
+main.nl:6:16: error: a value containing a pool cannot be copied; initialize a fresh pool owner

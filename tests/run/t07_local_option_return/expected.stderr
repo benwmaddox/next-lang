@@ -1,0 +1,1 @@
+main.nl:5:10: error: expected bad.P.Id, got local.Id; ids belong to their declaring pools

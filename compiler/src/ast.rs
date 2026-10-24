@@ -54,6 +54,7 @@ pub struct ConstDecl {
 #[derive(Clone, Debug)]
 pub struct StructDecl {
     pub name: String,
+    pub generic_params: Vec<String>,
     pub fields: Vec<StructFieldDecl>,
     pub span: Span,
 }
@@ -97,6 +98,7 @@ pub struct Test {
 #[derive(Clone, Debug)]
 pub struct Function {
     pub name: String,
+    pub generic_params: Vec<String>,
     pub params: Vec<Param>,
     pub result: Option<TypeAst>,
     pub body: Block,
@@ -178,6 +180,7 @@ pub enum AssignOp {
     Mul,
     Div,
     Rem,
+    Shr,
 }
 
 #[derive(Clone, Debug)]
@@ -234,6 +237,7 @@ pub enum ExprKind {
         fields: Vec<StructInitField>,
     },
     ListLiteral,
+    PoolLiteral,
     Fit {
         value: Box<Expr>,
         ty: TypeAst,

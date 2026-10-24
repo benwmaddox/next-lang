@@ -33,7 +33,7 @@ pub fn emit(program: &TProgram) -> String {
     let mut size_cache = vec![None; program.types.len()];
     for (id, ty) in program.types.iter().enumerate().skip(5) {
         match &ty.kind {
-            TTypeKind::Refinement { .. } => {}
+            TTypeKind::Refinement { .. } | TTypeKind::Id { .. } => {}
             TTypeKind::Struct(fields) => {
                 let fields = fields
                     .iter()
@@ -68,6 +68,29 @@ pub fn emit(program: &TProgram) -> String {
                 out.push_str(&format!(
                     "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
                     lanes.join(", "),
+                    ty.name
+                ));
+            }
+            TTypeKind::Pool {
+                element, capacity, ..
+            } => {
+                let mut fields = vec![
+                    "i64".to_owned(),
+                    "i64".to_owned(),
+                    format!("[{} x i1]", capacity),
+                    format!("[{} x i32]", capacity),
+                    format!("[{} x i32]", capacity),
+                ];
+                fields.extend(
+                    collection_lane_types(*element, &program.types)
+                        .iter()
+                        .map(|lane| {
+                            format!("[{} x {}]", capacity, llvm_type(*lane, &program.types))
+                        }),
+                );
+                out.push_str(&format!(
+                    "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
+                    fields.join(", "),
                     ty.name
                 ));
             }
@@ -134,6 +157,10 @@ pub fn emit(program: &TProgram) -> String {
         " }".to_owned(),
         "[".to_owned(),
         "]".to_owned(),
+        "pool{".to_owned(),
+        ":".to_owned(),
+        " => ".to_owned(),
+        "}".to_owned(),
     ];
     for ty in program.types.iter().skip(5) {
         print_texts.extend(ty.cases().into_iter().map(|case| case.name));
@@ -276,6 +303,12 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
                 collect_expect_sources_expr(arg, sources);
             }
         }
+        TExprKind::PoolOp { receiver, args, .. } => {
+            collect_expect_sources_expr(receiver, sources);
+            for arg in args {
+                collect_expect_sources_expr(arg, sources);
+            }
+        }
         TExprKind::OptionalToLong(receiver) => collect_expect_sources_expr(receiver, sources),
         TExprKind::Field { receiver, .. } => collect_expect_sources_expr(receiver, sources),
         TExprKind::StructConstruct { fields } => {
@@ -335,7 +368,8 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         | TExprKind::Constant(_)
         | TExprKind::LoopExit(_)
         | TExprKind::EmptyArray
-        | TExprKind::EmptyList => {}
+        | TExprKind::EmptyList
+        | TExprKind::EmptyPool => {}
     }
 }
 
@@ -398,6 +432,17 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
                         .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
                         .sum::<usize>(),
                 ),
+                TTypeKind::Pool {
+                    element, capacity, ..
+                } => 16usize
+                    .saturating_add(capacity.saturating_mul(9))
+                    .saturating_add(
+                        collection_lane_types(*element, types)
+                            .iter()
+                            .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
+                            .sum::<usize>(),
+                    ),
+                TTypeKind::Id { .. } => 8,
                 _ => {
                     let payload = enum_payload_size(ty, types, cache);
                     (4 + payload + 3) & !3
@@ -421,6 +466,10 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
             _ => unreachable!("bool constant has a non-bool value"),
         },
         TTypeKind::Unit => "zeroinitializer".to_owned(),
+        TTypeKind::Id { .. } => match value {
+            ConstValue::Integer(value) => value.to_string(),
+            _ => unreachable!("id constant has a non-integer value"),
+        },
         TTypeKind::Struct(fields) => {
             let ConstValue::Struct(values) = value else {
                 unreachable!("struct constant has a non-struct value")
@@ -451,6 +500,7 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType]) -> String {
             };
             collection_constant(*element, *capacity, values, true, types)
         }
+        TTypeKind::Pool { .. } => unreachable!("pool-valued constants are rejected"),
         TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
             let ConstValue::Enum {
                 case_index,
@@ -579,6 +629,12 @@ fn serialize_constant(
             bytes.push(u8::from(*value));
         }
         TTypeKind::Unit | TTypeKind::Never => {}
+        TTypeKind::Id { .. } => {
+            let ConstValue::Integer(value) = value else {
+                unreachable!("id constant has a non-integer value")
+            };
+            bytes.extend_from_slice(&(*value as u64).to_le_bytes());
+        }
         TTypeKind::Struct(fields) => {
             let ConstValue::Struct(values) = value else {
                 unreachable!("struct constant has a non-struct value")
@@ -600,6 +656,7 @@ fn serialize_constant(
             bytes.extend_from_slice(&(values.len() as u64).to_le_bytes());
             serialize_collection(*element, *capacity, values, true, types, bytes, cache);
         }
+        TTypeKind::Pool { .. } => unreachable!("pool-valued constants are rejected"),
         TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
             let ConstValue::Enum {
                 case_index,
@@ -728,8 +785,14 @@ impl<'a> FunctionEmitter<'a> {
             .any(|param| param.id == id && param.mode == ParamMode::Write)
     }
 
+    fn is_pool_param(&self, id: usize) -> bool {
+        self.function.params.iter().any(|param| {
+            param.id == id && matches!(self.program.types[param.ty.0].kind, TTypeKind::Pool { .. })
+        })
+    }
+
     fn local_pointer(&self, id: usize) -> String {
-        if self.is_write_param(id) {
+        if self.is_write_param(id) || self.is_pool_param(id) {
             format!("%arg.{id}")
         } else {
             format!("%local.{id}")
@@ -748,14 +811,14 @@ impl<'a> FunctionEmitter<'a> {
             .join(", ");
         self.lines.push("entry:".to_owned());
         for (id, ty) in self.slots.iter().enumerate() {
-            if let Some(ty) = ty.filter(|_| !self.is_write_param(id)) {
+            if let Some(ty) = ty.filter(|_| !self.is_write_param(id) && !self.is_pool_param(id)) {
                 self.lines
                     .push(format!("  %local.{id} = alloca {}", self.lltype(ty)));
             }
         }
         self.prologue_end = self.lines.len();
         for param in &self.function.params {
-            if param.mode == ParamMode::Read {
+            if param.mode == ParamMode::Read && !self.is_pool_param(param.id) {
                 self.lines.push(format!(
                     "  store {} %arg.{}, ptr %local.{}, align 1",
                     self.lltype(param.ty),
@@ -806,6 +869,14 @@ impl<'a> FunctionEmitter<'a> {
             self.prologue_end,
             format!("  {ptr} = alloca {}", self.lltype(ty)),
         );
+        self.prologue_end += 1;
+        ptr
+    }
+
+    fn entry_alloca_raw(&mut self, llvm_ty: &str) -> String {
+        let ptr = self.temp();
+        self.lines
+            .insert(self.prologue_end, format!("  {ptr} = alloca {llvm_ty}"));
         self.prologue_end += 1;
         ptr
     }
@@ -866,7 +937,9 @@ impl<'a> FunctionEmitter<'a> {
                 ..
             } => {
                 let element = match self.program.types[collection.ty.0].kind {
-                    TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+                    TTypeKind::Array { element, .. }
+                    | TTypeKind::List { element, .. }
+                    | TTypeKind::Pool { element, .. } => element,
                     _ => unreachable!("typed collection loop has a collection source"),
                 };
                 self.record_slot(*id, element);
@@ -915,6 +988,12 @@ impl<'a> FunctionEmitter<'a> {
             }
             TExprKind::Fill { value, .. } => self.collect_expr(value),
             TExprKind::CollectionOp { receiver, args, .. } => {
+                self.collect_expr(receiver);
+                for arg in args {
+                    self.collect_expr(arg);
+                }
+            }
+            TExprKind::PoolOp { receiver, args, .. } => {
                 self.collect_expr(receiver);
                 for arg in args {
                     self.collect_expr(arg);
@@ -991,7 +1070,8 @@ impl<'a> FunctionEmitter<'a> {
             | TExprKind::Constant(_)
             | TExprKind::LoopExit(_)
             | TExprKind::EmptyArray
-            | TExprKind::EmptyList => {}
+            | TExprKind::EmptyList
+            | TExprKind::EmptyPool => {}
         }
     }
 
@@ -1019,24 +1099,20 @@ impl<'a> FunctionEmitter<'a> {
         index: &str,
         lane: usize,
     ) -> String {
-        let is_list = matches!(
-            self.program.types[collection_ty.0].kind,
-            TTypeKind::List { .. }
-        );
-        let capacity = match self.program.types[collection_ty.0].kind {
-            TTypeKind::Array { capacity, .. } | TTypeKind::List { capacity, .. } => capacity,
-            _ => unreachable!("collection lane pointer requires an array or list"),
-        };
-        let element = match self.program.types[collection_ty.0].kind {
-            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
-            _ => unreachable!(),
+        let (capacity, offset, element) = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Array { element, capacity } => (capacity, 0, element),
+            TTypeKind::List { element, capacity } => (capacity, 1, element),
+            TTypeKind::Pool {
+                element, capacity, ..
+            } => (capacity, 5, element),
+            _ => unreachable!("collection lane pointer requires an array, list, or pool"),
         };
         let lane_ty = collection_lane_types(element, &self.program.types)[lane];
         let lane_ptr = self.temp();
         self.instruction(format!(
             "{lane_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 {}",
             self.lltype(collection_ty),
-            lane + usize::from(is_list)
+            lane + offset
         ));
         let result = self.temp();
         self.instruction(format!(
@@ -1049,7 +1125,9 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_collection_element(&mut self, collection_ty: Ty, pointer: &str, index: &str) -> String {
         let element = match self.program.types[collection_ty.0].kind {
-            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            TTypeKind::Array { element, .. }
+            | TTypeKind::List { element, .. }
+            | TTypeKind::Pool { element, .. } => element,
             _ => unreachable!(),
         };
         if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
@@ -1089,7 +1167,9 @@ impl<'a> FunctionEmitter<'a> {
         value: &str,
     ) {
         let element = match self.program.types[collection_ty.0].kind {
-            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            TTypeKind::Array { element, .. }
+            | TTypeKind::List { element, .. }
+            | TTypeKind::Pool { element, .. } => element,
             _ => unreachable!(),
         };
         if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
@@ -1129,6 +1209,327 @@ impl<'a> FunctionEmitter<'a> {
         let count = self.temp();
         self.instruction(format!("{count} = load i64, ptr {ptr}, align 1"));
         count
+    }
+
+    fn emit_pool_meta_ptr(&mut self, pool_ty: Ty, pointer: &str, field: usize) -> String {
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 {field}",
+            self.lltype(pool_ty)
+        ));
+        result
+    }
+
+    fn emit_pool_slot_ptr(
+        &mut self,
+        pool_ty: Ty,
+        pointer: &str,
+        field: usize,
+        index: &str,
+    ) -> String {
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 {field}, i64 {index}",
+            self.lltype(pool_ty)
+        ));
+        result
+    }
+
+    fn emit_pool_init(&mut self, pool_ty: Ty) -> String {
+        let capacity = match self.program.types[pool_ty.0].kind {
+            TTypeKind::Pool { capacity, .. } => capacity,
+            _ => unreachable!("pool literal has a pool type"),
+        };
+        let llvm_ty = self.lltype(pool_ty);
+        let mut value = "zeroinitializer".to_owned();
+        for index in 0..capacity {
+            let next = self.temp();
+            let slot = capacity - index - 1;
+            self.instruction(format!(
+                "{next} = insertvalue {llvm_ty} {value}, i32 {slot}, 4, {index}"
+            ));
+            value = next;
+            let next = self.temp();
+            self.instruction(format!(
+                "{next} = insertvalue {llvm_ty} {value}, i32 1, 3, {index}"
+            ));
+            value = next;
+        }
+        let next = self.temp();
+        self.instruction(format!(
+            "{next} = insertvalue {llvm_ty} {value}, i64 {capacity}, 1"
+        ));
+        next
+    }
+
+    fn emit_pool_op(
+        &mut self,
+        expr: &TExpr,
+        op: PoolOp,
+        receiver: &TExpr,
+        args: &[TExpr],
+        capacity: usize,
+        proven_success: bool,
+    ) -> String {
+        let pool_ty = receiver.ty;
+        let element = match self.program.types[pool_ty.0].kind {
+            TTypeKind::Pool { element, .. } => element,
+            _ => unreachable!("typed pool operation"),
+        };
+        let pointer = if Self::expr_place(receiver).is_some() {
+            self.emit_place_pointer_expr(receiver)
+        } else {
+            let value = self.emit_expr(receiver);
+            let pointer = self.entry_alloca(pool_ty);
+            self.instruction(format!(
+                "store {} {value}, ptr {pointer}, align 1",
+                self.lltype(pool_ty)
+            ));
+            pointer
+        };
+        if self.terminated {
+            return String::new();
+        }
+        if op == PoolOp::Count {
+            return self.emit_collection_count(pool_ty, &pointer);
+        }
+        let mut values = Vec::with_capacity(args.len());
+        for arg in args {
+            values.push(self.emit_expr(arg));
+            if self.terminated {
+                return String::new();
+            }
+        }
+        if op == PoolOp::Add {
+            let free_count_ptr = self.emit_pool_meta_ptr(pool_ty, &pointer, 1);
+            let free_count = self.temp();
+            self.instruction(format!(
+                "{free_count} = load i64, ptr {free_count_ptr}, align 1"
+            ));
+            let full = self.temp();
+            self.instruction(format!("{full} = icmp eq i64 {free_count}, 0"));
+            if proven_success {
+                let slot_index = self.temp();
+                self.instruction(format!("{slot_index} = sub i64 {free_count}, 1"));
+                let free_ptr = self.emit_pool_slot_ptr(pool_ty, &pointer, 4, &slot_index);
+                let slot32 = self.temp();
+                self.instruction(format!("{slot32} = load i32, ptr {free_ptr}, align 1"));
+                let slot64 = self.temp();
+                self.instruction(format!("{slot64} = zext i32 {slot32} to i64"));
+                self.emit_pool_add_store(
+                    pool_ty,
+                    &pointer,
+                    element,
+                    &values[0],
+                    &free_count_ptr,
+                    &free_count,
+                    &slot64,
+                );
+                let gen_ptr = self.emit_pool_slot_ptr(pool_ty, &pointer, 3, &slot64);
+                let generation = self.temp();
+                self.instruction(format!("{generation} = load i32, ptr {gen_ptr}, align 1"));
+                let id = self.emit_make_id(&slot32, &generation);
+                let id_ty = self.program.types[expr.ty.0].cases()[0].payload[0];
+                return self.emit_construct_values(expr.ty, 0, vec![(id_ty, id)]);
+            }
+            let fail_label = self.new_label("pool.add.full");
+            let ok_label = self.new_label("pool.add.ok");
+            let merge = self.new_label("pool.add.end");
+            self.terminate(format!(
+                "br i1 {full}, label %{fail_label}, label %{ok_label}"
+            ));
+            self.start_block(&fail_label);
+            let result_ty = expr.ty;
+            let error_ty = self.program.types[result_ty.0].cases()[1].payload[0];
+            let error = self.emit_construct_values(error_ty, 0, Vec::new());
+            let failed = self.emit_construct_values(result_ty, 1, vec![(error_ty, error)]);
+            let fail_pred = self.current_label.clone();
+            self.terminate(format!("br label %{merge}"));
+            self.start_block(&ok_label);
+            let slot_index = self.temp();
+            self.instruction(format!("{slot_index} = sub i64 {free_count}, 1"));
+            let free_ptr = self.emit_pool_slot_ptr(pool_ty, &pointer, 4, &slot_index);
+            let slot32 = self.temp();
+            self.instruction(format!("{slot32} = load i32, ptr {free_ptr}, align 1"));
+            let slot64 = self.temp();
+            self.instruction(format!("{slot64} = zext i32 {slot32} to i64"));
+            self.emit_pool_add_store(
+                pool_ty,
+                &pointer,
+                element,
+                &values[0],
+                &free_count_ptr,
+                &free_count,
+                &slot64,
+            );
+            let gen_ptr = self.emit_pool_slot_ptr(pool_ty, &pointer, 3, &slot64);
+            let generation = self.temp();
+            self.instruction(format!("{generation} = load i32, ptr {gen_ptr}, align 1"));
+            let id = self.emit_make_id(&slot32, &generation);
+            let id_ty = self.program.types[result_ty.0].cases()[0].payload[0];
+            let success = self.emit_construct_values(result_ty, 0, vec![(id_ty, id)]);
+            let ok_pred = self.current_label.clone();
+            self.terminate(format!("br label %{merge}"));
+            self.start_block(&merge);
+            let result = self.temp();
+            self.instruction(format!(
+                "{result} = phi {} [ {failed}, %{fail_pred} ], [ {success}, %{ok_pred} ]",
+                self.lltype(result_ty)
+            ));
+            return result;
+        }
+
+        let id = values[0].clone();
+        let slot = self.temp();
+        self.instruction(format!("{slot} = and i64 {id}, 4294967295"));
+        let generation64 = self.temp();
+        self.instruction(format!("{generation64} = lshr i64 {id}, 32"));
+        let generation = self.temp();
+        self.instruction(format!("{generation} = trunc i64 {generation64} to i32"));
+        let in_range = self.temp();
+        self.instruction(format!("{in_range} = icmp ult i64 {slot}, {capacity}"));
+        let inspect = self.new_label("pool.id.inspect");
+        let invalid = self.new_label("pool.id.invalid");
+        let valid = self.new_label("pool.id.valid");
+        let merge = self.new_label("pool.id.end");
+        self.terminate(format!(
+            "br i1 {in_range}, label %{inspect}, label %{invalid}"
+        ));
+        self.start_block(&inspect);
+        let occupied_ptr = self.emit_pool_slot_ptr(pool_ty, &pointer, 2, &slot);
+        let occupied = self.temp();
+        self.instruction(format!("{occupied} = load i1, ptr {occupied_ptr}, align 1"));
+        let actual_generation_ptr = self.emit_pool_slot_ptr(pool_ty, &pointer, 3, &slot);
+        let actual_generation = self.temp();
+        self.instruction(format!(
+            "{actual_generation} = load i32, ptr {actual_generation_ptr}, align 1"
+        ));
+        let same_generation = self.temp();
+        self.instruction(format!(
+            "{same_generation} = icmp eq i32 {actual_generation}, {generation}"
+        ));
+        let matches = self.temp();
+        self.instruction(format!("{matches} = and i1 {occupied}, {same_generation}"));
+        self.terminate(format!("br i1 {matches}, label %{valid}, label %{invalid}"));
+        self.start_block(&invalid);
+        let invalid_value = match op {
+            PoolOp::Contains => "false".to_owned(),
+            PoolOp::Get | PoolOp::Remove => self.emit_construct_values(expr.ty, 1, Vec::new()),
+            _ => unreachable!(),
+        };
+        let invalid_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&valid);
+        let valid_value = match op {
+            PoolOp::Contains => "true".to_owned(),
+            PoolOp::Get => {
+                let value = self.emit_collection_element(pool_ty, &pointer, &slot);
+                self.emit_construct_values(expr.ty, 0, vec![(element, value)])
+            }
+            PoolOp::Remove => {
+                let value = self.emit_collection_element(pool_ty, &pointer, &slot);
+                self.instruction(format!("store i1 false, ptr {occupied_ptr}, align 1"));
+                let active_ptr = self.emit_pool_meta_ptr(pool_ty, &pointer, 0);
+                let active = self.temp();
+                self.instruction(format!("{active} = load i64, ptr {active_ptr}, align 1"));
+                let active_next = self.temp();
+                self.instruction(format!("{active_next} = sub i64 {active}, 1"));
+                self.instruction(format!(
+                    "store i64 {active_next}, ptr {active_ptr}, align 1"
+                ));
+                let max_minus_one = self.temp();
+                self.instruction(format!(
+                    "{max_minus_one} = icmp uge i32 {actual_generation}, -2"
+                ));
+                let retire = self.new_label("pool.remove.retire");
+                let reuse = self.new_label("pool.remove.reuse");
+                let remove_done = self.new_label("pool.remove.done");
+                self.terminate(format!(
+                    "br i1 {max_minus_one}, label %{retire}, label %{reuse}"
+                ));
+                self.start_block(&retire);
+                self.instruction(format!(
+                    "store i32 -1, ptr {actual_generation_ptr}, align 1"
+                ));
+                self.terminate(format!("br label %{remove_done}"));
+                self.start_block(&reuse);
+                let next_generation = self.temp();
+                self.instruction(format!(
+                    "{next_generation} = add i32 {actual_generation}, 1"
+                ));
+                self.instruction(format!(
+                    "store i32 {next_generation}, ptr {actual_generation_ptr}, align 1"
+                ));
+                let free_count_ptr = self.emit_pool_meta_ptr(pool_ty, &pointer, 1);
+                let free_count = self.temp();
+                self.instruction(format!(
+                    "{free_count} = load i64, ptr {free_count_ptr}, align 1"
+                ));
+                let free_ptr = self.emit_pool_slot_ptr(pool_ty, &pointer, 4, &free_count);
+                let slot32 = self.temp();
+                self.instruction(format!("{slot32} = trunc i64 {slot} to i32"));
+                self.instruction(format!("store i32 {slot32}, ptr {free_ptr}, align 1"));
+                let free_next = self.temp();
+                self.instruction(format!("{free_next} = add i64 {free_count}, 1"));
+                self.instruction(format!(
+                    "store i64 {free_next}, ptr {free_count_ptr}, align 1"
+                ));
+                self.terminate(format!("br label %{remove_done}"));
+                self.start_block(&remove_done);
+                self.emit_construct_values(expr.ty, 0, vec![(element, value)])
+            }
+            _ => unreachable!(),
+        };
+        let valid_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&merge);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi {} [ {invalid_value}, %{invalid_pred} ], [ {valid_value}, %{valid_pred} ]",
+            self.lltype(expr.ty)
+        ));
+        result
+    }
+
+    fn emit_pool_add_store(
+        &mut self,
+        pool_ty: Ty,
+        pointer: &str,
+        element: Ty,
+        value: &str,
+        free_count_ptr: &str,
+        free_count: &str,
+        slot_index: &str,
+    ) {
+        self.emit_store_collection_element(pool_ty, pointer, slot_index, value);
+        let occupied = self.emit_pool_slot_ptr(pool_ty, pointer, 2, slot_index);
+        self.instruction(format!("store i1 true, ptr {occupied}, align 1"));
+        let free_next = self.temp();
+        self.instruction(format!("{free_next} = sub i64 {free_count}, 1"));
+        self.instruction(format!(
+            "store i64 {free_next}, ptr {free_count_ptr}, align 1"
+        ));
+        let active_ptr = self.emit_pool_meta_ptr(pool_ty, pointer, 0);
+        let active = self.temp();
+        self.instruction(format!("{active} = load i64, ptr {active_ptr}, align 1"));
+        let active_next = self.temp();
+        self.instruction(format!("{active_next} = add i64 {active}, 1"));
+        self.instruction(format!(
+            "store i64 {active_next}, ptr {active_ptr}, align 1"
+        ));
+        let _ = element;
+    }
+
+    fn emit_make_id(&mut self, slot32: &str, generation32: &str) -> String {
+        let slot64 = self.temp();
+        self.instruction(format!("{slot64} = zext i32 {slot32} to i64"));
+        let generation64 = self.temp();
+        self.instruction(format!("{generation64} = zext i32 {generation32} to i64"));
+        let shifted = self.temp();
+        self.instruction(format!("{shifted} = shl i64 {generation64}, 32"));
+        let result = self.temp();
+        self.instruction(format!("{result} = or i64 {shifted}, {slot64}"));
+        result
     }
 
     fn emit_fill(&mut self, collection_ty: Ty, value: &TExpr, capacity: usize) -> String {
@@ -1466,7 +1867,9 @@ impl<'a> FunctionEmitter<'a> {
                 view.counter_id
             ));
             let element = match self.program.types[view.collection_ty.0].kind {
-                TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+                TTypeKind::Array { element, .. }
+                | TTypeKind::List { element, .. }
+                | TTypeKind::Pool { element, .. } => element,
                 _ => unreachable!(),
             };
             current_ty = element;
@@ -1513,9 +1916,9 @@ impl<'a> FunctionEmitter<'a> {
                         );
                     }
                     let element = match self.program.types[current_ty.0].kind {
-                        TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
-                            element
-                        }
+                        TTypeKind::Array { element, .. }
+                        | TTypeKind::List { element, .. }
+                        | TTypeKind::Pool { element, .. } => element,
                         _ => unreachable!("typed place index crosses only collection storage"),
                     };
                     if matches!(self.program.types[element.0].kind, TTypeKind::Struct(_)) {
@@ -1574,6 +1977,7 @@ impl<'a> FunctionEmitter<'a> {
                     constant,
                     capacity: *capacity,
                     is_list: *is_list,
+                    is_pool: false,
                     proven: *proven,
                 });
                 place.ty = expr.ty;
@@ -1602,9 +2006,9 @@ impl<'a> FunctionEmitter<'a> {
                         _ => return None,
                     },
                     TProjection::Index { .. } => match self.program.types[current_ty.0].kind {
-                        TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
-                            element
-                        }
+                        TTypeKind::Array { element, .. }
+                        | TTypeKind::List { element, .. }
+                        | TTypeKind::Pool { element, .. } => element,
                         _ => return None,
                     },
                 };
@@ -1613,7 +2017,9 @@ impl<'a> FunctionEmitter<'a> {
                 unreachable!()
             };
             let element = match self.program.types[current_ty.0].kind {
-                TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+                TTypeKind::Array { element, .. }
+                | TTypeKind::List { element, .. }
+                | TTypeKind::Pool { element, .. } => element,
                 _ => return None,
             };
             if matches!(self.program.types[element.0].kind, TTypeKind::Struct(_)) {
@@ -1816,6 +2222,7 @@ impl<'a> FunctionEmitter<'a> {
                 collection,
                 source,
                 is_list,
+                is_pool,
                 body,
             } => self.emit_for_each(
                 *id,
@@ -1824,6 +2231,7 @@ impl<'a> FunctionEmitter<'a> {
                 collection,
                 source,
                 *is_list,
+                *is_pool,
                 body,
             ),
             TStmtKind::Discard(value) => {
@@ -1946,14 +2354,115 @@ impl<'a> FunctionEmitter<'a> {
         collection: &TExpr,
         source: &TPlace,
         is_list: bool,
+        is_pool: bool,
         body: &TBlock,
     ) {
         let collection_ptr = self.emit_place_pointer(source);
         let collection_ty = collection.ty;
         let capacity = match self.program.types[collection_ty.0].kind {
-            TTypeKind::Array { capacity, .. } | TTypeKind::List { capacity, .. } => capacity,
+            TTypeKind::Array { capacity, .. }
+            | TTypeKind::List { capacity, .. }
+            | TTypeKind::Pool { capacity, .. } => capacity,
             _ => unreachable!("typed foreach collection"),
         };
+        if is_pool {
+            let snapshot = self.entry_alloca_raw(&format!("[{} x i1]", capacity));
+            let snapshot_index = self.entry_alloca(Ty::Long);
+            self.instruction(format!("store i64 0, ptr {snapshot_index}, align 1"));
+            let copy_cond = self.new_label("foreach.pool.snapshot.cond");
+            let copy_body = self.new_label("foreach.pool.snapshot.body");
+            let copy_done = self.new_label("foreach.pool.snapshot.done");
+            self.terminate(format!("br label %{copy_cond}"));
+            self.start_block(&copy_cond);
+            let index = self.temp();
+            self.instruction(format!("{index} = load i64, ptr {snapshot_index}, align 1"));
+            let more = self.temp();
+            self.instruction(format!("{more} = icmp ult i64 {index}, {capacity}"));
+            self.terminate(format!(
+                "br i1 {more}, label %{copy_body}, label %{copy_done}"
+            ));
+            self.start_block(&copy_body);
+            let occupied_ptr = self.emit_pool_slot_ptr(collection_ty, &collection_ptr, 2, &index);
+            let occupied = self.temp();
+            self.instruction(format!("{occupied} = load i1, ptr {occupied_ptr}, align 1"));
+            let snapshot_ptr = self.temp();
+            self.instruction(format!("{snapshot_ptr} = getelementptr inbounds [{} x i1], ptr {snapshot}, i32 0, i64 {index}", capacity));
+            self.instruction(format!("store i1 {occupied}, ptr {snapshot_ptr}, align 1"));
+            let next = self.temp();
+            self.instruction(format!("{next} = add i64 {index}, 1"));
+            self.instruction(format!("store i64 {next}, ptr {snapshot_index}, align 1"));
+            self.terminate(format!("br label %{copy_cond}"));
+            self.start_block(&copy_done);
+            self.instruction(format!("store i64 0, ptr %local.{counter_id}, align 1"));
+            let condition = self.new_label("foreach.pool.cond");
+            let check = self.new_label("foreach.pool.check");
+            let body_label = self.new_label("foreach.pool.body");
+            let latch = self.new_label("foreach.pool.latch");
+            let exit = self.new_label("foreach.pool.exit");
+            self.terminate(format!("br label %{condition}"));
+            self.start_block(&condition);
+            let current = self.temp();
+            self.instruction(format!(
+                "{current} = load i64, ptr %local.{counter_id}, align 1"
+            ));
+            let within = self.temp();
+            self.instruction(format!("{within} = icmp ult i64 {current}, {capacity}"));
+            self.terminate(format!("br i1 {within}, label %{check}, label %{exit}"));
+            self.start_block(&check);
+            let snapshot_ptr = self.temp();
+            self.instruction(format!("{snapshot_ptr} = getelementptr inbounds [{} x i1], ptr {snapshot}, i32 0, i64 {current}", capacity));
+            let present = self.temp();
+            self.instruction(format!("{present} = load i1, ptr {snapshot_ptr}, align 1"));
+            self.terminate(format!(
+                "br i1 {present}, label %{body_label}, label %{latch}"
+            ));
+            self.start_block(&body_label);
+            if let Some(index_id) = index_id {
+                let generation_ptr =
+                    self.emit_pool_slot_ptr(collection_ty, &collection_ptr, 3, &current);
+                let generation = self.temp();
+                self.instruction(format!(
+                    "{generation} = load i32, ptr {generation_ptr}, align 1"
+                ));
+                let slot32 = self.temp();
+                self.instruction(format!("{slot32} = trunc i64 {current} to i32"));
+                let id = self.emit_make_id(&slot32, &generation);
+                self.instruction(format!("store i64 {id}, ptr %local.{index_id}, align 1"));
+            }
+            self.views.insert(
+                id,
+                ViewInfo {
+                    collection_ty,
+                    collection_ptr: collection_ptr.clone(),
+                    counter_id,
+                },
+            );
+            self.loops.push(LoopTargets {
+                latch: latch.clone(),
+                exit: exit.clone(),
+            });
+            self.emit_block(body);
+            if !self.terminated {
+                self.emit_iteration_cleanup();
+                self.terminate(format!("br label %{latch}"));
+            }
+            self.loops.pop();
+            self.views.remove(&id);
+            self.start_block(&latch);
+            let current = self.temp();
+            self.instruction(format!(
+                "{current} = load i64, ptr %local.{counter_id}, align 1"
+            ));
+            let next = self.temp();
+            self.instruction(format!("{next} = add i64 {current}, 1"));
+            self.instruction(format!(
+                "store i64 {next}, ptr %local.{counter_id}, align 1"
+            ));
+            self.terminate(format!("br label %{condition}"));
+            self.start_block(&exit);
+            let _ = collection;
+            return;
+        }
         let snapshot = if is_list {
             self.emit_collection_count(collection_ty, &collection_ptr)
         } else {
@@ -2379,6 +2888,10 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_print_value(&mut self, ty: Ty, value: &str) {
         let ty = base_type(ty, &self.program.types);
+        if matches!(self.program.types[ty.0].kind, TTypeKind::Pool { .. }) {
+            self.emit_print_pool(ty, value);
+            return;
+        }
         if matches!(
             self.program.types[ty.0].kind,
             TTypeKind::Array { .. } | TTypeKind::List { .. }
@@ -2392,6 +2905,16 @@ impl<'a> FunctionEmitter<'a> {
             Ty::Bool => self.instruction(format!("call void @nl_print_bool_raw(i1 {value})")),
             Ty::Unit => self.print_text("()"),
             _ => {
+                if matches!(self.program.types[ty.0].kind, TTypeKind::Id { .. }) {
+                    let slot = self.temp();
+                    self.instruction(format!("{slot} = and i64 {value}, 4294967295"));
+                    let generation = self.temp();
+                    self.instruction(format!("{generation} = lshr i64 {value}, 32"));
+                    self.instruction(format!("call void @nl_print_long_raw(i64 {slot})"));
+                    self.print_text(":");
+                    self.instruction(format!("call void @nl_print_long_raw(i64 {generation})"));
+                    return;
+                }
                 if let TTypeKind::Struct(fields) = &self.program.types[ty.0].kind {
                     let name = self.program.types[ty.0].name.clone();
                     self.print_text(&name);
@@ -2499,6 +3022,82 @@ impl<'a> FunctionEmitter<'a> {
         self.terminate(format!("br label %{cond}"));
         self.start_block(&done);
         self.print_text("]");
+    }
+
+    fn emit_print_pool(&mut self, ty: Ty, value: &str) {
+        let pointer = self.entry_alloca(ty);
+        self.instruction(format!(
+            "store {} {value}, ptr {pointer}, align 1",
+            self.lltype(ty)
+        ));
+        let capacity = match self.program.types[ty.0].kind {
+            TTypeKind::Pool { capacity, .. } => capacity,
+            _ => unreachable!(),
+        };
+        self.print_text("pool{");
+        let counter = self.entry_alloca(Ty::Long);
+        let first = self.entry_alloca_raw("i1");
+        self.instruction(format!("store i64 0, ptr {counter}, align 1"));
+        self.instruction(format!("store i1 true, ptr {first}, align 1"));
+        let cond = self.new_label("print.pool.cond");
+        let body = self.new_label("print.pool.body");
+        let print = self.new_label("print.pool.item");
+        let advance = self.new_label("print.pool.advance");
+        let done = self.new_label("print.pool.done");
+        self.terminate(format!("br label %{cond}"));
+        self.start_block(&cond);
+        let index = self.temp();
+        self.instruction(format!("{index} = load i64, ptr {counter}, align 1"));
+        let more = self.temp();
+        self.instruction(format!("{more} = icmp ult i64 {index}, {capacity}"));
+        self.terminate(format!("br i1 {more}, label %{body}, label %{done}"));
+        self.start_block(&body);
+        let occupied_ptr = self.emit_pool_slot_ptr(ty, &pointer, 2, &index);
+        let occupied = self.temp();
+        self.instruction(format!("{occupied} = load i1, ptr {occupied_ptr}, align 1"));
+        self.terminate(format!(
+            "br i1 {occupied}, label %{print}, label %{advance}"
+        ));
+        self.start_block(&print);
+        let is_first = self.temp();
+        self.instruction(format!("{is_first} = load i1, ptr {first}, align 1"));
+        let separator = self.new_label("print.pool.separator");
+        let item_label = self.new_label("print.pool.item.value");
+        self.terminate(format!(
+            "br i1 {is_first}, label %{item_label}, label %{separator}"
+        ));
+        self.start_block(&separator);
+        self.print_text(", ");
+        self.terminate(format!("br label %{item_label}"));
+        self.start_block(&item_label);
+        self.instruction(format!("store i1 false, ptr {first}, align 1"));
+        self.instruction(format!("call void @nl_print_long_raw(i64 {index})"));
+        self.print_text(":");
+        let generation_ptr = self.emit_pool_slot_ptr(ty, &pointer, 3, &index);
+        let generation = self.temp();
+        self.instruction(format!(
+            "{generation} = load i32, ptr {generation_ptr}, align 1"
+        ));
+        let generation64 = self.temp();
+        self.instruction(format!("{generation64} = zext i32 {generation} to i64"));
+        self.instruction(format!("call void @nl_print_long_raw(i64 {generation64})"));
+        self.print_text(" => ");
+        let item = self.emit_collection_element(ty, &pointer, &index);
+        let element = match self.program.types[ty.0].kind {
+            TTypeKind::Pool { element, .. } => element,
+            _ => unreachable!(),
+        };
+        self.emit_print_value(element, &item);
+        self.terminate(format!("br label %{advance}"));
+        self.start_block(&advance);
+        let current = self.temp();
+        self.instruction(format!("{current} = load i64, ptr {counter}, align 1"));
+        let next = self.temp();
+        self.instruction(format!("{next} = add i64 {current}, 1"));
+        self.instruction(format!("store i64 {next}, ptr {counter}, align 1"));
+        self.terminate(format!("br label %{cond}"));
+        self.start_block(&done);
+        self.print_text("}");
     }
 
     fn emit_method(&mut self, expr: &TExpr, kind: MethodKind, receiver: &TExpr) -> String {
@@ -2800,8 +3399,11 @@ impl<'a> FunctionEmitter<'a> {
     fn emit_structural_equal(&mut self, ty: Ty, left: &str, right: &str) -> String {
         if matches!(
             self.program.types[ty.0].kind,
-            TTypeKind::Array { .. } | TTypeKind::List { .. }
+            TTypeKind::Array { .. } | TTypeKind::List { .. } | TTypeKind::Pool { .. }
         ) {
+            if matches!(self.program.types[ty.0].kind, TTypeKind::Pool { .. }) {
+                return self.emit_pool_equal(ty, left, right);
+            }
             return self.emit_collection_equal(ty, left, right);
         }
         if let TTypeKind::Struct(fields) = &self.program.types[ty.0].kind {
@@ -2973,6 +3575,115 @@ impl<'a> FunctionEmitter<'a> {
         result
     }
 
+    fn emit_pool_equal(&mut self, ty: Ty, left: &str, right: &str) -> String {
+        let left_ptr = self.entry_alloca(ty);
+        let right_ptr = self.entry_alloca(ty);
+        self.instruction(format!(
+            "store {} {left}, ptr {left_ptr}, align 1",
+            self.lltype(ty)
+        ));
+        self.instruction(format!(
+            "store {} {right}, ptr {right_ptr}, align 1",
+            self.lltype(ty)
+        ));
+        let (element, capacity) = match self.program.types[ty.0].kind {
+            TTypeKind::Pool {
+                element, capacity, ..
+            } => (element, capacity),
+            _ => unreachable!(),
+        };
+        let counter = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {counter}, align 1"));
+        let cond = self.new_label("eq.pool.cond");
+        let body = self.new_label("eq.pool.body");
+        let occupied_equal = self.new_label("eq.pool.occupied.equal");
+        let live = self.new_label("eq.pool.live");
+        let compare_value = self.new_label("eq.pool.value");
+        let increment = self.new_label("eq.pool.increment");
+        let yes = self.new_label("eq.pool.true");
+        let no = self.new_label("eq.pool.false");
+        let merge = self.new_label("eq.pool.end");
+        self.terminate(format!("br label %{cond}"));
+        self.start_block(&cond);
+        let index = self.temp();
+        self.instruction(format!("{index} = load i64, ptr {counter}, align 1"));
+        let more = self.temp();
+        self.instruction(format!("{more} = icmp ult i64 {index}, {capacity}"));
+        self.terminate(format!("br i1 {more}, label %{body}, label %{yes}"));
+        self.start_block(&body);
+        let left_occupied_ptr = self.emit_pool_slot_ptr(ty, &left_ptr, 2, &index);
+        let right_occupied_ptr = self.emit_pool_slot_ptr(ty, &right_ptr, 2, &index);
+        let left_occupied = self.temp();
+        let right_occupied = self.temp();
+        self.instruction(format!(
+            "{left_occupied} = load i1, ptr {left_occupied_ptr}, align 1"
+        ));
+        self.instruction(format!(
+            "{right_occupied} = load i1, ptr {right_occupied_ptr}, align 1"
+        ));
+        let same_occupancy = self.temp();
+        self.instruction(format!(
+            "{same_occupancy} = icmp eq i1 {left_occupied}, {right_occupied}"
+        ));
+        self.terminate(format!(
+            "br i1 {same_occupancy}, label %{occupied_equal}, label %{no}"
+        ));
+        self.start_block(&occupied_equal);
+        self.terminate(format!(
+            "br i1 {left_occupied}, label %{live}, label %{increment}"
+        ));
+        self.start_block(&live);
+        let left_gen_ptr = self.emit_pool_slot_ptr(ty, &left_ptr, 3, &index);
+        let right_gen_ptr = self.emit_pool_slot_ptr(ty, &right_ptr, 3, &index);
+        let left_gen = self.temp();
+        let right_gen = self.temp();
+        self.instruction(format!(
+            "{left_gen} = load i32, ptr {left_gen_ptr}, align 1"
+        ));
+        self.instruction(format!(
+            "{right_gen} = load i32, ptr {right_gen_ptr}, align 1"
+        ));
+        let same_generation = self.temp();
+        self.instruction(format!(
+            "{same_generation} = icmp eq i32 {left_gen}, {right_gen}"
+        ));
+        self.terminate(format!(
+            "br i1 {same_generation}, label %{compare_value}, label %{no}"
+        ));
+        self.start_block(&compare_value);
+        let left_value = self.emit_collection_element(ty, &left_ptr, &index);
+        let right_value = self.emit_collection_element(ty, &right_ptr, &index);
+        let values_equal = self.emit_binary(
+            BinaryOp::Eq,
+            element,
+            &left_value,
+            &right_value,
+            Span::default(),
+        );
+        self.terminate(format!(
+            "br i1 {values_equal}, label %{increment}, label %{no}"
+        ));
+        self.start_block(&increment);
+        let current = self.temp();
+        self.instruction(format!("{current} = load i64, ptr {counter}, align 1"));
+        let next = self.temp();
+        self.instruction(format!("{next} = add i64 {current}, 1"));
+        self.instruction(format!("store i64 {next}, ptr {counter}, align 1"));
+        self.terminate(format!("br label %{cond}"));
+        self.start_block(&yes);
+        let yes_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&no);
+        let no_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&merge);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi i1 [ true, %{yes_pred} ], [ false, %{no_pred} ]"
+        ));
+        result
+    }
+
     fn emit_expr(&mut self, expr: &TExpr) -> String {
         if self.terminated {
             return String::new();
@@ -3047,7 +3758,9 @@ impl<'a> FunctionEmitter<'a> {
                     let signature = lower_signature(&function, &self.program.types);
                     let mut call_args = Vec::new();
                     for (arg, param) in args.iter().zip(&function.params) {
-                        if param.mode == ParamMode::Write {
+                        if param.mode == ParamMode::Write
+                            || matches!(self.program.types[param.ty.0].kind, TTypeKind::Pool { .. })
+                        {
                             let place = self.emit_place_pointer_expr(arg);
                             call_args.push(format!("ptr {place}"));
                         } else {
@@ -3142,6 +3855,7 @@ impl<'a> FunctionEmitter<'a> {
             }
             TExprKind::Fill { value, capacity } => self.emit_fill(expr.ty, value, *capacity),
             TExprKind::EmptyArray | TExprKind::EmptyList => "zeroinitializer".to_owned(),
+            TExprKind::EmptyPool => self.emit_pool_init(expr.ty),
             TExprKind::CollectionOp {
                 op,
                 receiver,
@@ -3149,6 +3863,13 @@ impl<'a> FunctionEmitter<'a> {
                 capacity,
                 proven_success,
             } => self.emit_collection_op(expr, *op, receiver, args, *capacity, *proven_success),
+            TExprKind::PoolOp {
+                op,
+                receiver,
+                args,
+                capacity,
+                proven_success,
+            } => self.emit_pool_op(expr, *op, receiver, args, *capacity, *proven_success),
             TExprKind::OptionalToLong(receiver) => self.emit_optional_to_long(expr, receiver),
             TExprKind::Field {
                 receiver,
@@ -3343,6 +4064,18 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_binary(&mut self, op: BinaryOp, ty: Ty, lhs: &str, rhs: &str, span: Span) -> String {
         let primitive = base_type(ty, &self.program.types);
+        if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+            && matches!(self.program.types[ty.0].kind, TTypeKind::Id { .. })
+        {
+            let equal = self.temp();
+            self.instruction(format!("{equal} = icmp eq i64 {lhs}, {rhs}"));
+            if op == BinaryOp::Eq {
+                return equal;
+            }
+            let result = self.temp();
+            self.instruction(format!("{result} = xor i1 {equal}, true"));
+            return result;
+        }
         if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
             && !matches!(primitive, Ty::Int | Ty::Long | Ty::Bool)
         {
@@ -3720,6 +4453,7 @@ fn assign_binary(op: AssignOp) -> BinaryOp {
         AssignOp::Mul => BinaryOp::Mul,
         AssignOp::Div => BinaryOp::Div,
         AssignOp::Rem => BinaryOp::Rem,
+        AssignOp::Shr => BinaryOp::Shr,
         AssignOp::Set => unreachable!(),
     }
 }
@@ -3742,7 +4476,9 @@ fn lower_signature(function: &TFunction, types: &[TType]) -> LoweredSignature {
             .params
             .iter()
             .map(|param| {
-                if param.mode == ParamMode::Write {
+                if param.mode == ParamMode::Write
+                    || matches!(types[param.ty.0].kind, TTypeKind::Pool { .. })
+                {
                     "ptr".to_owned()
                 } else {
                     llvm_type(param.ty, types)

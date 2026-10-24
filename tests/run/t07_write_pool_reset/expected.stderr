@@ -1,0 +1,1 @@
+main.nl:5:5: error: a value containing a pool cannot be replaced or assigned; pool copies and resets are not supported

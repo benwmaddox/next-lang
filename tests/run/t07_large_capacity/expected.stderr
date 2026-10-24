@@ -1,0 +1,1 @@
+main.nl:4:30: error: pool capacity exceeds the 32-bit slot limit; reduce the capacity

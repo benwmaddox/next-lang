@@ -1,0 +1,1 @@
+main.nl:6:22: error: expected insert_ephemeral.P.Id, got local.Id; ids belong to their declaring pools

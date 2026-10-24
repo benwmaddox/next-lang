@@ -55,6 +55,14 @@ pub enum TTypeKind {
         element: Ty,
         capacity: usize,
     },
+    Id {
+        owner: usize,
+    },
+    Pool {
+        element: Ty,
+        capacity: usize,
+        owner: usize,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -175,6 +183,11 @@ pub enum ConstValue {
     Struct(Vec<ConstValue>),
     Array(Vec<ConstValue>),
     List(Vec<ConstValue>),
+    Pool {
+        slots: Vec<Option<ConstValue>>,
+        generations: Vec<u32>,
+        free: Vec<u32>,
+    },
     Enum {
         case_index: usize,
         payload: Vec<ConstValue>,
@@ -273,6 +286,7 @@ pub enum TStmtKind {
         collection: TExpr,
         source: TPlace,
         is_list: bool,
+        is_pool: bool,
         body: TBlock,
     },
     Discard(TExpr),
@@ -302,6 +316,7 @@ pub enum TProjection {
         constant: Option<i128>,
         capacity: usize,
         is_list: bool,
+        is_pool: bool,
         proven: bool,
     },
 }
@@ -357,6 +372,15 @@ pub enum CollectionOp {
     Count,
     Len,
     Clear,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoolOp {
+    Add,
+    Get,
+    Remove,
+    Contains,
+    Count,
 }
 
 #[derive(Clone, Debug)]
@@ -421,8 +445,16 @@ pub enum TExprKind {
     },
     EmptyArray,
     EmptyList,
+    EmptyPool,
     CollectionOp {
         op: CollectionOp,
+        receiver: Box<TExpr>,
+        args: Vec<TExpr>,
+        capacity: usize,
+        proven_success: bool,
+    },
+    PoolOp {
+        op: PoolOp,
         receiver: Box<TExpr>,
         args: Vec<TExpr>,
         capacity: usize,
@@ -484,6 +516,9 @@ pub enum TExprKind {
 
 pub fn llvm_type(ty: Ty, types: &[TType]) -> String {
     let ty = base_type(ty, types);
+    if matches!(types[ty.0].kind, TTypeKind::Id { .. }) {
+        return "i64".to_owned();
+    }
     match ty {
         Ty::Int => "i32".to_owned(),
         Ty::Long => "i64".to_owned(),

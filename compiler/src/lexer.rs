@@ -36,6 +36,7 @@ pub enum TokenKind {
     StarEq,
     SlashEq,
     PercentEq,
+    ShrEq,
     Eq,
     EqEq,
     Bang,
@@ -201,6 +202,8 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
 
         let (kind, width) = if bytes.get(pos..pos + 3) == Some(b"..=".as_slice()) {
             Some((TokenKind::RangeInclusive, 3))
+        } else if bytes.get(pos..pos + 3) == Some(b">>=".as_slice()) {
+            Some((TokenKind::ShrEq, 3))
         } else if bytes.get(pos..pos + 2) == Some(b"=>".as_slice()) {
             Some((TokenKind::FatArrow, 2))
         } else {

@@ -1,0 +1,1 @@
+main.nl:9:17: error: expected stable.Id, got each_time.Id; ids belong to their declaring pools

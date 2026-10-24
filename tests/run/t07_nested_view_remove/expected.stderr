@@ -1,0 +1,1 @@
+main.nl:9:34: error: cannot remove from a pool while a collection view is live; collect ids and remove after the loop

@@ -1,0 +1,1 @@
+main.nl:7:29: error: expected other.Id, got rocks.Id; ids belong to their declaring pools

@@ -1,0 +1,1 @@
+main.nl:3:16: error: pool-containing constants are not supported; use a local pool while evaluating a constant function

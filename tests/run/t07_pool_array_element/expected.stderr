@@ -1,0 +1,1 @@
+main.nl:5:19: error: pools cannot appear inside array or list elements; each repeated element would need a distinct owner
