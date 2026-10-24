@@ -18,6 +18,74 @@ Non-goals for the first version:
 - Replacing Burin or the other languages: Burin continues as its own web language, and this is a separate project in its own folder that borrows their ideas and code.
 - A package ecosystem or governance model before the core proves itself.
 
+## The language in one page
+
+A summary of the whole design, with a small complete program. Each piece points to the section that designs it. The syntax here is a first proposal (2026-10-24), meant to make the design concrete; details will change.
+
+**What it is.** One language for servers, games and tools that compiles through LLVM to native code, with no garbage collector. Most of what can go wrong is a build error: no null, no data races, no dangling ids, exhaustive matches, bounded memory, declared effects. The rest is caught by tests that are part of the language.
+
+**The pieces.**
+
+- **Values and bounds:** records, enums, `Option` and `Result`; numbers with ranges (`Int 0..100`); text with a maximum (`Text max 80`, `Ascii max 32`). Everything that can grow has a bound the compiler knows (Types; Loops can't quietly fill a stack).
+- **Where data lives:** locals on a job's stacks, freed when their scope ends; a database for records; frozen pools for big shared read-only data; a small `shared global` for live data many jobs read; a `global` for a game's world (Memory).
+- **Collections** are bounded values: `T[N]`, `list`, `pool` (stable slots with ids), `map`, `set`, `queue`, `ring`, `grid` (Memory, Collections).
+- **Jobs:** each request, task or tick is a job on a worker thread, with its own stacks; it can wait for I/O without `async` (Threads and data stacks).
+- **Effects:** what a function may touch (the database, the network, the clock) is part of its type and comes from capabilities the program's entry point hands down (Effects and capabilities).
+- **One declaration, every layer:** a field's `max 80` is also the database's check, the form's limit and the API's schema (One declaration, every layer).
+- **Tests in the language:** `test` blocks with `expect`, scenarios, `check fast == reference` (Correctness tools).
+
+**A small program: a chat server.** A package is a directory; every file in it sees every other, with no imports.
+
+```
+// chat/model.nl: the data
+database Chat: sqlite {
+    record Room { name: Text max 80 }
+    record Message { room: Room.Key, author: Ascii max 32, body: Text max 2000 }
+}
+
+struct Presence { who: map<Room.Key, set<Ascii max 32, 200>, 1000> }
+shared global online: Presence = Presence {}   // small, live, read by every request
+
+// chat/pages.nl: what people see
+page room(id: Room.Key, db: Db) -> Html {
+    let r = db.read { Room.get(id) } ?? not_found()
+    let recent = db.read { Message.where(.room == id).newest(50) }   // limit 50: a bounded list
+    <h1>{r.name}</h1>
+    <p>{online.who.get(id).count()} here</p>
+    <ul live>
+        for m in recent { <li><b>{m.author}</b> {m.body}</li> }
+    </ul>
+    <form action={post(id)}>
+        <input name="body">        // maxlength and the server check come from Message.body
+    </form>
+}
+
+// chat/actions.nl: what changes data
+action post(room: Room.Key, body: Text max 2000, me: Viewer, db: Db) -> Result<(), PostError> {
+    require body.trim() != "" else PostError.Empty
+    db.transaction { Message.add(Message { room, author: me.name, body }) }?
+    signal room(room)                                                  // open pages update
+}
+
+// chat/tests.nl
+test "a post shows up for others" {
+    let db = Db.memory()
+    let room = db.transaction { Room.add(Room { name: "General" }) }
+    expect post(room, "hello", Viewer.named("ann"), db).ok()
+    let page = room(room, db)
+    expect page.contains("hello")
+    expect post(room, "   ", Viewer.named("ann"), db) == err(PostError.Empty)
+}
+
+// chat/main.nl: the entry point grants capabilities
+fn main(env: Env) {
+    let db = env.open(Chat, "chat.db")
+    serve(env.http(8080), routes { "/r/{id}" => room, "/r/{id}/post" => post }, db)
+}
+```
+
+What the compiler knows from this, without being told more: `room` and `post` read and write only `Chat`, so the change review flags any new effect; every query is bounded (`newest(50)`), so each request's memory is too; `body`'s 2,000 code points become the form's limit, the server's check and the database's CHECK; `online` is shared, so its reads come from a snapshot and its writes go through its writer; the test runs against an in-memory database with the same declarations.
+
 ## Evidence from the six languages
 
 The design keeps what was measured to work in four weeks of building six languages, and drops what was measured not to.
@@ -394,6 +462,17 @@ Refinement types are the design's best lever: one declaration serves correctness
 5. Reset its stacks and return the stack set to the worker's pool. These steps run on the worker's own scheduler stack, not the job's, so a job that failed because its native stack ran out can still be cleaned up.
 6. Report the failure: to the client (a 500 for a request), to the log, and to the parent if it was a parallel-loop chunk, which fails the parent job with the chunk's error. Code that wants to handle one of these locally uses the checked form that returns `Option` (`checked_add(a, b)`, `a.get(i)`), or a refinement that proves the failure can't happen.
 
+**Numbers** (proposed 2026-10-24)
+
+- **Integers:** `Int` is 64-bit and signed, the default. Sized forms exist for storage and C: `Int8`, `Int16`, `Int32`, `Int64`, and unsigned `UInt8` to `UInt64`; `Byte` is `UInt8`. A range refinement picks the storage: a field declared `hp: Int 0..1000` is stored in 16 bits in state's arrays (one array per field, so this halves or quarters the memory a loop streams through), while arithmetic on it happens at 64 bits and is narrowed, checked, on the way back.
+- **Arithmetic is checked:** an overflow fails the job (Failures). Wrapping is spelled `+%`, `-%`, `*%`, as hashes and checksums need; `checked_add` and friends return `Option`. Bit operations (`&`, `|`, `^`, `<<`, `>>`) work on any integer; a shift outside 0 to its width fails. Division truncates toward zero; dividing by zero fails.
+- **No implicit conversions:** `Int32` to `Int` is free and spelled `.to_int()`; narrowing (`Int` to `UInt8`) is `to_u8()`, checked, or `wrap_u8()`, wrapping. A range refinement that proves the value fits makes the checked form free.
+- **Floats:** `Float` is 64-bit IEEE, `Float32` 32-bit, for games and measurement. Ranges apply (`Float 0.0..1.0`). Whether NaN (the "not a number" value from `0.0 / 0.0`) is allowed in a plain `Float` is an open question below.
+- **Deterministic by default:** float code compiles without fast-math, so the same binary gives the same results on every run, which game replays and `check fast == reference` rely on. A `fast { }` block allows reordering for speed (LLVM's fast-math flags) where exact repeatability doesn't matter, and its results are excluded from replay checks.
+- **Vectors:** `Vec2`, `Vec3`, `Vec4` (of `Float32` by default) with operators, for games. Loops over state's arrays are where most speed comes from: one array per field means LLVM's auto-vectorizer (which turns a loop into instructions working on 4 or 8 values at once) usually applies on its own. An explicit `simd<Float32, 8>` type exists for code that needs to control it.
+- **Fixed-point:** `Fixed<2>` is an integer counting hundredths, for money and other exact decimals; it never rounds silently.
+- **Literals:** `1_000_000`, `0xFF`, `0b1010`, `1.5`, `2.0f32`; a literal takes the type its context needs, and one that doesn't fit is a build error.
+
 **Text, ASCII and bytes** (decided 2026-10-24): `Text` is always valid UTF-8; `Ascii` is text known to hold only ASCII characters (bytes 0 to 127), the compact form, one byte per character; and `Bytes` is raw data (DEFLATE's output, files, the network). An `Ascii` value is a valid `Text` too, so passing one to a *read* parameter of type `Text` costs nothing. A write or grow parameter is different: the function could store a non-ASCII character, or need up to 4 bytes for a character where `Ascii max N` owns exactly N, so passing `Ascii` there needs an `Ascii` parameter, a proof that the function writes only ASCII within the bound, or an explicit checked conversion into `Text` storage of the right size; going from `Text` or `Bytes` to `Ascii`, or from `Bytes` to `Text`, is a checked step that returns `Result`. For `Ascii`, a character, a code point and a byte are the same thing, so `Ascii max N` is exactly N bytes, its length is O(1) and indexing by character is direct; operations like `ascii_upper` and comparisons skip UTF-8 decoding. Text lengths count Unicode code points (what a person would call characters, roughly); byte lengths are written on `Bytes`, or as `Text bytes max N` when a byte budget is what matters.
 
 **Refinements** are a type plus a predicate the compiler understands, a closed set kept decidable:
@@ -508,6 +587,37 @@ One compiler target, LLVM, for development and release alike: no JIT, no interpr
 - **For agents:** `inspect` reports in JSON (API, effects, refinements, state, call graph), and a change review that lists what a change widens: effects, permissions, refinements loosened, invariants dropped.
 - **Editor:** a language server from the start, sharing the compiler's code (Stasis's VS Code extension is the model).
 
+## Packages, pages and the game host
+
+How code is organised, how servers produce pages, and how games talk to the screen and input. All proposed (2026-10-24).
+
+### Packages
+
+- **A package is a directory.** Every file in it sees every other's declarations, with no imports (crudspec's rule); files are read in name order only for error messages.
+- **Using another package:** a package lists its dependencies in its manifest (`package.toml`: name, version, dependencies, and the capabilities it may be granted). Their declarations are reached by package name, `chat.Room`, never by file.
+- **Visibility:** a declaration is private to its package unless marked `pub`. A `pub` declaration's whole interface (types, effects, refinements, the stack contract) is what other packages compile against, and what a module's cache key hashes (Development experience).
+- **The standard library** is a package written in the language where possible (`std`), with C bindings for crypto, compression and SQLite (no home-made crypto).
+- **Versions:** v1 resolves exact versions from a lock file; no package registry yet (a non-goal).
+
+### Pages and live updates (servers)
+
+- **Pages are functions that return `Html`.** Their body is HTML with `{expression}` holes, as in crudspec: `<p>Hello {name}!</p>`. Holes are escaped for where they appear (text, an attribute, a URL), so a value can't inject markup. `for` and `if` work inside the HTML.
+- **Defaults follow HTML:** plain lowercase tags are HTML elements; a capitalised tag is a page piece declared in the language (`<MessageList room={id}/>`).
+- **Forms are bound to actions:** `<form action={post(id)}>` generates the route, the field names and the checks. Field limits come from the action's parameter types (One declaration, every layer), so the form and the server can't disagree.
+- **Caching:** a page piece that is cacheable (no effects, read-only inputs; Effects and capabilities) is rendered once and kept, keyed by its inputs and their snapshot version; per-request pieces are rendered once per page (Burin's render-once).
+- **Live updates:** an element marked `live` re-renders when the data it reads changes; `signal room(id)` tells open pages showing `room(id)` to refresh it, sent over one stream per open page (Burin's server-sent events). A page's live pieces are the same functions as its first render, so there's one way to draw each thing.
+- **Pages and actions are entry points:** each is a job (Threads and data stacks); a route table in `main` connects URLs to them.
+
+### The game host (games)
+
+Games run as StasisLang games do: the host owns the window, input, audio and timing, and calls the game.
+
+- **Two entry points:** `tick(input: Input)` advances the simulation by one fixed step (60 per second by default); `draw(frame: Frame)` reads state and draws. `tick` may change program state; `draw` may only read it, which the effect system checks.
+- **Input is a value:** keys, pointer, touch and gamepad for this step, plus the step's time. Nothing else in a game reads the clock or randomness except through capabilities (`Random` seeded at start), so a recording of the inputs replays the game exactly (Correctness tools, Determinism).
+- **Drawing goes through a capability:** `frame.sprite(...)`, `frame.text(...)`, `frame.rect(...)`, recorded into a bounded draw list that the host renders. Assets (images, sounds, fonts) are declared in the package and loaded at startup into frozen pools, so play never loads or allocates.
+- **Saves:** a save is the program state tree, written by path; loading checks it like any initial value (Static allocation).
+- **Tools for free:** because the whole game's state is one tree, `inspect` reads any path between ticks, and a recorded run replays tick by tick and stops at the first tick whose state hash differs (as `stasis replay` does).
+
 ## Concurrency and interop
 
 Threads share nothing mutable; C is reachable through typed bindings that declare their effects.
@@ -583,6 +693,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 **Open questions**
 
 - How far past medium-sized programs the 3 s aim holds with per-module caching alone, and what to add when it doesn't (a faster code generator for `-O0`, LLVM's FastISel, or splitting modules finer). Measured, not promised: larger programs may simply take longer.
+- Floats and NaN ("not a number", what `0.0 / 0.0` gives): should a plain `Float` exclude it, so an operation that would produce it fails the job, with a separate type that allows it, or allow it as IEEE does?- Passing errors up: the example uses `?` after a call (Rust's form: return the error to the caller) and `??` for a default; functions, closures and error handling still need their own section.- Syntax in general: the overview's program is a first proposal, written to make the design concrete.
 - The language's name (the folder's is a working one).
 
 **First steps**
