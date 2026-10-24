@@ -48,6 +48,6 @@ DESIGN.md "Few stacks, used well": **one data stack per job by default, at most 
 
 - Finished values share the current stack in last-in-first-out order; only a value still growing while something above it is alive must be on top.
 - There is **no separate fixed-scratch stack**: a large fixed-size temporary goes on top of the current data stack when nothing below it will grow during its lifetime, otherwise on the native stack.
-- **Build above, then slide down:** something built while a value below it is still growing is built just past that value's end, then moved down onto it. A second data stack is used only when such a piece could exceed 4 KB; never more than two.
+- **Build above, then slide down:** something built while a value below it is still growing is built just past that value's end, then moved down onto it. A second data stack is very rare: used only when such a piece could exceed 64 KB (Ben, 2026-10-24), flagged as a warning in `inspect stacks`; never more than two. Append mode writes straight onto the growing value's end and needs no temporary at all.
 - The worked example (`render`/`line`) runs on **one stack, N = 1**: `name` and `line`'s result are built above `out`'s end and the result slides down. Its worst case is 40,000 + 60 + 80 = 40,140 bytes plus page rounding (T17's numbers).
 - `inspect contracts` / `inspect stacks` list every slide-down site and its worst-case copy size.
