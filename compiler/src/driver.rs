@@ -1,5 +1,5 @@
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,6 +30,7 @@ impl std::fmt::Display for CompileError {
 pub struct CompileOutput {
     pub llvm_ir: String,
     pub files: Vec<String>,
+    pub tests: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -48,7 +49,7 @@ impl std::fmt::Display for PackageError {
 }
 
 pub fn compile_package(package: &Path) -> Result<CompileOutput, CompileError> {
-    match compile_package_internal(package) {
+    match compile_package_internal(package, true) {
         Ok(output) => Ok(output),
         Err(PackageError::Compile(error)) => Err(error),
         Err(PackageError::Tool(message)) => Err(CompileError {
@@ -67,7 +68,10 @@ pub fn compile_package(package: &Path) -> Result<CompileOutput, CompileError> {
     }
 }
 
-fn compile_package_internal(package: &Path) -> Result<CompileOutput, PackageError> {
+fn compile_package_internal(
+    package: &Path,
+    require_main: bool,
+) -> Result<CompileOutput, PackageError> {
     let entries = fs::read_dir(package)
         .map_err(|e| PackageError::Tool(format!("cannot read package directory: {e}")))?;
     let mut paths = Vec::new();
@@ -103,7 +107,7 @@ fn compile_package_internal(package: &Path) -> Result<CompileOutput, PackageErro
                 message: e.message,
             })
         })?;
-        let program = parser::parse(tokens).map_err(|e| {
+        let program = parser::parse(tokens, &source).map_err(|e| {
             PackageError::Compile(CompileError {
                 file: file.clone(),
                 span: e.span,
@@ -113,7 +117,7 @@ fn compile_package_internal(package: &Path) -> Result<CompileOutput, PackageErro
         files.push(file);
         programs.push(program);
     }
-    let typed = checker::check(programs, files.clone()).map_err(|e| {
+    let typed = checker::check_package(programs, files.clone(), require_main).map_err(|e| {
         PackageError::Compile({
             let file = files
                 .get(e.span.file)
@@ -129,11 +133,12 @@ fn compile_package_internal(package: &Path) -> Result<CompileOutput, PackageErro
     Ok(CompileOutput {
         llvm_ir: emit::emit(&typed),
         files,
+        tests: typed.tests.iter().map(|test| test.name.clone()).collect(),
     })
 }
 
 pub fn build_package(package: &Path, output: &Path) -> Result<(), PackageError> {
-    let compiled = compile_package_internal(package)?;
+    let compiled = compile_package_internal(package, true)?;
     if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)
             .map_err(|e| PackageError::Tool(format!("cannot create output directory: {e}")))?;
@@ -147,7 +152,7 @@ pub fn build_package(package: &Path, output: &Path) -> Result<(), PackageError> 
 }
 
 pub fn run_package(package: &Path) -> Result<ExitStatus, PackageError> {
-    let compiled = compile_package_internal(package)?;
+    let compiled = compile_package_internal(package, true)?;
     let temp = TempDir::new()
         .map_err(|e| PackageError::Tool(format!("cannot create temporary directory: {e}")))?;
     let ir = temp.path.join("module.ll");
@@ -165,6 +170,61 @@ pub fn run_package(package: &Path) -> Result<ExitStatus, PackageError> {
         .stderr(Stdio::inherit())
         .status()
         .map_err(|e| PackageError::Tool(format!("cannot run native program: {e}")))
+}
+
+pub fn test_package(package: &Path) -> Result<u8, PackageError> {
+    let compiled = compile_package_internal(package, false)?;
+    if compiled.tests.is_empty() {
+        println!("0 passed, 0 failed");
+        return Ok(0);
+    }
+    let temp = TempDir::new()
+        .map_err(|e| PackageError::Tool(format!("cannot create temporary directory: {e}")))?;
+    let ir = temp.path.join("module.ll");
+    let binary = temp.path.join(if cfg!(windows) {
+        "program.exe"
+    } else {
+        "program"
+    });
+    fs::write(&ir, compiled.llvm_ir)
+        .map_err(|e| PackageError::Tool(format!("cannot write generated LLVM IR: {e}")))?;
+    clang(&ir, &binary)?;
+
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    for (index, name) in compiled.tests.iter().enumerate() {
+        let output = Command::new(&binary)
+            .env("NLC_TEST_INDEX", index.to_string())
+            .output()
+            .map_err(|e| PackageError::Tool(format!("cannot run test '{}': {e}", name)))?;
+        if output.status.success() {
+            println!("ok   {name}");
+            passed += 1;
+        } else {
+            println!("FAIL {name}");
+            failed += 1;
+            match output.status.code() {
+                Some(70) => println!("  test '{name}' ended with a runtime failure (exit code 70)"),
+                Some(code) if code != 1 => println!("  test '{name}' exited with code {code}"),
+                None => println!("  test '{name}' terminated abnormally"),
+                _ => {}
+            }
+        }
+        io::stdout()
+            .flush()
+            .map_err(|e| PackageError::Tool(format!("cannot write test status: {e}")))?;
+        io::stdout()
+            .write_all(&output.stdout)
+            .map_err(|e| PackageError::Tool(format!("cannot forward test stdout: {e}")))?;
+        io::stdout()
+            .flush()
+            .map_err(|e| PackageError::Tool(format!("cannot flush forwarded test stdout: {e}")))?;
+        io::stderr()
+            .write_all(&output.stderr)
+            .map_err(|e| PackageError::Tool(format!("cannot forward test stderr: {e}")))?;
+    }
+    println!("{passed} passed, {failed} failed");
+    Ok(if failed == 0 { 0 } else { 1 })
 }
 
 fn clang(ir: &Path, output: &Path) -> Result<(), PackageError> {

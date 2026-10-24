@@ -1,0 +1,31 @@
+ok   z from alphabetically first file
+FAIL expect values and stop this test
+  a-tests.nl:29:5: expect (three() == 4)
+    left:  3
+    right: 4
+ok   all comparisons and bool
+ok   short circuit and operand order
+1
+2
+ok   captured print and call
+55
+FAIL bool comparison values
+  a-tests.nl:69:5: expect true == false
+    left:  true
+    right: false
+FAIL plain bool failure
+  a-tests.nl:73:5: expect false
+    value: false
+FAIL multiline source is preserved
+  a-tests.nl:77:5: expect (
+        three()
+        == 4
+    )
+    left:  3
+    right: 4
+ok   a from later file
+FAIL runtime overflow is isolated
+  test 'runtime overflow is isolated' ended with a runtime failure (exit code 70)
+ok   later test still runs
+66
+6 passed, 5 failed

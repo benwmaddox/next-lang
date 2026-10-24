@@ -1,0 +1,1 @@
+main.nl:2:17: error: a range bound must be int or long, found bool

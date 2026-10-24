@@ -1,0 +1,1 @@
+main.nl:1:1: error: 'main' must take no arguments and return (); change its signature to 'fn main()'

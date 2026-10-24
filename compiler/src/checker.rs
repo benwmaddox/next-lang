@@ -23,6 +23,7 @@ struct Binding {
     ty: Ty,
     mutable: bool,
     span: Span,
+    loop_counter: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -32,15 +33,21 @@ struct Edge {
     span: Span,
 }
 
-pub fn check(programs: Vec<Program>, files: Vec<String>) -> Result<TProgram, CheckError> {
-    Checker::new(programs, files).run()
+pub fn check_package(
+    programs: Vec<Program>,
+    files: Vec<String>,
+    require_main: bool,
+) -> Result<TProgram, CheckError> {
+    Checker::new(programs, files, require_main).run()
 }
 
 struct Checker {
     programs: Vec<Program>,
     files: Vec<String>,
+    require_main: bool,
     signatures: HashMap<String, Signature>,
     ast_functions: Vec<Function>,
+    ast_tests: Vec<Test>,
     edges: Vec<Edge>,
     locals: Vec<HashMap<String, Binding>>,
     scope_ids: Vec<usize>,
@@ -48,15 +55,19 @@ struct Checker {
     next_local: usize,
     current_function: usize,
     current_return: Ty,
+    current_is_test: bool,
+    loop_depth: usize,
 }
 
 impl Checker {
-    fn new(programs: Vec<Program>, files: Vec<String>) -> Self {
+    fn new(programs: Vec<Program>, files: Vec<String>, require_main: bool) -> Self {
         Self {
             programs,
             files,
+            require_main,
             signatures: HashMap::new(),
             ast_functions: Vec::new(),
+            ast_tests: Vec::new(),
             edges: Vec::new(),
             locals: Vec::new(),
             scope_ids: Vec::new(),
@@ -64,10 +75,13 @@ impl Checker {
             next_local: 0,
             current_function: 0,
             current_return: Ty::Unit,
+            current_is_test: false,
+            loop_depth: 0,
         }
     }
 
     fn run(mut self) -> Result<TProgram, CheckError> {
+        let mut test_names = HashMap::<String, Span>::new();
         for p in self.programs.clone() {
             for function in p.functions {
                 let id = self.ast_functions.len();
@@ -99,11 +113,32 @@ impl Checker {
                     .insert(function.name.clone(), Signature { id, params, result });
                 self.ast_functions.push(function);
             }
+            for test in p.tests {
+                if let Some(previous) = test_names.get(&test.name) {
+                    return Err(CheckError {
+                        span: test.span,
+                        message: format!(
+                            "test '{}' is declared more than once (first declared on line {}); choose a unique name",
+                            test.name, previous.line
+                        ),
+                    });
+                }
+                test_names.insert(test.name.clone(), test.span);
+                self.ast_tests.push(test);
+            }
         }
-        self.check_entry()?;
-        let mut functions = Vec::with_capacity(self.ast_functions.len());
+        if self.require_main || self.signatures.contains_key("main") {
+            self.check_entry()?;
+        }
+        let mut functions = Vec::with_capacity(self.ast_functions.len() + self.ast_tests.len());
         for id in 0..self.ast_functions.len() {
             functions.push(self.check_function(id)?);
+        }
+        let mut tests = Vec::with_capacity(self.ast_tests.len());
+        for index in 0..self.ast_tests.len() {
+            let (function, test) = self.check_test(index)?;
+            tests.push(test);
+            functions.push(function);
         }
         self.check_recursion()?;
         let mut call_graph = vec![Vec::new(); functions.len()];
@@ -115,6 +150,7 @@ impl Checker {
         }
         Ok(TProgram {
             functions,
+            tests,
             files: self.files,
             call_graph,
         })
@@ -122,6 +158,9 @@ impl Checker {
 
     fn check_entry(&self) -> Result<(), CheckError> {
         let Some(sig) = self.signatures.get("main") else {
+            if !self.require_main {
+                return Ok(());
+            }
             return Err(CheckError {
                 span: Span { file: 0, line: 1, col: 1 },
                 message: "package must define 'fn main()'; add an entry point that takes no arguments and returns ()".to_owned(),
@@ -139,6 +178,8 @@ impl Checker {
         let signature = self.signatures[&function.name].clone();
         self.current_function = id;
         self.current_return = signature.result;
+        self.current_is_test = false;
+        self.loop_depth = 0;
         self.next_local = 0;
         self.locals.clear();
         self.locals.push(HashMap::new());
@@ -148,7 +189,7 @@ impl Checker {
         let mut params = Vec::new();
         for (i, param) in function.params.iter().enumerate() {
             let ty = signature.params[i];
-            let binding = self.declare(&param.name, ty, false, param.span)?;
+            let binding = self.declare(&param.name, ty, false, param.span, false)?;
             params.push(TParam {
                 id: binding.id,
                 name: binding.name,
@@ -191,7 +232,56 @@ impl Checker {
             result: signature.result,
             body,
             span: function.span,
+            is_test: false,
         })
+    }
+
+    fn check_test(&mut self, index: usize) -> Result<(TFunction, TTest), CheckError> {
+        let test = self.ast_tests[index].clone();
+        let id = self.ast_functions.len() + index;
+        self.current_function = id;
+        self.current_return = Ty::Unit;
+        self.current_is_test = true;
+        self.loop_depth = 0;
+        self.next_local = 0;
+        self.locals.clear();
+        self.locals.push(HashMap::new());
+        self.next_scope = 1;
+        self.scope_ids.clear();
+        self.scope_ids.push(0);
+        let body = self.check_block(&test.body, false, None)?;
+        if body.falls_through {
+            if let Some(tail) = &body.tail {
+                if tail.ty != Ty::Unit && tail.ty != Ty::Never {
+                    return Err(CheckError {
+                        span: tail.span,
+                        message: format!(
+                            "test '{}' ends with {}; remove the value or use it in a statement",
+                            test.name,
+                            tail.ty.name()
+                        ),
+                    });
+                }
+            }
+        }
+        self.locals.clear();
+        self.current_is_test = false;
+        Ok((
+            TFunction {
+                id,
+                name: format!("__nl_test_{index}"),
+                params: Vec::new(),
+                result: Ty::Unit,
+                body,
+                span: test.span,
+                is_test: true,
+            },
+            TTest {
+                name: test.name,
+                function_id: id,
+                span: test.span,
+            },
+        ))
     }
 
     fn check_block(
@@ -255,7 +345,7 @@ impl Checker {
                     return Err(CheckError { span: value.span, message: "a binding needs a value; functions and if expressions used here must return int, long, or bool".to_owned() });
                 }
                 let ty = annotated.unwrap_or(typed_value.ty);
-                let binding = self.declare(name, ty, *mutable, stmt.span)?;
+                let binding = self.declare(name, ty, *mutable, stmt.span, false)?;
                 TStmtKind::Let {
                     id: binding.id,
                     name: name.clone(),
@@ -276,10 +366,17 @@ impl Checker {
                 if !binding.mutable {
                     return Err(CheckError {
                         span: stmt.span,
-                        message: format!(
-                            "cannot assign to immutable 'let' binding '{}'; declare it with 'var'",
-                            name
-                        ),
+                        message: if binding.loop_counter {
+                            format!(
+                                "cannot assign to loop counter '{}'; loop counters are immutable",
+                                name
+                            )
+                        } else {
+                            format!(
+                                "cannot assign to immutable 'let' binding '{}'; declare it with 'var'",
+                                name
+                            )
+                        },
                     });
                 }
                 let typed_value = self.check_expr(value, Some(binding.ty))?;
@@ -307,6 +404,14 @@ impl Checker {
                 }
             }
             StmtKind::Return(value) => {
+                if self.current_is_test {
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message:
+                            "a test cannot return; let the test finish so all expectations run"
+                                .to_owned(),
+                    });
+                }
                 let result = match value {
                     Some(expr) => {
                         if self.current_return == Ty::Unit {
@@ -365,11 +470,372 @@ impl Checker {
                     TStmtKind::Expr(self.check_expr(expr, None)?)
                 }
             }
+            StmtKind::For {
+                name,
+                annotation,
+                start,
+                end,
+                inclusive,
+                body,
+            } => {
+                let ty =
+                    self.infer_loop_type(name, annotation.as_ref(), start, end, body, stmt.span)?;
+                let typed_start = self.check_expr(start, Some(ty))?;
+                let typed_end = self.check_expr(end, Some(ty))?;
+                self.locals.push(HashMap::new());
+                self.scope_ids.push(self.next_scope);
+                self.next_scope += 1;
+                let counter = self.declare(name, ty, false, stmt.span, true)?;
+                self.loop_depth += 1;
+                let typed_body = self.check_block(body, true, None)?;
+                self.loop_depth -= 1;
+                self.locals.pop();
+                self.scope_ids.pop();
+                TStmtKind::For {
+                    id: counter.id,
+                    ty,
+                    start: typed_start,
+                    end: typed_end,
+                    inclusive: *inclusive,
+                    body: typed_body,
+                }
+            }
+            StmtKind::Break => {
+                if self.loop_depth == 0 {
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message: "'break' is only valid inside a loop; move it into a for body"
+                            .to_owned(),
+                    });
+                }
+                TStmtKind::Break
+            }
+            StmtKind::Continue => {
+                if self.loop_depth == 0 {
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message: "'continue' is only valid inside a loop; move it into a for body"
+                            .to_owned(),
+                    });
+                }
+                TStmtKind::Continue
+            }
+            StmtKind::Expect { value, source } => {
+                if !self.current_is_test {
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message: "'expect' is only valid inside a test block".to_owned(),
+                    });
+                }
+                let typed = self.check_expr(value, Some(Ty::Bool))?;
+                let kind = if let ExprKind::Binary { op, .. } = &value.kind {
+                    if is_comparison(*op) {
+                        if let TExprKind::Binary { left, right, .. } = typed.kind {
+                            TExpectKind::Compare {
+                                op: *op,
+                                left: *left,
+                                right: *right,
+                            }
+                        } else {
+                            unreachable!("comparison expression typechecks as binary")
+                        }
+                    } else {
+                        TExpectKind::Bool(typed)
+                    }
+                } else {
+                    TExpectKind::Bool(typed)
+                };
+                TStmtKind::Expect {
+                    source: source.clone(),
+                    kind,
+                }
+            }
+            StmtKind::Block(block) => TStmtKind::Block(self.check_block(block, true, None)?),
         };
         Ok(TStmt {
             kind,
             span: stmt.span,
         })
+    }
+
+    fn infer_loop_type(
+        &self,
+        counter: &str,
+        annotation: Option<&TypeAst>,
+        start: &Expr,
+        end: &Expr,
+        body: &Block,
+        span: Span,
+    ) -> Result<Ty, CheckError> {
+        let mut constraints = Vec::new();
+        if let Some(annotation) = annotation {
+            let ty = parse_ty(annotation)?;
+            if !ty.is_numeric() {
+                return Err(CheckError {
+                    span: annotation.span,
+                    message: "a loop counter must be int or long; use one of those types"
+                        .to_owned(),
+                });
+            }
+            constraints.push(ty);
+        }
+        for bound in [start, end] {
+            if let Some(ty) = self.natural_expr_type(bound) {
+                if !ty.is_numeric() {
+                    return Err(CheckError {
+                        span: bound.span,
+                        message: format!("a range bound must be int or long, found {}", ty.name()),
+                    });
+                }
+                constraints.push(ty);
+            }
+        }
+        for statement in &body.statements {
+            self.collect_loop_constraints_stmt(statement, counter, &mut constraints);
+        }
+        if let Some(tail) = &body.tail {
+            self.collect_loop_constraints_expr(tail, counter, None, &mut constraints);
+        }
+        let ty = constraints.first().copied().unwrap_or(Ty::Int);
+        if let Some(other) = constraints.iter().copied().find(|other| *other != ty) {
+            return Err(CheckError {
+                span,
+                message: format!(
+                    "loop counter and range uses conflict between {} and {}; cast a bound or use explicitly typed values of one type",
+                    ty.name(),
+                    other.name()
+                ),
+            });
+        }
+        Ok(ty)
+    }
+
+    fn natural_expr_type(&self, expr: &Expr) -> Option<Ty> {
+        self.natural_expr_type_inner(expr, None)
+    }
+
+    fn natural_expr_type_inner(&self, expr: &Expr, shadowed_counter: Option<&str>) -> Option<Ty> {
+        match &expr.kind {
+            ExprKind::Integer {
+                long_suffix: true, ..
+            } => Some(Ty::Long),
+            ExprKind::Integer { .. } => None,
+            ExprKind::Bool(_) => Some(Ty::Bool),
+            ExprKind::Name(name) if shadowed_counter == Some(name.as_str()) => None,
+            ExprKind::Name(name) => self.find_binding(name).map(|binding| binding.ty),
+            ExprKind::Call { name, .. } => {
+                if name == "print" {
+                    Some(Ty::Unit)
+                } else {
+                    self.signatures.get(name).map(|signature| signature.result)
+                }
+            }
+            ExprKind::ToLong { .. } => Some(Ty::Long),
+            ExprKind::Cast { ty, .. } => parse_ty(ty).ok(),
+            ExprKind::Unary { op, value, .. } => match op {
+                UnaryOp::Not => Some(Ty::Bool),
+                UnaryOp::Neg => self.natural_expr_type_inner(value, shadowed_counter),
+            },
+            ExprKind::Binary {
+                op, left, right, ..
+            } => {
+                if matches!(
+                    op,
+                    BinaryOp::Eq
+                        | BinaryOp::Ne
+                        | BinaryOp::Lt
+                        | BinaryOp::Le
+                        | BinaryOp::Gt
+                        | BinaryOp::Ge
+                        | BinaryOp::And
+                        | BinaryOp::Or
+                ) {
+                    Some(Ty::Bool)
+                } else {
+                    let left = self.natural_expr_type_inner(left, shadowed_counter);
+                    let right = self.natural_expr_type_inner(right, shadowed_counter);
+                    match (left, right) {
+                        (Some(left), Some(right)) if left == right => Some(left),
+                        (Some(left), None) if left.is_numeric() => Some(left),
+                        (None, Some(right)) if right.is_numeric() => Some(right),
+                        _ => None,
+                    }
+                }
+            }
+            ExprKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                let left = then_block
+                    .tail
+                    .as_deref()
+                    .and_then(|tail| self.natural_expr_type_inner(tail, shadowed_counter));
+                let right = else_block
+                    .as_ref()
+                    .and_then(|block| block.tail.as_deref())
+                    .and_then(|tail| self.natural_expr_type_inner(tail, shadowed_counter));
+                if left == right { left } else { None }
+            }
+        }
+    }
+
+    fn collect_loop_constraints_stmt(&self, stmt: &Stmt, counter: &str, constraints: &mut Vec<Ty>) {
+        match &stmt.kind {
+            StmtKind::Let {
+                annotation, value, ..
+            } => {
+                self.collect_loop_constraints_expr(
+                    value,
+                    counter,
+                    annotation.as_ref().and_then(|ty| parse_ty(ty).ok()),
+                    constraints,
+                );
+            }
+            StmtKind::Assign { name, value, .. } => {
+                let expected = self.find_binding(name).map(|binding| binding.ty);
+                self.collect_loop_constraints_expr(value, counter, expected, constraints);
+            }
+            StmtKind::Return(value) => {
+                if let Some(value) = value {
+                    self.collect_loop_constraints_expr(
+                        value,
+                        counter,
+                        Some(self.current_return),
+                        constraints,
+                    );
+                }
+            }
+            StmtKind::Expr(expr) => {
+                self.collect_loop_constraints_expr(expr, counter, None, constraints)
+            }
+            StmtKind::For {
+                name,
+                start,
+                end,
+                body,
+                ..
+            } => {
+                self.collect_loop_constraints_expr(start, counter, None, constraints);
+                self.collect_loop_constraints_expr(end, counter, None, constraints);
+                if name != counter {
+                    self.collect_loop_constraints_block(body, counter, constraints);
+                }
+            }
+            StmtKind::Expect { value, .. } => {
+                self.collect_loop_constraints_expr(value, counter, Some(Ty::Bool), constraints);
+            }
+            StmtKind::Block(block) => {
+                self.collect_loop_constraints_block(block, counter, constraints)
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+        }
+    }
+
+    fn collect_loop_constraints_block(
+        &self,
+        block: &Block,
+        counter: &str,
+        constraints: &mut Vec<Ty>,
+    ) {
+        for statement in &block.statements {
+            self.collect_loop_constraints_stmt(statement, counter, constraints);
+        }
+        if let Some(tail) = &block.tail {
+            self.collect_loop_constraints_expr(tail, counter, None, constraints);
+        }
+    }
+
+    fn collect_loop_constraints_expr(
+        &self,
+        expr: &Expr,
+        counter: &str,
+        expected: Option<Ty>,
+        constraints: &mut Vec<Ty>,
+    ) {
+        match &expr.kind {
+            ExprKind::Name(name) if name == counter => {
+                if let Some(ty) = expected.filter(|ty| ty.is_numeric()) {
+                    constraints.push(ty);
+                }
+            }
+            ExprKind::Name(_) | ExprKind::Integer { .. } | ExprKind::Bool(_) => {}
+            ExprKind::Call { name, args, .. } => {
+                let parameters = self.signatures.get(name).map(|sig| sig.params.clone());
+                for (index, arg) in args.iter().enumerate() {
+                    let want = parameters
+                        .as_ref()
+                        .and_then(|params| params.get(index))
+                        .copied();
+                    self.collect_loop_constraints_expr(arg, counter, want, constraints);
+                }
+            }
+            ExprKind::ToLong { value, .. } => {
+                self.collect_loop_constraints_expr(value, counter, Some(Ty::Int), constraints);
+            }
+            ExprKind::Cast { ty, value, .. } => {
+                self.collect_loop_constraints_expr(value, counter, parse_ty(ty).ok(), constraints);
+            }
+            ExprKind::Unary { op, value, .. } => {
+                let want = match op {
+                    UnaryOp::Neg => expected.filter(|ty| ty.is_numeric()),
+                    UnaryOp::Not => Some(Ty::Bool),
+                };
+                self.collect_loop_constraints_expr(value, counter, want, constraints);
+            }
+            ExprKind::Binary {
+                op, left, right, ..
+            } => {
+                let (left_want, right_want) = if matches!(op, BinaryOp::And | BinaryOp::Or) {
+                    (Some(Ty::Bool), Some(Ty::Bool))
+                } else {
+                    let contextual = if matches!(
+                        op,
+                        BinaryOp::Add
+                            | BinaryOp::Sub
+                            | BinaryOp::Mul
+                            | BinaryOp::Div
+                            | BinaryOp::Rem
+                            | BinaryOp::WrapAdd
+                            | BinaryOp::WrapSub
+                            | BinaryOp::WrapMul
+                            | BinaryOp::BitAnd
+                            | BinaryOp::BitOr
+                            | BinaryOp::BitXor
+                            | BinaryOp::Shl
+                            | BinaryOp::Shr
+                    ) {
+                        expected.filter(|ty| ty.is_numeric())
+                    } else {
+                        None
+                    };
+                    let left_natural = self
+                        .natural_expr_type_inner(left, Some(counter))
+                        .filter(|ty| ty.is_numeric());
+                    let right_natural = self
+                        .natural_expr_type_inner(right, Some(counter))
+                        .filter(|ty| ty.is_numeric());
+                    (contextual.or(right_natural), contextual.or(left_natural))
+                };
+                self.collect_loop_constraints_expr(left, counter, left_want, constraints);
+                self.collect_loop_constraints_expr(right, counter, right_want, constraints);
+            }
+            ExprKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.collect_loop_constraints_expr(condition, counter, Some(Ty::Bool), constraints);
+                for block in std::iter::once(then_block).chain(else_block.iter()) {
+                    if let Some(tail) = &block.tail {
+                        self.collect_loop_constraints_expr(tail, counter, expected, constraints);
+                    }
+                    for statement in &block.statements {
+                        self.collect_loop_constraints_stmt(statement, counter, constraints);
+                    }
+                }
+            }
+        }
     }
 
     fn check_expr(&mut self, expr: &Expr, expected: Option<Ty>) -> Result<TExpr, CheckError> {
@@ -496,8 +962,17 @@ impl Checker {
                     )
                 }
             }
-            ExprKind::ToLong(value) => {
-                let typed = self.check_expr(value, Some(Ty::Int))?;
+            ExprKind::ToLong { value, method_span } => {
+                let typed = self.check_expr(value, None)?;
+                if typed.ty != Ty::Int {
+                    return Err(CheckError {
+                        span: *method_span,
+                        message: format!(
+                            "no method 'to_long' on {}; 'to_long' is available on int",
+                            typed.ty.name()
+                        ),
+                    });
+                }
                 if let Some(want) = expected {
                     self.type_mismatch(Ty::Long, want, expr.span)?;
                 }
@@ -837,6 +1312,7 @@ impl Checker {
         ty: Ty,
         mutable: bool,
         span: Span,
+        loop_counter: bool,
     ) -> Result<Binding, CheckError> {
         let scope = self.locals.last_mut().expect("function scope exists");
         if let Some(previous) = scope.get(name) {
@@ -854,6 +1330,7 @@ impl Checker {
             ty,
             mutable,
             span,
+            loop_counter,
         };
         self.next_local += 1;
         scope.insert(name.to_owned(), binding.clone());
@@ -934,7 +1411,7 @@ impl Checker {
     }
 
     fn check_recursion(&self) -> Result<(), CheckError> {
-        let n = self.ast_functions.len();
+        let n = self.ast_functions.len() + self.ast_tests.len();
         let mut graph = vec![Vec::<Edge>::new(); n];
         for edge in &self.edges {
             graph[edge.from].push(*edge);
@@ -964,11 +1441,14 @@ impl Checker {
             state[v] = 2;
             Ok(())
         }
-        let names = self
+        let mut names = self
             .ast_functions
             .iter()
             .map(|f| f.name.clone())
             .collect::<Vec<_>>();
+        names.extend(
+            (0..self.ast_tests.len()).map(|index| format!("test {}", self.ast_tests[index].name)),
+        );
         for v in 0..n {
             if state[v] == 0 {
                 visit(v, &graph, &mut state, &names)?;
@@ -1014,7 +1494,17 @@ fn statement_falls_through(stmt: &TStmtKind) -> bool {
             None => true,
             Some(other) => then_block.falls_through || other.falls_through,
         },
+        TStmtKind::For { .. } | TStmtKind::Expect { .. } => true,
+        TStmtKind::Break | TStmtKind::Continue => false,
+        TStmtKind::Block(block) => block.falls_through,
     }
+}
+
+fn is_comparison(op: BinaryOp) -> bool {
+    matches!(
+        op,
+        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+    )
 }
 
 fn is_unsuffixed_integer(expr: &Expr) -> bool {

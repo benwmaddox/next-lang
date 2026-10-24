@@ -14,6 +14,14 @@ pub struct TypeAst {
 #[derive(Clone, Debug)]
 pub struct Program {
     pub functions: Vec<Function>,
+    pub tests: Vec<Test>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Test {
+    pub name: String,
+    pub body: Block,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +69,21 @@ pub enum StmtKind {
     },
     Return(Option<Expr>),
     Expr(Expr),
+    For {
+        name: String,
+        annotation: Option<TypeAst>,
+        start: Expr,
+        end: Expr,
+        inclusive: bool,
+        body: Block,
+    },
+    Break,
+    Continue,
+    Expect {
+        value: Expr,
+        source: String,
+    },
+    Block(Block),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,7 +116,10 @@ pub enum ExprKind {
         call_span: Span,
         args: Vec<Expr>,
     },
-    ToLong(Box<Expr>),
+    ToLong {
+        value: Box<Expr>,
+        method_span: Span,
+    },
     Cast {
         ty: TypeAst,
         cast_span: Span,

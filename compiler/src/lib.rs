@@ -8,4 +8,5 @@ mod typed;
 
 pub use driver::{
     CompileError, CompileOutput, PackageError, build_package, compile_package, run_package,
+    test_package,
 };

@@ -4,6 +4,7 @@
 
 static const char **nl_files;
 static size_t nl_file_capacity;
+static int nl_test_mode;
 
 void nl_register_file(int32_t file_id, const char *name) {
     if (file_id < 0) return;
@@ -20,8 +21,24 @@ void nl_register_file(int32_t file_id, const char *name) {
     nl_files[file_id] = name;
 }
 
-void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col) {
+int32_t nl_test_selected_index(void) {
+    const char *value = getenv("NLC_TEST_INDEX");
+    if (!value || !*value) return -1;
+    char *end = NULL;
+    long index = strtol(value, &end, 10);
+    if (!end || *end || index < 0 || index > INT32_MAX) return -1;
+    return (int32_t)index;
+}
+
+void nl_set_test_mode(void) { nl_test_mode = 1; }
+
+static const char *nl_file_name(int32_t file_id) {
     const char *file = (file_id >= 0 && (size_t)file_id < nl_file_capacity && nl_files[file_id]) ? nl_files[file_id] : "<source>";
+    return file;
+}
+
+_Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col) {
+    const char *file = nl_file_name(file_id);
     const char *message = "runtime failure";
     switch (kind) {
         case 1: message = "overflow in int addition"; break;
@@ -39,7 +56,29 @@ void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col) {
         case 13: message = "overflow in long division"; break;
     }
     fprintf(stderr, "%s:%d:%d: %s\n", file, line, col, message);
-    exit(1);
+    exit(nl_test_mode ? 70 : 1);
+}
+
+void nl_expect_fail_compare(int32_t file_id, int32_t line, int32_t col,
+                            const char *source, int64_t left, int64_t right,
+                            int32_t is_bool) {
+    char left_text[32];
+    char right_text[32];
+    if (is_bool) {
+        snprintf(left_text, sizeof(left_text), "%s", left ? "true" : "false");
+        snprintf(right_text, sizeof(right_text), "%s", right ? "true" : "false");
+    } else {
+        snprintf(left_text, sizeof(left_text), "%lld", (long long)left);
+        snprintf(right_text, sizeof(right_text), "%lld", (long long)right);
+    }
+    printf("  %s:%d:%d: %s\n    left:  %s\n    right: %s\n",
+           nl_file_name(file_id), line, col, source, left_text, right_text);
+}
+
+void nl_expect_fail_bool(int32_t file_id, int32_t line, int32_t col,
+                         const char *source) {
+    printf("  %s:%d:%d: %s\n    value: false\n",
+           nl_file_name(file_id), line, col, source);
 }
 
 void nl_print_int(int32_t value) { printf("%d\n", value); }

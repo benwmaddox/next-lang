@@ -7,25 +7,56 @@ pub struct ParseError {
     pub message: String,
 }
 
-pub fn parse(tokens: Vec<Token>) -> Result<Program, ParseError> {
-    Parser { tokens, pos: 0 }.program()
+pub fn parse(tokens: Vec<Token>, source: &str) -> Result<Program, ParseError> {
+    Parser {
+        tokens,
+        pos: 0,
+        source,
+    }
+    .program()
 }
 
-struct Parser {
+struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
+    source: &'a str,
 }
 
-impl Parser {
+impl Parser<'_> {
     fn program(mut self) -> Result<Program, ParseError> {
         let mut functions = Vec::new();
+        let mut tests = Vec::new();
         self.skip_separators();
         while !self.at(&TokenKind::Eof) {
-            functions.push(self.function()?);
+            if self.word_is("test") {
+                tests.push(self.test()?);
+            } else {
+                functions.push(self.function()?);
+            }
             self.require_separator_or_eof()?;
             self.skip_separators();
         }
-        Ok(Program { functions })
+        Ok(Program { functions, tests })
+    }
+
+    fn test(&mut self) -> Result<Test, ParseError> {
+        let start = self.expect_word("test", "expected 'test'")?.span;
+        let token = self.next().clone();
+        let name = if let TokenKind::String(name) = token.kind {
+            name
+        } else {
+            return Err(ParseError {
+                span: token.span,
+                message: "expected a quoted test name after 'test'".to_owned(),
+            });
+        };
+        self.skip_newlines();
+        let body = self.block()?;
+        Ok(Test {
+            name,
+            body,
+            span: start,
+        })
     }
 
     fn function(&mut self) -> Result<Function, ParseError> {
@@ -131,6 +162,44 @@ impl Parser {
     }
 
     fn statement_candidate(&mut self) -> Result<Candidate, ParseError> {
+        if self.word_is("for") {
+            return Ok(Candidate::Statement(self.for_statement()?));
+        }
+        if self.word_is("break") || self.word_is("continue") {
+            let token = self.next().clone();
+            return Ok(Candidate::Statement(Stmt {
+                span: token.span,
+                kind: if matches!(&token.kind, TokenKind::Ident(word) if word == "break") {
+                    StmtKind::Break
+                } else {
+                    StmtKind::Continue
+                },
+            }));
+        }
+        if self.word_is("expect") {
+            let start = self.next().clone();
+            if self.at(&TokenKind::Newline) || self.at(&TokenKind::Semicolon) {
+                return Err(self.error_here("expected a bool expression after 'expect'"));
+            }
+            let first = self.pos;
+            let value = self.expression(0)?;
+            let end = self.tokens[self.pos.saturating_sub(1)].end_offset;
+            let begin = self.tokens[first].start_offset;
+            let expression_source = self.source.get(begin..end).unwrap_or("").trim_start();
+            return Ok(Candidate::Statement(Stmt {
+                span: start.span,
+                kind: StmtKind::Expect {
+                    value,
+                    source: format!("expect {expression_source}"),
+                },
+            }));
+        }
+        if self.at(&TokenKind::LBrace) {
+            return Ok(Candidate::Statement(Stmt {
+                span: self.peek().span,
+                kind: StmtKind::Block(self.block()?),
+            }));
+        }
         if self.word_is("let") || self.word_is("var") {
             let mutable = self.word_is("var");
             let start = self.next().span;
@@ -219,6 +288,39 @@ impl Parser {
             }));
         }
         Ok(Candidate::Expression(expression))
+    }
+
+    fn for_statement(&mut self) -> Result<Stmt, ParseError> {
+        let start = self.expect_word("for", "expected 'for'")?.span;
+        let (name, _) = self.expect_ident("expected a counter name after 'for'")?;
+        let annotation = if self.take(&TokenKind::Colon) {
+            Some(self.type_name()?)
+        } else {
+            None
+        };
+        self.expect_word("in", "expected 'in' after the loop counter")?;
+        let first = self.expression(0)?;
+        let inclusive = if self.take(&TokenKind::RangeInclusive) {
+            true
+        } else if self.take(&TokenKind::Range) {
+            false
+        } else {
+            return Err(self.error_here("expected '..' or '..=' after the loop start"));
+        };
+        let end = self.expression(0)?;
+        self.skip_newlines();
+        let body = self.block()?;
+        Ok(Stmt {
+            kind: StmtKind::For {
+                name,
+                annotation,
+                start: first,
+                end,
+                inclusive,
+                body,
+            },
+            span: start,
+        })
     }
 
     fn expression(&mut self, min_precedence: u8) -> Result<Expr, ParseError> {
@@ -388,7 +490,10 @@ impl Parser {
                 self.expect(&TokenKind::LParen, "expected '()' after to_long")?;
                 self.expect(&TokenKind::RParen, "expected '()' after to_long")?;
                 expr = Expr {
-                    kind: ExprKind::ToLong(Box::new(expr.clone())),
+                    kind: ExprKind::ToLong {
+                        value: Box::new(expr.clone()),
+                        method_span,
+                    },
                     span: expr.span,
                 };
                 continue;
@@ -594,7 +699,7 @@ mod tests {
     #[test]
     fn block_keeps_tail_expression_and_continued_operator() {
         let source = "fn value(a: int) -> int {\n let x = a +\n 2\n x\n}\nfn main() {}";
-        let parsed = parse(lex(source, 0).unwrap()).unwrap();
+        let parsed = parse(lex(source, 0).unwrap(), source).unwrap();
         let body = &parsed.functions[0].body;
         assert_eq!(body.statements.len(), 1);
         assert!(body.tail.is_some());
@@ -612,7 +717,8 @@ mod tests {
 
     #[test]
     fn final_if_without_else_is_a_statement() {
-        let parsed = parse(lex("fn main() { if true { print(1) } }", 0).unwrap()).unwrap();
+        let source = "fn main() { if true { print(1) } }";
+        let parsed = parse(lex(source, 0).unwrap(), source).unwrap();
         let body = &parsed.functions[0].body;
         assert!(body.tail.is_none());
         assert!(matches!(

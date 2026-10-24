@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use next_lang::{PackageError, build_package, run_package};
+use next_lang::{PackageError, build_package, run_package, test_package};
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os();
@@ -14,6 +14,10 @@ fn main() -> ExitCode {
     match command.as_str() {
         "run" if rest.len() == 1 => match run_package(Path::new(&rest[0])) {
             Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+            Err(error) => report_error(error),
+        },
+        "test" if rest.len() == 1 => match test_package(Path::new(&rest[0])) {
+            Ok(code) => ExitCode::from(code),
             Err(error) => report_error(error),
         },
         "build" if rest.len() == 3 && rest[1] == "-o" => {
@@ -43,5 +47,7 @@ fn report_error(error: PackageError) -> ExitCode {
 }
 
 fn usage() {
-    eprintln!("usage: nlc run <package-dir> | nlc build <package-dir> -o <file>");
+    eprintln!(
+        "usage: nlc run <package-dir> | nlc build <package-dir> -o <file> | nlc test <package-dir>"
+    );
 }

@@ -1,0 +1,1 @@
+main.nl:3:9: error: cannot assign to loop counter 'i'; loop counters are immutable

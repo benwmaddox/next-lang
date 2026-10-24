@@ -4,6 +4,7 @@ use crate::ast::Span;
 pub enum TokenKind {
     Ident(String),
     Number(String),
+    String(String),
     Newline,
     LParen,
     RParen,
@@ -13,6 +14,8 @@ pub enum TokenKind {
     Colon,
     Semicolon,
     Dot,
+    Range,
+    RangeInclusive,
     Arrow,
     Plus,
     Minus,
@@ -49,6 +52,8 @@ pub enum TokenKind {
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
+    pub start_offset: usize,
+    pub end_offset: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -78,7 +83,7 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             line += 1;
             col = 1;
             if parens == 0 {
-                push_newline(&mut out, span);
+                push_newline(&mut out, span, pos - 1);
             }
             continue;
         }
@@ -99,6 +104,8 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             out.push(Token {
                 kind: TokenKind::Ident(source[start..pos].to_owned()),
                 span,
+                start_offset: start,
+                end_offset: pos,
             });
             continue;
         }
@@ -113,11 +120,85 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             out.push(Token {
                 kind: TokenKind::Number(source[start..pos].to_owned()),
                 span,
+                start_offset: start,
+                end_offset: pos,
             });
             continue;
         }
 
-        let (kind, width) = match_two_or_one(bytes, pos).ok_or_else(|| LexError {
+        if b == b'"' {
+            let start = pos;
+            pos += 1;
+            col += 1;
+            let mut value = String::new();
+            let mut closed = false;
+            while pos < bytes.len() {
+                match bytes[pos] {
+                    b'"' => {
+                        pos += 1;
+                        col += 1;
+                        closed = true;
+                        break;
+                    }
+                    b'\\' => {
+                        pos += 1;
+                        col += 1;
+                        let Some(&escaped) = bytes.get(pos) else {
+                            break;
+                        };
+                        match escaped {
+                            b'"' => value.push('"'),
+                            b'\\' => value.push('\\'),
+                            b'n' => value.push('\n'),
+                            b't' => value.push('\t'),
+                            _ => {
+                                return Err(LexError {
+                                    span,
+                                    message: "unsupported string escape; use \", \\\\, \\n, or \\t"
+                                        .to_owned(),
+                                });
+                            }
+                        }
+                        pos += 1;
+                        col += 1;
+                    }
+                    b'\n' => {
+                        return Err(LexError {
+                            span,
+                            message: "string literals cannot contain a newline; escape it as \\n"
+                                .to_owned(),
+                        });
+                    }
+                    _ => {
+                        let ch = source[pos..].chars().next().expect("valid UTF-8 source");
+                        value.push(ch);
+                        let width = ch.len_utf8();
+                        pos += width;
+                        col += width;
+                    }
+                }
+            }
+            if !closed {
+                return Err(LexError {
+                    span,
+                    message: "unclosed string literal; add a closing quote".to_owned(),
+                });
+            }
+            out.push(Token {
+                kind: TokenKind::String(value),
+                span,
+                start_offset: start,
+                end_offset: pos,
+            });
+            continue;
+        }
+
+        let (kind, width) = if bytes.get(pos..pos + 3) == Some(b"..=".as_slice()) {
+            Some((TokenKind::RangeInclusive, 3))
+        } else {
+            match_two_or_one(bytes, pos)
+        }
+        .ok_or_else(|| LexError {
             span,
             message: format!(
                 "unexpected character '{}'; remove it or use a supported operator",
@@ -135,9 +216,15 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             }
             parens -= 1;
         }
+        let start_offset = pos;
         pos += width;
         col += width;
-        out.push(Token { kind, span });
+        out.push(Token {
+            kind,
+            span,
+            start_offset,
+            end_offset: pos,
+        });
     }
     if parens != 0 {
         return Err(LexError {
@@ -148,11 +235,13 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
     out.push(Token {
         kind: TokenKind::Eof,
         span: Span { file, line, col },
+        start_offset: pos,
+        end_offset: pos,
     });
     Ok(out)
 }
 
-fn push_newline(out: &mut Vec<Token>, span: Span) {
+fn push_newline(out: &mut Vec<Token>, span: Span, offset: usize) {
     if !matches!(
         out.last().map(|t| &t.kind),
         Some(TokenKind::Newline | TokenKind::Semicolon)
@@ -160,6 +249,8 @@ fn push_newline(out: &mut Vec<Token>, span: Span) {
         out.push(Token {
             kind: TokenKind::Newline,
             span,
+            start_offset: offset,
+            end_offset: offset + 1,
         });
     }
 }
@@ -177,6 +268,7 @@ fn match_two_or_one(b: &[u8], p: usize) -> Option<(TokenKind, usize)> {
     if let Some(pair) = two {
         let kind = match pair {
             b"->" => Some(TokenKind::Arrow),
+            b".." => Some(TokenKind::Range),
             b"+%" => Some(TokenKind::WrapPlus),
             b"-%" => Some(TokenKind::WrapMinus),
             b"*%" => Some(TokenKind::WrapStar),

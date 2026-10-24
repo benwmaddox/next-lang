@@ -1,0 +1,1 @@
+main.nl:2:20: error: no method 'to_long' on long; 'to_long' is available on int

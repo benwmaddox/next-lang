@@ -29,6 +29,7 @@ impl Ty {
 #[allow(dead_code)] // The checker preserves the call graph for later analyses.
 pub struct TProgram {
     pub functions: Vec<TFunction>,
+    pub tests: Vec<TTest>,
     pub files: Vec<String>,
     pub call_graph: Vec<Vec<TCallEdge>>,
 }
@@ -41,6 +42,14 @@ pub struct TCallEdge {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct TTest {
+    pub name: String,
+    pub function_id: usize,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
 #[allow(dead_code)] // Keep source locations and source names in the typed form for later diagnostics.
 pub struct TFunction {
     pub id: usize,
@@ -49,6 +58,7 @@ pub struct TFunction {
     pub result: Ty,
     pub body: TBlock,
     pub span: Span,
+    pub is_test: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +109,31 @@ pub enum TStmtKind {
         condition: TExpr,
         then_block: TBlock,
         else_block: Option<TBlock>,
+    },
+    For {
+        id: usize,
+        ty: Ty,
+        start: TExpr,
+        end: TExpr,
+        inclusive: bool,
+        body: TBlock,
+    },
+    Break,
+    Continue,
+    Expect {
+        source: String,
+        kind: TExpectKind,
+    },
+    Block(TBlock),
+}
+
+#[derive(Clone, Debug)]
+pub enum TExpectKind {
+    Bool(TExpr),
+    Compare {
+        op: BinaryOp,
+        left: TExpr,
+        right: TExpr,
     },
 }
 

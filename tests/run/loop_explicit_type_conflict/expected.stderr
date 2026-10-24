@@ -1,0 +1,1 @@
+main.nl:3:5: error: loop counter and range uses conflict between long and int; cast a bound or use explicitly typed values of one type
