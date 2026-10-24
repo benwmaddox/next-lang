@@ -559,6 +559,25 @@ Refinement types are the design's best lever: one declaration serves correctness
   - *Parallel work:* a named or scoped body, a read-only context, and one output slot per item, joined before the caller's storage ends (Parallel loops).
   - *Page pieces:* top-level pieces with bounded plain arguments; `serve` supplies capabilities afresh on every render and refresh.
 
+
+**Generics and interfaces** (decided 2026-10-24). Generic code says what it needs from a type through a named interface, and a type provides it with an explicit `impl`, as in C# and Rust:
+
+```
+interface Ordered {
+    fn less(a: Self, b: Self) -> bool
+}
+impl Ordered for Unit {
+    fn less(a: Unit, b: Unit) -> bool { a.hp < b.hp }
+}
+fn sort<T: Ordered, N>(xs: write list<T, N>) { ... }
+```
+
+- **Static only:** a generic function is copied per type (decided earlier), so a call to `less` is a direct call the compiler can inline, never a lookup at run time. There are no interface-typed values (no `list<Ordered, 10>` holding mixed types); a function value (Functions as values) covers the cases where behaviour has to be chosen at run time.
+- **Explicit:** a type satisfies an interface only through an `impl`, so it can't happen by accident, and a missing one is an error that names the interface, the type and the missing function.
+- **Coherence:** an `impl` lives in the package of the interface or of the type, so two packages can't give conflicting `impl`s for the same pair.
+- The built-in interfaces `Eq`, `Hash` and `Ordered` let maps, sets and sorting work on declared types; until they exist, those are compiler built-ins over structural types (T09, T12).
+- Interfaces carry the same contract as function types: an `impl`'s functions may have no more effects than the interface allows.
+- Generic expansion has its own limit (a count of copies), not a source-size bound.
 **Text, ASCII and bytes** (decided 2026-10-24): `Text` is always valid UTF-8; `Ascii` is text known to hold only ASCII characters (bytes 0 to 127), the compact form, one byte per character; and `Bytes` is raw data (DEFLATE's output, files, the network). An `Ascii` value is a valid `Text` too, so passing one to a *read* parameter of type `Text` costs nothing. A write or grow parameter is different: the function could store a non-ASCII character, or need up to 4 bytes for a character where `Ascii max N` owns exactly N, so passing `Ascii` there needs an `Ascii` parameter, a proof that the function writes only ASCII within the bound, or an explicit checked conversion into `Text` storage of the right size; going from `Text` or `Bytes` to `Ascii`, or from `Bytes` to `Text`, is a checked step that returns `Result`. For `Ascii`, a character, a code point and a byte are the same thing, so `Ascii max N` is exactly N bytes, its length is O(1) and indexing by character is direct; operations like `ascii_upper` and comparisons skip UTF-8 decoding. Text lengths count Unicode code points (what a person would call characters, roughly); byte lengths are written on `Bytes`, or as `Text bytes max N` when a byte budget is what matters.
 
 **Refinements** are a type plus a predicate the compiler understands, a closed set kept decidable:
@@ -824,6 +843,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - A value a loop keeps growing must have a bound the compiler knows, and each iteration's temporaries are freed when it ends.
 - A failed job discards only its uncommitted batch; committed batches stay, and `transaction { }` groups changes that must succeed together.
 - A transaction's checks and writes run on the writer against its latest version, with no waits inside.
+- Generic constraints are named interfaces with explicit `impl`s (C#/Rust style), static only: copied per type, no interface-typed values.
 - Reusable definitions that hold their own ids take an owner parameter (`struct Node<P> { parent: Option<Id<P>> }`), checked at compile time; ids stay 64 bits.
 - Ranges are Rust-style: `a..b` excludes `b` and `a..=b` includes it, everywhere (`int 0..=100`, `for i in 0..8`); loop counters take their type from their bounds and use.
 - Clarity: compound assignment (`+=` and the rest, same checks); unsuffixed literals take their type from context; `??` may `continue` or `break`; `discard` drops a collection's expected error on purpose; named refinements (`type Size = int 1..=3`, cast as `(Size)(x)`); widening methods like `.to_long()`.

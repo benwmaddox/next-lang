@@ -52,7 +52,7 @@ Ben adopted the recommendation both reviews reached (docs/reviews/claude-selfhos
 
 | Gap | Milestone |
 | --- | --- |
-| Generic constraints (traits or interfaces), equality and hashing requirements | before M2's collections need them (M1 follow-up) |
+| Generic constraints: decided 2026-10-24, named interfaces with explicit `impl` (DESIGN.md, "Generics and interfaces"); `Eq`, `Hash`, `Ordered` built-in interfaces | a generics task after M2 (T09 and T12 use compiler built-ins until then) |
 | How a reusable `Node` or `Type` definition names ids belonging to a particular pool or batch: decided 2026-10-24, owner parameters (DESIGN.md, "Owner parameters in reusable definitions") | M2 |
 | `map`, `set`, `queue`, hashing and sorting, firmly scheduled rather than on the Later list | M2 (collections) |
 | Byte slicing, UTF-8 validation, number parsing and formatting, bounded writers that flush to a file in chunks | M3 |
