@@ -45,6 +45,7 @@ Each is small enough to review in one sitting, ends with passing tests, and maps
 
 Ben adopted the recommendation both reviews reached (docs/reviews/claude-selfhost.md, docs/reviews/sol-selfhost-r1.md): self-host the compiler in stages, starting after M3, as DESIGN.md's planned "parallel tool" validation program. The Rust `nlc` stays the reference throughout.
 
+- **S0, before M3 (decided 2026-10-24): the prerequisites S1 needs that don't depend on M3.** T19 `recursive` functions with a native-stack budget; T20 files, arguments and output through capabilities, using `list<byte, N>` until M3 brings `Bytes`. Order: T11, T12, then T19, T20, then M3 (T13 onward).
 - **S1, after M3: lexer, parser and diagnostic formatter in next-lang.** It parses every package under `tests/` in parallel into frozen pools and prints the trees; the result must match the Rust parser's trees and diagnostics exactly. This doubles as the validation plan's parallel-tool program (frozen pools, builders, parallel loops and bounds on a real workload), measured against the Rust parser.
 - **S2: the checker,** compared with the Rust checker's typed output and errors on every test package.
 - **S3: code generation,** compared by behaviour on every test program at development and release optimisation levels.
