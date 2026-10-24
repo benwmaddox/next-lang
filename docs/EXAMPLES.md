@@ -11,11 +11,12 @@ An arcade game: a ship that turns, thrusts and fires, and rocks that split when 
 ```
 // rocks/state.nl
 const SCREEN = Vector2(960.0f, 540.0f)
+const TAU: float = 6.2831855f            // 2π, one full turn
 
 struct Ship {
     pos: Vector2 = SCREEN * 0.5f
     vel: Vector2 = Vector2.zero
-    angle: float = 0.0f            // radians
+    angle: float 0.0f..TAU = 0.0f  // radians, always within one turn (both ends included: 0 and 2π are the same direction)
     cooldown: int 0..15 = 0        // ticks until the next shot
     lives: int 0..3 = 3
 }
@@ -58,8 +59,8 @@ fn step(g: write Game, input: Input) {
 }
 
 fn steer(ship: write Ship, input: Input) {
-    if input.held(Key.Left)  { ship.angle = ship.angle - 0.07f }
-    if input.held(Key.Right) { ship.angle = ship.angle + 0.07f }
+    if input.held(Key.Left)  { ship.angle = turn(ship.angle, -0.07f) }
+    if input.held(Key.Right) { ship.angle = turn(ship.angle, 0.07f) }
     if input.held(Key.Up)    { ship.vel = ship.vel + direction(ship.angle) * 0.15f }
     ship.vel = ship.vel * 0.99f        // drag
     ship.pos = wrap(ship.pos + ship.vel)
@@ -127,7 +128,13 @@ fn split(g: write Game, r: Rock) {
     }
 }
 
-fn direction(angle: float) -> Vector2 { Vector2(cos(angle), sin(angle)) }   // the language's own cos and sin: exact everywhere
+// Turning wraps, so the angle never leaves its range. modulo's contract says that for
+// a positive m the result is in 0..m, inclusive (a tiny negative input can round up to
+// exactly m), which matches the field's range, so the assignment needs no runtime check.
+fn turn(a: float 0.0f..TAU, by: float -0.1f..0.1f) -> float 0.0f..TAU {
+    modulo(a + by, TAU)
+}
+fn direction(angle: float 0.0f..TAU) -> Vector2 { Vector2(cos(angle), sin(angle)) }   // the language's own cos and sin: exact everywhere
 fn radius(size: int 1..3) -> float { (float)size * 12.0f }
 fn points(size: int 1..3) -> int { 400 / size }
 fn wrap(p: Vector2) -> Vector2 { Vector2(modulo(p.x, SCREEN.x), modulo(p.y, SCREEN.y)) }
@@ -170,13 +177,14 @@ test "the bullet limit holds" {
 }
 ```
 
-**What it exercises:** a `prefault` global with defaults in the struct definitions; pools with typed ids; removing after the loop, not during it; `Full` handled at every `add`; parameter modes (`write`); a range cast that the compiler can prove (`(int 1..3)(r.size - 1)`); explicit casts (`(long)`, `(float)`); random state kept in the game state; a read-only `draw`; tests on a local `Game`.
+**What it exercises:** a `prefault` global with defaults in the struct definitions; a float range on the ship's angle, kept by a `turn` helper whose result range the compiler matches against the field's; pools with typed ids; removing after the loop, not during it; `Full` handled at every `add`; parameter modes (`write`); a range cast that the compiler can prove (`(int 1..3)(r.size - 1)`); explicit casts (`(long)`, `(float)`); random state kept in the game state; a read-only `draw`; tests on a local `Game`.
 
 **Open points it raised:**
 
 - *Parameter-mode syntax:* `g: write Game` is a guess; the design names the modes (read, write, grow) but not how to write them.
 - *Pushes the compiler can prove safe:* `hit.push(rid)` and `spent.add(bid)` can't overflow (each holds at most as many ids as its pool), so the design should let a proven push skip the `Result`; otherwise every one of these needs handling that can never run.
 - *Element views in loops:* `for r in g.rocks { r.pos = … }` writes through the loop variable. The design allows writing fixed-size fields of the element a view is on; it should say loop variables over a writable collection are writable views.
+- *Two meanings of `..`:* in a refinement (`int 0..100`, `float 0.0f..TAU`) the range includes its end; in a loop (`for k in 0..2`) it stops before it. The design should either say so plainly or use two spellings (Rust has `..` and `..=`).
 - *Restarting:* resetting the whole game (`g = Game {}`) replaces pools, which the design's Later list says needs a rule for generations.
 
 ## 2. A tool: logsum
