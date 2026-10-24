@@ -42,7 +42,19 @@ The design keeps what was measured to work in four weeks of building six languag
 
 There are two lifetimes and no garbage collector: long-lived data in a declared tree of state, everything temporary on scope stacks freed in one store.
 
-**State** holds in-memory data that outlives a call (a game's world, a tool's index, a server's live data). It's organised the way StasisLang organises it (decided 2026-10-24): one tree of structs, whose fields are values, nested structs and bounded collections. There are no standalone tables; what earlier drafts called a table is a `pool`, one kind of collection field. Data kept in a database (SQLite, later others) isn't state; it's a separate feature (see Databases).
+**Where data lives** (decided 2026-10-24: static state is meant to be used lightly). Most data shouldn't be in a global. In order of how often a program should reach for each:
+
+| Data | Where it lives |
+| --- | --- |
+| What one request, task or tick computes, including its lists, sets and maps | locals on its stacks (bounded collections are ordinary values, see Collections), freed when their scope ends |
+| A server's records, anything that must survive a crash or outgrow RAM | a database (see Databases) |
+| Big read-only data built in parallel (syntax trees, an index) | frozen pools, freed with the scope that built them |
+| Small data many jobs read while it changes (presence, counters, a live cache) | a small `shared global` |
+| Configuration, and a game's world, which really does live for the whole run | a `global`, sized deliberately |
+
+Globals are allocated in full at startup for their worst case (Static allocation, below), so every byte declared there is paid for the whole run; `inspect memory` warns when they pass a budget.
+
+**State** holds in-memory data that outlives a call. Whether it's a global, a shared global or a local, it's organised the way StasisLang organises it (decided 2026-10-24): one tree of structs, whose fields are values, nested structs and bounded collections. There are no standalone tables; what earlier drafts called a table is a `pool`, one kind of collection. Data kept in a database (SQLite, later others) isn't state; it's a separate feature (see Databases).
 
 ```
 struct App {
@@ -70,6 +82,8 @@ global app: App                              // the program's state, reserved on
 - **One concept, not several.** Structs, fixed arrays and collections nest freely; a pool is just a field.
 
 **Collections** (all bounded; the capacity is part of the type)
+
+- **Collections are ordinary values.** A bounded collection has a fixed worst-case size (its capacity, with its text's size classes), so it can be a local, a field, a parameter (as a view, or in write or grow mode) or a result, like any fixed-size value. A local one goes on the fixed-scratch stack when it's over 4 KB (How the compiler assigns stacks), is committed only as it's used, and is freed with its scope. Pushing into a local `list` never moves a stack top: its space was set aside when it was declared, so it isn't a growing value and needs no stack of its own.
 
 | Type | What it is | Elements named by |
 | --- | --- | --- |
@@ -102,7 +116,7 @@ Adding to a full collection (or writing a field past its maximum) returns `Resul
 **Who owns state**
 
 - **The program:** `global app: App` is reserved once at start and lives for the whole run. A global has a *home worker*, and only jobs scheduled on that worker may use it, so its arrays are plain memory: no writer, no snapshots, no counting, no locks. A game's simulation is the typical case.
-- **A job:** a job can make state of its own (`let scratch: CheckerState in job`), reserved from a per-worker pool of reservations and freed when the job ends: a type checker's cache, a request's working set. Its ids are typed by the job's scope (`scratch.types.Id`), so they can't leave the job or mix with another job's. Admission counts it toward the job's memory.
+- **A function or a job: locals.** A struct or collection declared as a local (`let seen: set<units.Id, 500>`) lives on that function's stacks and is freed when its scope ends; one declared in a job's entry function lasts the whole job, which is all "job state" is (a type checker's cache, a request's working set). A local pool's ids are typed by the local (`seen.Id`, `cache.types.Id`), so they can't leave its scope or mix with another's. These count toward the job's memory in admission.
 - **Shared:** `shared global chat: Chat` is for data many jobs on many workers read while it keeps changing: a server's live data, a multiplayer game's world. One writer changes it; jobs send it changes and `transaction { }` blocks (Thread kinds and jobs), and readers on other workers read an immutable snapshot, pinned once per read phase, never per element (Burin's model; details in Shared state across threads). Everything about snapshots, pins, blocks, reclamation and transactions applies only to shared state; the other kinds pay none of it.
 - Several instances of one shared global (one per tenant, say) would need an instance field in its ids, and are left for later.
 
@@ -120,14 +134,14 @@ Adding to a full collection (or writing a field past its maximum) returns `Resul
 - **Initialised before any job runs:** every field of the state has a starting value, given by a default in its declaration (`hp: Int 0..1000 = 100`, as Stasis allows) or by the global's `init { … }` block, which runs once at startup, before the first job is scheduled, and may read configuration but do no other I/O. `list`, `pool`, `map`, `set`, `queue` and `ring` start empty unless `init` fills them; fixed arrays (`T[N]`, `grid`) need every element's value. A field whose type has no valid zero (an `Int 1..100`) and no default or `init` is a build error that names it. Defaults, `init` and state restored from a save all go through the same refinement and invariant checks as any write, so a program never runs with invalid state.
 - **Stacks are not static.** Data stacks, native stacks, job state and frozen batches belong to jobs, and jobs come and go, so they're reserved as address ranges and committed as they're used, within their bounds (N stacks per job, Loops can't quietly fill a stack). Admission limits how many jobs exist at once. The difference: a global's worst case is paid once, for the whole run; a job's worst case would be paid per job, and most jobs use a fraction of it.
 - **Foreign code** keeps its own allocation unless configured: SQLite can be handed a fixed memory region at startup (its `SQLITE_CONFIG_HEAP` option), and the binding generator does so. Other C libraries' allocation is outside the guarantee, and the audit report lists them.
-- **Reported:** `inspect memory` prints the startup claim (state, shared budgets, foreign fixed regions) and, separately, the per-job worst case for each entry point.
+- **Reported:** `inspect memory` prints the startup claim (state, shared budgets, foreign fixed regions) and, separately, the per-job worst case for each entry point. It warns when the globals' startup claim passes a configured budget (64 MB by default), so heavy static use is a visible choice, not an accident; a game that wants a big world raises the budget in its configuration.
 - **Reported:** `inspect state` lists, per path, the byte bound, the reserved address space and the committed memory, separately; for shared state also the budget for old versions, and for frozen batches their totals.
 - **Not on the data stacks:** state's memory comes from its own reservation. A job uses a stack only when it copies something out of state; reading through a view copies nothing.
 
-| | Program global | Job state | `shared global` | Database (separate feature) |
+| | Program global | Locals (and job state) | `shared global` | Database (separate feature) |
 | --- | --- | --- | --- | --- |
 | Lives in | RAM | RAM | RAM | the database (disk) |
-| Who changes it | jobs on its home worker | its job | one writer | the database, through transactions |
+| Who changes it | jobs on its home worker | the function or job that owns it | one writer | the database, through transactions |
 | Who reads it | jobs on its home worker | its job | any job, through a snapshot | any job, through queries |
 | Bound | capacities and field maxima, allocated in full at startup | the same, reserved when the job makes it, committed as used | the same, plus old versions | disk, plus an optional quota per deployment |
 | Survives a crash | no (unless saved) | no | no (unless saved) | yes |
@@ -271,7 +285,7 @@ A bump stack frees nothing until its scope ends, so a careless loop can fill one
 - **The compiler adds it up.** From the bounds it computes each stack's worst case per entry point, which sizes reservations (N stacks per job). `inspect stacks` lists, per entry point, each stack's worst case and the lines that drive it, and every loop's growth per iteration. An entry point with something still unbounded (an untyped external call, say) is listed as such and gets the default reservation.
 - **Tests can pin it:** `expect stack_peak(handler) < 2 MB` fails a test when a change raises the worst case past a budget.
 - **Tools that read whole projects** bound their inputs too: a source tool declares the most files and bytes per batch it accepts, and a budget for the trees it keeps, rather than relying on the default reservation and failing.
-- **Nested growing values wait:** in v1 a growing value can't contain growing values on a stack (a `List<Text>` built on a stack, a record with two growing fields). The first implementation refuses them with an error suggesting a collection in job state or a builder instead (state can nest bounded collections, since they flatten into arrays). The later design keeps two compiler-assigned stacks for such a value, one for its fixed-size descriptors (`{offset, length}` per element, offsets rather than pointers) and one for the elements' bytes. An element is frozen once it's added; changing it means rebuilding it at the end and updating its descriptor. Both stacks, alignment and any temporary copy count in the bound.
+- **Nested growing values wait:** in v1 a growing value can't contain growing values on a stack (a `List<Text>` built on a stack, a record with two growing fields). The first implementation refuses them with an error suggesting a bounded collection instead (`list<Ascii max 40, 100>` as a local, say), which isn't a growing value: it has a fixed worst-case size and nests freely, since collections flatten into arrays. The later design keeps two compiler-assigned stacks for such a value, one for its fixed-size descriptors (`{offset, length}` per element, offsets rather than pointers) and one for the elements' bytes. An element is frozen once it's added; changing it means rebuilding it at the end and updating its descriptor. Both stacks, alignment and any temporary copy count in the bound.
 
 ### Keeping it fast
 
@@ -552,6 +566,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - A value a loop keeps growing must have a bound the compiler knows, and each iteration's temporaries are freed when it ends.
 - A failed job discards only its uncommitted batch; committed batches stay, and `transaction { }` groups changes that must succeed together.
 - A transaction's checks and writes run on the writer against its latest version, with no waits inside.
+- Static state is meant to be used lightly: most data lives in locals on stacks (bounded collections are ordinary values), in databases or in frozen pools; `inspect memory` warns past a globals budget.
 - Full static allocation of state: globals (program and shared) are sized at build time and allocated in full at startup, never allocating after; data stacks, job state and frozen batches stay per job, reserved and committed as used.
 - All state is bounded: every collection declares its capacity and each variable-size field its maximum; adding to a full collection returns `Result`.
 - Only this program writes its databases in v1; other tools may read them.
@@ -565,7 +580,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 
 **First steps**
 
-1. State and typed ids: a global struct with fixed arrays, `list` and `pool` (generation-checked ids), laid out as one array per field, nested collections flattened.
+1. State and typed ids: fixed arrays, `list` and `pool` (generation-checked ids) as locals and in a small global struct, laid out as one array per field, nested collections flattened.
 2. Goose-style stack assignment for growing values, replacing the helper arena: stack contracts (fresh-result and append), iteration scopes, bounds per entry point; `push`, text built from pieces, `out_byte` as a store and bump. Nested growing values are refused at first.
 3. Refinements on parameters and fields (range, length, membership, index), inferred through the sign analysis and emitted as LLVM facts. Measured on DEFLATE.
 4. `check fast == reference` and `test` blocks with `expect`.
