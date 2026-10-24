@@ -462,12 +462,12 @@ Refinement types are the design's best lever: one declaration serves correctness
 5. Reset its stacks and return the stack set to the worker's pool. These steps run on the worker's own scheduler stack, not the job's, so a job that failed because its native stack ran out can still be cleaned up.
 6. Report the failure: to the client (a 500 for a request), to the log, and to the parent if it was a parallel-loop chunk, which fails the parent job with the chunk's error. Code that wants to handle one of these locally uses the checked form that returns `Option` (`checked_add(a, b)`, `a.get(i)`), or a refinement that proves the failure can't happen.
 
-**Numbers** (proposed 2026-10-24)
+**Numbers** (proposed 2026-10-24, except where marked decided)
 
 - **Integers:** `Int` is 64-bit and signed, the default. Sized forms exist for storage and C: `Int8`, `Int16`, `Int32`, `Int64`, and unsigned `UInt8` to `UInt64`; `Byte` is `UInt8`. A range refinement picks the storage: a field declared `hp: Int 0..1000` is stored in 16 bits in state's arrays (one array per field, so this halves or quarters the memory a loop streams through), while arithmetic on it happens at 64 bits and is narrowed, checked, on the way back.
 - **Arithmetic is checked:** an overflow fails the job (Failures). Wrapping is spelled `+%`, `-%`, `*%`, as hashes and checksums need; `checked_add` and friends return `Option`. Bit operations (`&`, `|`, `^`, `<<`, `>>`) work on any integer; a shift outside 0 to its width fails. Division truncates toward zero; dividing by zero fails.
 - **No implicit conversions:** `Int32` to `Int` is free and spelled `.to_int()`; narrowing (`Int` to `UInt8`) is `to_u8()`, checked, or `wrap_u8()`, wrapping. A range refinement that proves the value fits makes the checked form free.
-- **Floats:** `Float` is 64-bit IEEE, `Float32` 32-bit, for games and measurement. Ranges apply (`Float 0.0..1.0`). Whether NaN (the "not a number" value from `0.0 / 0.0`) is allowed in a plain `Float` is an open question below.
+- **Floats:** `Float` is 64-bit IEEE, `Float32` 32-bit, for games and measurement. Ranges apply (`Float 0.0..1.0`). A plain `Float` never holds NaN (the "not a number" value from `0.0 / 0.0` or `sqrt(-1.0)`; decided 2026-10-24): an operation that would produce one fails the job at that line, as an integer overflow does, so the bug shows up where it was made, not frames later. `FloatNaN` (and `Float32NaN`) allows it for code that wants IEEE behaviour, and a `fast { }` block may produce it inside; converting back to `Float` is checked. Infinities are allowed unless a range excludes them.
 - **Deterministic by default:** float code compiles without fast-math, so the same binary gives the same results on every run, which game replays and `check fast == reference` rely on. A `fast { }` block allows reordering for speed (LLVM's fast-math flags) where exact repeatability doesn't matter, and its results are excluded from replay checks.
 - **Vectors:** `Vec2`, `Vec3`, `Vec4` (of `Float32` by default) with operators, for games. Loops over state's arrays are where most speed comes from: one array per field means LLVM's auto-vectorizer (which turns a loop into instructions working on 4 or 8 values at once) usually applies on its own. An explicit `simd<Float32, 8>` type exists for code that needs to control it.
 - **Fixed-point:** `Fixed<2>` is an integer counting hundredths, for money and other exact decimals; it never rounds silently.
@@ -589,7 +589,7 @@ One compiler target, LLVM, for development and release alike: no JIT, no interpr
 
 ## Packages, pages and the game host
 
-How code is organised, how servers produce pages, and how games talk to the screen and input. All proposed (2026-10-24).
+How code is organised, how servers produce pages, and how games talk to the screen and input. Proposed 2026-10-24; the page model and the game host's shape were then confirmed by Ben the same day.
 
 ### Packages
 
@@ -601,7 +601,7 @@ How code is organised, how servers produce pages, and how games talk to the scre
 
 ### Pages and live updates (servers)
 
-- **Pages are functions that return `Html`.** Their body is HTML with `{expression}` holes, as in crudspec: `<p>Hello {name}!</p>`. Holes are escaped for where they appear (text, an attribute, a URL), so a value can't inject markup. `for` and `if` work inside the HTML.
+- **Pages are functions that return `Html`** (decided 2026-10-24). Their body is HTML with `{expression}` holes, as in crudspec: `<p>Hello {name}!</p>`. Holes are escaped for where they appear (text, an attribute, a URL), so a value can't inject markup. `for` and `if` work inside the HTML.
 - **Defaults follow HTML:** plain lowercase tags are HTML elements; a capitalised tag is a page piece declared in the language (`<MessageList room={id}/>`).
 - **Forms are bound to actions:** `<form action={post(id)}>` generates the route, the field names and the checks. Field limits come from the action's parameter types (One declaration, every layer), so the form and the server can't disagree.
 - **Caching:** a page piece that is cacheable (no effects, read-only inputs; Effects and capabilities) is rendered once and kept, keyed by its inputs and their snapshot version; per-request pieces are rendered once per page (Burin's render-once).
@@ -612,7 +612,7 @@ How code is organised, how servers produce pages, and how games talk to the scre
 
 Games run as StasisLang games do: the host owns the window, input, audio and timing, and calls the game.
 
-- **Two entry points:** `tick(input: Input)` advances the simulation by one fixed step (60 per second by default); `draw(frame: Frame)` reads state and draws. `tick` may change program state; `draw` may only read it, which the effect system checks.
+- **Two entry points** (decided 2026-10-24, StasisLang's model): `tick(input: Input)` advances the simulation by one fixed step (60 per second by default); `draw(frame: Frame)` reads state and draws. `tick` may change program state; `draw` may only read it, which the effect system checks.
 - **Input is a value:** keys, pointer, touch and gamepad for this step, plus the step's time. Nothing else in a game reads the clock or randomness except through capabilities (`Random` seeded at start), so a recording of the inputs replays the game exactly (Correctness tools, Determinism).
 - **Drawing goes through a capability:** `frame.sprite(...)`, `frame.text(...)`, `frame.rect(...)`, recorded into a bounded draw list that the host renders. Assets (images, sounds, fonts) are declared in the package and loaded at startup into frozen pools, so play never loads or allocates.
 - **Saves:** a save is the program state tree, written by path; loading checks it like any initial value (Static allocation).
@@ -683,6 +683,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - A value a loop keeps growing must have a bound the compiler knows, and each iteration's temporaries are freed when it ends.
 - A failed job discards only its uncommitted batch; committed batches stay, and `transaction { }` groups changes that must succeed together.
 - A transaction's checks and writes run on the writer against its latest version, with no waits inside.
+- A plain `Float` never holds NaN; an operation that would produce one fails the job (`FloatNaN` allows it). Pages are HTML with `{…}` holes, `live` elements and `signal`; games have a fixed-step `tick(input)` and a read-only `draw(frame)`, as in StasisLang.
 - Static state is meant to be used lightly: most data lives in locals on stacks (bounded collections are ordinary values), in databases or in frozen pools; `inspect memory` warns past a globals budget.
 - Full static allocation of state: globals (program and shared) are sized at build time and allocated in full at startup, never allocating after; data stacks, job state and frozen batches stay per job, reserved and committed as used.
 - All state is bounded: every collection declares its capacity and each variable-size field its maximum; adding to a full collection returns `Result`.
@@ -693,7 +694,6 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 **Open questions**
 
 - How far past medium-sized programs the 3 s aim holds with per-module caching alone, and what to add when it doesn't (a faster code generator for `-O0`, LLVM's FastISel, or splitting modules finer). Measured, not promised: larger programs may simply take longer.
-- Floats and NaN ("not a number", what `0.0 / 0.0` gives): should a plain `Float` exclude it, so an operation that would produce it fails the job, with a separate type that allows it, or allow it as IEEE does?
 - Passing errors up: the example uses `?` after a call (Rust's form: return the error to the caller) and `??` for a default; functions, closures and error handling still need their own section.
 - Syntax in general: the overview's program is a first proposal, written to make the design concrete.
 - The language's name (the folder's is a working one).
