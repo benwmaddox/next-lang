@@ -1,4 +1,4 @@
-Round 3. Read your earlier reviews (docs/reviews/codex-r1.md, codex-r2.md) and Claude's replies (claude-r1.md, claude-r2.md, which end with what Claude wants you to check), which also records Ben's new decisions. Read both, then the revised docs/DESIGN.md (git diff HEAD~1 shows round 2's changes).
+Round 3. Read your earlier reviews (docs/reviews/codex-r1.md, codex-r2.md) and Claude's replies (claude-r1.md, claude-r2.md, which end with what Claude wants you to check); they also record Ben's new decisions. Then read the revised docs/DESIGN.md (`git log -p -2 -- docs/DESIGN.md` shows the last two rounds' changes).
 
 Same rules as before (docs/reviews/round-prompt.md): Ben isn't a compiler specialist, so define jargon; don't re-argue Ben's decisions, but you may state their costs; edit only docs/reviews/.
 
