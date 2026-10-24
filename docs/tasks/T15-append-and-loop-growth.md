@@ -1,77 +1,49 @@
 # T15: append mode, iteration scopes and loop growth (milestone M3, part 3)
 
-Depends on T14. Same rules. Binding points from docs/reviews/sol-T13-T14-r1.md. Read DESIGN.md "How the compiler assigns stacks" (the append contract) and "Loops can't quietly fill a stack".
+Depends on T14. Same rules. Rewritten for the reserve-ahead decision, folding in sol-T13-T14-r1, sol-M3-r2 and sol-fewstacks-r1. Read DESIGN.md "How the compiler places values" (the append contract) and "Loops can't quietly fill a stack".
 
 ## Append mode
 
-- When a call's result goes straight into a builder (`out += line(r)`), the callee runs in **append mode**: a hidden grow parameter for the builder plus its remaining capacity; it writes past the builder's end and returns the length written; on success the caller moves the end; on failure the end and top go back. A function compiled for both modes gets both contracts, and its published window is the larger. A fallible producer (one returning `Result<Ascii max N, E>`) in append mode reports failure and leaves the builder unchanged.
-- The hidden builder is an argument for the overlap check: `out += f(out)` evaluates `f(out)` into separate scratch first, or is refused.
-- Function types (T11) record whether a function supports append mode, and indirect calls use it only when every function that fits the type does.
+- When a call's result goes straight into a builder (`out += line(r)`), the callee runs in **append mode**: it gets the builder's region, its **accepted length** (what's already part of the value), and its remaining capacity; it writes past the accepted length and returns how much it wrote. The caller publishes the new length only on success. The accepted length is separate from the physical top of the stack, which also covers temporaries placed above.
+- **Checkpoints:** each append first saves the builder's length (and for text later, its code-point count) and the stack top. A failure, whether `Full` or an `err` from a fallible producer (one returning `Result<Ascii max N, E>`, whose error reaches the caller as an `err`, distinct from `Full`), restores the checkpoint, even after part of the output was written. Nested appends (`out += f()` where `f` does `piece += g()`) each restore their own checkpoint, so an inner success disappears if an outer step then fails.
+- A function compiled for both result modes publishes both contracts. Function types (T11) record whether a function supports append mode; an indirect call uses it only when every function that fits the type does.
+- The builder is an argument for the overlap check: `out += f(out)` builds `f(out)` in a temporary region first, or is refused.
 
-## Loop growth
+## Loops
 
-- An outer value grown in a loop keeps its end across iterations while the iteration's own scratch is reset (DESIGN.md). `s = s + piece` on an outer value is an append in place; any other reassignment of an outer growing value (`acc = merge(acc, x)`) builds on scratch and copies down, with the two-value peak counted.
-- **A value a loop keeps growing must have a bound** the checker shows: the type's maximum suffices for `try_append`; a plain `+=` in a loop needs a proof (a counted loop over a bounded input, with bounded growth each iteration). An `Ascii.empty()` builder whose maximum can't be inferred is a build error naming the value and the loop, with both fixes.
+- Every iteration is a scope: its temporaries are freed when it ends and on `continue`, `break`, `return` and `?`; a builder outside the loop keeps the length it's grown to inside its reserved region, and the top returns to where the iteration started (above that region). A failed append restores its own checkpoint first.
+- `s = s + piece` on an outer value is an append in place when `piece` doesn't read `s`; otherwise T14's safe path applies. Any other reassignment of an outer growing value (`acc = merge(acc, x)`) builds in a temporary region and copies into `acc`'s region, with the two-value peak counted.
+- **A value a loop keeps growing must have a bound** the checker shows: the type's maximum (with `try_append`), or for a plain `+=`, a proof (a counted loop over a bounded input, bounded growth each iteration). An `Ascii.empty()` whose maximum can't be inferred is a build error naming the value and the loop, with both fixes.
 
-## The worked example
+## The runnable worked example
 
-DESIGN.md's `render`/`line` example needs `Ascii` fields in state and shared snapshots, which aren't ready, so it's deferred. Instead, this runnable equivalent must compile with the contracts DESIGN.md gives and print the right output:
+DESIGN.md's `render`/`line` uses `Ascii` fields in state and shared snapshots, which aren't ready, so this equivalent stands in (the collection version is T16's):
 
 ```
-fn render(names: list<Ascii max 60, 500>, counts: list<int 0..=999999, 500>) -> Ascii max 40000 {
-    var out = Ascii.empty()                        // its maximum: from the result type
-    for i in 0..names.count() {
-        out += line(names[i], counts[i])           // append mode
-    }
+fn render(n: int 0..=500) -> Ascii max 40000 {
+    var out = Ascii.empty()                   // in the caller's 40,000-byte destination region
+    for i in 0..n { out += line(i) }          // append mode: line writes into out's region
     out
 }
-fn line(name: Ascii max 60, count: int 0..=999999) -> Ascii max 80 {
-    ascii_upper(name) + ": " + str(count)          // streamed into the destination
+fn line(i: int 0..=499) -> Ascii max 80 {
+    let name = label(i)                       // a temporary placed above out's region
+    name + ": " + str(i * 7)                  // streamed into out's region
 }
+fn label(i: int 0..=499) -> Ascii max 60 { ascii_upper("row") + str(i) }
 ```
 
-(`list<Ascii max 60, 500>` needs growing values in collections, T16; until then, use two parallel arrays of fixed `Ascii max 60` read parameters supplied by a helper, or move this fixture to T16. Expected contracts: `render` and `line` have scratch window `k = 1`; `ascii_upper` and `str` have `k = 0`, excluding their caller-owned destinations; with destination 0 and base 1, N = 2.)
+Expected: one data stack, no copies of lines; the stack's worst case is 40,000 (the destination region) plus `name`'s 60 bytes plus descriptors and alignment; `inspect contracts` shows `line` in append mode with a requirement of about 60 bytes above `out`'s region, and `label` and `ascii_upper` writing into their destinations.
 
 ## Acceptance cases
 
 - Exact output in fresh-result and append modes at the declared maximum; capacity checked before any store; a failed append leaving no partial output.
-- The example above: its output, its contracts from `inspect contracts`, N = 2.
-- `out += f(out)` safe or refused; `acc = merge(acc, x)`'s copy-down with its peak.
-- A loop appending one byte at a time to an outer `Ascii max 1000000` a million times, building a temporary each iteration: right final length, no exhaustion.
+- Nested appends: an inner success followed by an outer failure (all rolled back); a producer error after a prefix (rolled back, error returned); reuse of the builder after a rollback.
+- The example above: output, contracts, worst case.
+- `out += f(out)` safe or refused; `acc = merge(acc, x)`'s copy with its peak.
+- A loop appending one byte at a time to an outer `Ascii max 1000000` a million times, building a temporary each iteration: right final length; measured peak stays bounded.
 - An uninferable builder in a loop (build error naming both fixes).
+- Three interleaved builders appended to in turn inside a loop, including through a function value.
 
 ## Report
 
 docs/tasks/T15-report.md.
-
-## Corrections from Sol's second M3 review (docs/reviews/sol-M3-r2.md), binding
-
-- **The fixture:** T15's runnable stand-in uses a counted loop over integers, not collections of `Ascii` (which are T16):
-
-  ```
-  fn render(n: int 0..=500) -> Ascii max 40000 {
-      var out = Ascii.empty()
-      for i in 0..n { out += line(i) }
-      out
-  }
-  fn line(i: int 0..=499) -> Ascii max 80 {
-      let name = label(i)                     // one real temporary on stack 1, as in DESIGN.md
-      name + ": " + str(i * 7)
-  }
-  fn label(i: int 0..=499) -> Ascii max 60 { ascii_upper("row") + str(i) }   // built straight into its destination
-  ```
-
-  Keep the explicit `let name = ...` so the temporary exists and `line`'s window is `k = 1` (`label` writes into the destination `line` gives it, needing no scratch of its own, and `ascii_upper` of a literal needs none). Wrapping one call in another (`ascii_upper(label(i))`) would add a second temporary and make `k = 2`. The collection version of the example is T16's.
-- Append-mode failure: a fallible producer returns its error to the caller as an `err`, distinct from `Full`; in both cases the builder is rolled back even after a prefix was written. Test both.
-- `s = s + piece` becomes an in-place append only when `piece` doesn't read `s`; otherwise T14's overlap handling applies.
-- Function types carry each function's byte bounds per stack (not only its window and append flag), and calls through function values take the maximum over every function that fits; T17 relies on this.
-
-## Ben's stack-count decision (2026-10-24), overrides anything above
-
-DESIGN.md "Few stacks, used well": **one data stack per job by default, at most two.** Where this task says "N data stacks", "fixed scratch stack", "window k = 1 on stack 1" or "N = 2", read it under these rules:
-
-- Finished values share the current stack in last-in-first-out order; only a value still growing while something above it is alive must be on top.
-- There is **no separate fixed-scratch stack**: a large fixed-size temporary goes on top of the current data stack when nothing below it will grow during its lifetime, otherwise on the native stack.
-- **Build above, then slide down:** something built while a value below it is still growing is built just past that value's end, then moved down onto it. A second data stack is very rare: used only when such a piece could exceed 64 KB (Ben, 2026-10-24), flagged as a warning in `inspect stacks`; never more than two. Append mode writes straight onto the growing value's end and needs no temporary at all.
-- The worked example (`render`/`line`) runs on **one stack, N = 1**: `name` and `line`'s result are built above `out`'s end and the result slides down. Its worst case is 40,000 + 60 + 80 = 40,140 bytes plus page rounding (T17's numbers).
-- `inspect contracts` / `inspect stacks` list every slide-down site and its worst-case copy size.
