@@ -548,11 +548,18 @@ Refinement types are the design's best lever: one declaration serves correctness
 | Kind | Written | Example use |
 | --- | --- | --- |
 | Range | `int 0..100`, `int >= 0` | quantities, percentages, indexes |
+| Wrapping or clamping range | `float 0.0f..TAU wrap`, `int 0..359 wrap`, `int 0..100 clamp` | angles and other cycles; health, volume and other values pinned at their ends |
 | Length | `Text max 80`, `list<T, 20>` with at least 1 (`list<T, 1..20>`) | names, bounded lists |
 | Membership | `Text in ["low", "high"]`, an enum | states, options |
 | Pattern (a regular-language subset) | `Text matches slug` | slugs, codes, emails as syntax only |
 | Index | `Index(a)`, a `long` with `0 <= i < len(a)` | array positions with no bounds check |
 | Linear relation between fields | `invariant start <= end` | intervals, budgets |
+
+**Wrapping and clamping ranges** (decided 2026-10-24). A plain range fails the job when a value outside it is stored, which is what catches bugs. Two written options change that, for values where going past an end is expected:
+
+- **`wrap`** reduces the value into the range when it's stored (assigned to a variable or field, passed as an argument, or returned): for integers `lo + (x - lo) mod (hi - lo + 1)`, so `heading: int 0..359 wrap` takes 365 to 5 and −10 to 350; for floats the same with the exact float `modulo`. A wrapping float range is half-open, `0.0f..TAU wrap` meaning 0 ≤ angle < 2π, as suits a cycle (2π is the same direction as 0), and a result that rounds to exactly `TAU` becomes `0.0f`. Arithmetic in between happens normally (`ship.angle = ship.angle + 0.07f`), and since float `modulo` is exact, replays stay deterministic. It's the refinement form of `+%`, which wraps over a whole type's range.
+- **`clamp`** pins a stored value to the nearest end instead: `hp: int 0..100 clamp` makes healing past 100 stop at 100 and damage below 0 stop at 0.
+- Both are part of the type, so readers see them where the field is declared, and the projections follow (a form field for `int 0..359 wrap` accepts 0 to 359 and the server wraps nothing it receives: input from outside is checked, never silently wrapped or clamped). The overflow of the arithmetic itself is still checked: `int 0..359 wrap` wraps a stored `int`, but an `int` sum that passes 2^31 still fails first.
 
 **How they are checked:**
 
@@ -786,6 +793,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - A value a loop keeps growing must have a bound the compiler knows, and each iteration's temporaries are freed when it ends.
 - A failed job discards only its uncommitted batch; committed batches stay, and `transaction { }` groups changes that must succeed together.
 - A transaction's checks and writes run on the writer against its latest version, with no waits inside.
+- Ranges may be `wrap` (stored values wrap around into the range; float wrapping ranges are half-open) or `clamp` (pinned to the nearest end); plain ranges fail on out-of-range values, and input from outside is always checked, never wrapped or clamped.
 - Functions are values (named functions only); there are no closures, and context is passed as an explicit parameter; built-in scoped blocks (`db.read`, `transaction`, routes, `parallel for` bodies) may read locals but can't be stored or returned. Lengths, counts and indexes are `long`.
 - Numbers use C#'s names and widths (`int` is 32-bit, `long` 64-bit, `float` and `double`), lowercase like C#'s keywords. No implicit conversions between number types: every one is a cast, and narrowing casts are checked. A plain `double` or `float` never holds NaN; an operation that would produce one fails the job (`double nan` allows it).
 - x86-64 builds target `x86-64-v2` by default; v3 and above are opt-in with a build flag or manifest setting, and public software adds v3/v4 clones of hot functions.
