@@ -7,7 +7,7 @@ Oct 23, 2026 · Ben Maddox. Working copy, refined with Codex; reviews and replie
 One language that is hard to get wrong, quick to work in, and within about 10% of C on CPU and memory, for servers, games and tools (weighted equally). Each goal has a test, not an adjective:
 
 - **Correct:** the compiler enforces a stated set of properties (no null, no data races, no dangling ids, exhaustive matches, refinements, effects), and the language's own tests catch most of the rest. Measured by seeded slips caught at build time, scenarios passing, and fast-versus-reference checks. No language catches every wrong program; this one aims to catch the common ones before production.
-- **Easy:** a small edit is running again within 3 s, a release builds in under 30 s, and every error names the fix. Measured by edit-to-running time and the mutation harness's "did you mean" rate.
+- **Easy:** a small edit to a small or medium program is running again within about 3 s (an aspiration, not a promise for every program), a release builds in under 30 s, and every error names the fix. Measured by edit-to-running time and the mutation harness's "did you mean" rate.
 - **Efficient:** no garbage collector, no allocation in steady state, compute at 0.9x of C or better, servers within 1.2x of the optimized Rust port's memory. Measured on DEFLATE, a Campfire-class server, a game simulation and a parallel tool (see Validation).
 
 Non-goals for the first version:
@@ -497,9 +497,9 @@ The compiler doesn't try to out-optimize LLVM; it tells LLVM what the language k
 
 ## Development experience
 
-One compiler target, LLVM, for development and release alike: no JIT, no interpreter, no live swap, so nothing can drift between two back ends. A small edit is running again within 3 s (decided 2026-10-24).
+One compiler target, LLVM, for development and release alike: no JIT, no interpreter, no live swap, so nothing can drift between two back ends. The aim is about 3 s from a small edit to running again (decided 2026-10-24). It's an aspiration, meant to hold for small changes to small and medium programs: a Campfire-sized server, a game or a tool up to roughly 50,000 lines. Larger programs and wide changes (an edited interface many modules use) may take longer, and that's accepted; `inspect build` shows where the time went.
 
-- **Development builds:** LLVM at `-O1`, no LTO, one object file per module cached by a hash of its source, its dependencies' interfaces, the generic copies it contains (each per-type copy is compiled into the module that first needs it, and its key includes the generic's source), and whatever compile-time evaluation read, so a one-function change rebuilds one object and relinks. Target: 3 s from save to running on a Campfire-sized program; release builds (`-O3`, LTO) under 30 s.
+- **Development builds:** LLVM at `-O1`, no LTO, one object file per module cached by a hash of its source, its dependencies' interfaces, the generic copies it contains (each per-type copy is compiled into the module that first needs it, and its key includes the generic's source), and whatever compile-time evaluation read, so a one-function change rebuilds one object and relinks. Aim: about 3 s from save to running for a one-function change in a Campfire-sized program; release builds (`-O3`, LTO) under 30 s.
 - **Restart, not swap:** a change restarts the program. Database records survive, and a changed schema's migration, planned from the diff (crudspec), runs at start; program and shared state start from their defaults and initialisers (or from what the program saved, checked the same way).
 - **What you test is what ships:** tests run on the same code generator as release, at the development optimization level, and in release mode in CI.
 - **Compile-time evaluation** covers some of what a REPL would: constant code runs in the compiler.
@@ -563,7 +563,8 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 
 - Recursion is opt-in: only functions marked `recursive` may call themselves, directly or through a cycle. A recursive cycle can't hold a growing value across its recursive call, and its native stack use is checked against a byte budget; going past it fails the job. Everything else stays recursion-free, so stack assignment stays simple.
 - Three types for text and bytes: `Text` (always valid UTF-8, lengths in code points), `Ascii` (ASCII only, one byte per character, the compact form) and `Bytes`.
-- Generics are copied per type (as Rust and C++ do): full speed, and LLVM sees concrete types, at a cost in code size and build time that the 3 s target has to absorb.
+- The 3 s build is an aspiration for small changes to small and medium programs (up to roughly 50,000 lines), not a guarantee for every program or change.
+- Generics are copied per type (as Rust and C++ do): full speed, and LLVM sees concrete types, at a cost in code size and build time that the 3 s aim has to absorb.
 - Servers, games and tools weigh equally; the validation has a program for each.
 - Jobs can wait: I/O suspends a job, which keeps its own stacks, and the worker runs others meanwhile.
 - Running out of a data stack (or another runtime failure) fails the job, not the program; no `Result` on every push.
@@ -581,7 +582,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 
 **Open questions**
 
-- Can development builds hold 3 s as programs grow, with per-module caching alone, or will they need a faster code generator for `-O0` (LLVM's FastISel, or splitting modules finer)?
+- How far past medium-sized programs the 3 s aim holds with per-module caching alone, and what to add when it doesn't (a faster code generator for `-O0`, LLVM's FastISel, or splitting modules finer). Measured, not promised: larger programs may simply take longer.
 - The language's name (the folder's is a working one).
 
 **First steps**
