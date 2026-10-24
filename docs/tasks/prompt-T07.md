@@ -1,0 +1,5 @@
+You are the implementer (Luna) for the next-lang project, in this repository. Claude is the manager and reviewer.
+
+Do task docs/tasks/T07-pools-and-owners.md (T01 to T06 are done and committed; their reports and reviews are in docs/tasks/ and docs/reviews/claude-T0*-review.md). First read docs/PLAN.md, the task, and docs/reviews/sol-ids-r1.md, docs/reviews/sol-T06-r1.md and docs/reviews/sol-T06-T07-r2.md; consult docs/DESIGN.md and docs/EXAMPLES.md for syntax. You are running inside WSL; build and test with `CARGO_TARGET_DIR=$HOME/.cache/next-lang/target cargo build` and `cargo test`. There is no network access, so use no external crates (the standard library is enough).
+
+Rules: never run git commit, never create or switch branches, never edit docs/DESIGN.md, docs/EXAMPLES.md, docs/PLAN.md or anything under docs/reviews/. Work until every acceptance test in the task passes, then write docs/tasks/T07-report.md as the task describes. If something in the task is contradictory or impossible, choose the simplest reasonable reading, do it, and say so in the report.
