@@ -53,3 +53,9 @@ Fixed arrays and lists of **fixed-size elements** (scalars, enums, structs of th
 ## Report
 
 docs/tasks/T06-report.md.
+
+## Decisions from Sol's second review (docs/reviews/sol-T06-T07-r2.md), binding
+
+- **Nested views protect everything enclosing them:** while iterating `units[k].inventory`, replacing `units[k]`, assigning `units`, removing or shifting the element that contains it, and passing `units` or `units[k]` as `write` are build errors. Assigning a scalar loop binding (`for x in xs { x = 3 }`) writes the element when the collection is writable, and is a build error when it's read-only.
+- **Counting facts for proven pushes:** a successful push adds one to the count the checker knows, a failed one leaves it unchanged; branch joins keep the larger possible count, and loop back edges take the most the loop can add. Other writes or calls that can change the collection end the fact. Tests: a bounded loop of pushes proven safe; a helper call in between that ends the proof (so the `Result` must then be handled); a proven push used with `?` and with `unwrap`.
+- **`Full`:** the prelude has `Full` as a value and a type (one case, no payload): written `Full`, matched as `err(Full)`, and printed `Full`.

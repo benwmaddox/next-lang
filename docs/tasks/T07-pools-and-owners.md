@@ -33,3 +33,37 @@ Depends on T06. Same rules. Read DESIGN.md "Pools and their ids" including "Owne
 ## Report
 
 docs/tasks/T07-report.md.
+
+## Decisions from Sol's second review (docs/reviews/sol-T06-T07-r2.md), binding
+
+- **Pools inside structs:** a local struct may have a pool field; its owner is named by its path (`state.nodes.Id`, `Id<state.nodes>`). Copying, returning, replacing or assigning any value that contains a pool, at any depth and including through a `write` parameter (`s = State {}` where `s: write State` holds a pool), is a build error, so a reset can't be slipped in by replacing the struct around a pool. Pools in elements of arrays or lists, directly or through structs, are a build error. Copying with rebinding (DESIGN.md) is scheduled after M3.
+- **Constants:** a constant's evaluation may use a local pool inside a function that returns a plain value; a pool-valued constant (`const P: pool<...>`) is a build error for now.
+- **Owner parameters, completed:**
+
+  ```
+  struct Node<P> { parent: Option<Id<P>>, value: int }
+  fn depth<P, N>(nodes: pool<Node<P>, N, P>, id: Id<P>) -> long {
+      var d = 0L
+      var cur = id
+      for step in 0..N {                         // at most N links
+          let node = nodes.get(cur) ?? return d
+          let up = node.parent ?? return d
+          cur = up
+          d += 1
+      }
+      d
+  }
+  fn main() {
+      var nodes: pool<Node<nodes>, 256> = pool {}
+      let root: nodes.Id = nodes.add(Node { parent: none, value: 1 }).unwrap()
+      let leaf: Id<nodes> = nodes.add(Node { parent: some(root), value: 2 }).unwrap()
+      print(depth(nodes, leaf))                  // P and N inferred: prints 1
+  }
+  ```
+
+  - The `P` argument in `pool<Node<P>, N, P>` refers to the pool's existing owner; it can't attach that owner to other storage.
+  - Scope checks cover storing an id anywhere that outlives its pool, recursively through structs, enums, `Option`s and collections, not only returns.
+  - Owner parameters exist only at compile time and are erased in generated code (one compiled function serves every owner); capacity parameters make a copy per distinct capacity. The limit of 10,000 counts capacity copies only.
+  - Tests: carrying an id from one loop iteration's pool into the next iteration's (a fresh owner each time: build error); the same through repeated calls to a function that makes a pool; storing an id in a longer-lived struct (build error).
+- **T06's contracts apply to pools:** `add`'s `Result` is mandatory to handle, `discard` drops `Full` explicitly, a proven add may skip handling with its type unchanged, and mutations need mutable storage. Capacity zero is allowed; capacities must be constants. The temporary 64 KB limit counts the flags, generations, free list and temporaries, so the example above uses 256 nodes. Nested views extend to pools: while iterating an element's nested list, removing that element is a build error.
+- **Nesting acceptance case:** a pool whose elements hold a `list<Item, 8>`: the counts are independent per element, and the emitted IR shows flattened field arrays.
