@@ -289,7 +289,7 @@ The agent study follows the lessons of AgentLang's: the outcome is scored by sce
 
 ## Risks, open questions and first steps
 
-The largest risk is scope: a general-purpose language is how Hobthrush ended up building everything at once. The first steps happen in this language's own folder (D:\\code\\next-lang, a working name), copying from Burin's helper compiler, which already reaches 0.89x of C, without depending on Burin.
+The largest risk is scope: a general-purpose language is how Hobthrush ended up building everything at once. The first steps happen in this language's own folder (D:\code\next-lang, a working name), copying from Burin's helper compiler, which already reaches 0.89x of C, without depending on Burin.
 
 **Risks**
 
