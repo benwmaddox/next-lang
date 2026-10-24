@@ -1,4 +1,4 @@
-use crate::ast::{AssignOp, BinaryOp, Span, UnaryOp};
+use crate::ast::{AssignOp, BinaryOp, ParamMode, RefinePolicy, Span, UnaryOp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Ty(pub usize);
@@ -10,10 +10,6 @@ impl Ty {
     pub const Bool: Ty = Ty(2);
     pub const Unit: Ty = Ty(3);
     pub const Never: Ty = Ty(4);
-
-    pub fn is_numeric(self) -> bool {
-        matches!(self, Ty::Int | Ty::Long)
-    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -41,9 +37,49 @@ pub enum TTypeKind {
     Bool,
     Unit,
     Never,
+    Refinement {
+        base: Ty,
+        min: i128,
+        max: i128,
+        policy: RefinePolicy,
+    },
+    Struct(Vec<TField>),
     Enum(Vec<TCase>),
     Option(Ty),
     Result(Ty, Ty),
+}
+
+#[derive(Clone, Debug)]
+pub struct TField {
+    pub name: String,
+    pub ty: Ty,
+}
+
+pub fn base_type(mut ty: Ty, types: &[TType]) -> Ty {
+    while let Some(TType {
+        kind: TTypeKind::Refinement { base, .. },
+        ..
+    }) = types.get(ty.0)
+    {
+        ty = *base;
+    }
+    ty
+}
+
+pub fn is_numeric_type(ty: Ty, types: &[TType]) -> bool {
+    matches!(base_type(ty, types), Ty::Int | Ty::Long)
+}
+
+pub fn refinement(ty: Ty, types: &[TType]) -> Option<(Ty, i128, i128, RefinePolicy)> {
+    match &types.get(ty.0)?.kind {
+        TTypeKind::Refinement {
+            base,
+            min,
+            max,
+            policy,
+        } => Some((*base, *min, *max, *policy)),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -137,6 +173,7 @@ pub struct TParam {
     pub id: usize,
     pub name: String,
     pub ty: Ty,
+    pub mode: ParamMode,
     pub span: Span,
 }
 
@@ -167,7 +204,7 @@ pub enum TStmtKind {
         value: TExpr,
     },
     Assign {
-        id: usize,
+        place: TPlace,
         ty: Ty,
         op: AssignOp,
         operator_span: Span,
@@ -197,6 +234,13 @@ pub enum TStmtKind {
     Block(TBlock),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TPlace {
+    pub root: usize,
+    pub fields: Vec<usize>,
+    pub ty: Ty,
+}
+
 #[derive(Clone, Debug)]
 pub enum TExpectKind {
     Bool(TExpr),
@@ -218,6 +262,8 @@ pub struct TExpr {
 pub enum CallTarget {
     Function(usize),
     Print,
+    Min,
+    Max,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -280,6 +326,26 @@ pub enum TExprKind {
         args: Vec<TExpr>,
         wraps_result: bool,
     },
+    OptionalToLong(Box<TExpr>),
+    Field {
+        receiver: Box<TExpr>,
+        field_index: usize,
+    },
+    StructConstruct {
+        fields: Vec<(usize, TExpr)>,
+    },
+    Convert {
+        value: Box<TExpr>,
+        min: i128,
+        max: i128,
+        policy: RefinePolicy,
+    },
+    Fit {
+        value: Box<TExpr>,
+        min: i128,
+        max: i128,
+        option_ty: Ty,
+    },
     Try {
         value: Box<TExpr>,
         success_ty: Ty,
@@ -320,6 +386,7 @@ pub enum TExprKind {
 }
 
 pub fn llvm_type(ty: Ty, types: &[TType]) -> String {
+    let ty = base_type(ty, types);
     match ty {
         Ty::Int => "i32".to_owned(),
         Ty::Long => "i64".to_owned(),

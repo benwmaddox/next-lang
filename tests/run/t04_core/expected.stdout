@@ -1,0 +1,19 @@
+Core { size: 3, heading: 0, health: 0, child: Child { value: 9 } }
+Core { size: 2, heading: 0, health: 100, child: Child { value: 4 } }
+5
+2
+Defaults { first: 2, second: 1, skipped: 7 }
+-9223372036854775807
+some(Core { size: 3, heading: 0, health: 0, child: Child { value: 9 } })
+err(2)
+ok(Core { size: 3, heading: 0, health: 0, child: Child { value: 9 } })
+3
+none
+some(3)
+some(3)
+9
+none
+some(8)
+2
+6
+true

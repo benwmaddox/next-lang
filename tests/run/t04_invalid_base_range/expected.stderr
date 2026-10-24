@@ -1,0 +1,1 @@
+main.nl:1:12: error: refinement bounds must fit int; use long for a wider range

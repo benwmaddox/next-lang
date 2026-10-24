@@ -27,12 +27,18 @@ struct Parser<'a> {
 impl Parser<'_> {
     fn program(mut self) -> Result<Program, ParseError> {
         let mut enums = Vec::new();
+        let mut structs = Vec::new();
+        let mut aliases = Vec::new();
         let mut functions = Vec::new();
         let mut tests = Vec::new();
         self.skip_separators();
         while !self.at(&TokenKind::Eof) {
             if self.word_is("enum") {
                 enums.push(self.enum_decl()?);
+            } else if self.word_is("struct") {
+                structs.push(self.struct_decl()?);
+            } else if self.word_is("type") {
+                aliases.push(self.type_alias_decl()?);
             } else if self.word_is("test") {
                 tests.push(self.test()?);
             } else {
@@ -43,8 +49,59 @@ impl Parser<'_> {
         }
         Ok(Program {
             enums,
+            structs,
+            aliases,
             functions,
             tests,
+        })
+    }
+
+    fn struct_decl(&mut self) -> Result<StructDecl, ParseError> {
+        let start = self.expect_word("struct", "expected 'struct'")?.span;
+        let (name, _) = self.expect_ident("expected a struct name")?;
+        self.skip_newlines();
+        self.expect(&TokenKind::LBrace, "expected '{' after the struct name")?;
+        self.skip_separators();
+        let mut fields = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let (field_name, field_span) = self.expect_ident("expected a field name")?;
+            self.expect(&TokenKind::Colon, "expected ':' after the field name")?;
+            let ty = self.type_name()?;
+            let default = if self.take(&TokenKind::Eq) {
+                Some(self.expression(0)?)
+            } else {
+                None
+            };
+            fields.push(StructFieldDecl {
+                name: field_name,
+                ty,
+                default,
+                span: field_span,
+            });
+            let separated = self.skip_separators() > 0;
+            if self.take(&TokenKind::Comma) {
+                self.skip_separators();
+            } else if !self.at(&TokenKind::RBrace) && !separated {
+                return Err(self.error_here("expected a comma or newline between struct fields"));
+            }
+        }
+        self.expect(&TokenKind::RBrace, "expected '}' to close the struct")?;
+        Ok(StructDecl {
+            name,
+            fields,
+            span: start,
+        })
+    }
+
+    fn type_alias_decl(&mut self) -> Result<TypeAliasDecl, ParseError> {
+        let start = self.expect_word("type", "expected 'type'")?.span;
+        let (name, _) = self.expect_ident("expected a type name")?;
+        self.expect(&TokenKind::Eq, "expected '=' in a type alias")?;
+        let ty = self.type_name()?;
+        Ok(TypeAliasDecl {
+            name,
+            ty,
+            span: start,
         })
     }
 
@@ -134,9 +191,16 @@ impl Parser<'_> {
                 self.skip_newlines();
                 let (param_name, pspan) = self.expect_ident("expected a parameter name")?;
                 self.expect(&TokenKind::Colon, "expected ':' after the parameter name")?;
+                let mode = if self.word_is("write") {
+                    self.next();
+                    ParamMode::Write
+                } else {
+                    ParamMode::Read
+                };
                 let ty = self.type_name()?;
                 params.push(Param {
                     name: param_name,
+                    mode,
                     ty,
                     span: pspan,
                 });
@@ -175,6 +239,8 @@ impl Parser<'_> {
             return Ok(TypeAst {
                 name: "()".to_owned(),
                 args: Vec::new(),
+                range: None,
+                policy: RefinePolicy::Checked,
                 span: self.tokens[self.pos.saturating_sub(2)].span,
             });
         }
@@ -198,7 +264,82 @@ impl Parser<'_> {
                 return Err(self.error_here("expected '>' after generic type arguments"));
             }
         }
-        Ok(TypeAst { name, args, span })
+        let range = if matches!(self.peek().kind, TokenKind::Number(_) | TokenKind::Minus) {
+            let lower = self.range_bound()?;
+            let inclusive = if self.take(&TokenKind::RangeInclusive) {
+                true
+            } else {
+                self.expect(&TokenKind::Range, "expected '..' or '..=' in a range type")?;
+                false
+            };
+            let upper = self.range_bound()?;
+            Some(TypeRangeAst {
+                lower,
+                upper,
+                inclusive,
+                span,
+            })
+        } else {
+            None
+        };
+        let policy = if self.word_is("wrap") {
+            self.next();
+            RefinePolicy::Wrap
+        } else if self.word_is("clamp") {
+            self.next();
+            RefinePolicy::Clamp
+        } else {
+            RefinePolicy::Checked
+        };
+        if range.is_none() && policy != RefinePolicy::Checked {
+            return Err(ParseError {
+                span,
+                message: "'wrap' and 'clamp' need an integer range type".to_owned(),
+            });
+        }
+        Ok(TypeAst {
+            name,
+            args,
+            range,
+            policy,
+            span,
+        })
+    }
+
+    fn range_bound(&mut self) -> Result<i128, ParseError> {
+        let negative = self.take(&TokenKind::Minus);
+        let token = self.next().clone();
+        let TokenKind::Number(raw) = token.kind else {
+            return Err(ParseError {
+                span: token.span,
+                message: "range bounds must be integer literals".to_owned(),
+            });
+        };
+        let parsed = self.integer(raw, token.span, negative)?;
+        if let ExprKind::Integer {
+            magnitude,
+            negative,
+            ..
+        } = parsed.kind
+        {
+            if magnitude > i128::MAX as u128 + u128::from(negative) {
+                return Err(ParseError {
+                    span: token.span,
+                    message: "range bound is too large to represent".to_owned(),
+                });
+            }
+            Ok(if negative {
+                if magnitude == i128::MAX as u128 + 1 {
+                    i128::MIN
+                } else {
+                    -(magnitude as i128)
+                }
+            } else {
+                magnitude as i128
+            })
+        } else {
+            unreachable!()
+        }
     }
 
     fn block(&mut self) -> Result<Block, ParseError> {
@@ -332,8 +473,8 @@ impl Parser<'_> {
         };
         if let Some(op) = assignment {
             let span = expression.span;
-            let name = match expression.kind {
-                ExprKind::Name(name) => name,
+            let target = match &expression.kind {
+                ExprKind::Name(_) | ExprKind::Field { .. } => expression,
                 _ => {
                     return Err(ParseError {
                         span,
@@ -347,7 +488,7 @@ impl Parser<'_> {
             return Ok(Candidate::Statement(Stmt {
                 span,
                 kind: StmtKind::Assign {
-                    name,
+                    target,
                     op,
                     operator_span,
                     value,
@@ -481,20 +622,17 @@ impl Parser<'_> {
                 } else {
                     let cast_name = match (&self.peek().kind, &self.peek_n(1).kind) {
                         (TokenKind::Ident(name), TokenKind::RParen)
-                            if matches!(name.as_str(), "int" | "long" | "bool") =>
+                            if matches!(name.as_str(), "int" | "long" | "bool")
+                                || name.chars().next().is_some_and(char::is_uppercase) =>
                         {
                             Some(name.clone())
                         }
                         _ => None,
                     };
                     if let Some(name) = cast_name {
-                        let ty_token = self.next().clone();
-                        self.next();
-                        let ty = TypeAst {
-                            name,
-                            args: Vec::new(),
-                            span: ty_token.span,
-                        };
+                        let _ = name;
+                        let ty = self.type_name()?;
+                        self.expect(&TokenKind::RParen, "expected ')' after the cast type")?;
                         self.skip_newlines();
                         let value = self.prefix()?;
                         Expr {
@@ -589,6 +727,22 @@ impl Parser<'_> {
                 };
                 continue;
             }
+            if self.at(&TokenKind::LBrace) {
+                let name = match &expr.kind {
+                    ExprKind::Name(name) if name.chars().next().is_some_and(char::is_uppercase) => {
+                        Some(name.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    let fields = self.struct_init_fields()?;
+                    expr = Expr {
+                        kind: ExprKind::StructInit { name, fields },
+                        span: expr.span,
+                    };
+                    continue;
+                }
+            }
             if self.take(&TokenKind::Question) {
                 let span = expr.span;
                 expr = Expr {
@@ -624,7 +778,25 @@ impl Parser<'_> {
                     ExprKind::Name(name) => Some(name.clone()),
                     _ => None,
                 };
-                if self.take(&TokenKind::LParen) {
+                if method == "fit" && self.take(&TokenKind::Lt) {
+                    let ty = self.type_name()?;
+                    if self.pending_type_gt {
+                        self.pending_type_gt = false;
+                    } else {
+                        self.expect(&TokenKind::Gt, "expected '>' after the fit type")?;
+                    }
+                    self.expect(&TokenKind::LParen, "expected '()' after the fit type")?;
+                    self.expect(&TokenKind::RParen, "fit takes no arguments")?;
+                    let span = expr.span;
+                    expr = Expr {
+                        kind: ExprKind::Fit {
+                            value: Box::new(expr),
+                            ty,
+                            method_span,
+                        },
+                        span,
+                    };
+                } else if self.take(&TokenKind::LParen) {
                     let args = self.arguments_after_lparen()?;
                     let span = expr.span;
                     let is_builtin_method = matches!(
@@ -662,18 +834,11 @@ impl Parser<'_> {
                     }
                 } else {
                     let span = expr.span;
-                    let Some(enum_name) = qualifier else {
-                        return Err(ParseError {
-                            span: method_span,
-                            message: "expected '()' after a method name".to_owned(),
-                        });
-                    };
                     expr = Expr {
-                        kind: ExprKind::QualifiedCase {
-                            enum_name,
-                            case_name: method,
-                            case_span: method_span,
-                            args: Vec::new(),
+                        kind: ExprKind::Field {
+                            receiver: Box::new(expr),
+                            name: method,
+                            field_span: method_span,
                         },
                         span,
                     };
@@ -703,6 +868,35 @@ impl Parser<'_> {
         }
         self.expect(&TokenKind::RParen, "expected ')' after the arguments")?;
         Ok(args)
+    }
+
+    fn struct_init_fields(&mut self) -> Result<Vec<StructInitField>, ParseError> {
+        self.expect(&TokenKind::LBrace, "expected '{' to start a struct literal")?;
+        self.skip_separators();
+        let mut fields = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let (name, span) = self.expect_ident("expected a field name in the struct literal")?;
+            let value = if self.take(&TokenKind::Colon) {
+                self.expression(0)?
+            } else {
+                Expr {
+                    kind: ExprKind::Name(name.clone()),
+                    span,
+                }
+            };
+            fields.push(StructInitField { name, value, span });
+            let separated = self.skip_separators() > 0;
+            if self.take(&TokenKind::Comma) {
+                self.skip_separators();
+            } else if !self.at(&TokenKind::RBrace) && !separated {
+                return Err(self.error_here("expected a comma or newline between struct fields"));
+            }
+        }
+        self.expect(
+            &TokenKind::RBrace,
+            "expected '}' to close the struct literal",
+        )?;
+        Ok(fields)
     }
 
     fn match_expression(&mut self, span: Span) -> Result<Expr, ParseError> {

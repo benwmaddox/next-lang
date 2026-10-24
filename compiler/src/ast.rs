@@ -9,14 +9,55 @@ pub struct Span {
 pub struct TypeAst {
     pub name: String,
     pub args: Vec<TypeAst>,
+    pub range: Option<TypeRangeAst>,
+    pub policy: RefinePolicy,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RefinePolicy {
+    Checked,
+    Wrap,
+    Clamp,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TypeRangeAst {
+    pub lower: i128,
+    pub upper: i128,
+    pub inclusive: bool,
     pub span: Span,
 }
 
 #[derive(Clone, Debug)]
 pub struct Program {
     pub enums: Vec<EnumDecl>,
+    pub structs: Vec<StructDecl>,
+    pub aliases: Vec<TypeAliasDecl>,
     pub functions: Vec<Function>,
     pub tests: Vec<Test>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StructDecl {
+    pub name: String,
+    pub fields: Vec<StructFieldDecl>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct StructFieldDecl {
+    pub name: String,
+    pub ty: TypeAst,
+    pub default: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeAliasDecl {
+    pub name: String,
+    pub ty: TypeAst,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -52,8 +93,15 @@ pub struct Function {
 #[derive(Clone, Debug)]
 pub struct Param {
     pub name: String,
+    pub mode: ParamMode,
     pub ty: TypeAst,
     pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamMode {
+    Read,
+    Write,
 }
 
 #[derive(Clone, Debug)]
@@ -78,7 +126,7 @@ pub enum StmtKind {
         value: Expr,
     },
     Assign {
-        name: String,
+        target: Expr,
         op: AssignOp,
         operator_span: Span,
         value: Expr,
@@ -151,6 +199,20 @@ pub enum ExprKind {
         method_span: Span,
         args: Vec<Expr>,
     },
+    Field {
+        receiver: Box<Expr>,
+        name: String,
+        field_span: Span,
+    },
+    StructInit {
+        name: String,
+        fields: Vec<StructInitField>,
+    },
+    Fit {
+        value: Box<Expr>,
+        ty: TypeAst,
+        method_span: Span,
+    },
     Try(Box<Expr>),
     Return(Option<Box<Expr>>),
     LoopExit(bool),
@@ -183,6 +245,13 @@ pub enum ExprKind {
         then_block: Block,
         else_block: Option<Block>,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct StructInitField {
+    pub name: String,
+    pub value: Expr,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]

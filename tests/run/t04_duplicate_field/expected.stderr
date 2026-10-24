@@ -1,0 +1,1 @@
+main.nl:2:34: error: field 'x' is supplied more than once (first on line 2)

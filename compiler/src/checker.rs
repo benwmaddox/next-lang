@@ -12,8 +12,14 @@ pub struct CheckError {
 #[derive(Clone)]
 struct Signature {
     id: usize,
-    params: Vec<Ty>,
+    params: Vec<ParamSignature>,
     result: Ty,
+}
+
+#[derive(Clone, Copy)]
+struct ParamSignature {
+    ty: Ty,
+    mode: ParamMode,
 }
 
 #[derive(Clone)]
@@ -22,6 +28,7 @@ struct Binding {
     name: String,
     ty: Ty,
     mutable: bool,
+    mode: ParamMode,
     span: Span,
     loop_counter: bool,
 }
@@ -47,7 +54,10 @@ struct Checker {
     require_main: bool,
     signatures: HashMap<String, Signature>,
     types: Vec<TType>,
-    enum_ids: HashMap<String, Ty>,
+    type_ids: HashMap<String, Ty>,
+    preferred_type_names: HashMap<Ty, String>,
+    struct_decls: HashMap<Ty, StructDecl>,
+    refinement_ids: HashMap<(Ty, i128, i128, RefinePolicy), Ty>,
     generic_ids: HashMap<(u8, Ty, Ty), Ty>,
     ast_functions: Vec<Function>,
     ast_tests: Vec<Test>,
@@ -60,6 +70,8 @@ struct Checker {
     current_return: Ty,
     current_is_test: bool,
     loop_depth: usize,
+    facts: HashMap<(usize, Vec<usize>), (i128, i128)>,
+    loop_writes: Vec<std::collections::HashSet<usize>>,
 }
 
 impl Checker {
@@ -96,7 +108,10 @@ impl Checker {
                     span: Span::default(),
                 },
             ],
-            enum_ids: HashMap::new(),
+            type_ids: HashMap::new(),
+            preferred_type_names: HashMap::new(),
+            struct_decls: HashMap::new(),
+            refinement_ids: HashMap::new(),
             generic_ids: HashMap::new(),
             ast_functions: Vec::new(),
             ast_tests: Vec::new(),
@@ -109,22 +124,29 @@ impl Checker {
             current_return: Ty::Unit,
             current_is_test: false,
             loop_depth: 0,
+            facts: HashMap::new(),
+            loop_writes: Vec::new(),
         }
     }
 
     fn run(mut self) -> Result<TProgram, CheckError> {
-        self.register_enum_names()?;
+        self.register_type_names()?;
+        self.fill_type_aliases()?;
         self.fill_enum_cases()?;
+        self.fill_struct_fields()?;
         self.check_recursive_value_types()?;
         let mut test_names = HashMap::<String, Span>::new();
         for p in self.programs.clone() {
             for function in p.functions {
                 let id = self.ast_functions.len();
-                if function.name == "print" {
+                if matches!(function.name.as_str(), "print" | "min" | "max") {
                     return Err(CheckError {
                         span: function.span,
-                        message: "'print' is a built-in function name and cannot be redeclared"
-                            .to_owned(),
+                        message: format!(
+                            "'{}' is a built-in function name and cannot be redeclared",
+                            function.name
+                        )
+                        .to_owned(),
                     });
                 }
                 if self.signatures.contains_key(&function.name) {
@@ -136,7 +158,12 @@ impl Checker {
                 let params = function
                     .params
                     .iter()
-                    .map(|p| self.parse_type(&p.ty))
+                    .map(|p| {
+                        Ok(ParamSignature {
+                            ty: self.parse_type(&p.ty)?,
+                            mode: p.mode,
+                        })
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 let result = function
                     .result
@@ -192,28 +219,36 @@ impl Checker {
         })
     }
 
-    fn register_enum_names(&mut self) -> Result<(), CheckError> {
+    fn register_type_names(&mut self) -> Result<(), CheckError> {
         for program in &self.programs {
-            for declaration in &program.enums {
-                if matches!(
-                    declaration.name.as_str(),
-                    "int" | "long" | "bool" | "Option" | "Result"
-                ) || self.enum_ids.contains_key(&declaration.name)
+            for (name, span, kind) in program
+                .enums
+                .iter()
+                .map(|d| (&d.name, d.span, TTypeKind::Enum(Vec::new())))
+                .chain(
+                    program
+                        .structs
+                        .iter()
+                        .map(|d| (&d.name, d.span, TTypeKind::Struct(Vec::new()))),
+                )
+            {
+                if matches!(name.as_str(), "int" | "long" | "bool" | "Option" | "Result")
+                    || self.type_ids.contains_key(name)
                 {
                     return Err(CheckError {
-                        span: declaration.span,
+                        span,
                         message: format!(
                             "type '{}' is declared more than once or shadows a built-in type",
-                            declaration.name
+                            name
                         ),
                     });
                 }
                 let ty = Ty(self.types.len());
-                self.enum_ids.insert(declaration.name.clone(), ty);
+                self.type_ids.insert(name.clone(), ty);
                 self.types.push(TType {
-                    name: declaration.name.clone(),
-                    kind: TTypeKind::Enum(Vec::new()),
-                    span: declaration.span,
+                    name: name.clone(),
+                    kind,
+                    span,
                 });
             }
         }
@@ -227,7 +262,7 @@ impl Checker {
             .flat_map(|p| p.enums.clone())
             .collect::<Vec<_>>();
         for declaration in declarations {
-            let ty = self.enum_ids[&declaration.name];
+            let ty = self.type_ids[&declaration.name];
             let mut names = HashMap::<String, Span>::new();
             let mut cases = Vec::new();
             for case in declaration.cases {
@@ -256,18 +291,113 @@ impl Checker {
         Ok(())
     }
 
+    fn fill_struct_fields(&mut self) -> Result<(), CheckError> {
+        let declarations = self
+            .programs
+            .iter()
+            .flat_map(|p| p.structs.clone())
+            .collect::<Vec<_>>();
+        for declaration in declarations {
+            let ty = self.type_ids[&declaration.name];
+            let mut names = HashMap::<String, Span>::new();
+            let mut fields = Vec::new();
+            for field in &declaration.fields {
+                if let Some(previous) = names.insert(field.name.clone(), field.span) {
+                    return Err(CheckError {
+                        span: field.span,
+                        message: format!(
+                            "field '{}' is declared twice (first on line {})",
+                            field.name, previous.line
+                        ),
+                    });
+                }
+                fields.push(TField {
+                    name: field.name.clone(),
+                    ty: self.parse_type(&field.ty)?,
+                });
+                if fields
+                    .last()
+                    .is_some_and(|field| field.ty == Ty::Unit || field.ty == Ty::Never)
+                {
+                    return Err(CheckError { span: field.span, message: "a struct field must have a storable value type; use an enum unit case for ()".to_owned() });
+                }
+            }
+            self.types[ty.0].kind = TTypeKind::Struct(fields);
+            self.struct_decls.insert(ty, declaration);
+        }
+        Ok(())
+    }
+
+    fn fill_type_aliases(&mut self) -> Result<(), CheckError> {
+        let declarations = self
+            .programs
+            .iter()
+            .flat_map(|p| p.aliases.clone())
+            .collect::<Vec<_>>();
+        let mut pending = declarations;
+        while !pending.is_empty() {
+            let mut next = Vec::new();
+            let mut progressed = false;
+            for alias in pending {
+                if matches!(
+                    alias.name.as_str(),
+                    "int" | "long" | "bool" | "Option" | "Result"
+                ) || self.type_ids.contains_key(&alias.name)
+                {
+                    return Err(CheckError {
+                        span: alias.span,
+                        message: format!(
+                            "type '{}' is declared more than once or shadows a built-in type",
+                            alias.name
+                        ),
+                    });
+                }
+                match self.parse_type(&alias.ty) {
+                    Ok(ty) => {
+                        self.preferred_type_names
+                            .entry(ty)
+                            .or_insert_with(|| alias.name.clone());
+                        self.type_ids.insert(alias.name, ty);
+                        progressed = true;
+                    }
+                    Err(error) if error.message.starts_with("unknown type '") => next.push(alias),
+                    Err(error) => return Err(error),
+                }
+            }
+            if !progressed {
+                let alias = &next[0];
+                return Err(CheckError {
+                    span: alias.ty.span,
+                    message: format!(
+                        "unknown type in alias '{}'; declare the base type first",
+                        alias.name
+                    ),
+                });
+            }
+            pending = next;
+        }
+        Ok(())
+    }
+
     fn parse_type(&mut self, ty: &TypeAst) -> Result<Ty, CheckError> {
-        if ty.name == "int" && ty.args.is_empty() {
-            return Ok(Ty::Int);
+        let base = match ty.name.as_str() {
+            "int" if ty.args.is_empty() => Some(Ty::Int),
+            "long" if ty.args.is_empty() => Some(Ty::Long),
+            "bool" if ty.args.is_empty() => Some(Ty::Bool),
+            "()" if ty.args.is_empty() => Some(Ty::Unit),
+            _ => None,
+        };
+        if let Some(base) = base {
+            if let Some(range) = ty.range {
+                return self.intern_refinement(base, range, ty.policy, ty.span);
+            }
+            return Ok(base);
         }
-        if ty.name == "long" && ty.args.is_empty() {
-            return Ok(Ty::Long);
-        }
-        if ty.name == "bool" && ty.args.is_empty() {
-            return Ok(Ty::Bool);
-        }
-        if ty.name == "()" && ty.args.is_empty() {
-            return Ok(Ty::Unit);
+        if ty.range.is_some() || ty.policy != RefinePolicy::Checked {
+            return Err(CheckError {
+                span: ty.span,
+                message: "range refinements can be declared on int or long only".to_owned(),
+            });
         }
         match ty.name.as_str() {
             "Option" if ty.args.len() == 1 => {
@@ -307,8 +437,8 @@ impl Checker {
                     ty.name
                 ),
             }),
-            _ => self.enum_ids.get(&ty.name).copied().ok_or_else(|| {
-                let mut names = self.enum_ids.keys().cloned().collect::<Vec<_>>();
+            _ => self.type_ids.get(&ty.name).copied().ok_or_else(|| {
+                let mut names = self.type_ids.keys().cloned().collect::<Vec<_>>();
                 names.extend([
                     "int".to_owned(),
                     "long".to_owned(),
@@ -332,6 +462,67 @@ impl Checker {
                 }
             }),
         }
+    }
+
+    fn intern_refinement(
+        &mut self,
+        base: Ty,
+        range: TypeRangeAst,
+        policy: RefinePolicy,
+        span: Span,
+    ) -> Result<Ty, CheckError> {
+        let (base_min, base_max) = if base == Ty::Int {
+            (i32::MIN as i128, i32::MAX as i128)
+        } else if base == Ty::Long {
+            (i64::MIN as i128, i64::MAX as i128)
+        } else {
+            return Err(CheckError {
+                span: range.span,
+                message: "range refinements can be declared on int or long only".to_owned(),
+            });
+        };
+        let max = if range.inclusive {
+            range.upper
+        } else {
+            range.upper.saturating_sub(1)
+        };
+        if range.lower > max {
+            return Err(CheckError {
+                span: range.span,
+                message: "refinement range is empty or reversed; choose bounds that include at least one value".to_owned(),
+            });
+        }
+        if range.lower < base_min || range.lower > base_max || max < base_min || max > base_max {
+            return Err(CheckError {
+                span: range.span,
+                message: format!(
+                    "refinement bounds must fit {}; use {} for a wider range",
+                    self.type_name(base),
+                    if base == Ty::Int {
+                        "long"
+                    } else {
+                        "a narrower range"
+                    }
+                ),
+            });
+        }
+        let key = (base, range.lower, max, policy);
+        if let Some(ty) = self.refinement_ids.get(&key) {
+            return Ok(*ty);
+        }
+        let ty = Ty(self.types.len());
+        self.types.push(TType {
+            name: format!("{} {}..={}", self.type_name(base), range.lower, max),
+            kind: TTypeKind::Refinement {
+                base,
+                min: range.lower,
+                max,
+                policy,
+            },
+            span,
+        });
+        self.refinement_ids.insert(key, ty);
+        Ok(ty)
     }
 
     fn intern_generic(
@@ -358,10 +549,15 @@ impl Checker {
     }
 
     fn type_name(&self, ty: Ty) -> String {
-        self.types
-            .get(ty.0)
-            .map(|t| t.name.clone())
-            .unwrap_or_else(|| ty.name().to_owned())
+        self.preferred_type_names
+            .get(&ty)
+            .cloned()
+            .unwrap_or_else(|| {
+                self.types
+                    .get(ty.0)
+                    .map(|t| t.name.clone())
+                    .unwrap_or_else(|| ty.name().to_owned())
+            })
     }
 
     fn check_recursive_value_types(&self) -> Result<(), CheckError> {
@@ -384,8 +580,10 @@ impl Checker {
                     .iter()
                     .flat_map(|c| c.payload.iter().copied())
                     .collect::<Vec<_>>(),
+                TTypeKind::Struct(fields) => fields.iter().map(|field| field.ty).collect(),
                 TTypeKind::Option(t) => vec![*t],
                 TTypeKind::Result(a, b) => vec![*a, *b],
+                TTypeKind::Refinement { .. } => Vec::new(),
                 _ => Vec::new(),
             };
             for child in children {
@@ -439,6 +637,7 @@ impl Checker {
         self.current_function = id;
         self.current_return = signature.result;
         self.current_is_test = false;
+        self.facts.clear();
         self.loop_depth = 0;
         self.next_local = 0;
         self.locals.clear();
@@ -448,12 +647,20 @@ impl Checker {
         self.scope_ids.push(0);
         let mut params = Vec::new();
         for (i, param) in function.params.iter().enumerate() {
-            let ty = signature.params[i];
-            let binding = self.declare(&param.name, ty, false, param.span, false)?;
+            let ty = signature.params[i].ty;
+            let binding = self.declare_mode(
+                &param.name,
+                ty,
+                param.mode == ParamMode::Write,
+                param.mode,
+                param.span,
+                false,
+            )?;
             params.push(TParam {
                 id: binding.id,
                 name: binding.name,
                 ty,
+                mode: param.mode,
                 span: param.span,
             });
         }
@@ -502,6 +709,7 @@ impl Checker {
         self.current_function = id;
         self.current_return = Ty::Unit;
         self.current_is_test = true;
+        self.facts.clear();
         self.loop_depth = 0;
         self.next_local = 0;
         self.locals.clear();
@@ -567,7 +775,11 @@ impl Checker {
             }
         }
         let tail = if let Some(expr) = &block.tail {
-            Some(Box::new(self.check_expr(expr, expected)?))
+            Some(Box::new(if let Some(target) = expected {
+                self.check_store(expr, target)?
+            } else {
+                self.check_expr(expr, None)?
+            }))
         } else {
             None
         };
@@ -603,12 +815,20 @@ impl Checker {
                     .as_ref()
                     .map(|ty| self.parse_type(ty))
                     .transpose()?;
-                let typed_value = self.check_expr(value, annotated)?;
+                let typed_value = if let Some(target) = annotated {
+                    self.check_store(value, target)?
+                } else {
+                    self.check_expr(value, None)?
+                };
                 if typed_value.ty == Ty::Unit || typed_value.ty == Ty::Never {
                     return Err(CheckError { span: value.span, message: "a binding needs a value; functions and if expressions used here must return int, long, or bool".to_owned() });
                 }
                 let ty = annotated.unwrap_or(typed_value.ty);
                 let binding = self.declare(name, ty, *mutable, stmt.span, false)?;
+                if let Some(range) = self.expr_range(&typed_value) {
+                    self.facts.insert((binding.id, Vec::new()), range);
+                }
+                self.record_nested_facts(binding.id, &[], &typed_value);
                 TStmtKind::Let {
                     id: binding.id,
                     name: name.clone(),
@@ -618,49 +838,108 @@ impl Checker {
                 }
             }
             StmtKind::Assign {
-                name,
+                target,
                 op,
                 operator_span,
                 value,
             } => {
-                let binding = self
-                    .find_binding(name)
-                    .ok_or_else(|| self.unknown_local(name, stmt.span))?;
-                if !binding.mutable {
+                let place = self.resolve_place(target)?;
+                if !self.place_is_mutable(&place) {
+                    let binding = self
+                        .binding_by_id(place.root)
+                        .expect("place binding is in scope");
                     return Err(CheckError {
                         span: stmt.span,
                         message: if binding.loop_counter {
                             format!(
                                 "cannot assign to loop counter '{}'; loop counters are immutable",
-                                name
+                                binding.name
+                            )
+                        } else if binding.mode == ParamMode::Read
+                            && binding.id < self.function_param_count()
+                        {
+                            format!(
+                                "cannot assign to read parameter '{}'; pass it as 'write' to allow mutation",
+                                binding.name
+                            )
+                        } else if place.fields.is_empty() {
+                            format!(
+                                "cannot assign to immutable 'let' binding '{}'; declare it with 'var'",
+                                binding.name
                             )
                         } else {
                             format!(
-                                "cannot assign to immutable 'let' binding '{}'; declare it with 'var'",
-                                name
+                                "cannot assign through immutable 'let' binding '{}'; declare it with 'var'",
+                                binding.name
                             )
                         },
                     });
                 }
-                let typed_value = self.check_expr(value, Some(binding.ty))?;
+                let (typed_value, assigned_range) = if *op == AssignOp::Set {
+                    let stored = self.check_store(value, place.ty)?;
+                    let range = self.expr_range(&stored);
+                    (stored, range)
+                } else {
+                    let typed_value = self.check_expr(value, Some(self.base_type(place.ty)))?;
+                    let bop = assign_binary(*op);
+                    self.check_binary_types(
+                        bop,
+                        self.base_type(place.ty),
+                        self.base_type(typed_value.ty),
+                        *operator_span,
+                    )?;
+                    let lhs = self.typed_place_expr(&place, target.span);
+                    let result = TExpr {
+                        kind: TExprKind::Binary {
+                            op: bop,
+                            operator_span: *operator_span,
+                            left: Box::new(lhs),
+                            right: Box::new(typed_value.clone()),
+                        },
+                        ty: self.base_type(place.ty),
+                        span: *operator_span,
+                    };
+                    let stored = self.coerce_store(result, place.ty)?;
+                    let range = self.expr_range(&stored);
+                    (typed_value, range)
+                };
                 if *op != AssignOp::Set {
                     let bop = assign_binary(*op);
-                    self.check_binary_types(bop, binding.ty, typed_value.ty, *operator_span)?;
-                    if !binding.ty.is_numeric() {
+                    self.check_binary_types(bop, place.ty, typed_value.ty, *operator_span)?;
+                    if !self.is_numeric(place.ty) {
                         return Err(CheckError {
                             span: stmt.span,
                             message: format!(
                                 "'{}=' requires int or long; '{}' is {}",
                                 assign_spelling(*op),
-                                name,
-                                self.type_name(binding.ty)
+                                target_name(target),
+                                self.type_name(place.ty)
                             ),
                         });
                     }
                 }
+                let nested_facts = self.nested_facts_for_value(&place.fields, &typed_value);
+                self.invalidate_place(&place);
+                let is_loop_written = self
+                    .loop_writes
+                    .iter()
+                    .any(|writes| writes.contains(&place.root));
+                if !is_loop_written {
+                    if let Some(range) = self
+                        .refinement(place.ty)
+                        .map(|(_, lo, hi, _)| (lo, hi))
+                        .or(assigned_range)
+                    {
+                        self.facts.insert((place.root, place.fields.clone()), range);
+                    }
+                    for (fields, range) in nested_facts {
+                        self.facts.insert((place.root, fields), range);
+                    }
+                }
+                let place_ty = place.ty;
                 TStmtKind::Assign {
-                    id: binding.id,
-                    ty: binding.ty,
+                    place,
+                    ty: place_ty,
                     op: *op,
                     operator_span: *operator_span,
                     value: typed_value,
@@ -684,7 +963,7 @@ impl Checker {
                                     .to_owned(),
                             });
                         }
-                        Some(self.check_expr(expr, Some(self.current_return))?)
+                        Some(self.check_store(expr, self.current_return)?)
                     }
                     None => {
                         if self.current_return != Ty::Unit {
@@ -745,15 +1024,38 @@ impl Checker {
                     self.infer_loop_type(name, annotation.as_ref(), start, end, body, stmt.span)?;
                 let typed_start = self.check_expr(start, Some(ty))?;
                 let typed_end = self.check_expr(end, Some(ty))?;
+                let before_loop = self.facts.clone();
+                let mut loop_writes = std::collections::HashSet::new();
+                self.collect_loop_writes(body, &mut loop_writes);
+                self.facts
+                    .retain(|(root, _), _| !loop_writes.contains(root));
                 self.locals.push(HashMap::new());
                 self.scope_ids.push(self.next_scope);
                 self.next_scope += 1;
                 let counter = self.declare(name, ty, false, stmt.span, true)?;
+                let start_range = self
+                    .expr_range(&typed_start)
+                    .unwrap_or_else(|| integer_bounds(ty).unwrap());
+                let end_range = self
+                    .expr_range(&typed_end)
+                    .unwrap_or_else(|| integer_bounds(ty).unwrap());
+                let last = if *inclusive {
+                    end_range.1
+                } else {
+                    end_range.1.saturating_sub(1)
+                };
+                self.facts
+                    .insert((counter.id, Vec::new()), (start_range.0, last));
+                self.loop_writes.push(loop_writes.clone());
                 self.loop_depth += 1;
                 let typed_body = self.check_block(body, true, None)?;
                 self.loop_depth -= 1;
+                self.loop_writes.pop();
                 self.locals.pop();
                 self.scope_ids.pop();
+                self.facts = before_loop;
+                self.facts
+                    .retain(|(root, _), _| !loop_writes.contains(root));
                 TStmtKind::For {
                     id: counter.id,
                     ty,
@@ -833,18 +1135,18 @@ impl Checker {
         let mut constraints = Vec::new();
         if let Some(annotation) = annotation {
             let ty = self.parse_type(annotation)?;
-            if !ty.is_numeric() {
+            if !self.is_numeric(ty) {
                 return Err(CheckError {
                     span: annotation.span,
                     message: "a loop counter must be int or long; use one of those types"
                         .to_owned(),
                 });
             }
-            constraints.push(ty);
+            constraints.push(self.base_type(ty));
         }
         for bound in [start, end] {
             if let Some(ty) = self.natural_expr_type(bound) {
-                if !ty.is_numeric() {
+                if !self.is_numeric(ty) {
                     return Err(CheckError {
                         span: bound.span,
                         message: format!(
@@ -853,7 +1155,7 @@ impl Checker {
                         ),
                     });
                 }
-                constraints.push(ty);
+                constraints.push(self.base_type(ty));
             }
         }
         for statement in &body.statements {
@@ -927,8 +1229,8 @@ impl Checker {
                     let right = self.natural_expr_type_inner(right, shadowed_counter);
                     match (left, right) {
                         (Some(left), Some(right)) if left == right => Some(left),
-                        (Some(left), None) if left.is_numeric() => Some(left),
-                        (None, Some(right)) if right.is_numeric() => Some(right),
+                        (Some(left), None) if self.is_numeric(left) => Some(left),
+                        (None, Some(right)) if self.is_numeric(right) => Some(right),
                         _ => None,
                     }
                 }
@@ -948,7 +1250,21 @@ impl Checker {
                     .and_then(|tail| self.natural_expr_type_inner(tail, shadowed_counter));
                 if left == right { left } else { None }
             }
-            ExprKind::QualifiedCase { enum_name, .. } => self.enum_ids.get(enum_name).copied(),
+            ExprKind::QualifiedCase { enum_name, .. } => self.type_ids.get(enum_name).copied(),
+            ExprKind::Field { receiver, name, .. } => {
+                let receiver_ty = self.natural_expr_type_inner(receiver, shadowed_counter)?;
+                match &self.types[receiver_ty.0].kind {
+                    TTypeKind::Struct(fields) => {
+                        fields.iter().find(|f| f.name == *name).map(|f| f.ty)
+                    }
+                    _ => None,
+                }
+            }
+            ExprKind::StructInit { name, .. } => self.type_ids.get(name).copied(),
+            ExprKind::Fit { ty, .. } => self
+                .parse_type(ty)
+                .ok()
+                .and_then(|inner| Some(self.option_type(inner, expr.span))),
             ExprKind::MethodCall { receiver, name, .. } => {
                 let receiver_ty = self.natural_expr_type_inner(receiver, shadowed_counter)?;
                 match (self.types[receiver_ty.0].kind.clone(), name.as_str()) {
@@ -990,8 +1306,8 @@ impl Checker {
                 let expected = annotation.as_ref().and_then(|ty| self.parse_type(ty).ok());
                 self.collect_loop_constraints_expr(value, counter, expected, constraints);
             }
-            StmtKind::Assign { name, value, .. } => {
-                let expected = self.find_binding(name).map(|binding| binding.ty);
+            StmtKind::Assign { target, value, .. } => {
+                let expected = self.resolve_place(target).ok().map(|place| place.ty);
                 self.collect_loop_constraints_expr(value, counter, expected, constraints);
             }
             StmtKind::Return(value) => {
@@ -1053,13 +1369,16 @@ impl Checker {
     ) {
         match &expr.kind {
             ExprKind::Name(name) if name == counter => {
-                if let Some(ty) = expected.filter(|ty| ty.is_numeric()) {
-                    constraints.push(ty);
+                if let Some(ty) = expected.filter(|ty| self.is_numeric(*ty)) {
+                    constraints.push(self.base_type(ty));
                 }
             }
             ExprKind::Name(_) | ExprKind::Integer { .. } | ExprKind::Bool(_) | ExprKind::Unit => {}
             ExprKind::Call { name, args, .. } => {
-                let parameters = self.signatures.get(name).map(|sig| sig.params.clone());
+                let parameters = self
+                    .signatures
+                    .get(name)
+                    .map(|sig| sig.params.iter().map(|param| param.ty).collect::<Vec<_>>());
                 for (index, arg) in args.iter().enumerate() {
                     let want = parameters
                         .as_ref()
@@ -1075,7 +1394,7 @@ impl Checker {
                 ..
             } => {
                 let payload = self
-                    .enum_ids
+                    .type_ids
                     .get(enum_name)
                     .and_then(|ty| self.find_case_in_type(*ty, case_name))
                     .map(|(_, c)| c.payload);
@@ -1118,13 +1437,24 @@ impl Checker {
             ExprKind::ToLong { value, .. } => {
                 self.collect_loop_constraints_expr(value, counter, Some(Ty::Int), constraints);
             }
+            ExprKind::Field { receiver, .. } => {
+                self.collect_loop_constraints_expr(receiver, counter, None, constraints);
+            }
+            ExprKind::StructInit { fields, .. } => {
+                for field in fields {
+                    self.collect_loop_constraints_expr(&field.value, counter, None, constraints);
+                }
+            }
+            ExprKind::Fit { value, .. } => {
+                self.collect_loop_constraints_expr(value, counter, None, constraints);
+            }
             ExprKind::Cast { ty, value, .. } => {
                 let expected = self.parse_type(ty).ok();
                 self.collect_loop_constraints_expr(value, counter, expected, constraints);
             }
             ExprKind::Unary { op, value, .. } => {
                 let want = match op {
-                    UnaryOp::Neg => expected.filter(|ty| ty.is_numeric()),
+                    UnaryOp::Neg => expected.filter(|ty| self.is_numeric(*ty)),
                     UnaryOp::Not => Some(Ty::Bool),
                 };
                 self.collect_loop_constraints_expr(value, counter, want, constraints);
@@ -1151,16 +1481,16 @@ impl Checker {
                             | BinaryOp::Shl
                             | BinaryOp::Shr
                     ) {
-                        expected.filter(|ty| ty.is_numeric())
+                        expected.filter(|ty| self.is_numeric(*ty))
                     } else {
                         None
                     };
                     let left_natural = self
                         .natural_expr_type_inner(left, Some(counter))
-                        .filter(|ty| ty.is_numeric());
+                        .filter(|ty| self.is_numeric(*ty));
                     let right_natural = self
                         .natural_expr_type_inner(right, Some(counter))
-                        .filter(|ty| ty.is_numeric());
+                        .filter(|ty| self.is_numeric(*ty));
                     (contextual.or(right_natural), contextual.or(left_natural))
                 };
                 self.collect_loop_constraints_expr(left, counter, left_want, constraints);
@@ -1256,7 +1586,7 @@ impl Checker {
         }
         let mut values = Vec::new();
         for (arg, payload_ty) in args.iter().zip(case.payload) {
-            values.push(self.check_expr(arg, Some(payload_ty))?);
+            values.push(self.check_store(arg, payload_ty)?);
         }
         if let Some(want) = expected {
             self.type_mismatch(ty, want, span)?;
@@ -1341,7 +1671,11 @@ impl Checker {
                         ),
                     });
                 }
-                let value = self.check_expr(&args[0], expected_inner)?;
+                let value = if let Some(inner) = expected_inner {
+                    self.check_store(&args[0], inner)?
+                } else {
+                    self.check_expr(&args[0], None)?
+                };
                 let ty = expected.unwrap_or_else(|| self.option_type(value.ty, span));
                 Ok(Some((
                     TExprKind::Construct {
@@ -1391,7 +1725,7 @@ impl Checker {
                 };
                 let index = if name == "ok" { 0 } else { 1 };
                 let case = self.case_def(ty, index);
-                let value = self.check_expr(&args[0], Some(case.payload[0]))?;
+                let value = self.check_store(&args[0], case.payload[0])?;
                 Ok(Some((
                     TExprKind::Construct {
                         case_index: index,
@@ -1480,9 +1814,12 @@ impl Checker {
                 let ty = if *long_suffix {
                     Ty::Long
                 } else {
-                    expected.filter(|t| t.is_numeric()).unwrap_or(Ty::Int)
+                    expected
+                        .filter(|t| self.is_numeric(*t))
+                        .map(|t| self.base_type(t))
+                        .unwrap_or(Ty::Int)
                 };
-                if *long_suffix && expected.is_some_and(|t| t != Ty::Long) {
+                if *long_suffix && expected.is_some_and(|t| self.base_type(t) != Ty::Long) {
                     self.type_mismatch(Ty::Long, expected.unwrap(), expr.span)?;
                 }
                 let limit = match (ty, *negative) {
@@ -1571,6 +1908,188 @@ impl Checker {
                     }
                 }
             }
+            ExprKind::Field {
+                receiver,
+                name,
+                field_span,
+            } => {
+                if let ExprKind::Name(type_name) = &receiver.kind {
+                    if self.find_binding(type_name).is_none() {
+                        if let Some(ty) = self.type_ids.get(type_name).copied() {
+                            if let Some((index, case)) = self.find_case_in_type(ty, name) {
+                                if !case.payload.is_empty() {
+                                    return Err(CheckError {
+                                        span: *field_span,
+                                        message: format!(
+                                            "case '{}.{}' needs {} payload value(s)",
+                                            type_name,
+                                            name,
+                                            case.payload.len()
+                                        ),
+                                    });
+                                }
+                                let built =
+                                    self.check_constructor(ty, index, &[], *field_span, expected)?;
+                                return self.finish_expr(expr, built, expected);
+                            }
+                        }
+                    }
+                }
+                let typed_receiver = self.check_expr(receiver, None)?;
+                let TTypeKind::Struct(fields) = &self.types[typed_receiver.ty.0].kind else {
+                    return Err(CheckError {
+                        span: *field_span,
+                        message: format!(
+                            "{} has no fields; cannot read '{}'",
+                            self.type_name(typed_receiver.ty),
+                            name
+                        ),
+                    });
+                };
+                let Some(field_index) = fields.iter().position(|field| field.name == *name) else {
+                    let names = fields
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect::<Vec<_>>();
+                    let suffix = close_name(name, &names)
+                        .map(|suggestion| format!("; did you mean '{}'", suggestion))
+                        .unwrap_or_default();
+                    return Err(CheckError {
+                        span: *field_span,
+                        message: format!(
+                            "unknown field '{}' on {}{}",
+                            name,
+                            self.type_name(typed_receiver.ty),
+                            suffix
+                        ),
+                    });
+                };
+                let field_ty = fields[field_index].ty;
+                if let Some(want) = expected {
+                    self.type_mismatch(field_ty, want, expr.span)?;
+                }
+                (
+                    TExprKind::Field {
+                        receiver: Box::new(typed_receiver),
+                        field_index,
+                    },
+                    field_ty,
+                )
+            }
+            ExprKind::StructInit { name, fields } => {
+                let Some(ty) = self.type_ids.get(name).copied() else {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: format!("unknown struct '{}'; declare it with struct", name),
+                    });
+                };
+                let TTypeKind::Struct(type_fields) = self.types[ty.0].kind.clone() else {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: format!("'{}' is not a struct type", name),
+                    });
+                };
+                let declaration = self
+                    .struct_decls
+                    .get(&ty)
+                    .cloned()
+                    .expect("struct declaration recorded");
+                let mut supplied = HashMap::<usize, Span>::new();
+                let mut typed_fields = Vec::new();
+                for init in fields {
+                    let Some(index) = type_fields.iter().position(|field| field.name == init.name)
+                    else {
+                        let names = type_fields
+                            .iter()
+                            .map(|field| field.name.clone())
+                            .collect::<Vec<_>>();
+                        let suffix = close_name(&init.name, &names)
+                            .map(|suggestion| format!("; did you mean '{}'", suggestion))
+                            .unwrap_or_default();
+                        return Err(CheckError {
+                            span: init.span,
+                            message: format!(
+                                "unknown field '{}' in {} literal{}",
+                                init.name, name, suffix
+                            ),
+                        });
+                    };
+                    if let Some(previous) = supplied.insert(index, init.span) {
+                        return Err(CheckError {
+                            span: init.span,
+                            message: format!(
+                                "field '{}' is supplied more than once (first on line {})",
+                                init.name, previous.line
+                            ),
+                        });
+                    }
+                    let value = self.check_store(&init.value, type_fields[index].ty)?;
+                    typed_fields.push((index, value));
+                }
+                for (index, field) in type_fields.iter().enumerate() {
+                    if supplied.contains_key(&index) {
+                        continue;
+                    }
+                    let default = declaration.fields[index].default.as_ref();
+                    if let Some(default) = default {
+                        typed_fields.push((index, self.check_store(default, field.ty)?));
+                    } else {
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: format!(
+                                "missing required field '{}' in {} literal; give it a value",
+                                field.name, name
+                            ),
+                        });
+                    }
+                }
+                if let Some(want) = expected {
+                    self.type_mismatch(ty, want, expr.span)?;
+                }
+                (
+                    TExprKind::StructConstruct {
+                        fields: typed_fields,
+                    },
+                    ty,
+                )
+            }
+            ExprKind::Fit {
+                value,
+                ty,
+                method_span,
+            } => {
+                let target = self.parse_type(ty)?;
+                let Some((base, min, max, _)) = self.refinement(target) else {
+                    return Err(CheckError {
+                        span: ty.span,
+                        message: "fit<T>() needs an int or long refinement type".to_owned(),
+                    });
+                };
+                let value = self.check_expr(value, Some(base))?;
+                if self.base_type(value.ty) != base {
+                    return Err(CheckError {
+                        span: *method_span,
+                        message: format!(
+                            "fit input must have base type {}; found {}",
+                            self.type_name(base),
+                            self.type_name(value.ty)
+                        ),
+                    });
+                }
+                let option_ty = self.option_type(target, expr.span);
+                if let Some(want) = expected {
+                    self.type_mismatch(option_ty, want, expr.span)?;
+                }
+                (
+                    TExprKind::Fit {
+                        value: Box::new(value),
+                        min,
+                        max,
+                        option_ty,
+                    },
+                    option_ty,
+                )
+            }
             ExprKind::Call {
                 name,
                 call_span,
@@ -1579,6 +2098,39 @@ impl Checker {
                 if matches!(name.as_str(), "some" | "none" | "ok" | "err") {
                     self.check_builtin_constructor(name, args, *call_span, expected)?
                         .unwrap()
+                } else if name == "min" || name == "max" {
+                    if args.len() != 2 {
+                        return Err(CheckError {
+                            span: *call_span,
+                            message: format!("{} takes two values; got {}", name, args.len()),
+                        });
+                    }
+                    let (left, right) = self.check_operand_pair(
+                        &args[0],
+                        &args[1],
+                        expected.filter(|ty| self.is_numeric(*ty)),
+                    )?;
+                    if self.base_type(left.ty) != self.base_type(right.ty)
+                        || !self.is_numeric(left.ty)
+                    {
+                        return Err(self.mixed_types_error(left.ty, right.ty, *call_span));
+                    }
+                    let result_ty = self.base_type(left.ty);
+                    if let Some(want) = expected {
+                        self.type_mismatch(result_ty, self.base_type(want), *call_span)?;
+                    }
+                    (
+                        TExprKind::Call {
+                            target: if name == "min" {
+                                CallTarget::Min
+                            } else {
+                                CallTarget::Max
+                            },
+                            args: vec![left, right],
+                            effect: Effect::None,
+                        },
+                        result_ty,
+                    )
                 } else if expected.is_some_and(|want| {
                     self.types[want.0].is_sum() && self.find_case_in_type(want, name).is_some()
                 }) {
@@ -1601,12 +2153,14 @@ impl Checker {
                         });
                     }
                     let arg = self.check_expr(&args[0], None)?;
-                    if !matches!(arg.ty, Ty::Int | Ty::Long | Ty::Bool)
+                    if !matches!(self.base_type(arg.ty), Ty::Int | Ty::Long | Ty::Bool)
                         && !self.types[arg.ty.0].is_sum()
+                        && !matches!(self.types[arg.ty.0].kind, TTypeKind::Struct(_))
                     {
                         return Err(CheckError {
                             span: args[0].span,
-                            message: "print supports int, long, bool, and enum values".to_owned(),
+                            message: "print supports int, long, bool, enum, and struct values"
+                                .to_owned(),
                         });
                     }
                     if let Some(want) = expected {
@@ -1636,8 +2190,46 @@ impl Checker {
                         });
                     }
                     let mut typed_args = Vec::new();
-                    for (arg, ty) in args.iter().zip(signature.params.iter().copied()) {
-                        typed_args.push(self.check_expr(arg, Some(ty))?);
+                    let mut arg_places = Vec::<Option<TPlace>>::new();
+                    for (arg, param) in args.iter().zip(signature.params.iter().copied()) {
+                        let place = self.resolve_place(arg).ok();
+                        for (previous, previous_param) in
+                            arg_places.iter().zip(signature.params.iter())
+                        {
+                            if (param.mode == ParamMode::Write
+                                || previous_param.mode == ParamMode::Write)
+                                && previous
+                                    .as_ref()
+                                    .zip(place.as_ref())
+                                    .is_some_and(|(a, b)| places_overlap(a, b))
+                            {
+                                return Err(CheckError { span: arg.span, message: "arguments overlap, and at least one is passed as write; pass separate fields or a copy".to_owned() });
+                            }
+                        }
+                        if param.mode == ParamMode::Write {
+                            let place = place.clone().ok_or_else(|| CheckError {
+                                span: arg.span,
+                                message: "a write argument must be an assignable place".to_owned(),
+                            })?;
+                            if !self.place_is_mutable(&place) {
+                                return Err(CheckError { span: arg.span, message: "a write argument must be a var, a field of a var, or another write parameter".to_owned() });
+                            }
+                            if place.ty != param.ty {
+                                return Err(CheckError {
+                                    span: arg.span,
+                                    message: format!(
+                                        "write argument needs exactly {}; found {}",
+                                        self.type_name(param.ty),
+                                        self.type_name(place.ty)
+                                    ),
+                                });
+                            }
+                            self.invalidate_place(&place);
+                            typed_args.push(self.check_expr(arg, Some(param.ty))?);
+                        } else {
+                            typed_args.push(self.check_store(arg, param.ty)?);
+                        }
+                        arg_places.push(place);
                     }
                     if let Some(want) = expected {
                         self.type_mismatch(signature.result, want, *call_span)?;
@@ -1663,7 +2255,7 @@ impl Checker {
                 case_span,
                 args,
             } => {
-                let Some(ty) = self.enum_ids.get(enum_name).copied() else {
+                let Some(ty) = self.type_ids.get(enum_name).copied() else {
                     return Err(CheckError {
                         span: expr.span,
                         message: format!("unknown enum '{}'; declare it with enum", enum_name),
@@ -1705,48 +2297,68 @@ impl Checker {
                         });
                     }
                 };
-                let Some(signature) = self.signatures.get(name).cloned() else {
-                    return Err(self.unknown_function(name, *method_span));
-                };
-                if signature.params.len() != args.len() + 1 {
-                    return Err(CheckError {
-                        span: *method_span,
-                        message: format!(
-                            "optional call '{}()' takes the receiver plus {} argument(s), but got {}",
-                            name,
-                            signature.params.len().saturating_sub(1),
-                            args.len()
-                        ),
-                    });
-                }
-                self.type_mismatch(inner, signature.params[0], receiver.span)?;
-                let mut typed_args = Vec::new();
-                for (arg, ty) in args.iter().zip(signature.params.iter().copied().skip(1)) {
-                    typed_args.push(self.check_expr(arg, Some(ty))?);
-                }
-                let (result_ty, wraps_result) =
-                    if matches!(self.types[signature.result.0].kind, TTypeKind::Option(_)) {
-                        (signature.result, false)
-                    } else {
-                        (self.option_type(signature.result, expr.span), true)
+                if name == "to_long" {
+                    if !args.is_empty() || self.base_type(inner) != Ty::Int {
+                        return Err(CheckError { span: *method_span, message: "optional method 'to_long()' takes no arguments and requires Option<int>".to_owned() });
+                    }
+                    let result_ty = self.option_type(Ty::Long, expr.span);
+                    if let Some(want) = expected {
+                        self.type_mismatch(result_ty, want, expr.span)?;
+                    }
+                    (
+                        TExprKind::OptionalToLong(Box::new(typed_receiver)),
+                        result_ty,
+                    )
+                } else {
+                    let Some(signature) = self.signatures.get(name).cloned() else {
+                        return Err(self.unknown_function(name, *method_span));
                     };
-                if let Some(want) = expected {
-                    self.type_mismatch(result_ty, want, expr.span)?;
+                    if signature.params.len() != args.len() + 1 {
+                        return Err(CheckError {
+                            span: *method_span,
+                            message: format!(
+                                "optional call '{}()' takes the receiver plus {} argument(s), but got {}",
+                                name,
+                                signature.params.len().saturating_sub(1),
+                                args.len()
+                            ),
+                        });
+                    }
+                    if signature.params[0].mode == ParamMode::Write {
+                        return Err(CheckError { span: *method_span, message: "optional chaining cannot call a function whose receiver parameter is write".to_owned() });
+                    }
+                    self.type_mismatch(inner, signature.params[0].ty, receiver.span)?;
+                    let mut typed_args = Vec::new();
+                    for (arg, param) in args.iter().zip(signature.params.iter().copied().skip(1)) {
+                        if param.mode == ParamMode::Write {
+                            return Err(CheckError { span: *method_span, message: "optional calls cannot pass a write parameter; call a function directly with an assignable place".to_owned() });
+                        }
+                        typed_args.push(self.check_store(arg, param.ty)?);
+                    }
+                    let (result_ty, wraps_result) =
+                        if matches!(self.types[signature.result.0].kind, TTypeKind::Option(_)) {
+                            (signature.result, false)
+                        } else {
+                            (self.option_type(signature.result, expr.span), true)
+                        };
+                    if let Some(want) = expected {
+                        self.type_mismatch(result_ty, want, expr.span)?;
+                    }
+                    self.edges.push(Edge {
+                        from: self.current_function,
+                        to: signature.id,
+                        span: *method_span,
+                    });
+                    (
+                        TExprKind::OptionalCall {
+                            receiver: Box::new(typed_receiver),
+                            function_id: signature.id,
+                            args: typed_args,
+                            wraps_result,
+                        },
+                        result_ty,
+                    )
                 }
-                self.edges.push(Edge {
-                    from: self.current_function,
-                    to: signature.id,
-                    span: *method_span,
-                });
-                (
-                    TExprKind::OptionalCall {
-                        receiver: Box::new(typed_receiver),
-                        function_id: signature.id,
-                        args: typed_args,
-                        wraps_result,
-                    },
-                    result_ty,
-                )
             }
             ExprKind::Try(value) => {
                 if self.current_is_test {
@@ -1857,7 +2469,7 @@ impl Checker {
             }
             ExprKind::ToLong { value, method_span } => {
                 let typed = self.check_expr(value, None)?;
-                if typed.ty != Ty::Int {
+                if self.base_type(typed.ty) != Ty::Int {
                     return Err(CheckError {
                         span: *method_span,
                         message: format!(
@@ -1877,14 +2489,14 @@ impl Checker {
                 value,
             } => {
                 let target = self.parse_type(ty)?;
-                if !target.is_numeric() {
+                if !self.is_numeric(target) {
                     return Err(CheckError {
                         span: ty.span,
                         message: "casts in this task are between int and long".to_owned(),
                     });
                 }
                 let source = self.check_expr(value, None)?;
-                if !source.ty.is_numeric() {
+                if !self.is_numeric(source.ty) {
                     return Err(CheckError {
                         span: value.span,
                         message: format!(
@@ -1914,7 +2526,7 @@ impl Checker {
                     value,
                     match op {
                         UnaryOp::Not => Some(Ty::Bool),
-                        UnaryOp::Neg => expected.filter(|t| t.is_numeric()),
+                        UnaryOp::Neg => expected.filter(|t| self.is_numeric(*t)),
                     },
                 )?;
                 match op {
@@ -1924,7 +2536,7 @@ impl Checker {
                             message: "'!' requires a bool".to_owned(),
                         });
                     }
-                    UnaryOp::Neg if !typed.ty.is_numeric() => {
+                    UnaryOp::Neg if !self.is_numeric(typed.ty) => {
                         return Err(CheckError {
                             span: value.span,
                             message: "unary '-' requires int or long".to_owned(),
@@ -2109,7 +2721,7 @@ impl Checker {
                         });
                     }
                     if let Some(qualifier) = enum_name {
-                        let qualified_ty = if let Some(ty) = self.enum_ids.get(qualifier) {
+                        let qualified_ty = if let Some(ty) = self.type_ids.get(qualifier) {
                             Some(*ty)
                         } else if qualifier == "Option"
                             && matches!(self.types[scrutinee.ty.0].kind, TTypeKind::Option(_))
@@ -2341,8 +2953,10 @@ impl Checker {
         }
         let (l, r) = if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
             let (l, r) =
-                self.check_operand_pair(left, right, expected.filter(|t| t.is_numeric()))?;
-            if l.ty != r.ty {
+                self.check_operand_pair(left, right, expected.filter(|t| self.is_numeric(*t)))?;
+            if l.ty != r.ty
+                && !(self.is_numeric(l.ty) && self.base_type(l.ty) == self.base_type(r.ty))
+            {
                 return Err(self.mixed_types_error(l.ty, r.ty, span));
             }
             if matches!(l.ty, Ty::Unit | Ty::Never) {
@@ -2365,11 +2979,13 @@ impl Checker {
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
         ) {
             let (l, r) =
-                self.check_operand_pair(left, right, expected.filter(|t| t.is_numeric()))?;
-            if l.ty != r.ty {
+                self.check_operand_pair(left, right, expected.filter(|t| self.is_numeric(*t)))?;
+            if l.ty != r.ty
+                && !(self.is_numeric(l.ty) && self.base_type(l.ty) == self.base_type(r.ty))
+            {
                 return Err(self.mixed_types_error(l.ty, r.ty, span));
             }
-            if !l.ty.is_numeric() {
+            if !self.is_numeric(l.ty) {
                 return Err(CheckError {
                     span,
                     message: "ordered comparisons require int or long values".to_owned(),
@@ -2385,12 +3001,13 @@ impl Checker {
                 Ty::Bool,
             ));
         } else {
-            self.check_operand_pair(left, right, expected.filter(|t| t.is_numeric()))?
+            self.check_operand_pair(left, right, expected.filter(|t| self.is_numeric(*t)))?
         };
-        if l.ty != r.ty {
+        if l.ty != r.ty && !(self.is_numeric(l.ty) && self.base_type(l.ty) == self.base_type(r.ty))
+        {
             return Err(self.mixed_types_error(l.ty, r.ty, span));
         }
-        if !l.ty.is_numeric() {
+        if !self.is_numeric(l.ty) {
             return Err(CheckError {
                 span,
                 message: format!(
@@ -2420,7 +3037,7 @@ impl Checker {
                     left: Box::new(l.clone()),
                     right: Box::new(r),
                 },
-                l.ty,
+                self.base_type(l.ty),
             ))
         } else {
             unreachable!()
@@ -2473,10 +3090,12 @@ impl Checker {
         right: Ty,
         span: Span,
     ) -> Result<(), CheckError> {
-        if left != right {
+        if left != right
+            && !(self.is_numeric(left) && self.base_type(left) == self.base_type(right))
+        {
             return Err(self.mixed_types_error(left, right, span));
         }
-        if !left.is_numeric() {
+        if !self.is_numeric(left) {
             return Err(CheckError {
                 span,
                 message: format!(
@@ -2504,11 +3123,26 @@ impl Checker {
                 message: "an if expression needs an else branch; add 'else { ... }'".to_owned(),
             });
         }
+        let entry_facts = self.facts.clone();
+        self.narrow_from_condition(&condition, true);
         let then_block =
             self.check_block(then_ast, true, if value_context { expected } else { None })?;
+        let then_facts = self.facts.clone();
+        self.facts = entry_facts.clone();
+        self.narrow_from_condition(&condition, false);
         let else_block = else_ast
             .map(|b| self.check_block(b, true, if value_context { expected } else { None }))
             .transpose()?;
+        let else_facts = self.facts.clone();
+        self.facts = match (
+            then_block.falls_through,
+            else_block.as_ref().is_none_or(|b| b.falls_through),
+        ) {
+            (true, true) => intersect_facts(&then_facts, &else_facts),
+            (true, false) => then_facts,
+            (false, true) => else_facts,
+            (false, false) => entry_facts,
+        };
         let ty = if !value_context {
             Ty::Unit
         } else {
@@ -2546,11 +3180,221 @@ impl Checker {
         })
     }
 
+    fn narrow_from_condition(&mut self, condition: &TExpr, truth: bool) {
+        match &condition.kind {
+            TExprKind::Unary {
+                op: UnaryOp::Not,
+                value,
+                ..
+            } => self.narrow_from_condition(value, !truth),
+            TExprKind::Binary {
+                op, left, right, ..
+            } if is_comparison(*op) => {
+                let (place_expr, value, mut op) = if let (Some(_), TExprKind::Integer(value)) =
+                    (self.place_key(left), &right.kind)
+                {
+                    (left.as_ref(), *value, *op)
+                } else if let (TExprKind::Integer(value), Some(_)) =
+                    (&left.kind, self.place_key(right))
+                {
+                    (right.as_ref(), *value, reverse_comparison(*op))
+                } else {
+                    return;
+                };
+                if !truth {
+                    op = negate_comparison(op);
+                }
+                let Some((root, fields)) = self.place_key(place_expr) else {
+                    return;
+                };
+                let Some((base_lo, base_hi)) = integer_bounds(self.base_type(place_expr.ty)) else {
+                    return;
+                };
+                let (mut lo, mut hi) = self
+                    .facts
+                    .get(&(root, fields.clone()))
+                    .copied()
+                    .or_else(|| {
+                        self.refinement(place_expr.ty)
+                            .map(|(_, lo, hi, _)| (lo, hi))
+                    })
+                    .unwrap_or((base_lo, base_hi));
+                match op {
+                    BinaryOp::Lt => hi = hi.min(value.saturating_sub(1)),
+                    BinaryOp::Le => hi = hi.min(value),
+                    BinaryOp::Gt => lo = lo.max(value.saturating_add(1)),
+                    BinaryOp::Ge => lo = lo.max(value),
+                    BinaryOp::Eq => {
+                        lo = lo.max(value);
+                        hi = hi.min(value);
+                    }
+                    BinaryOp::Ne => {
+                        if value == lo {
+                            lo = lo.saturating_add(1);
+                        } else if value == hi {
+                            hi = hi.saturating_sub(1);
+                        }
+                    }
+                    _ => return,
+                }
+                if lo <= hi {
+                    self.facts.insert((root, fields), (lo, hi));
+                }
+            }
+            TExprKind::Binary {
+                op: BinaryOp::And,
+                left,
+                right,
+                ..
+            } if truth => {
+                self.narrow_from_condition(left, true);
+                self.narrow_from_condition(right, true);
+            }
+            TExprKind::Binary {
+                op: BinaryOp::Or,
+                left,
+                right,
+                ..
+            } if !truth => {
+                self.narrow_from_condition(left, false);
+                self.narrow_from_condition(right, false);
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_loop_writes(&self, block: &Block, writes: &mut std::collections::HashSet<usize>) {
+        for statement in &block.statements {
+            match &statement.kind {
+                StmtKind::Assign { target, value, .. } => {
+                    if let Ok(place) = self.resolve_place(target) {
+                        writes.insert(place.root);
+                    }
+                    self.collect_expr_writes(value, writes);
+                }
+                StmtKind::Let { value, .. } | StmtKind::Expr(value) => {
+                    self.collect_expr_writes(value, writes)
+                }
+                StmtKind::Return(value) => {
+                    if let Some(value) = value {
+                        self.collect_expr_writes(value, writes);
+                    }
+                }
+                StmtKind::For {
+                    start, end, body, ..
+                } => {
+                    self.collect_expr_writes(start, writes);
+                    self.collect_expr_writes(end, writes);
+                    self.collect_loop_writes(body, writes);
+                }
+                StmtKind::Expect { value, .. } => self.collect_expr_writes(value, writes),
+                StmtKind::Block(body) => self.collect_loop_writes(body, writes),
+                StmtKind::Break | StmtKind::Continue => {}
+            }
+        }
+        if let Some(tail) = &block.tail {
+            self.collect_expr_writes(tail, writes);
+        }
+    }
+
+    fn collect_expr_writes(&self, expr: &Expr, writes: &mut std::collections::HashSet<usize>) {
+        match &expr.kind {
+            ExprKind::Call { name, args, .. } => {
+                if let Some(signature) = self.signatures.get(name) {
+                    for (arg, param) in args.iter().zip(&signature.params) {
+                        if param.mode == ParamMode::Write {
+                            if let Ok(place) = self.resolve_place(arg) {
+                                writes.insert(place.root);
+                            }
+                        }
+                    }
+                }
+                for arg in args {
+                    self.collect_expr_writes(arg, writes);
+                }
+            }
+            ExprKind::StructInit { fields, .. } => {
+                for field in fields {
+                    self.collect_expr_writes(&field.value, writes);
+                }
+            }
+            ExprKind::MethodCall { receiver, args, .. }
+            | ExprKind::OptionalCall { receiver, args, .. } => {
+                self.collect_expr_writes(receiver, writes);
+                for arg in args {
+                    self.collect_expr_writes(arg, writes);
+                }
+            }
+            ExprKind::Field { receiver, .. }
+            | ExprKind::Fit {
+                value: receiver, ..
+            }
+            | ExprKind::Try(receiver)
+            | ExprKind::ToLong {
+                value: receiver, ..
+            }
+            | ExprKind::Cast {
+                value: receiver, ..
+            }
+            | ExprKind::Unary {
+                value: receiver, ..
+            } => self.collect_expr_writes(receiver, writes),
+            ExprKind::QualifiedCase { args, .. } => {
+                for arg in args {
+                    self.collect_expr_writes(arg, writes);
+                }
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.collect_expr_writes(left, writes);
+                self.collect_expr_writes(right, writes);
+            }
+            ExprKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.collect_expr_writes(condition, writes);
+                self.collect_loop_writes(then_block, writes);
+                if let Some(other) = else_block {
+                    self.collect_loop_writes(other, writes);
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.collect_expr_writes(scrutinee, writes);
+                for arm in arms {
+                    self.collect_loop_writes(&arm.body, writes);
+                }
+            }
+            ExprKind::Return(value) => {
+                if let Some(value) = value {
+                    self.collect_expr_writes(value, writes);
+                }
+            }
+            ExprKind::Name(_)
+            | ExprKind::Unit
+            | ExprKind::Integer { .. }
+            | ExprKind::Bool(_)
+            | ExprKind::LoopExit(_) => {}
+        }
+    }
+
     fn declare(
         &mut self,
         name: &str,
         ty: Ty,
         mutable: bool,
+        span: Span,
+        loop_counter: bool,
+    ) -> Result<Binding, CheckError> {
+        self.declare_mode(name, ty, mutable, ParamMode::Read, span, loop_counter)
+    }
+
+    fn declare_mode(
+        &mut self,
+        name: &str,
+        ty: Ty,
+        mutable: bool,
+        mode: ParamMode,
         span: Span,
         loop_counter: bool,
     ) -> Result<Binding, CheckError> {
@@ -2569,6 +3413,7 @@ impl Checker {
             name: name.to_owned(),
             ty,
             mutable,
+            mode,
             span,
             loop_counter,
         };
@@ -2582,6 +3427,115 @@ impl Checker {
             .iter()
             .rev()
             .find_map(|scope| scope.get(name).cloned())
+    }
+
+    fn binding_by_id(&self, id: usize) -> Option<Binding> {
+        self.locals
+            .iter()
+            .flat_map(|scope| scope.values())
+            .find(|binding| binding.id == id)
+            .cloned()
+    }
+
+    fn function_param_count(&self) -> usize {
+        self.ast_functions
+            .get(self.current_function)
+            .map_or(0, |function| function.params.len())
+    }
+
+    fn resolve_place(&self, expr: &Expr) -> Result<TPlace, CheckError> {
+        match &expr.kind {
+            ExprKind::Name(name) => {
+                let binding = self
+                    .find_binding(name)
+                    .ok_or_else(|| self.unknown_local(name, expr.span))?;
+                Ok(TPlace {
+                    root: binding.id,
+                    fields: Vec::new(),
+                    ty: binding.ty,
+                })
+            }
+            ExprKind::Field {
+                receiver,
+                name,
+                field_span,
+            } => {
+                let mut place = self.resolve_place(receiver)?;
+                let TTypeKind::Struct(fields) = &self.types[place.ty.0].kind else {
+                    return Err(CheckError {
+                        span: *field_span,
+                        message: format!("{} has no fields", self.type_name(place.ty)),
+                    });
+                };
+                let Some(index) = fields.iter().position(|field| field.name == *name) else {
+                    let candidates = fields
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect::<Vec<_>>();
+                    let suffix = close_name(name, &candidates)
+                        .map(|suggestion| format!("; did you mean '{}'", suggestion))
+                        .unwrap_or_default();
+                    return Err(CheckError {
+                        span: *field_span,
+                        message: format!(
+                            "unknown field '{}' on {}{}",
+                            name,
+                            self.type_name(place.ty),
+                            suffix
+                        ),
+                    });
+                };
+                place.fields.push(index);
+                place.ty = fields[index].ty;
+                Ok(place)
+            }
+            _ => Err(CheckError {
+                span: expr.span,
+                message: "this expression is not an assignable place; use a var or a field of one"
+                    .to_owned(),
+            }),
+        }
+    }
+
+    fn place_is_mutable(&self, place: &TPlace) -> bool {
+        self.binding_by_id(place.root)
+            .is_some_and(|binding| binding.mutable)
+    }
+
+    fn typed_place_expr(&self, place: &TPlace, span: Span) -> TExpr {
+        let binding = self
+            .binding_by_id(place.root)
+            .expect("place owner exists in scope");
+        let mut expr = TExpr {
+            kind: TExprKind::Local(place.root),
+            ty: binding.ty,
+            span,
+        };
+        for index in &place.fields {
+            let field_ty = match &self.types[expr.ty.0].kind {
+                TTypeKind::Struct(fields) => fields[*index].ty,
+                _ => unreachable!("resolved place field belongs to a struct"),
+            };
+            expr = TExpr {
+                kind: TExprKind::Field {
+                    receiver: Box::new(expr),
+                    field_index: *index,
+                },
+                ty: field_ty,
+                span,
+            };
+        }
+        expr
+    }
+
+    fn invalidate_place(&mut self, place: &TPlace) {
+        let path = &place.fields;
+        self.facts.retain(|(root, fields), _| {
+            if *root != place.root {
+                return true;
+            }
+            !is_prefix(path, fields) && !is_prefix(fields, path)
+        });
     }
 
     fn unknown_local(&self, name: &str, span: Span) -> CheckError {
@@ -2621,7 +3575,10 @@ impl Checker {
     }
 
     fn type_mismatch(&self, actual: Ty, expected: Ty, span: Span) -> Result<(), CheckError> {
-        if actual == expected || actual == Ty::Never {
+        if actual == expected
+            || actual == Ty::Never
+            || (self.is_numeric(actual) && self.base_type(actual) == self.base_type(expected))
+        {
             Ok(())
         } else {
             Err(CheckError {
@@ -2635,6 +3592,223 @@ impl Checker {
                 .replace(" )", ")"),
             })
         }
+    }
+
+    fn base_type(&self, ty: Ty) -> Ty {
+        base_type(ty, &self.types)
+    }
+
+    fn is_numeric(&self, ty: Ty) -> bool {
+        is_numeric_type(ty, &self.types)
+    }
+
+    fn refinement(&self, ty: Ty) -> Option<(Ty, i128, i128, RefinePolicy)> {
+        refinement(ty, &self.types)
+    }
+
+    fn place_key(&self, expr: &TExpr) -> Option<(usize, Vec<usize>)> {
+        match &expr.kind {
+            TExprKind::Local(id) => Some((*id, Vec::new())),
+            TExprKind::Field {
+                receiver,
+                field_index,
+            } => {
+                let (root, mut fields) = self.place_key(receiver)?;
+                fields.push(*field_index);
+                Some((root, fields))
+            }
+            _ => None,
+        }
+    }
+
+    fn expr_range(&self, expr: &TExpr) -> Option<(i128, i128)> {
+        match &expr.kind {
+            TExprKind::Integer(value) => Some((*value, *value)),
+            TExprKind::Local(id) => self
+                .range_for_place(*id, &[])
+                .or_else(|| self.refinement(expr.ty).map(|(_, lo, hi, _)| (lo, hi)))
+                .or_else(|| integer_bounds(self.base_type(expr.ty))),
+            TExprKind::Field {
+                receiver,
+                field_index,
+            } => {
+                let (root, mut fields) = self.place_key(receiver)?;
+                fields.push(*field_index);
+                self.range_for_place(root, &fields)
+                    .or_else(|| self.refinement(expr.ty).map(|(_, lo, hi, _)| (lo, hi)))
+                    .or_else(|| integer_bounds(self.base_type(expr.ty)))
+            }
+            TExprKind::Convert {
+                value,
+                min,
+                max,
+                policy,
+            } => match policy {
+                RefinePolicy::Checked => self.expr_range(value),
+                RefinePolicy::Wrap | RefinePolicy::Clamp => Some((*min, *max)),
+            },
+            TExprKind::ToLong(value) => self.expr_range(value),
+            TExprKind::Unary {
+                op: UnaryOp::Neg,
+                value,
+                ..
+            } => {
+                let (lo, hi) = self.expr_range(value)?;
+                let base = self.base_type(expr.ty);
+                let (base_lo, base_hi) = integer_bounds(base)?;
+                Some(((-hi).max(base_lo), (-lo).min(base_hi)))
+            }
+            TExprKind::Binary {
+                op, left, right, ..
+            } if is_numeric_type(expr.ty, &self.types) => {
+                let base = self.base_type(expr.ty);
+                let (base_lo, base_hi) = integer_bounds(base)?;
+                if matches!(
+                    op,
+                    BinaryOp::WrapAdd | BinaryOp::WrapSub | BinaryOp::WrapMul
+                ) {
+                    return Some((base_lo, base_hi));
+                }
+                let (a, b) = self.expr_range(left)?;
+                let (c, d) = self.expr_range(right)?;
+                let (lo, hi) = match op {
+                    BinaryOp::Add => (a.saturating_add(c), b.saturating_add(d)),
+                    BinaryOp::Sub => (a.saturating_sub(d), b.saturating_sub(c)),
+                    BinaryOp::Mul => {
+                        let vals = [
+                            a.saturating_mul(c),
+                            a.saturating_mul(d),
+                            b.saturating_mul(c),
+                            b.saturating_mul(d),
+                        ];
+                        (*vals.iter().min()?, *vals.iter().max()?)
+                    }
+                    BinaryOp::Div | BinaryOp::Rem => (base_lo, base_hi),
+                    _ => return None,
+                };
+                Some((lo.max(base_lo), hi.min(base_hi)))
+            }
+            TExprKind::Call {
+                target: CallTarget::Min,
+                args,
+                ..
+            } if args.len() == 2 => {
+                let (a, b) = self.expr_range(&args[0])?;
+                let (c, d) = self.expr_range(&args[1])?;
+                Some((a.min(c), b.min(d)))
+            }
+            TExprKind::Call {
+                target: CallTarget::Max,
+                args,
+                ..
+            } if args.len() == 2 => {
+                let (a, b) = self.expr_range(&args[0])?;
+                let (c, d) = self.expr_range(&args[1])?;
+                Some((a.max(c), b.max(d)))
+            }
+            _ => self.refinement(expr.ty).map(|(_, lo, hi, _)| (lo, hi)),
+        }
+    }
+
+    fn range_for_place(&self, root: usize, fields: &[usize]) -> Option<(i128, i128)> {
+        self.facts.get(&(root, fields.to_vec())).copied()
+    }
+
+    fn record_nested_facts(&mut self, root: usize, prefix: &[usize], value: &TExpr) {
+        for (path, range) in self.nested_facts_for_value(prefix, value) {
+            self.facts.insert((root, path), range);
+        }
+    }
+
+    fn nested_facts_for_value(
+        &self,
+        prefix: &[usize],
+        value: &TExpr,
+    ) -> Vec<(Vec<usize>, (i128, i128))> {
+        let mut collected = Vec::new();
+        if let Some((source_root, source_fields)) = self.place_key(value) {
+            let copies = self
+                .facts
+                .iter()
+                .filter_map(|((owner, path), range)| {
+                    if *owner == source_root && is_prefix(&source_fields, path) {
+                        let mut target = prefix.to_vec();
+                        target.extend_from_slice(&path[source_fields.len()..]);
+                        Some((target, *range))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            collected.extend(copies);
+        }
+        if let TExprKind::StructConstruct { fields } = &value.kind {
+            for (index, field) in fields {
+                let mut path = prefix.to_vec();
+                path.push(*index);
+                if let Some(range) = self.expr_range(field) {
+                    collected.push((path.clone(), range));
+                }
+                collected.extend(self.nested_facts_for_value(&path, field));
+            }
+        }
+        collected
+    }
+
+    fn check_store(&mut self, expr: &Expr, target: Ty) -> Result<TExpr, CheckError> {
+        let typed = self.check_expr(expr, Some(target))?;
+        self.coerce_store_hint(typed, target, &source_hint(expr))
+    }
+
+    fn coerce_store(&self, value: TExpr, target: Ty) -> Result<TExpr, CheckError> {
+        self.coerce_store_hint(value, target, "value")
+    }
+
+    fn coerce_store_hint(&self, value: TExpr, target: Ty, hint: &str) -> Result<TExpr, CheckError> {
+        if self.base_type(value.ty) != self.base_type(target) {
+            return Err(self.mixed_types_error(value.ty, target, value.span));
+        }
+        let Some((base, min, max, policy)) = self.refinement(target) else {
+            if value.ty != target && self.base_type(value.ty) != self.base_type(target) {
+                return Err(self.mixed_types_error(value.ty, target, value.span));
+            }
+            return Ok(value);
+        };
+        if self.base_type(value.ty) != base {
+            return Err(self.mixed_types_error(value.ty, target, value.span));
+        }
+        if value.ty == target {
+            return Ok(value);
+        }
+        if policy == RefinePolicy::Checked {
+            let range = self
+                .expr_range(&value)
+                .unwrap_or_else(|| integer_bounds(base).unwrap());
+            if range.0 < min || range.1 > max {
+                return Err(CheckError {
+                    span: value.span,
+                    message: format!(
+                        "cannot prove this value fits {}; use ({})({}) for a checked cast or {}.fit<{}>() to handle failure",
+                        self.type_name(target),
+                        self.type_name(target),
+                        hint,
+                        hint,
+                        self.type_name(target)
+                    ),
+                });
+            }
+        }
+        let span = value.span;
+        Ok(TExpr {
+            kind: TExprKind::Convert {
+                value: Box::new(value),
+                min,
+                max,
+                policy,
+            },
+            ty: target,
+            span,
+        })
     }
 
     fn mixed_types_error(&self, left: Ty, right: Ty, span: Span) -> CheckError {
@@ -2705,6 +3879,83 @@ fn block_value_ty(block: &TBlock) -> Ty {
         tail.ty
     } else {
         Ty::Unit
+    }
+}
+
+fn integer_bounds(ty: Ty) -> Option<(i128, i128)> {
+    match ty {
+        Ty::Int => Some((i32::MIN as i128, i32::MAX as i128)),
+        Ty::Long => Some((i64::MIN as i128, i64::MAX as i128)),
+        _ => None,
+    }
+}
+
+fn is_prefix(a: &[usize], b: &[usize]) -> bool {
+    a.len() <= b.len() && a.iter().zip(b).all(|(x, y)| x == y)
+}
+
+fn places_overlap(a: &TPlace, b: &TPlace) -> bool {
+    a.root == b.root && (is_prefix(&a.fields, &b.fields) || is_prefix(&b.fields, &a.fields))
+}
+
+fn intersect_facts(
+    a: &HashMap<(usize, Vec<usize>), (i128, i128)>,
+    b: &HashMap<(usize, Vec<usize>), (i128, i128)>,
+) -> HashMap<(usize, Vec<usize>), (i128, i128)> {
+    a.iter()
+        .filter_map(|(key, left)| {
+            b.get(key)
+                .map(|right| (key.clone(), (left.0.min(right.0), left.1.max(right.1))))
+        })
+        .collect()
+}
+
+fn reverse_comparison(op: BinaryOp) -> BinaryOp {
+    match op {
+        BinaryOp::Lt => BinaryOp::Gt,
+        BinaryOp::Le => BinaryOp::Ge,
+        BinaryOp::Gt => BinaryOp::Lt,
+        BinaryOp::Ge => BinaryOp::Le,
+        other => other,
+    }
+}
+
+fn negate_comparison(op: BinaryOp) -> BinaryOp {
+    match op {
+        BinaryOp::Lt => BinaryOp::Ge,
+        BinaryOp::Le => BinaryOp::Gt,
+        BinaryOp::Gt => BinaryOp::Le,
+        BinaryOp::Ge => BinaryOp::Lt,
+        BinaryOp::Eq => BinaryOp::Ne,
+        BinaryOp::Ne => BinaryOp::Eq,
+        other => other,
+    }
+}
+
+fn target_name(expr: &Expr) -> &str {
+    match &expr.kind {
+        ExprKind::Name(name) => name,
+        ExprKind::Field { name, .. } => name,
+        _ => "place",
+    }
+}
+
+fn source_hint(expr: &Expr) -> String {
+    match &expr.kind {
+        ExprKind::Name(name) => name.clone(),
+        ExprKind::Field { receiver, name, .. } => format!("{}.{}", source_hint(receiver), name),
+        ExprKind::Integer {
+            magnitude,
+            negative,
+            ..
+        } => {
+            if *negative {
+                format!("-{magnitude}")
+            } else {
+                magnitude.to_string()
+            }
+        }
+        _ => "value".to_owned(),
     }
 }
 

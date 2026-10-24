@@ -1,0 +1,1 @@
+main.nl:5:7: error: cannot prove this value fits Size; use (Size)(value) for a checked cast or value.fit<Size>() to handle failure

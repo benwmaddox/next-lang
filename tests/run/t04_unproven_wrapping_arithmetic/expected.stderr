@@ -1,0 +1,1 @@
+main.nl:2:31: error: cannot prove this value fits Small; use (Small)(value) for a checked cast or value.fit<Small>() to handle failure

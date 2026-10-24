@@ -1,0 +1,1 @@
+main.nl:3:58: error: cannot assign through immutable 'let' binding 'o'; declare it with 'var'
