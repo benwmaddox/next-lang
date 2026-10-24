@@ -1,0 +1,3 @@
+You are the peer reviewer (Sol) for next-lang. Review docs/tasks/T06-arrays-lists-pools.md against docs/DESIGN.md (Collections, Layout, Pools and their ids including Owner parameters, Views of state that can change, Bounds, First steps acceptance cases) and the earlier tasks T01-T05 in docs/tasks/ (T04 is being implemented now; don't touch its files). Do not edit anything except docs/reviews/sol-T06-r1.md; never commit or touch branches.
+
+Write docs/reviews/sol-T06-r1.md, under 800 words: ambiguities an implementer would guess at (with your answer), conflicts with DESIGN.md or earlier tasks, scope to split or move, missing acceptance cases. Concrete; no praise.
