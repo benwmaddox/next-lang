@@ -1,0 +1,1 @@
+main.nl:8:9: error: cannot call 'reorder' while viewing 'app.values'; the call can structurally change that global

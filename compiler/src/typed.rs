@@ -439,6 +439,19 @@ pub enum CallTarget {
     Print,
     Min,
     Max,
+    Sort {
+        capacity: usize,
+        is_list: bool,
+    },
+    SortBy {
+        callsite_id: usize,
+        capacity: usize,
+        is_list: bool,
+    },
+    BinarySearch {
+        capacity: usize,
+        is_list: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

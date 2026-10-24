@@ -1,0 +1,1 @@
+main.nl:3:5: error: sorting input and scratch buffer exceed the temporary 64 KB native-stack limit; use a smaller collection or wait for M3 data-stack lowering

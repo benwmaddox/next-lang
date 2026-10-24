@@ -1,0 +1,8 @@
+ok   natural integer sorting handles empty, single, sorted, reverse, and full lists
+ok   bottom-up merge sorting orders both sides of a reverse run
+ok   arrays sort naturally for integer, bool, and payload-free enum values
+ok   sort_by passes a read-only context when ordering units by distance
+ok   sort_by remains stable across merge boundaries for equal keys
+ok   sort_by accepts a pure comparator function value
+ok   binary_search returns the first duplicate and handles both boundaries and empty inputs
+7 passed, 0 failed

@@ -1,0 +1,1 @@
+main.nl:3005:5: error: sorting exceeds the 1,000 element-type/capacity specialization limit; reduce the number of distinct types and capacities

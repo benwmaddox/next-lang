@@ -21,6 +21,7 @@ struct FunctionValueUse {
     function: usize,
     function_ty: Ty,
     span: Span,
+    sort_comparator: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -123,6 +124,9 @@ struct Checker {
     function_value_uses: Vec<FunctionValueUse>,
     indirect_calls: Vec<IndirectCallSite>,
     next_indirect_call: usize,
+    sort_specializations: std::collections::HashSet<(Ty, usize)>,
+    sort_scratch_specializations: std::collections::HashSet<(usize, Ty)>,
+    sort_scratch_use: HashMap<usize, u128>,
     suppress_function_value_effect_check: bool,
     locals: Vec<HashMap<String, Binding>>,
     scope_ids: Vec<usize>,
@@ -220,6 +224,9 @@ impl Checker {
             function_value_uses: Vec::new(),
             indirect_calls: Vec::new(),
             next_indirect_call: 0,
+            sort_specializations: std::collections::HashSet::new(),
+            sort_scratch_specializations: std::collections::HashSet::new(),
+            sort_scratch_use: HashMap::new(),
             suppress_function_value_effect_check: false,
             locals: Vec::new(),
             scope_ids: Vec::new(),
@@ -291,7 +298,10 @@ impl Checker {
         for p in self.programs.clone() {
             for function in p.functions {
                 let id = self.ast_functions.len();
-                if matches!(function.name.as_str(), "print" | "min" | "max") {
+                if matches!(
+                    function.name.as_str(),
+                    "print" | "min" | "max" | "sort" | "sort_by" | "binary_search"
+                ) {
                     return Err(CheckError {
                         span: function.span,
                         message: format!(
@@ -2764,6 +2774,57 @@ impl Checker {
         for function in functions {
             let mut active_views = Vec::new();
             let mut check = |call: &TExpr, views: &[GlobalPath]| {
+                if let TExprKind::Call {
+                    target: CallTarget::SortBy { .. },
+                    args,
+                    ..
+                } = &call.kind
+                {
+                    if let Some(input_path) = args.first().and_then(global_path_from_expr) {
+                        let expression = &args[1];
+                        let mut expression_effects = GlobalEffects::default();
+                        collect_global_expr_effects(expression, &mut expression_effects, functions);
+                        let mut add_indirect_targets = |nested: &TExpr, _views: &[GlobalPath]| {
+                            let nested_callsite = match &nested.kind {
+                                TExprKind::IndirectCall { callsite_id, .. } => Some(*callsite_id),
+                                TExprKind::Call {
+                                    target: CallTarget::SortBy { callsite_id, .. },
+                                    ..
+                                } => Some(*callsite_id),
+                                _ => None,
+                            };
+                            if let Some(nested_callsite) = nested_callsite {
+                                for target in
+                                    indirect_targets.get(&nested_callsite).into_iter().flatten()
+                                {
+                                    expression_effects.add_call(*target);
+                                }
+                            }
+                            Ok(())
+                        };
+                        visit_global_calls_expr(
+                            expression,
+                            &mut Vec::new(),
+                            &mut add_indirect_targets,
+                        )?;
+                        close_global_effects(&mut expression_effects, &effects);
+                        if let Some(access_path) = expression_effects
+                            .reads
+                            .iter()
+                            .chain(expression_effects.writes.iter().map(|write| &write.path))
+                            .find(|path| global_paths_overlap(&input_path, path))
+                        {
+                            return Err(CheckError {
+                                span: expression.span,
+                                message: format!(
+                                    "sort_by context accesses '{}' while sorting '{}'; pass a separate value",
+                                    self.global_path_name(access_path),
+                                    self.global_path_name(&input_path)
+                                ),
+                            });
+                        }
+                    }
+                }
                 let calls = match &call.kind {
                     TExprKind::Call {
                         target: CallTarget::Function(target),
@@ -3906,6 +3967,8 @@ impl Checker {
             | ExprKind::RingLiteral => None,
             ExprKind::Call { name, .. } => {
                 if name == "print" {
+                    Some(Ty::Unit)
+                } else if name == "sort" || name == "sort_by" {
                     Some(Ty::Unit)
                 } else if let Some(value_ty) = self.visible_value_type(name) {
                     match self.types.get(value_ty.0).map(|ty| &ty.kind) {
@@ -6004,6 +6067,317 @@ impl Checker {
         ))
     }
 
+    fn record_sort_specialization(
+        &mut self,
+        element: Ty,
+        capacity: usize,
+        span: Span,
+    ) -> Result<(), CheckError> {
+        self.sort_specializations.insert((element, capacity));
+        if self.sort_specializations.len() > 1_000 {
+            return Err(CheckError {
+                span,
+                message: "sorting exceeds the 1,000 element-type/capacity specialization limit; reduce the number of distinct types and capacities".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn check_sort_scratch(
+        &mut self,
+        storage_ty: Ty,
+        input_place: &TPlace,
+        span: Span,
+    ) -> Result<(), CheckError> {
+        const SORT_SCRATCH_LIMIT: u128 = 65_536;
+        let mut cache = vec![None; self.types.len()];
+        let bytes = self.type_size_checked(storage_ty, &mut cache, span)?;
+        if bytes > SORT_SCRATCH_LIMIT {
+            return Err(CheckError {
+                span,
+                message: format!(
+                    "sort scratch buffer for {} exceeds the temporary 64 KB native-stack limit; this specialization needs M3 data-stack lowering",
+                    self.type_name(storage_ty)
+                ),
+            });
+        }
+        if let Some(binding) = self.binding_by_id(input_place.root) {
+            let input_bytes = self.type_size_checked(binding.ty, &mut cache, span)?;
+            if input_bytes.saturating_add(bytes) > SORT_SCRATCH_LIMIT {
+                return Err(CheckError {
+                    span,
+                    message: "sorting input and scratch buffer exceed the temporary 64 KB native-stack limit; use a smaller collection or wait for M3 data-stack lowering".to_owned(),
+                });
+            }
+        }
+        if self
+            .sort_scratch_specializations
+            .insert((self.current_function, storage_ty))
+        {
+            let used = self
+                .sort_scratch_use
+                .entry(self.current_function)
+                .or_default();
+            let total = used.saturating_add(bytes);
+            if total > SORT_SCRATCH_LIMIT {
+                return Err(CheckError {
+                    span,
+                    message: "sorting scratch buffers in this function exceed the temporary 64 KB native-stack limit; reduce the number or capacity of sorted collection types".to_owned(),
+                });
+            }
+            *used = total;
+        }
+        Ok(())
+    }
+
+    fn check_sort_input(
+        &mut self,
+        expr: &Expr,
+        input_name: &str,
+        span: Span,
+        require_write: bool,
+        check_natural_order: bool,
+    ) -> Result<(TExpr, TPlace, Ty, usize, bool), CheckError> {
+        let collection = self.check_expr(expr, None)?;
+        let (element, capacity, is_list) = match self.types[collection.ty.0].kind {
+            TTypeKind::Array { element, capacity } => (element, capacity, false),
+            TTypeKind::List { element, capacity } => (element, capacity, true),
+            _ => {
+                return Err(CheckError {
+                    span,
+                    message: format!(
+                        "{} expects a list<T, N> or array T[N]; found {}",
+                        input_name,
+                        self.type_name(collection.ty)
+                    ),
+                });
+            }
+        };
+        if check_natural_order {
+            let base = self.base_type(element);
+            let naturally_ordered = matches!(
+                self.types[base.0].kind,
+                TTypeKind::Int | TTypeKind::Long | TTypeKind::Bool
+            ) || matches!(&self.types[base.0].kind, TTypeKind::Enum(cases) if cases.iter().all(|case| case.payload.is_empty()));
+            if !naturally_ordered {
+                return Err(CheckError {
+                    span,
+                    message: format!(
+                        "sort supports integer, bool, and payload-free enum elements; use sort_by for {}",
+                        self.type_name(element)
+                    ),
+                });
+            }
+        }
+        let place = self.resolve_place(expr).map_err(|_| CheckError {
+            span: expr.span,
+            message: "sorting needs a writable list or array place; use var or pass it as write"
+                .to_owned(),
+        })?;
+        if require_write && !self.place_is_mutable(&place) {
+            return Err(CheckError {
+                span: expr.span,
+                message: "sorting needs mutable storage; use var or pass it as write".to_owned(),
+            });
+        }
+        if require_write
+            && self.active_views.iter().any(|view| {
+                let view = self.canonical_place(view);
+                let receiver = self.canonical_place(&place);
+                places_may_prefix(&receiver, &view) || places_may_prefix(&view, &receiver)
+            })
+        {
+            return Err(CheckError {
+                span,
+                message: "cannot sort a collection while one of its views is live; move sorting after the loop".to_owned(),
+            });
+        }
+        self.record_sort_specialization(element, capacity, span)?;
+        if require_write {
+            self.check_sort_scratch(collection.ty, &place, span)?;
+        }
+        Ok((collection, place, element, capacity, is_list))
+    }
+
+    fn sort_callback_type(&mut self, context: Ty, element: Ty, span: Span) -> Ty {
+        self.intern_function_type(
+            vec![
+                TFunctionTypeParam {
+                    ty: context,
+                    mode: ParamMode::Read,
+                },
+                TFunctionTypeParam {
+                    ty: element,
+                    mode: ParamMode::Read,
+                },
+                TFunctionTypeParam {
+                    ty: element,
+                    mode: ParamMode::Read,
+                },
+            ],
+            Ty::Bool,
+            TFunctionEffects::default(),
+            span,
+        )
+    }
+
+    fn check_sort_builtin(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        span: Span,
+    ) -> Result<(TExprKind, Ty), CheckError> {
+        match name {
+            "sort" => {
+                if args.len() != 1 {
+                    return Err(CheckError {
+                        span,
+                        message: format!(
+                            "sort takes one writable list or array; got {} arguments",
+                            args.len()
+                        ),
+                    });
+                }
+                if self.checking_constant || self.checking_global_initializer {
+                    return Err(CheckError {
+                        span,
+                        message: "sort cannot run during constant or global initialization; sort from a function".to_owned(),
+                    });
+                }
+                let (collection, _, _, capacity, is_list) =
+                    self.check_sort_input(&args[0], "sort", span, true, true)?;
+                Ok((
+                    TExprKind::Call {
+                        target: CallTarget::Sort { capacity, is_list },
+                        args: vec![collection],
+                        effect: Effect::None,
+                    },
+                    Ty::Unit,
+                ))
+            }
+            "sort_by" => {
+                if args.len() != 3 {
+                    return Err(CheckError {
+                        span,
+                        message: format!(
+                            "sort_by takes a writable list or array, a context, and a comparator; got {} arguments",
+                            args.len()
+                        ),
+                    });
+                }
+                if self.checking_constant || self.checking_global_initializer {
+                    return Err(CheckError {
+                        span,
+                        message: "sort_by cannot run during constant or global initialization; sort from a function".to_owned(),
+                    });
+                }
+                let (collection, collection_place, element, capacity, is_list) =
+                    self.check_sort_input(&args[0], "sort_by", span, true, false)?;
+                let context = self.check_expr(&args[1], None)?;
+                if self.type_contains_pool(context.ty)
+                    && !matches!(self.types[context.ty.0].kind, TTypeKind::Pool { .. })
+                {
+                    return Err(CheckError {
+                        span: args[1].span,
+                        message: "sort_by context cannot contain a pool; pass a read-only value or a pool directly".to_owned(),
+                    });
+                }
+                if let Some(context_place) = self.resolve_place(&args[1]).ok() {
+                    if places_overlap(
+                        &self.canonical_place(&collection_place),
+                        &self.canonical_place(&context_place),
+                    ) {
+                        return Err(CheckError {
+                            span: args[1].span,
+                            message: "sort_by context overlaps the collection being sorted; pass a separate copy".to_owned(),
+                        });
+                    }
+                }
+                let callback_ty = self.sort_callback_type(context.ty, element, args[2].span);
+                let comparator_use_start = self.function_value_uses.len();
+                let comparator =
+                    self.check_expr(&args[2], Some(callback_ty))
+                        .map_err(|mut error| {
+                            if error.message.contains("extra effect '") {
+                                error.message.push_str("; a sort comparator must be pure");
+                            }
+                            error
+                        })?;
+                for usage in &mut self.function_value_uses[comparator_use_start..] {
+                    usage.sort_comparator = true;
+                }
+                let callsite_id = self.next_indirect_call;
+                self.next_indirect_call += 1;
+                if self.current_function < self.ast_functions.len() + self.ast_tests.len() {
+                    self.indirect_calls.push(IndirectCallSite {
+                        id: callsite_id,
+                        from: self.current_function,
+                        function_ty: comparator.ty,
+                        span: args[2].span,
+                    });
+                }
+                Ok((
+                    TExprKind::Call {
+                        target: CallTarget::SortBy {
+                            callsite_id,
+                            capacity,
+                            is_list,
+                        },
+                        args: vec![collection, context, comparator],
+                        effect: Effect::None,
+                    },
+                    Ty::Unit,
+                ))
+            }
+            "binary_search" => {
+                if args.len() != 2 {
+                    return Err(CheckError {
+                        span,
+                        message: format!(
+                            "binary_search takes a list or array and a key; got {} arguments",
+                            args.len()
+                        ),
+                    });
+                }
+                let collection = self.check_expr(&args[0], None)?;
+                let (element, capacity, is_list) = match self.types[collection.ty.0].kind {
+                    TTypeKind::Array { element, capacity } => (element, capacity, false),
+                    TTypeKind::List { element, capacity } => (element, capacity, true),
+                    _ => {
+                        return Err(CheckError {
+                            span: args[0].span,
+                            message: format!(
+                                "binary_search expects an integer list or array; found {}",
+                                self.type_name(collection.ty)
+                            ),
+                        });
+                    }
+                };
+                if !matches!(self.base_type(element), Ty::Int | Ty::Long) {
+                    return Err(CheckError {
+                        span: args[0].span,
+                        message: format!(
+                            "binary_search supports integer elements; found {}",
+                            self.type_name(element)
+                        ),
+                    });
+                }
+                self.record_sort_specialization(element, capacity, span)?;
+                let key = self.check_store(&args[1], element)?;
+                let result = self.option_type(Ty::Long, span);
+                Ok((
+                    TExprKind::Call {
+                        target: CallTarget::BinarySearch { capacity, is_list },
+                        args: vec![collection, key],
+                        effect: Effect::None,
+                    },
+                    result,
+                ))
+            }
+            _ => unreachable!(),
+        }
+    }
+
     fn check_expr(&mut self, expr: &Expr, expected: Option<Ty>) -> Result<TExpr, CheckError> {
         let (kind, ty) = match &expr.kind {
             ExprKind::Unit => {
@@ -6121,6 +6495,7 @@ impl Checker {
                             function: signature.id,
                             function_ty: value_ty,
                             span: expr.span,
+                            sort_comparator: false,
                         });
                     }
                     (TExprKind::FunctionValue(signature.id), value_ty)
@@ -6577,6 +6952,9 @@ impl Checker {
                     };
                     let value = self.default_typed_value(target, *call_span)?;
                     return self.finish_expr(expr, (value.kind, target), expected);
+                } else if matches!(name.as_str(), "sort" | "sort_by" | "binary_search") {
+                    let checked = self.check_sort_builtin(name, args, *call_span)?;
+                    return self.finish_expr(expr, checked, expected);
                 } else if name == "fill" {
                     if args.len() != 1 {
                         return Err(CheckError {
@@ -9407,10 +9785,17 @@ impl Checker {
             {
                 return Err(CheckError {
                     span: usage.span,
-                    message: format!(
-                        "function '{}' has extra effect '{}'; add it to the function type's effects bound",
-                        functions[usage.function].name, extra
-                    ),
+                    message: if usage.sort_comparator {
+                        format!(
+                            "function '{}' has extra effect '{}'; a sort comparator must be pure",
+                            functions[usage.function].name, extra
+                        )
+                    } else {
+                        format!(
+                            "function '{}' has extra effect '{}'; add it to the function type's effects bound",
+                            functions[usage.function].name, extra
+                        )
+                    },
                 });
             }
         }
@@ -9786,6 +10171,12 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
                 }
                 CallTarget::Print => effects.prints = true,
                 CallTarget::Min | CallTarget::Max => {}
+                CallTarget::Sort { .. } | CallTarget::SortBy { .. } => {
+                    if let Some(path) = args.first().and_then(global_path_from_expr) {
+                        effects.add_write(path, true);
+                    }
+                }
+                CallTarget::BinarySearch { .. } => {}
             }
             for argument in args {
                 collect_global_expr_effects(argument, effects, functions);
@@ -10033,10 +10424,15 @@ fn visit_global_calls_expr(
     active_views: &mut Vec<GlobalPath>,
     check: &mut impl FnMut(&TExpr, &[GlobalPath]) -> Result<(), CheckError>,
 ) -> Result<(), CheckError> {
-    if matches!(
-        expr.kind,
-        TExprKind::Call { .. } | TExprKind::OptionalCall { .. } | TExprKind::IndirectCall { .. }
-    ) {
+    let needs_global_call_check = matches!(
+        &expr.kind,
+        TExprKind::Call {
+            target: CallTarget::Function(_) | CallTarget::SortBy { .. },
+            ..
+        } | TExprKind::OptionalCall { .. }
+            | TExprKind::IndirectCall { .. }
+    );
+    if needs_global_call_check {
         check(expr, active_views)?;
     }
     match &expr.kind {

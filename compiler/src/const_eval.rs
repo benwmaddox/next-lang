@@ -412,12 +412,12 @@ fn expression_cacheability_problem(
         });
     }
     let mut calls = Vec::<(usize, Span)>::new();
-    let mut effects = Vec::<Span>::new();
+    let mut effects = Vec::<(Span, &'static str)>::new();
     collect_calls_expr(expr, &mut calls, &mut effects);
-    if let Some(span) = effects.first() {
+    if let Some((span, effect)) = effects.first() {
         return Some(CacheabilityProblem {
             reason: "compile-time evaluation cannot reach an effect".to_owned(),
-            chain: vec!["print".to_owned()],
+            chain: vec![(*effect).to_owned()],
             span: Some(*span),
         });
     }
@@ -639,12 +639,12 @@ fn function_cacheability_problem(
         return problem;
     }
     let mut calls = Vec::new();
-    let mut effects = Vec::new();
+    let mut effects = Vec::<(Span, &'static str)>::new();
     collect_calls_block(&function.body, &mut calls, &mut effects);
     if !effects.is_empty() {
         let problem = Some((
             "compile-time evaluation cannot reach an effect".to_owned(),
-            vec![function.name.clone(), "print".to_owned()],
+            vec![function.name.clone(), effects[0].1.to_owned()],
         ));
         memo[id] = Some(problem.clone());
         return problem;
@@ -675,7 +675,11 @@ fn function_cacheability_problem(
     None
 }
 
-fn collect_calls_block(block: &TBlock, calls: &mut Vec<(usize, Span)>, effects: &mut Vec<Span>) {
+fn collect_calls_block(
+    block: &TBlock,
+    calls: &mut Vec<(usize, Span)>,
+    effects: &mut Vec<(Span, &'static str)>,
+) {
     for stmt in &block.statements {
         match &stmt.kind {
             TStmtKind::Let { value, .. }
@@ -727,13 +731,21 @@ fn collect_calls_block(block: &TBlock, calls: &mut Vec<(usize, Span)>, effects: 
     }
 }
 
-fn collect_calls_expr(expr: &TExpr, calls: &mut Vec<(usize, Span)>, effects: &mut Vec<Span>) {
+fn collect_calls_expr(
+    expr: &TExpr,
+    calls: &mut Vec<(usize, Span)>,
+    effects: &mut Vec<(Span, &'static str)>,
+) {
     match &expr.kind {
         TExprKind::Call { target, args, .. } => {
             match target {
                 CallTarget::Function(id) => calls.push((*id, expr.span)),
-                CallTarget::Print => effects.push(expr.span),
+                CallTarget::Print => effects.push((expr.span, "print")),
                 CallTarget::Min | CallTarget::Max => {}
+                CallTarget::Sort { .. } | CallTarget::SortBy { .. } => {
+                    effects.push((expr.span, "sort"))
+                }
+                CallTarget::BinarySearch { .. } => {}
             }
             for arg in args {
                 collect_calls_expr(arg, calls, effects);
@@ -2030,6 +2042,54 @@ impl Evaluator<'_> {
                     } else {
                         left.max(right)
                     })
+                }
+                CallTarget::BinarySearch { .. } => {
+                    let collection = value_or_flow!(self.eval_expr(&args[0], locals));
+                    let key = value_or_flow!(self.eval_expr(&args[1], locals));
+                    let key = as_integer(&key);
+                    let items = match collection {
+                        ConstValue::Array(items) | ConstValue::List(items) => items,
+                        _ => {
+                            return Err(self.failure(
+                                expr.span,
+                                "binary_search receiver was not an array or list",
+                            ));
+                        }
+                    };
+                    if cfg!(debug_assertions)
+                        && items
+                            .windows(2)
+                            .any(|pair| as_integer(&pair[0]) > as_integer(&pair[1]))
+                    {
+                        return Err(self.failure(expr.span, "binary_search requires sorted input"));
+                    }
+                    let mut low = 0usize;
+                    let mut high = items.len();
+                    while low < high {
+                        let middle = low + (high - low) / 2;
+                        if as_integer(&items[middle]) < key {
+                            low = middle + 1;
+                        } else {
+                            high = middle;
+                        }
+                    }
+                    if items.get(low).is_some_and(|value| as_integer(value) == key) {
+                        ConstValue::Enum {
+                            case_index: 0,
+                            payload: vec![ConstValue::Integer(low as i128)],
+                        }
+                    } else {
+                        ConstValue::Enum {
+                            case_index: 1,
+                            payload: Vec::new(),
+                        }
+                    }
+                }
+                CallTarget::Sort { .. } | CallTarget::SortBy { .. } => {
+                    return Err(self.failure(
+                        expr.span,
+                        "sorting cannot run during compile-time evaluation",
+                    ));
                 }
             },
             TExprKind::IndirectCall { callee, args, .. } => {

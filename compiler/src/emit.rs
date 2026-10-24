@@ -1323,6 +1323,7 @@ struct FunctionEmitter<'a> {
     slots: Vec<Option<Ty>>,
     loops: Vec<LoopTargets>,
     views: HashMap<usize, ViewInfo>,
+    sort_scratch: HashMap<Ty, String>,
     prologue_end: usize,
 }
 
@@ -1358,6 +1359,7 @@ impl<'a> FunctionEmitter<'a> {
             slots: Vec::new(),
             loops: Vec::new(),
             views: HashMap::new(),
+            sort_scratch: HashMap::new(),
             prologue_end: 0,
         };
         for param in &function.params {
@@ -6154,6 +6156,624 @@ impl<'a> FunctionEmitter<'a> {
         result
     }
 
+    fn emit_sort_less(
+        &mut self,
+        element_ty: Ty,
+        callback: Option<(Ty, Ty, &str, &str)>,
+        left: &str,
+        right: &str,
+    ) -> String {
+        if let Some((callback_ty, context_ty, function_value, context_value)) = callback {
+            let TTypeKind::Function { params, .. } = &self.program.types[callback_ty.0].kind else {
+                unreachable!("sort_by comparator has a function type")
+            };
+            let context_arg = if matches!(
+                self.program.types[context_ty.0].kind,
+                TTypeKind::Pool { .. }
+            ) {
+                format!("ptr {context_value}")
+            } else {
+                format!("{} {context_value}", self.lltype(context_ty))
+            };
+            debug_assert_eq!(params.len(), 3);
+            let args = format!(
+                "{context_arg}, {} {left}, {} {right}",
+                self.lltype(element_ty),
+                self.lltype(element_ty)
+            );
+            let result = self.temp();
+            self.instruction(format!("{result} = call i1 {function_value}({args})"));
+            return result;
+        }
+
+        let ordered_ty = base_type(element_ty, &self.program.types);
+        match &self.program.types[ordered_ty.0].kind {
+            TTypeKind::Int | TTypeKind::Long | TTypeKind::Bool => {
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = icmp {} {} {left}, {right}",
+                    if ordered_ty == Ty::Bool { "ult" } else { "slt" },
+                    self.lltype(ordered_ty)
+                ));
+                result
+            }
+            TTypeKind::Enum(_) => {
+                let left_tag = self.temp();
+                self.instruction(format!(
+                    "{left_tag} = extractvalue {} {left}, 0",
+                    self.lltype(element_ty)
+                ));
+                let right_tag = self.temp();
+                self.instruction(format!(
+                    "{right_tag} = extractvalue {} {right}, 0",
+                    self.lltype(element_ty)
+                ));
+                let result = self.temp();
+                self.instruction(format!("{result} = icmp ult i32 {left_tag}, {right_tag}"));
+                result
+            }
+            _ => unreachable!("checker restricts natural sort element types"),
+        }
+    }
+
+    fn emit_sort(&mut self, expr: &TExpr, args: &[TExpr], capacity: usize, is_list: bool) {
+        let collection = &args[0];
+        let collection_ty = collection.ty;
+        let collection_ptr = self.emit_place_pointer_expr(collection);
+        if self.terminated {
+            return;
+        }
+        let mut callback = None;
+        if args.len() == 3 {
+            let context = &args[1];
+            let context_value = if matches!(
+                self.program.types[context.ty.0].kind,
+                TTypeKind::Pool { .. }
+            ) {
+                self.emit_place_pointer_expr(context)
+            } else {
+                self.emit_expr(context)
+            };
+            if self.terminated {
+                return;
+            }
+            let function_value = self.emit_expr(&args[2]);
+            if self.terminated {
+                return;
+            }
+            let TTypeKind::Function { params, .. } = &self.program.types[args[2].ty.0].kind else {
+                unreachable!("type checker validates sort_by comparator")
+            };
+            callback = Some((args[2].ty, params[0].ty, function_value, context_value));
+        }
+        let count = if is_list {
+            self.emit_collection_count(collection_ty, &collection_ptr)
+        } else {
+            capacity.to_string()
+        };
+        let element_ty = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            _ => unreachable!("sort input was checked as a list or array"),
+        };
+        let scratch_ptr = if let Some(pointer) = self.sort_scratch.get(&collection_ty) {
+            pointer.clone()
+        } else {
+            let pointer = self.entry_alloca(collection_ty);
+            self.sort_scratch.insert(collection_ty, pointer.clone());
+            pointer
+        };
+        let i_ptr = self.entry_alloca(Ty::Long);
+        let j_ptr = self.entry_alloca(Ty::Long);
+
+        let small = self.temp();
+        self.instruction(format!("{small} = icmp ult i64 {count}, 16"));
+        let insertion = self.new_label("sort.insertion");
+        let merge = self.new_label("sort.merge.init");
+        let finished = self.new_label("sort.done");
+        self.terminate(format!("br i1 {small}, label %{insertion}, label %{merge}"));
+
+        self.start_block(&insertion);
+        self.instruction(format!("store i64 1, ptr {i_ptr}, align 1"));
+        let insertion_cond = self.new_label("sort.insertion.cond");
+        let insertion_body = self.new_label("sort.insertion.body");
+        let insertion_inner = self.new_label("sort.insertion.inner");
+        let insertion_compare = self.new_label("sort.insertion.compare");
+        let insertion_shift = self.new_label("sort.insertion.shift");
+        let insertion_store = self.new_label("sort.insertion.store");
+        let insertion_exit = self.new_label("sort.insertion.exit");
+        self.terminate(format!("br label %{insertion_cond}"));
+        self.start_block(&insertion_cond);
+        let i = self.temp();
+        self.instruction(format!("{i} = load i64, ptr {i_ptr}, align 1"));
+        let more = self.temp();
+        self.instruction(format!("{more} = icmp ult i64 {i}, {count}"));
+        self.terminate(format!(
+            "br i1 {more}, label %{insertion_body}, label %{insertion_exit}"
+        ));
+        self.start_block(&insertion_body);
+        let value = self.emit_collection_element(collection_ty, &collection_ptr, &i);
+        self.emit_store_collection_element(collection_ty, &scratch_ptr, &i, &value);
+        self.instruction(format!("store i64 {i}, ptr {j_ptr}, align 1"));
+        self.terminate(format!("br label %{insertion_inner}"));
+        self.start_block(&insertion_inner);
+        let j = self.temp();
+        self.instruction(format!("{j} = load i64, ptr {j_ptr}, align 1"));
+        let has_previous = self.temp();
+        self.instruction(format!("{has_previous} = icmp ugt i64 {j}, 0"));
+        self.terminate(format!(
+            "br i1 {has_previous}, label %{insertion_compare}, label %{insertion_store}"
+        ));
+        self.start_block(&insertion_compare);
+        let previous = self.temp();
+        self.instruction(format!("{previous} = sub i64 {j}, 1"));
+        let previous_value =
+            self.emit_collection_element(collection_ty, &collection_ptr, &previous);
+        let key_index = self.temp();
+        self.instruction(format!("{key_index} = load i64, ptr {i_ptr}, align 1"));
+        let key_value = self.emit_collection_element(collection_ty, &scratch_ptr, &key_index);
+        let should_shift = self.emit_sort_less(
+            element_ty,
+            callback
+                .as_ref()
+                .map(|(callback_ty, context_ty, function_value, context_value)| {
+                    (
+                        *callback_ty,
+                        *context_ty,
+                        function_value.as_str(),
+                        context_value.as_str(),
+                    )
+                }),
+            &key_value,
+            &previous_value,
+        );
+        self.terminate(format!(
+            "br i1 {should_shift}, label %{insertion_shift}, label %{insertion_store}"
+        ));
+        self.start_block(&insertion_shift);
+        self.emit_store_collection_element(collection_ty, &collection_ptr, &j, &previous_value);
+        self.instruction(format!("store i64 {previous}, ptr {j_ptr}, align 1"));
+        self.terminate(format!("br label %{insertion_inner}"));
+        self.start_block(&insertion_store);
+        let j = self.temp();
+        self.instruction(format!("{j} = load i64, ptr {j_ptr}, align 1"));
+        let key_index = self.temp();
+        self.instruction(format!("{key_index} = load i64, ptr {i_ptr}, align 1"));
+        let key_value = self.emit_collection_element(collection_ty, &scratch_ptr, &key_index);
+        self.emit_store_collection_element(collection_ty, &collection_ptr, &j, &key_value);
+        let i = self.temp();
+        self.instruction(format!("{i} = load i64, ptr {i_ptr}, align 1"));
+        let next = self.temp();
+        self.instruction(format!("{next} = add i64 {i}, 1"));
+        self.instruction(format!("store i64 {next}, ptr {i_ptr}, align 1"));
+        self.terminate(format!("br label %{insertion_cond}"));
+        self.start_block(&insertion_exit);
+        self.terminate(format!("br label %{finished}"));
+
+        self.start_block(&merge);
+        let width_ptr = self.entry_alloca(Ty::Long);
+        let left_ptr = self.entry_alloca(Ty::Long);
+        let mid_ptr = self.entry_alloca(Ty::Long);
+        let right_ptr = self.entry_alloca(Ty::Long);
+        let out_ptr = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 1, ptr {width_ptr}, align 1"));
+        let merge_cond = self.new_label("sort.merge.cond");
+        let merge_pass = self.new_label("sort.merge.pass");
+        let group_cond = self.new_label("sort.merge.group.cond");
+        let group_setup = self.new_label("sort.merge.group.setup");
+        let values_cond = self.new_label("sort.merge.values.cond");
+        let compare = self.new_label("sort.merge.compare");
+        let choose_left = self.new_label("sort.merge.left");
+        let choose_right = self.new_label("sort.merge.right");
+        let group_done = self.new_label("sort.merge.group.done");
+        let copy_cond = self.new_label("sort.merge.copy.cond");
+        let copy_body = self.new_label("sort.merge.copy.body");
+        let copy_done = self.new_label("sort.merge.copy.done");
+        let merge_done = self.new_label("sort.merge.done");
+        self.terminate(format!("br label %{merge_cond}"));
+        self.start_block(&merge_cond);
+        let width = self.temp();
+        self.instruction(format!("{width} = load i64, ptr {width_ptr}, align 1"));
+        let finished_passes = self.temp();
+        self.instruction(format!("{finished_passes} = icmp uge i64 {width}, {count}"));
+        self.terminate(format!(
+            "br i1 {finished_passes}, label %{merge_done}, label %{merge_pass}"
+        ));
+        self.start_block(&merge_pass);
+        self.instruction(format!("store i64 0, ptr {left_ptr}, align 1"));
+        self.terminate(format!("br label %{group_cond}"));
+        self.start_block(&group_cond);
+        let left = self.temp();
+        self.instruction(format!("{left} = load i64, ptr {left_ptr}, align 1"));
+        let more_groups = self.temp();
+        self.instruction(format!("{more_groups} = icmp ult i64 {left}, {count}"));
+        self.terminate(format!(
+            "br i1 {more_groups}, label %{group_setup}, label %{copy_cond}"
+        ));
+        self.start_block(&group_setup);
+        let width = self.temp();
+        self.instruction(format!("{width} = load i64, ptr {width_ptr}, align 1"));
+        let left = self.temp();
+        self.instruction(format!("{left} = load i64, ptr {left_ptr}, align 1"));
+        let mid_candidate = self.temp();
+        self.instruction(format!("{mid_candidate} = add i64 {left}, {width}"));
+        let mid_past = self.temp();
+        self.instruction(format!(
+            "{mid_past} = icmp ugt i64 {mid_candidate}, {count}"
+        ));
+        let mid = self.temp();
+        self.instruction(format!(
+            "{mid} = select i1 {mid_past}, i64 {count}, i64 {mid_candidate}"
+        ));
+        self.instruction(format!("store i64 {mid}, ptr {mid_ptr}, align 1"));
+        let right_candidate = self.temp();
+        self.instruction(format!("{right_candidate} = add i64 {mid}, {width}"));
+        let right_past = self.temp();
+        self.instruction(format!(
+            "{right_past} = icmp ugt i64 {right_candidate}, {count}"
+        ));
+        let right = self.temp();
+        self.instruction(format!(
+            "{right} = select i1 {right_past}, i64 {count}, i64 {right_candidate}"
+        ));
+        self.instruction(format!("store i64 {right}, ptr {right_ptr}, align 1"));
+        self.instruction(format!("store i64 {left}, ptr {i_ptr}, align 1"));
+        self.instruction(format!("store i64 {mid}, ptr {j_ptr}, align 1"));
+        self.instruction(format!("store i64 {left}, ptr {out_ptr}, align 1"));
+        self.terminate(format!("br label %{values_cond}"));
+        self.start_block(&values_cond);
+        let i = self.temp();
+        self.instruction(format!("{i} = load i64, ptr {i_ptr}, align 1"));
+        let j = self.temp();
+        self.instruction(format!("{j} = load i64, ptr {j_ptr}, align 1"));
+        let mid = self.temp();
+        self.instruction(format!("{mid} = load i64, ptr {mid_ptr}, align 1"));
+        let right = self.temp();
+        self.instruction(format!("{right} = load i64, ptr {right_ptr}, align 1"));
+        let i_more = self.temp();
+        self.instruction(format!("{i_more} = icmp ult i64 {i}, {mid}"));
+        let j_more = self.temp();
+        self.instruction(format!("{j_more} = icmp ult i64 {j}, {right}"));
+        let both = self.temp();
+        self.instruction(format!("{both} = and i1 {i_more}, {j_more}"));
+        let values_done = self.new_label("sort.merge.values.done");
+        let one_side = self.new_label("sort.merge.one.side");
+        self.terminate(format!("br i1 {both}, label %{compare}, label %{one_side}"));
+        self.start_block(&one_side);
+        let any = self.temp();
+        self.instruction(format!("{any} = or i1 {i_more}, {j_more}"));
+        self.terminate(format!(
+            "br i1 {any}, label %{choose_left}, label %{values_done}"
+        ));
+        self.start_block(&compare);
+        let i = self.temp();
+        self.instruction(format!("{i} = load i64, ptr {i_ptr}, align 1"));
+        let j = self.temp();
+        self.instruction(format!("{j} = load i64, ptr {j_ptr}, align 1"));
+        let left_value = self.emit_collection_element(collection_ty, &collection_ptr, &i);
+        let right_value = self.emit_collection_element(collection_ty, &collection_ptr, &j);
+        let right_before_left = self.emit_sort_less(
+            element_ty,
+            callback
+                .as_ref()
+                .map(|(callback_ty, context_ty, function_value, context_value)| {
+                    (
+                        *callback_ty,
+                        *context_ty,
+                        function_value.as_str(),
+                        context_value.as_str(),
+                    )
+                }),
+            &right_value,
+            &left_value,
+        );
+        self.terminate(format!(
+            "br i1 {right_before_left}, label %{choose_right}, label %{choose_left}"
+        ));
+
+        self.start_block(&choose_left);
+        let i_more = self.temp();
+        let i = self.temp();
+        let mid = self.temp();
+        self.instruction(format!("{i} = load i64, ptr {i_ptr}, align 1"));
+        self.instruction(format!("{mid} = load i64, ptr {mid_ptr}, align 1"));
+        self.instruction(format!("{i_more} = icmp ult i64 {i}, {mid}"));
+        let left_value = self.new_label("sort.merge.take.left");
+        let right_value = self.new_label("sort.merge.take.right");
+        self.terminate(format!(
+            "br i1 {i_more}, label %{left_value}, label %{right_value}"
+        ));
+        self.start_block(&left_value);
+        let i = self.temp();
+        let out = self.temp();
+        self.instruction(format!("{i} = load i64, ptr {i_ptr}, align 1"));
+        self.instruction(format!("{out} = load i64, ptr {out_ptr}, align 1"));
+        let value = self.emit_collection_element(collection_ty, &collection_ptr, &i);
+        self.emit_store_collection_element(collection_ty, &scratch_ptr, &out, &value);
+        let i_next = self.temp();
+        self.instruction(format!("{i_next} = add i64 {i}, 1"));
+        self.instruction(format!("store i64 {i_next}, ptr {i_ptr}, align 1"));
+        let out_next = self.temp();
+        self.instruction(format!("{out_next} = add i64 {out}, 1"));
+        self.instruction(format!("store i64 {out_next}, ptr {out_ptr}, align 1"));
+        self.terminate(format!("br label %{values_cond}"));
+        self.start_block(&right_value);
+        let j = self.temp();
+        let out = self.temp();
+        self.instruction(format!("{j} = load i64, ptr {j_ptr}, align 1"));
+        self.instruction(format!("{out} = load i64, ptr {out_ptr}, align 1"));
+        let value = self.emit_collection_element(collection_ty, &collection_ptr, &j);
+        self.emit_store_collection_element(collection_ty, &scratch_ptr, &out, &value);
+        let j_next = self.temp();
+        self.instruction(format!("{j_next} = add i64 {j}, 1"));
+        self.instruction(format!("store i64 {j_next}, ptr {j_ptr}, align 1"));
+        let out_next = self.temp();
+        self.instruction(format!("{out_next} = add i64 {out}, 1"));
+        self.instruction(format!("store i64 {out_next}, ptr {out_ptr}, align 1"));
+        self.terminate(format!("br label %{values_cond}"));
+
+        self.start_block(&choose_right);
+        let j = self.temp();
+        let out = self.temp();
+        self.instruction(format!("{j} = load i64, ptr {j_ptr}, align 1"));
+        self.instruction(format!("{out} = load i64, ptr {out_ptr}, align 1"));
+        let value = self.emit_collection_element(collection_ty, &collection_ptr, &j);
+        self.emit_store_collection_element(collection_ty, &scratch_ptr, &out, &value);
+        let j_next = self.temp();
+        self.instruction(format!("{j_next} = add i64 {j}, 1"));
+        self.instruction(format!("store i64 {j_next}, ptr {j_ptr}, align 1"));
+        let out_next = self.temp();
+        self.instruction(format!("{out_next} = add i64 {out}, 1"));
+        self.instruction(format!("store i64 {out_next}, ptr {out_ptr}, align 1"));
+        self.terminate(format!("br label %{values_cond}"));
+
+        self.start_block(&values_done);
+        let left = self.temp();
+        let right = self.temp();
+        self.instruction(format!("{left} = load i64, ptr {left_ptr}, align 1"));
+        self.instruction(format!("{right} = load i64, ptr {right_ptr}, align 1"));
+        let _ = (left, right);
+        self.terminate(format!("br label %{group_done}"));
+        self.start_block(&group_done);
+        let next_left = self.temp();
+        self.instruction(format!("{next_left} = load i64, ptr {right_ptr}, align 1"));
+        self.instruction(format!("store i64 {next_left}, ptr {left_ptr}, align 1"));
+        self.terminate(format!("br label %{group_cond}"));
+
+        self.start_block(&copy_cond);
+        self.instruction(format!("store i64 0, ptr {i_ptr}, align 1"));
+        let copy_loop = self.new_label("sort.merge.copy.loop");
+        self.terminate(format!("br label %{copy_loop}"));
+        self.start_block(&copy_loop);
+        let i = self.temp();
+        self.instruction(format!("{i} = load i64, ptr {i_ptr}, align 1"));
+        let more = self.temp();
+        self.instruction(format!("{more} = icmp ult i64 {i}, {count}"));
+        self.terminate(format!(
+            "br i1 {more}, label %{copy_body}, label %{copy_done}"
+        ));
+        self.start_block(&copy_body);
+        let i = self.temp();
+        self.instruction(format!("{i} = load i64, ptr {i_ptr}, align 1"));
+        let value = self.emit_collection_element(collection_ty, &scratch_ptr, &i);
+        self.emit_store_collection_element(collection_ty, &collection_ptr, &i, &value);
+        let next = self.temp();
+        self.instruction(format!("{next} = add i64 {i}, 1"));
+        self.instruction(format!("store i64 {next}, ptr {i_ptr}, align 1"));
+        self.terminate(format!("br label %{copy_loop}"));
+        self.start_block(&copy_done);
+        let width = self.temp();
+        self.instruction(format!("{width} = load i64, ptr {width_ptr}, align 1"));
+        let doubled = self.temp();
+        self.instruction(format!("{doubled} = shl i64 {width}, 1"));
+        self.instruction(format!("store i64 {doubled}, ptr {width_ptr}, align 1"));
+        self.terminate(format!("br label %{merge_cond}"));
+        self.start_block(&merge_done);
+        self.terminate(format!("br label %{finished}"));
+        self.start_block(&finished);
+        let _ = expr;
+    }
+
+    fn emit_binary_search(
+        &mut self,
+        expr: &TExpr,
+        args: &[TExpr],
+        capacity: usize,
+        is_list: bool,
+    ) -> String {
+        let collection = &args[0];
+        let collection_ty = collection.ty;
+        let collection_ptr = if let Some(place) = Self::expr_place(collection) {
+            self.emit_place_pointer(&place)
+        } else {
+            let value = self.emit_expr(collection);
+            if self.terminated {
+                return String::new();
+            }
+            let pointer = self.entry_alloca(collection_ty);
+            self.instruction(format!(
+                "store {} {value}, ptr {pointer}, align 1",
+                self.lltype(collection_ty)
+            ));
+            pointer
+        };
+        let key = self.emit_expr(&args[1]);
+        if self.terminated {
+            return String::new();
+        }
+        let element_ty = match self.program.types[collection_ty.0].kind {
+            TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => element,
+            _ => unreachable!("binary_search input was checked as a list or array"),
+        };
+        let base = base_type(element_ty, &self.program.types);
+        let count = if is_list {
+            self.emit_collection_count(collection_ty, &collection_ptr)
+        } else {
+            capacity.to_string()
+        };
+        let key_ptr = self.entry_alloca(element_ty);
+        self.instruction(format!(
+            "store {} {key}, ptr {key_ptr}, align 1",
+            self.lltype(element_ty)
+        ));
+
+        if cfg!(debug_assertions) {
+            let index_ptr = self.entry_alloca(Ty::Long);
+            self.instruction(format!("store i64 1, ptr {index_ptr}, align 1"));
+            let cond = self.new_label("binary.search.sorted.cond");
+            let body = self.new_label("binary.search.sorted.body");
+            let compare = self.new_label("binary.search.sorted.compare");
+            let next = self.new_label("binary.search.sorted.next");
+            let done = self.new_label("binary.search.sorted.done");
+            self.terminate(format!("br label %{cond}"));
+            self.start_block(&cond);
+            let index = self.temp();
+            self.instruction(format!("{index} = load i64, ptr {index_ptr}, align 1"));
+            let valid = self.temp();
+            self.instruction(format!("{valid} = icmp ult i64 {index}, {count}"));
+            self.terminate(format!("br i1 {valid}, label %{body}, label %{done}"));
+            self.start_block(&body);
+            self.terminate(format!("br label %{compare}"));
+            self.start_block(&compare);
+            let index = self.temp();
+            self.instruction(format!("{index} = load i64, ptr {index_ptr}, align 1"));
+            let previous = self.temp();
+            self.instruction(format!("{previous} = sub i64 {index}, 1"));
+            let previous_value =
+                self.emit_collection_element(collection_ty, &collection_ptr, &previous);
+            let current_value =
+                self.emit_collection_element(collection_ty, &collection_ptr, &index);
+            let inverted = self.temp();
+            self.instruction(format!(
+                "{inverted} = icmp slt {} {current_value}, {previous_value}",
+                self.lltype(base)
+            ));
+            self.guard(inverted, Failure::UnsortedInput, expr.span);
+            self.terminate(format!("br label %{next}"));
+            self.start_block(&next);
+            let index = self.temp();
+            self.instruction(format!("{index} = load i64, ptr {index_ptr}, align 1"));
+            let incremented = self.temp();
+            self.instruction(format!("{incremented} = add i64 {index}, 1"));
+            self.instruction(format!("store i64 {incremented}, ptr {index_ptr}, align 1"));
+            self.terminate(format!("br label %{cond}"));
+            self.start_block(&done);
+        }
+
+        let low_ptr = self.entry_alloca(Ty::Long);
+        let high_ptr = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {low_ptr}, align 1"));
+        self.instruction(format!("store i64 {count}, ptr {high_ptr}, align 1"));
+        let cond = self.new_label("binary.search.cond");
+        let body = self.new_label("binary.search.body");
+        let done = self.new_label("binary.search.done");
+        self.terminate(format!("br label %{cond}"));
+        self.start_block(&cond);
+        let low = self.temp();
+        let high = self.temp();
+        self.instruction(format!("{low} = load i64, ptr {low_ptr}, align 1"));
+        self.instruction(format!("{high} = load i64, ptr {high_ptr}, align 1"));
+        let more = self.temp();
+        self.instruction(format!("{more} = icmp ult i64 {low}, {high}"));
+        self.terminate(format!("br i1 {more}, label %{body}, label %{done}"));
+        self.start_block(&body);
+        let low = self.temp();
+        let high = self.temp();
+        self.instruction(format!("{low} = load i64, ptr {low_ptr}, align 1"));
+        self.instruction(format!("{high} = load i64, ptr {high_ptr}, align 1"));
+        let delta = self.temp();
+        self.instruction(format!("{delta} = sub i64 {high}, {low}"));
+        let half = self.temp();
+        self.instruction(format!("{half} = udiv i64 {delta}, 2"));
+        let middle = self.temp();
+        self.instruction(format!("{middle} = add i64 {low}, {half}"));
+        let value = self.emit_collection_element(collection_ty, &collection_ptr, &middle);
+        let key = self.temp();
+        self.instruction(format!(
+            "{key} = load {}, ptr {key_ptr}, align 1",
+            self.lltype(element_ty)
+        ));
+        let before = self.temp();
+        self.instruction(format!(
+            "{before} = icmp slt {} {value}, {key}",
+            self.lltype(base)
+        ));
+        let advance = self.new_label("binary.search.advance");
+        let shorten = self.new_label("binary.search.shorten");
+        self.terminate(format!(
+            "br i1 {before}, label %{advance}, label %{shorten}"
+        ));
+        self.start_block(&advance);
+        let next = self.temp();
+        self.instruction(format!("{next} = add i64 {middle}, 1"));
+        self.instruction(format!("store i64 {next}, ptr {low_ptr}, align 1"));
+        self.terminate(format!("br label %{cond}"));
+        self.start_block(&shorten);
+        self.instruction(format!("store i64 {middle}, ptr {high_ptr}, align 1"));
+        self.terminate(format!("br label %{cond}"));
+        self.start_block(&done);
+        let low = self.temp();
+        self.instruction(format!("{low} = load i64, ptr {low_ptr}, align 1"));
+        let within = self.temp();
+        self.instruction(format!("{within} = icmp ult i64 {low}, {count}"));
+        let found = self.new_label("binary.search.found.check");
+        let missing = self.new_label("binary.search.missing");
+        let found_value = self.new_label("binary.search.found");
+        self.terminate(format!("br i1 {within}, label %{found}, label %{missing}"));
+        self.start_block(&found);
+        let value = self.emit_collection_element(collection_ty, &collection_ptr, &low);
+        let key = self.temp();
+        self.instruction(format!(
+            "{key} = load {}, ptr {key_ptr}, align 1",
+            self.lltype(element_ty)
+        ));
+        let equal = self.temp();
+        self.instruction(format!(
+            "{equal} = icmp eq {} {value}, {key}",
+            self.lltype(base)
+        ));
+        self.terminate(format!(
+            "br i1 {equal}, label %{found_value}, label %{missing}"
+        ));
+        self.start_block(&found_value);
+        let found_value = low.clone();
+        let found_pred = self.current_label.clone();
+        let result_block = self.new_label("binary.search.result");
+        self.terminate(format!("br label %{result_block}"));
+        self.start_block(&missing);
+        let missing_pred = self.current_label.clone();
+        self.terminate(format!("br label %{result_block}"));
+        self.start_block(&result_block);
+        let is_found = self.temp();
+        self.instruction(format!(
+            "{is_found} = phi i1 [ true, %{found_pred} ], [ false, %{missing_pred} ]"
+        ));
+        let index = self.temp();
+        self.instruction(format!(
+            "{index} = phi i64 [ {found_value}, %{found_pred} ], [ 0, %{missing_pred} ]"
+        ));
+        let some_label = self.new_label("binary.search.some");
+        let none_label = self.new_label("binary.search.none");
+        let result_label = self.new_label("binary.search.result.end");
+        self.terminate(format!(
+            "br i1 {is_found}, label %{some_label}, label %{none_label}"
+        ));
+        self.start_block(&some_label);
+        let some = self.emit_construct_values(expr.ty, 0, vec![(Ty::Long, index.clone())]);
+        let some_pred = self.current_label.clone();
+        self.terminate(format!("br label %{result_label}"));
+        self.start_block(&none_label);
+        let none = self.emit_construct_values(expr.ty, 1, Vec::new());
+        let none_pred = self.current_label.clone();
+        self.terminate(format!("br label %{result_label}"));
+        self.start_block(&result_label);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi {} [ {some}, %{some_pred} ], [ {none}, %{none_pred} ]",
+            self.lltype(expr.ty)
+        ));
+        result
+    }
+
     fn emit_expr(&mut self, expr: &TExpr) -> String {
         if self.terminated {
             return String::new();
@@ -6295,6 +6915,22 @@ impl<'a> FunctionEmitter<'a> {
                         self.lltype(ty)
                     ));
                     result
+                }
+                CallTarget::Sort { capacity, is_list } => {
+                    debug_assert_eq!(*effect, Effect::None);
+                    self.emit_sort(expr, args, *capacity, *is_list);
+                    String::new()
+                }
+                CallTarget::SortBy {
+                    capacity, is_list, ..
+                } => {
+                    debug_assert_eq!(*effect, Effect::None);
+                    self.emit_sort(expr, args, *capacity, *is_list);
+                    String::new()
+                }
+                CallTarget::BinarySearch { capacity, is_list } => {
+                    debug_assert_eq!(*effect, Effect::None);
+                    self.emit_binary_search(expr, args, *capacity, *is_list)
                 }
             },
             TExprKind::IndirectCall {
@@ -6983,6 +7619,7 @@ enum Failure {
     UnwrapNone = 14,
     UnwrapErr = 15,
     IndexOutOfRange = 16,
+    UnsortedInput = 17,
 }
 
 fn failure_for(ty: Ty, op: BinaryOp, unary: bool) -> Failure {

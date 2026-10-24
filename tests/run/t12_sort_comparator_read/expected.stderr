@@ -1,0 +1,1 @@
+main.nl:9:24: error: function 'less' has extra effect 'reads app'; a sort comparator must be pure

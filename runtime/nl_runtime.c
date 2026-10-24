@@ -346,6 +346,7 @@ _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col)
         case 14: message = "unwrap called on none"; break;
         case 15: message = "unwrap called on err"; break;
         case 16: message = "index out of range"; break;
+        case 17: message = "binary_search requires sorted input"; break;
     }
     fprintf(stderr, "%s:%d:%d: %s\n", file, line, col, message);
     exit(nl_test_mode ? 70 : 1);

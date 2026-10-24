@@ -1,0 +1,1 @@
+main.nl:9:29: error: function 'compare' has extra effect 'reads app.values'; a sort comparator must be pure

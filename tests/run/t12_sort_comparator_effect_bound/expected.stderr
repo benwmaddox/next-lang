@@ -1,0 +1,1 @@
+main.nl:8:24: error: function type exceeds the destination effects bound; extra effect 'print' is not allowed; a sort comparator must be pure
