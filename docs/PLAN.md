@@ -26,7 +26,7 @@ This is the one queue; no other part of this plan sets a different order. Each e
 
 1. **O1** (running): the offset runtime and slice ported onto main, and inline stack allocation (docs/tasks/O1-offset-runtime-and-inline-alloc.md).
 2. **H1:** the self-hosted front end, selectable, with Rust still the default (docs/tasks/H1-selfhost-frontend.md). Its child is built in pointer mode until O6 (a build setting, not a pointer-only feature).
-3. **Buffered standard output, with `match` on `byte`** (small, independent).
+3. **R1, runtime without per-operation heap use, with buffered standard output and `match` on `byte`** (docs/tasks/R1-runtime-arena-only.md): file reads, listings and the job context stop using `malloc`/`calloc`/`realloc`/`strdup`; stdout and stderr buffered.
 4. **O2, O3, O4,** in order.
 5. **L1** nested layout flattening (after O4, keeping O4's element-reference form).
 6. **O5, O6, O7,** ending with offsets as the only mode.
