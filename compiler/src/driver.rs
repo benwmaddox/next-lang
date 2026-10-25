@@ -535,7 +535,26 @@ pub fn build_package(package: &Path, output: &Path) -> Result<(), PackageError> 
     let ir = temp.path.join("module.ll");
     fs::write(&ir, &compiled.llvm_ir)
         .map_err(|e| PackageError::Tool(format!("cannot write generated LLVM IR: {e}")))?;
-    clang(&ir, output, false, &compiled)
+    clang(&ir, output, false, &compiled)?;
+    for contract in &compiled.contracts {
+        for site in &contract.copy_down_sites {
+            let file = compiled
+                .files
+                .get(site.span.file)
+                .map(String::as_str)
+                .unwrap_or("<source>");
+            eprintln!(
+                "{file}:{}:{}: note: assignment to '{}' in '{}' uses a {}-byte copy-down temporary ({} bytes while the old value is live); pass it as a 'grow' or 'write' parameter and return it to update in place",
+                site.span.line,
+                site.span.col,
+                site.name,
+                contract.function,
+                site.bytes / 2,
+                site.bytes,
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn run_package(package: &Path) -> Result<ExitStatus, PackageError> {

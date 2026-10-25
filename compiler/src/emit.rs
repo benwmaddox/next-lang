@@ -1,6 +1,6 @@
 use crate::ast::{AssignOp, BinaryOp, ParamMode, RefinePolicy, Span, UnaryOp};
 use crate::typed::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 fn result_error_type(ty: Ty, types: &[TType]) -> Option<Ty> {
     match &types[base_type(ty, types).0].kind {
@@ -1125,7 +1125,10 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     mutable,
                     value,
                     ..
-                } if is_large_type(*ty, types) && Some(*id) != forwarded_return => {
+                } if is_large_type(*ty, types)
+                    && Some(*id) != forwarded_return
+                    && !matches!(&value.kind, TExprKind::Take(source) if matches!(&source.kind, TExprKind::Local(_))) =>
+                {
                     let bytes = if !*mutable
                         && matches!(types[ty.0].kind, TTypeKind::Ascii { .. })
                         && !growing_ascii.contains(id)
@@ -1561,7 +1564,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                             }
                         }
                     }
-                    own = own.saturating_add(block_scratch(&arm.body, types));
+                    own = own.saturating_add(block_scratch(&arm.body, types, &[]));
                 }
             }
             TExprKind::Return(value) => {
@@ -1607,9 +1610,9 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 else_block,
             } => {
                 own = own.saturating_add(expression_scratch(condition, types));
-                own = own.saturating_add(block_scratch(then_block, types));
+                own = own.saturating_add(block_scratch(then_block, types, &[]));
                 if let Some(other) = else_block {
-                    own = own.saturating_add(block_scratch(other, types));
+                    own = own.saturating_add(block_scratch(other, types, &[]));
                 }
             }
             TExprKind::Unit
@@ -1677,7 +1680,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
         }
     }
 
-    fn block_scratch(block: &TBlock, types: &[TType]) -> u64 {
+    fn block_scratch(block: &TBlock, types: &[TType], functions: &[TFunction]) -> u64 {
         let mut total = 0u64;
         for statement in &block.statements {
             match &statement.kind {
@@ -1704,18 +1707,28 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     value,
                     ..
                 } => {
-                    total = total.saturating_add(expression_scratch(value, types));
+                    let in_place =
+                        in_place_reassignment_parameter(functions, types, place, value).is_some();
+                    let scratch = if in_place {
+                        expression_scratch_in_destination(value, types)
+                    } else {
+                        expression_scratch(value, types)
+                    };
+                    total = total.saturating_add(scratch);
                     if *op != AssignOp::Add
-                        && is_growing_payload(place.ty, types)
-                        && !matches!(
-                            value.kind,
-                            TExprKind::AsciiEmpty | TExprKind::TextEmpty | TExprKind::BytesEmpty
-                        )
+                        && assignment_is_copy_down(functions, types, place, value)
                     {
-                        // Copy-down keeps the old builder in its live region while
-                        // the replacement is built above it. Empty resets only write
-                        // the empty header and do not need replacement storage.
-                        total = total.saturating_add(stack_storage_size(*ty, types) as u64);
+                        let call_has_result_scratch = matches!(
+                            value.kind,
+                            TExprKind::Call { .. }
+                                | TExprKind::IndirectCall { .. }
+                                | TExprKind::OptionalCall { .. }
+                        ) && is_large_type(value.ty, types);
+                        if !call_has_result_scratch {
+                            // The replacement is built above the live value, then
+                            // copied back before the temporary region is released.
+                            total = total.saturating_add(stack_storage_size(*ty, types) as u64);
+                        }
                     }
                 }
                 TStmtKind::Expr(value) | TStmtKind::Discard(value) => {
@@ -1737,9 +1750,9 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     else_block,
                 } => {
                     total = total.saturating_add(expression_scratch(condition, types));
-                    total = total.saturating_add(block_scratch(then_block, types));
+                    total = total.saturating_add(block_scratch(then_block, types, functions));
                     if let Some(other) = else_block {
-                        total = total.saturating_add(block_scratch(other, types));
+                        total = total.saturating_add(block_scratch(other, types, functions));
                     }
                 }
                 TStmtKind::For {
@@ -1747,15 +1760,17 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 } => {
                     total = total.saturating_add(expression_scratch(start, types));
                     total = total.saturating_add(expression_scratch(end, types));
-                    total = total.saturating_add(block_scratch(body, types));
+                    total = total.saturating_add(block_scratch(body, types, functions));
                 }
                 TStmtKind::ForEach {
                     collection, body, ..
                 } => {
                     total = total.saturating_add(expression_scratch(collection, types));
-                    total = total.saturating_add(block_scratch(body, types));
+                    total = total.saturating_add(block_scratch(body, types, functions));
                 }
-                TStmtKind::Block(body) => total = total.saturating_add(block_scratch(body, types)),
+                TStmtKind::Block(body) => {
+                    total = total.saturating_add(block_scratch(body, types, functions))
+                }
                 TStmtKind::Expect { kind, .. } => match kind {
                     TExpectKind::Bool(value) => {
                         total = total.saturating_add(expression_scratch(value, types));
@@ -1856,7 +1871,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
     let temporary_requirements = program
         .functions
         .iter()
-        .map(|function| block_scratch(&function.body, &program.types))
+        .map(|function| block_scratch(&function.body, &program.types, &program.functions))
         .collect::<Vec<_>>();
     let bases = local_requirements
         .iter()
@@ -2066,6 +2081,7 @@ fn function_stack_details(
     fn walk(
         block: &TBlock,
         types: &[TType],
+        functions: &[TFunction],
         growing_ascii: &std::collections::HashSet<usize>,
         names: &mut HashMap<usize, String>,
         local_regions: &mut Vec<StackRegion>,
@@ -2074,12 +2090,23 @@ fn function_stack_details(
         copy_down_sites: &mut Vec<StackCopyDown>,
         forwarded_return: Option<usize>,
     ) {
+        for planned in local_region_plan(block, types, growing_ascii, forwarded_return, None) {
+            names.insert(planned.id, planned.name.clone());
+            let region = StackRegion {
+                name: planned.name,
+                bytes: planned.bytes as u64,
+                span: planned.span,
+            };
+            local_regions.push(region.clone());
+            reserved_regions.push(region);
+        }
         for statement in &block.statements {
             visit_stmt_exprs(statement, &mut |expr| {
                 visit_expr_blocks(expr, &mut |nested| {
                     walk(
                         nested,
                         types,
+                        functions,
                         growing_ascii,
                         names,
                         local_regions,
@@ -2100,25 +2127,7 @@ fn function_stack_details(
                     ..
                 } => {
                     names.insert(*id, name.clone());
-                    let bytes = if !*mutable
-                        && matches!(types[ty.0].kind, TTypeKind::Ascii { .. })
-                        && !growing_ascii.contains(id)
-                    {
-                        static_ascii_length(value, types)
-                            .map(|length| 16usize.saturating_add(length))
-                            .unwrap_or_else(|| stack_storage_size(*ty, types))
-                    } else {
-                        stack_storage_size(*ty, types)
-                    } as u64;
-                    if is_large_type(*ty, types) && Some(*id) != forwarded_return {
-                        let region = StackRegion {
-                            name: name.clone(),
-                            bytes,
-                            span: statement.span,
-                        };
-                        local_regions.push(region.clone());
-                        reserved_regions.push(region);
-                    }
+                    let _ = (ty, mutable, value);
                 }
                 TStmtKind::Assign {
                     place,
@@ -2127,11 +2136,7 @@ fn function_stack_details(
                     value,
                     ..
                 } if *op != AssignOp::Add
-                    && is_growing_payload(place.ty, types)
-                    && !matches!(
-                        value.kind,
-                        TExprKind::AsciiEmpty | TExprKind::TextEmpty | TExprKind::BytesEmpty
-                    ) =>
+                    && assignment_is_copy_down(functions, types, place, value) =>
                 {
                     let bytes = (stack_storage_size(*ty, types) as u64).saturating_mul(2);
                     let name = names
@@ -2159,6 +2164,7 @@ fn function_stack_details(
                     walk(
                         then_block,
                         types,
+                        functions,
                         growing_ascii,
                         names,
                         local_regions,
@@ -2171,6 +2177,7 @@ fn function_stack_details(
                         walk(
                             other,
                             types,
+                            functions,
                             growing_ascii,
                             names,
                             local_regions,
@@ -2196,6 +2203,7 @@ fn function_stack_details(
                     walk(
                         body,
                         types,
+                        functions,
                         growing_ascii,
                         names,
                         local_regions,
@@ -2236,6 +2244,7 @@ fn function_stack_details(
                     walk(
                         body,
                         types,
+                        functions,
                         growing_ascii,
                         names,
                         local_regions,
@@ -2249,6 +2258,7 @@ fn function_stack_details(
                     walk(
                         inner,
                         types,
+                        functions,
                         growing_ascii,
                         names,
                         local_regions,
@@ -2266,6 +2276,7 @@ fn function_stack_details(
                 walk(
                     nested,
                     types,
+                    functions,
                     growing_ascii,
                     names,
                     local_regions,
@@ -2290,6 +2301,7 @@ fn function_stack_details(
     walk(
         &function.body,
         &program.types,
+        &program.functions,
         &growing_ascii,
         &mut names,
         &mut local_regions,
@@ -3580,6 +3592,365 @@ fn expression_uses_local_root(expr: &TExpr, root: usize) -> bool {
     }
 }
 
+fn expression_returns_local(expr: &TExpr, local_id: usize) -> bool {
+    let returns_are_local = |values: &[TExpr]| {
+        values
+            .iter()
+            .all(|value| expression_returns_local(value, local_id))
+    };
+    match &expr.kind {
+        TExprKind::Return(Some(value)) => {
+            matches!(&value.kind, TExprKind::Local(id) if *id == local_id)
+        }
+        TExprKind::Return(None) => false,
+        TExprKind::Call { args, .. }
+        | TExprKind::Construct { args, .. }
+        | TExprKind::CollectionLiteral(args)
+        | TExprKind::CollectionOp { args, .. }
+        | TExprKind::PoolOp { args, .. }
+        | TExprKind::MapOp { args, .. }
+        | TExprKind::SetOp { args, .. } => returns_are_local(args),
+        TExprKind::IndirectCall { callee, args, .. } => {
+            expression_returns_local(callee, local_id) && returns_are_local(args)
+        }
+        TExprKind::OptionalCall { receiver, args, .. } => {
+            expression_returns_local(receiver, local_id) && returns_are_local(args)
+        }
+        TExprKind::Method { receiver, .. }
+        | TExprKind::AsciiUpper(receiver)
+        | TExprKind::TextUpper(receiver)
+        | TExprKind::BytesValidateUtf8(receiver)
+        | TExprKind::AsciiCast(receiver)
+        | TExprKind::BytesView(receiver)
+        | TExprKind::Take(receiver)
+        | TExprKind::Field { receiver, .. }
+        | TExprKind::OptionalToLong(receiver)
+        | TExprKind::ToLong(receiver)
+        | TExprKind::Convert {
+            value: receiver, ..
+        }
+        | TExprKind::Fit {
+            value: receiver, ..
+        }
+        | TExprKind::Try {
+            value: receiver, ..
+        }
+        | TExprKind::Cast {
+            value: receiver, ..
+        }
+        | TExprKind::Unary {
+            value: receiver, ..
+        }
+        | TExprKind::AsciiFit {
+            value: receiver, ..
+        }
+        | TExprKind::TextConvert {
+            value: receiver, ..
+        }
+        | TExprKind::Fill {
+            value: receiver, ..
+        } => expression_returns_local(receiver, local_id),
+        TExprKind::AsciiFormat { value, .. }
+        | TExprKind::ParseInteger {
+            receiver: value, ..
+        } => expression_returns_local(value, local_id),
+        TExprKind::AsciiPad { value, width, .. }
+        | TExprKind::AsciiZeroPad { value, width }
+        | TExprKind::Coalesce {
+            option: value,
+            fallback: width,
+        }
+        | TExprKind::Binary {
+            left: value,
+            right: width,
+            ..
+        } => expression_returns_local(value, local_id) && expression_returns_local(width, local_id),
+        TExprKind::AsciiTryAppend { receiver, argument }
+        | TExprKind::TextTryAppend { receiver, argument }
+        | TExprKind::BytesTryAppend { receiver, argument } => {
+            expression_returns_local(receiver, local_id)
+                && expression_returns_local(argument, local_id)
+        }
+        TExprKind::BytesPush { receiver, byte, .. } => {
+            expression_returns_local(receiver, local_id) && expression_returns_local(byte, local_id)
+        }
+        TExprKind::TextSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::AsciiSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::BytesSlice {
+            receiver,
+            start,
+            end,
+        } => {
+            expression_returns_local(receiver, local_id)
+                && expression_returns_local(start, local_id)
+                && expression_returns_local(end, local_id)
+        }
+        TExprKind::Index {
+            receiver,
+            index,
+            grid,
+            ..
+        } => {
+            expression_returns_local(receiver, local_id)
+                && expression_returns_local(index, local_id)
+                && grid.as_ref().is_none_or(|grid| {
+                    expression_returns_local(&grid.x, local_id)
+                        && expression_returns_local(&grid.y, local_id)
+                })
+        }
+        TExprKind::BytesIndex {
+            receiver, index, ..
+        } => {
+            expression_returns_local(receiver, local_id)
+                && expression_returns_local(index, local_id)
+        }
+        TExprKind::StructConstruct { fields } => fields
+            .iter()
+            .all(|(_, value)| expression_returns_local(value, local_id)),
+        TExprKind::Match { scrutinee, arms } => {
+            expression_returns_local(scrutinee, local_id)
+                && arms
+                    .iter()
+                    .all(|arm| block_returns_local(&arm.body, local_id))
+        }
+        TExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            expression_returns_local(condition, local_id)
+                && block_returns_local(then_block, local_id)
+                && else_block
+                    .as_ref()
+                    .is_none_or(|block| block_returns_local(block, local_id))
+        }
+        TExprKind::Unit
+        | TExprKind::Integer(_)
+        | TExprKind::Bool(_)
+        | TExprKind::ByteString(_)
+        | TExprKind::Local(_)
+        | TExprKind::Global(_)
+        | TExprKind::Constant(_)
+        | TExprKind::FunctionValue(_)
+        | TExprKind::AsciiEmpty
+        | TExprKind::TextEmpty
+        | TExprKind::BytesEmpty
+        | TExprKind::EmptyArray
+        | TExprKind::EmptyGrid
+        | TExprKind::EmptyList
+        | TExprKind::EmptyPool
+        | TExprKind::EmptyMap
+        | TExprKind::EmptySet
+        | TExprKind::EmptyQueue
+        | TExprKind::EmptyRing
+        | TExprKind::LoopExit(_) => true,
+    }
+}
+
+fn block_returns_local(block: &TBlock, local_id: usize) -> bool {
+    block
+        .statements
+        .iter()
+        .all(|statement| match &statement.kind {
+            TStmtKind::Let { value, .. }
+            | TStmtKind::Assign { value, .. }
+            | TStmtKind::Expr(value)
+            | TStmtKind::Discard(value) => expression_returns_local(value, local_id),
+            TStmtKind::Return(Some(value)) => expression_returns_local(value, local_id),
+            TStmtKind::Return(None) => false,
+            TStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                expression_returns_local(condition, local_id)
+                    && block_returns_local(then_block, local_id)
+                    && else_block
+                        .as_ref()
+                        .is_none_or(|block| block_returns_local(block, local_id))
+            }
+            TStmtKind::For {
+                start, end, body, ..
+            } => {
+                expression_returns_local(start, local_id)
+                    && expression_returns_local(end, local_id)
+                    && block_returns_local(body, local_id)
+            }
+            TStmtKind::ForEach {
+                collection, body, ..
+            } => {
+                expression_returns_local(collection, local_id)
+                    && block_returns_local(body, local_id)
+            }
+            TStmtKind::Expect { kind, .. } => match kind {
+                TExpectKind::Bool(value) => expression_returns_local(value, local_id),
+                TExpectKind::Compare { left, right, .. } => {
+                    expression_returns_local(left, local_id)
+                        && expression_returns_local(right, local_id)
+                }
+                TExpectKind::StackPeak { .. } => true,
+            },
+            TStmtKind::Block(block) => block_returns_local(block, local_id),
+            TStmtKind::Break | TStmtKind::Continue => true,
+        })
+        && block
+            .tail
+            .as_deref()
+            .is_none_or(|tail| expression_returns_local(tail, local_id))
+}
+
+fn function_returns_local(function: &TFunction, local_id: usize) -> bool {
+    matches!(
+        function.body.tail.as_deref().map(|tail| &tail.kind),
+        Some(TExprKind::Local(id)) if *id == local_id
+    ) && block_returns_local(&function.body, local_id)
+}
+
+fn in_place_reassignment_parameter(
+    functions: &[TFunction],
+    types: &[TType],
+    place: &TPlace,
+    value: &TExpr,
+) -> Option<usize> {
+    if !place.path.is_empty() || !is_growing_payload(place.ty, types) {
+        return None;
+    }
+    let TExprKind::Call {
+        target: CallTarget::Function(function_id),
+        args,
+        ..
+    } = &value.kind
+    else {
+        return None;
+    };
+    let function = functions.get(*function_id)?;
+    if function.result != place.ty || function.params.len() != args.len() {
+        return None;
+    }
+    let mut matching_parameter = None;
+    for (index, (parameter, argument)) in function.params.iter().zip(args).enumerate() {
+        if parameter.ty == place.ty
+            && argument.ty == place.ty
+            && matches!(parameter.mode, ParamMode::Grow | ParamMode::Write)
+            && matches!(&argument.kind, TExprKind::Local(id) if *id == place.root)
+        {
+            if matching_parameter.replace(index).is_some() {
+                return None;
+            }
+        } else if local_root(argument) == Some(place.root) {
+            // A second alias could make the result destination overlap another input.
+            return None;
+        }
+    }
+    let index = matching_parameter?;
+    function_returns_local(function, function.params[index].id).then_some(index)
+}
+
+#[derive(Clone)]
+struct PlannedLocalRegion {
+    id: usize,
+    ty: Ty,
+    name: String,
+    bytes: usize,
+    span: Span,
+    static_ascii_bytes: Option<usize>,
+}
+
+fn local_region_plan(
+    block: &TBlock,
+    types: &[TType],
+    growing_ascii: &HashSet<usize>,
+    forwarded_return: Option<usize>,
+    append_builder_local: Option<usize>,
+) -> Vec<PlannedLocalRegion> {
+    let mut regions = Vec::new();
+    for statement in &block.statements {
+        let TStmtKind::Let {
+            id,
+            name,
+            ty,
+            mutable,
+            value,
+        } = &statement.kind
+        else {
+            continue;
+        };
+        if append_builder_local == Some(*id) {
+            continue;
+        }
+        let static_ascii_bytes = if !*mutable
+            && matches!(types[ty.0].kind, TTypeKind::Ascii { .. })
+            && !growing_ascii.contains(id)
+        {
+            static_ascii_length(value, types).map(|length| 16usize.saturating_add(length))
+        } else {
+            None
+        };
+        let bytes = if let Some(bytes) = static_ascii_bytes {
+            Some(bytes)
+        } else if is_large_type(*ty, types)
+            && Some(*id) != forwarded_return
+            && !matches!(&value.kind, TExprKind::Take(source) if matches!(&source.kind, TExprKind::Local(_)))
+        {
+            Some(stack_storage_size(*ty, types))
+        } else {
+            None
+        };
+        if let Some(bytes) = bytes {
+            regions.push(PlannedLocalRegion {
+                id: *id,
+                ty: *ty,
+                name: name.clone(),
+                bytes,
+                span: statement.span,
+                static_ascii_bytes,
+            });
+        }
+    }
+    regions.sort_by_key(|region| region.bytes > 64 * 1024);
+    regions
+}
+
+fn assignment_is_copy_down(
+    functions: &[TFunction],
+    types: &[TType],
+    place: &TPlace,
+    value: &TExpr,
+) -> bool {
+    if !is_growing_payload(place.ty, types)
+        || matches!(
+            value.kind,
+            TExprKind::AsciiEmpty | TExprKind::TextEmpty | TExprKind::BytesEmpty
+        )
+        || in_place_reassignment_parameter(functions, types, place, value).is_some()
+    {
+        return false;
+    }
+    if matches!(types[place.ty.0].kind, TTypeKind::Ascii { .. })
+        || place
+            .path
+            .iter()
+            .any(|projection| matches!(projection, TProjection::Index { .. }))
+    {
+        return true;
+    }
+    matches!(
+        value.kind,
+        TExprKind::Call { .. }
+            | TExprKind::IndirectCall { .. }
+            | TExprKind::OptionalCall { .. }
+            | TExprKind::Binary { .. }
+    ) && expression_uses_local_root(value, place.root)
+}
+
 fn growing_ascii_locals(
     function: &TFunction,
     program: &TProgram,
@@ -4697,6 +5068,7 @@ struct FunctionEmitter<'a> {
     loops: Vec<LoopTargets>,
     views: HashMap<usize, ViewInfo>,
     sort_scratch: HashMap<Ty, String>,
+    preallocated_local_regions: HashSet<usize>,
     returned_ascii_builder_local: Option<usize>,
     append_variant: bool,
     append_builder_local: Option<usize>,
@@ -4797,6 +5169,7 @@ impl<'a> FunctionEmitter<'a> {
             loops: Vec::new(),
             views: HashMap::new(),
             sort_scratch: HashMap::new(),
+            preallocated_local_regions: HashSet::new(),
             returned_ascii_builder_local,
             append_variant,
             append_builder_local,
@@ -11458,6 +11831,23 @@ impl<'a> FunctionEmitter<'a> {
         result_destination: Option<&str>,
         call_span: Span,
     ) -> String {
+        self.emit_direct_call_with_in_place_alias(
+            function_id,
+            args,
+            result_destination,
+            call_span,
+            None,
+        )
+    }
+
+    fn emit_direct_call_with_in_place_alias(
+        &mut self,
+        function_id: usize,
+        args: &[TExpr],
+        result_destination: Option<&str>,
+        call_span: Span,
+        in_place_alias_parameter: Option<usize>,
+    ) -> String {
         let function = self.program.functions[function_id].clone();
         let signature = lower_signature(&function, &self.program.types);
         let saved_top = self.stack_top.clone();
@@ -11472,13 +11862,13 @@ impl<'a> FunctionEmitter<'a> {
         }
         let mut regions = Vec::new();
         let mut pointer_args = Vec::new();
-        for (arg, param) in args.iter().zip(&function.params) {
+        for (index, (arg, param)) in args.iter().zip(&function.params).enumerate() {
             let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
             else {
                 return String::new();
             };
             if value.starts_with("ptr ") {
-                pointer_args.push((value[4..].to_owned(), param.ty));
+                pointer_args.push((index, value[4..].to_owned(), param.ty));
             }
             call_args.push(value);
         }
@@ -11489,8 +11879,13 @@ impl<'a> FunctionEmitter<'a> {
         {
             let destination = result_storage.as_deref().unwrap();
             let argument_top = self.stack_top.clone();
+            let overlap_args = pointer_args
+                .iter()
+                .filter(|(index, _, _)| Some(*index) != in_place_alias_parameter)
+                .map(|(_, pointer, ty)| (pointer.clone(), *ty))
+                .collect::<Vec<_>>();
             let overlaps =
-                self.emit_pointer_overlap_any(destination, function.result, &pointer_args);
+                self.emit_pointer_overlap_any(destination, function.result, &overlap_args);
             let direct_label = self.new_label("call.result.direct");
             let scratch_label = self.new_label("call.result.scratch");
             let merge_label = self.new_label("call.result.end");
@@ -12992,7 +13387,40 @@ impl<'a> FunctionEmitter<'a> {
         }
     }
 
+    fn preallocate_block_local_regions(&mut self, block: &TBlock) {
+        let growing_ascii = growing_ascii_locals(self.function, self.program);
+        let forwarded_return =
+            returned_lazy_local(self.function, &self.program.types).or_else(|| {
+                (!self.append_variant)
+                    .then_some(self.returned_ascii_builder_local)
+                    .flatten()
+            });
+        let plan = local_region_plan(
+            block,
+            &self.program.types,
+            &growing_ascii,
+            forwarded_return,
+            self.append_builder_local,
+        );
+        for region in plan {
+            if !self.preallocated_local_regions.insert(region.id) {
+                continue;
+            }
+            let pointer = format!("%local.{}", region.id);
+            if let Some(bytes) = region.static_ascii_bytes {
+                self.emit_runtime_region_alloc_dynamic(
+                    &bytes.to_string(),
+                    region.span,
+                    Some(pointer),
+                );
+            } else {
+                self.emit_runtime_region_alloc(region.ty, region.span, Some(pointer));
+            }
+        }
+    }
+
     fn emit_block_contents(&mut self, block: &TBlock) {
+        self.preallocate_block_local_regions(block);
         for stmt in &block.statements {
             if self.terminated {
                 break;
@@ -13034,11 +13462,15 @@ impl<'a> FunctionEmitter<'a> {
                 if !mutable && self.is_ascii_type(*ty) {
                     if let Some(length) = self.ascii_static_length(value) {
                         let bytes = length.saturating_add(16).to_string();
-                        let pointer = self.emit_runtime_region_alloc_dynamic(
-                            &bytes,
-                            stmt.span,
-                            Some(format!("%local.{id}")),
-                        );
+                        let pointer = if self.preallocated_local_regions.contains(id) {
+                            format!("%local.{id}")
+                        } else {
+                            self.emit_runtime_region_alloc_dynamic(
+                                &bytes,
+                                stmt.span,
+                                Some(format!("%local.{id}")),
+                            )
+                        };
                         self.emit_expr_to(&pointer, value);
                         return;
                     }
@@ -13069,11 +13501,11 @@ impl<'a> FunctionEmitter<'a> {
                             return;
                         }
                     }
-                    let pointer = self.emit_runtime_region_alloc(
-                        *ty,
-                        stmt.span,
-                        Some(format!("%local.{id}")),
-                    );
+                    let pointer = if self.preallocated_local_regions.contains(id) {
+                        format!("%local.{id}")
+                    } else {
+                        self.emit_runtime_region_alloc(*ty, stmt.span, Some(format!("%local.{id}")))
+                    };
                     self.emit_expr_to(&pointer, value);
                 } else {
                     let val = self.emit_expr(value);
@@ -13092,6 +13524,32 @@ impl<'a> FunctionEmitter<'a> {
                 operator_span,
                 value,
             } => {
+                if *op == AssignOp::Set {
+                    if let Some(parameter_index) = in_place_reassignment_parameter(
+                        &self.program.functions,
+                        &self.program.types,
+                        place,
+                        value,
+                    ) {
+                        let TExprKind::Call {
+                            target: CallTarget::Function(function_id),
+                            args,
+                            ..
+                        } = &value.kind
+                        else {
+                            unreachable!("in-place reassignment proof requires a direct call")
+                        };
+                        let destination = self.emit_place_pointer(place);
+                        self.emit_direct_call_with_in_place_alias(
+                            *function_id,
+                            args,
+                            Some(&destination),
+                            value.span,
+                            Some(parameter_index),
+                        );
+                        return;
+                    }
+                }
                 if *op == AssignOp::Set {
                     if let Some((collection_ty, collection_pointer, index, lane)) =
                         self.emit_growing_field_address(place)
