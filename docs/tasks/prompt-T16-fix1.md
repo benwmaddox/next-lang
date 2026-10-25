@@ -1,0 +1,9 @@
+You are implementing next-lang, task T16 (Text, Bytes, growing values in collections), fix round 1. Repo: /mnt/d/code/next-lang. Read docs/tasks/T16-text-bytes-collections.md and docs/tasks/T16-report.md. Same rules: do not commit, do not create, switch or stash branches, do not edit docs/DESIGN.md, docs/PLAN.md, docs/EXAMPLES.md, docs/reviews/ or docs/research/, use CARGO_TARGET_DIR=$HOME/.cache/next-lang/target, no external crates.
+
+Reviewer findings:
+
+1. **Invalid UTF-8 read into Text is `err(Other(84))`** (84 is the errno EILSEQ). A program can't tell that apart from an OS failure without knowing Linux errno numbers. Add a named case to `IoError` (`InvalidUtf8`) for Text reads of invalid UTF-8, and use it consistently wherever Text is validated from bytes at the I/O boundary (fs.read into Text, and any other place that currently returns Other(84)). Keep `Other(int)` for real OS errors only. Update fixtures and the parse dumps that change.
+2. **`Text.empty()` and `Bytes.empty()` don't exist** ("unknown name 'Text'") while `Ascii.empty()` does. Add both, with the same rule as Ascii (maximum from the annotation or destination, never max 0).
+3. **The Unicode uppercase table** (runtime/nl_unicode_upper.h, 123 KB, "generated from ... Python's standard library") has no committed generator and no stated Unicode version, so it depends on whichever Python built it. Commit the generator as scripts/gen-unicode-upper.py, have it write the Unicode version (unicodedata.unidata_version) into the header's comment and into a constant the runtime can report, and make the header byte-for-byte reproducible from the script. State the version in the report. (DESIGN says upper uses full mappings; pinning the version is what keeps output deterministic across build hosts.)
+
+Run cargo build, cargo test and cargo fmt -- --check (and the parse-dump update script if fixtures change). Append a "Fix round 1" section to docs/tasks/T16-report.md.
