@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use next_lang::{PackageError, parse_package};
 
@@ -360,5 +362,236 @@ fn parse_cli_dumps_without_checking_and_is_repeatable() {
     assert_eq!(
         error.stderr,
         read(&root.join("tests/parse/dumps/cases/bad_escape.stderr")).as_bytes()
+    );
+}
+
+struct ScratchPackage(PathBuf);
+
+impl ScratchPackage {
+    fn new() -> Self {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        let path = env::temp_dir().join(format!(
+            "next-lang-t22-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path).expect("could not create temporary parse package");
+        Self(path)
+    }
+
+    fn parse(&self, source: &str) -> std::process::Output {
+        fs::write(self.0.join("main.nl"), source).expect("could not write temporary source");
+        Command::new(env!("CARGO_BIN_EXE_nlc"))
+            .arg("parse")
+            .arg(&self.0)
+            .output()
+            .expect("could not run debug nlc parse")
+    }
+}
+
+impl Drop for ScratchPackage {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn assert_parse_success(package: &ScratchPackage, source: &str, construct: &str) {
+    let output = package.parse(source);
+    assert!(
+        output.status.success(),
+        "debug nlc rejected 1,000 {construct}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+}
+
+fn assert_parse_limit(
+    package: &ScratchPackage,
+    source: &str,
+    offset: usize,
+    message: &str,
+    construct: &str,
+) {
+    let output = package.parse(source);
+    assert_eq!(output.status.code(), Some(2), "{construct} should fail");
+    assert!(output.stdout.is_empty());
+    let prefix = &source[..offset];
+    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+    let column = prefix[line_start..].len() + 1;
+    let expected = format!("main.nl:{line}:{column}: error: {message}\n");
+    assert_eq!(
+        output.stderr,
+        expected.as_bytes(),
+        "wrong {construct} limit position"
+    );
+}
+
+fn parse_source(expression: &str) -> String {
+    format!("fn main() {{ print({expression}) }}\n")
+}
+
+#[test]
+fn parser_nesting_limits_are_1000_with_exact_boundary_positions() {
+    let package = ScratchPackage::new();
+    let expression_error = "expression nesting limit of 1000 exceeded";
+
+    let expression = format!("{}1{}", "(".repeat(1000), ")".repeat(1000));
+    let source = parse_source(&expression);
+    assert_parse_success(&package, &source, "parentheses");
+    let expression = format!("{}1{}", "(".repeat(1001), ")".repeat(1001));
+    let source = parse_source(&expression);
+    let offset = source.find("print(").unwrap() + "print(".len() + 1000;
+    assert_parse_limit(&package, &source, offset, expression_error, "parentheses");
+
+    let source = parse_source(&format!("{}true", "!".repeat(1000)));
+    assert_parse_success(&package, &source, "unary operators");
+    let source = parse_source(&format!("{}true", "!".repeat(1001)));
+    let offset = source.find("!".repeat(1001).as_str()).unwrap() + 1000;
+    assert_parse_limit(
+        &package,
+        &source,
+        offset,
+        expression_error,
+        "unary operators",
+    );
+    let source = parse_source(&format!("{}x", "-".repeat(1000)));
+    assert_parse_success(&package, &source, "unary negation operators");
+    let source = parse_source(&format!("{}x", "-".repeat(1001)));
+    let offset = source.find("-".repeat(1001).as_str()).unwrap() + 1000;
+    assert_parse_limit(
+        &package,
+        &source,
+        offset,
+        expression_error,
+        "unary negation operators",
+    );
+    assert_parse_success(
+        &package,
+        &parse_source(&format!("{}()", "!".repeat(1000))),
+        "unary operators before a unit value",
+    );
+
+    let binary_chain = |count: usize| {
+        let mut expression = String::from("1L");
+        for _ in 0..count {
+            expression.push_str(" + 1L");
+        }
+        expression
+    };
+    let source = parse_source(&binary_chain(1000));
+    assert_parse_success(&package, &source, "binary operators");
+    let source = parse_source(&binary_chain(1001));
+    let offset = source.find("+").unwrap();
+    assert_parse_limit(
+        &package,
+        &source,
+        offset,
+        expression_error,
+        "binary operators",
+    );
+
+    let coalesce_chain = |count: usize| format!("a{}", " ?? a".repeat(count));
+    let source = parse_source(&coalesce_chain(1000));
+    assert_parse_success(&package, &source, "right-associative binary operators");
+    let source = parse_source(&coalesce_chain(1001));
+    let offset = source.match_indices("??").nth(1000).unwrap().0;
+    assert_parse_limit(
+        &package,
+        &source,
+        offset,
+        expression_error,
+        "right-associative binary operators",
+    );
+
+    let call_chain = |count: usize| format!("{}1{}", "f(".repeat(count), ")".repeat(count));
+    let source = parse_source(&call_chain(1000));
+    assert_parse_success(&package, &source, "calls");
+    let source = parse_source(&call_chain(1001));
+    let offset = source.match_indices("f(").nth(1000).unwrap().0;
+    assert_parse_limit(&package, &source, offset, expression_error, "calls");
+
+    let source = parse_source(&format!("{}1L", "(long)".repeat(1000)));
+    assert_parse_success(&package, &source, "casts");
+    let source = parse_source(&format!("{}1L", "(long)".repeat(1001)));
+    let offset = source.match_indices("(long)").nth(1000).unwrap().0;
+    assert_parse_limit(&package, &source, offset, expression_error, "casts");
+
+    let mut matches = String::new();
+    for _ in 0..1000 {
+        matches.push_str("match true { true => ");
+    }
+    matches.push('0');
+    matches.push_str(&" }".repeat(1000));
+    let source = parse_source(&matches);
+    assert_parse_success(&package, &source, "match expressions");
+    let mut matches = String::new();
+    for _ in 0..1001 {
+        matches.push_str("match true { true => ");
+    }
+    matches.push('0');
+    matches.push_str(&" }".repeat(1001));
+    let source = parse_source(&matches);
+    let offset = source.match_indices("match").nth(1000).unwrap().0;
+    assert_parse_limit(
+        &package,
+        &source,
+        offset,
+        expression_error,
+        "match expressions",
+    );
+
+    let if_chain = |count: usize| {
+        let mut clauses = String::from("if true { 1 }");
+        for _ in 1..count {
+            clauses.push_str(" else if true { 1 }");
+        }
+        clauses.push_str(" else { 0 }");
+        clauses
+    };
+    let source = parse_source(&if_chain(1000));
+    assert_parse_success(&package, &source, "if clauses");
+    let source = parse_source(&if_chain(1001));
+    let offset = source.match_indices("if true").nth(1000).unwrap().0;
+    assert_parse_limit(&package, &source, offset, expression_error, "if clauses");
+
+    let mut nested_blocks = String::from("fn main() {\n");
+    nested_blocks.push_str(&"{\n".repeat(999));
+    nested_blocks.push_str("0\n");
+    nested_blocks.push_str(&"}\n".repeat(999));
+    nested_blocks.push_str("}\n");
+    assert_parse_success(&package, &nested_blocks, "blocks");
+    let mut nested_blocks = String::from("fn main() {\n");
+    nested_blocks.push_str(&"{\n".repeat(1000));
+    nested_blocks.push_str("0\n");
+    nested_blocks.push_str(&"}\n".repeat(1000));
+    nested_blocks.push_str("}\n");
+    let offset = nested_blocks.find("{\n").unwrap() + 2 + 2 * 999;
+    assert_parse_limit(
+        &package,
+        &nested_blocks,
+        offset,
+        "block nesting limit of 1000 exceeded",
+        "blocks",
+    );
+
+    let nested_type = |wrappers: usize| {
+        format!(
+            "fn main(value: {}byte{}) {{}}\n",
+            "list<".repeat(wrappers),
+            ", 1>".repeat(wrappers)
+        )
+    };
+    let source = nested_type(999);
+    assert_parse_success(&package, &source, "types");
+    let source = nested_type(1000);
+    let offset = source.find("byte").unwrap();
+    assert_parse_limit(
+        &package,
+        &source,
+        offset,
+        "type nesting limit of 1000 exceeded",
+        "types",
     );
 }

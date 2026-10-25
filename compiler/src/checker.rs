@@ -64,6 +64,17 @@ struct CollectionCountKey {
     fields: Vec<usize>,
 }
 
+type AsciiGrowthRoots = (
+    std::collections::HashSet<usize>,
+    std::collections::HashSet<usize>,
+);
+
+#[derive(Clone)]
+enum LoopWriteCandidate {
+    Target(Expr),
+    IndirectCall { callee: Expr, args: Vec<Expr> },
+}
+
 pub fn check_package(
     programs: Vec<Program>,
     files: Vec<String>,
@@ -148,6 +159,12 @@ struct Checker {
     view_bindings: HashMap<usize, TPlace>,
     collection_counts: HashMap<CollectionCountKey, usize>,
     loop_push_proofs: Vec<std::collections::HashSet<CollectionCountKey>>,
+    expression_analysis_depth: usize,
+    expression_analysis_generation: u64,
+    natural_expr_type_cache: HashMap<(usize, Option<String>, u64), Option<Ty>>,
+    expression_ascii_cache: HashMap<(usize, u64), bool>,
+    loop_write_candidates: HashMap<usize, Vec<LoopWriteCandidate>>,
+    loop_ascii_growth_roots: HashMap<(usize, usize, usize, usize), AsciiGrowthRoots>,
 }
 
 impl Checker {
@@ -258,6 +275,12 @@ impl Checker {
             view_bindings: HashMap::new(),
             collection_counts: HashMap::new(),
             loop_push_proofs: Vec::new(),
+            expression_analysis_depth: 0,
+            expression_analysis_generation: 0,
+            natural_expr_type_cache: HashMap::new(),
+            expression_ascii_cache: HashMap::new(),
+            loop_write_candidates: HashMap::new(),
+            loop_ascii_growth_roots: HashMap::new(),
         };
         let full_ty = Ty(checker.types.len());
         checker.types.push(TType {
@@ -2625,6 +2648,23 @@ impl Checker {
     }
 
     fn expression_may_be_ascii(&mut self, expr: &Expr) -> bool {
+        let key = (
+            expr as *const Expr as usize,
+            self.expression_analysis_generation,
+        );
+        if self.expression_analysis_depth > 0 {
+            if let Some(result) = self.expression_ascii_cache.get(&key) {
+                return *result;
+            }
+        }
+        let result = self.expression_may_be_ascii_uncached(expr);
+        if self.expression_analysis_depth > 0 {
+            self.expression_ascii_cache.insert(key, result);
+        }
+        result
+    }
+
+    fn expression_may_be_ascii_uncached(&mut self, expr: &Expr) -> bool {
         if self
             .natural_expr_type_inner(expr, None)
             .is_some_and(|ty| self.is_ascii(ty))
@@ -2951,6 +2991,8 @@ impl Checker {
         self.current_function = id;
         self.current_return = signature.result;
         self.current_is_test = false;
+        self.loop_write_candidates.clear();
+        self.loop_ascii_growth_roots.clear();
         self.facts.clear();
         self.collection_counts.clear();
         self.loop_push_proofs.clear();
@@ -3538,6 +3580,8 @@ impl Checker {
         self.current_function = id;
         self.current_return = Ty::Unit;
         self.current_is_test = true;
+        self.loop_write_candidates.clear();
+        self.loop_ascii_growth_roots.clear();
         self.facts.clear();
         self.collection_counts.clear();
         self.loop_push_proofs.clear();
@@ -4721,6 +4765,28 @@ impl Checker {
     }
 
     fn natural_expr_type_inner(
+        &mut self,
+        expr: &Expr,
+        shadowed_counter: Option<&str>,
+    ) -> Option<Ty> {
+        let key = (
+            expr as *const Expr as usize,
+            shadowed_counter.map(str::to_owned),
+            self.expression_analysis_generation,
+        );
+        if self.expression_analysis_depth > 0 {
+            if let Some(result) = self.natural_expr_type_cache.get(&key) {
+                return *result;
+            }
+        }
+        let result = self.natural_expr_type_inner_uncached(expr, shadowed_counter);
+        if self.expression_analysis_depth > 0 {
+            self.natural_expr_type_cache.insert(key, result);
+        }
+        result
+    }
+
+    fn natural_expr_type_inner_uncached(
         &mut self,
         expr: &Expr,
         shadowed_counter: Option<&str>,
@@ -7659,6 +7725,22 @@ impl Checker {
     }
 
     fn check_expr(&mut self, expr: &Expr, expected: Option<Ty>) -> Result<TExpr, CheckError> {
+        let outermost = self.expression_analysis_depth == 0;
+        if outermost {
+            self.natural_expr_type_cache.clear();
+            self.expression_ascii_cache.clear();
+        }
+        self.expression_analysis_depth += 1;
+        let result = self.check_expr_with_analysis(expr, expected);
+        self.expression_analysis_depth -= 1;
+        result
+    }
+
+    fn check_expr_with_analysis(
+        &mut self,
+        expr: &Expr,
+        expected: Option<Ty>,
+    ) -> Result<TExpr, CheckError> {
         match &expr.kind {
             ExprKind::Call {
                 name,
@@ -9883,14 +9965,15 @@ impl Checker {
                 | BinaryOp::WrapSub
                 | BinaryOp::WrapMul
         ) {
+            let result_ty = self.base_type(l.ty);
             Ok((
                 TExprKind::Binary {
                     op,
                     operator_span: span,
-                    left: Box::new(l.clone()),
+                    left: Box::new(l),
                     right: Box::new(r),
                 },
-                self.base_type(l.ty),
+                result_ty,
             ))
         } else {
             unreachable!()
@@ -10195,90 +10278,119 @@ impl Checker {
         block: &Block,
         writes: &mut std::collections::HashSet<usize>,
     ) {
-        for statement in &block.statements {
-            match &statement.kind {
-                StmtKind::Assign { target, value, .. } => {
-                    if let Ok(place) = self.resolve_place(target) {
+        for candidate in self.loop_write_candidates_for_block(block) {
+            match candidate {
+                LoopWriteCandidate::Target(target) => {
+                    if let Ok(place) = self.resolve_place(&target) {
                         writes.insert(place.root);
                     }
-                    self.collect_expr_writes(value, writes);
                 }
-                StmtKind::Let { value, .. } | StmtKind::Expr(value) | StmtKind::Discard(value) => {
-                    self.collect_expr_writes(value, writes)
-                }
-                StmtKind::Return(value) => {
-                    if let Some(value) = value {
-                        self.collect_expr_writes(value, writes);
-                    }
-                }
-                StmtKind::For {
-                    start, end, body, ..
-                } => {
-                    self.collect_expr_writes(start, writes);
-                    self.collect_expr_writes(end, writes);
-                    self.collect_loop_writes(body, writes);
-                }
-                StmtKind::ForEach {
-                    collection, body, ..
-                } => {
-                    self.collect_expr_writes(collection, writes);
-                    self.collect_loop_writes(body, writes);
-                }
-                StmtKind::Expect { value, .. } => self.collect_expr_writes(value, writes),
-                StmtKind::Block(body) => self.collect_loop_writes(body, writes),
-                StmtKind::Break | StmtKind::Continue => {}
-            }
-        }
-        if let Some(tail) = &block.tail {
-            self.collect_expr_writes(tail, writes);
-        }
-    }
-
-    fn collect_expr_writes(&mut self, expr: &Expr, writes: &mut std::collections::HashSet<usize>) {
-        match &expr.kind {
-            ExprKind::Call { name, args, .. } => {
-                if let Some(signature) = self.signatures.get(name).cloned() {
-                    for (arg, param) in args.iter().zip(&signature.params) {
-                        if param.mode == ParamMode::Write {
-                            if let Ok(place) = self.resolve_place(arg) {
-                                writes.insert(place.root);
-                            }
-                        }
-                    }
-                }
-                for arg in args {
-                    self.collect_expr_writes(arg, writes);
-                }
-            }
-            ExprKind::IndirectCall { callee, args } => {
-                if let Some(function_ty) = self.natural_expr_type(callee) {
-                    if let TTypeKind::Function { params, .. } =
-                        self.types[function_ty.0].kind.clone()
-                    {
-                        for (arg, param) in args.iter().zip(params) {
-                            if param.mode == ParamMode::Write {
-                                if let Ok(place) = self.resolve_place(arg) {
-                                    writes.insert(place.root);
+                LoopWriteCandidate::IndirectCall { callee, args } => {
+                    if let Some(function_ty) = self.natural_expr_type(&callee) {
+                        if let TTypeKind::Function { params, .. } =
+                            self.types[function_ty.0].kind.clone()
+                        {
+                            for (arg, param) in args.iter().zip(params) {
+                                if param.mode == ParamMode::Write {
+                                    if let Ok(place) = self.resolve_place(arg) {
+                                        writes.insert(place.root);
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                self.collect_expr_writes(callee, writes);
+            }
+        }
+    }
+
+    fn loop_write_candidates_for_block(&mut self, block: &Block) -> Vec<LoopWriteCandidate> {
+        let key = block as *const Block as usize;
+        if let Some(candidates) = self.loop_write_candidates.get(&key) {
+            return candidates.clone();
+        }
+        let mut candidates = Vec::new();
+        for statement in &block.statements {
+            match &statement.kind {
+                StmtKind::Assign { target, value, .. } => {
+                    candidates.push(LoopWriteCandidate::Target(target.clone()));
+                    self.collect_expr_write_candidates(value, &mut candidates);
+                }
+                StmtKind::Let { value, .. } | StmtKind::Expr(value) | StmtKind::Discard(value) => {
+                    self.collect_expr_write_candidates(value, &mut candidates)
+                }
+                StmtKind::Return(value) => {
+                    if let Some(value) = value {
+                        self.collect_expr_write_candidates(value, &mut candidates);
+                    }
+                }
+                StmtKind::For {
+                    start, end, body, ..
+                } => {
+                    self.collect_expr_write_candidates(start, &mut candidates);
+                    self.collect_expr_write_candidates(end, &mut candidates);
+                    candidates.extend(self.loop_write_candidates_for_block(body));
+                }
+                StmtKind::ForEach {
+                    collection, body, ..
+                } => {
+                    self.collect_expr_write_candidates(collection, &mut candidates);
+                    candidates.extend(self.loop_write_candidates_for_block(body));
+                }
+                StmtKind::Expect { value, .. } => {
+                    self.collect_expr_write_candidates(value, &mut candidates)
+                }
+                StmtKind::Block(body) => {
+                    candidates.extend(self.loop_write_candidates_for_block(body))
+                }
+                StmtKind::Break | StmtKind::Continue => {}
+            }
+        }
+        if let Some(tail) = &block.tail {
+            self.collect_expr_write_candidates(tail, &mut candidates);
+        }
+        self.loop_write_candidates.insert(key, candidates.clone());
+        candidates
+    }
+
+    fn collect_expr_write_candidates(
+        &mut self,
+        expr: &Expr,
+        candidates: &mut Vec<LoopWriteCandidate>,
+    ) {
+        match &expr.kind {
+            ExprKind::Call { name, args, .. } => {
+                if let Some(signature) = self.signatures.get(name).cloned() {
+                    for (arg, param) in args.iter().zip(&signature.params) {
+                        if param.mode == ParamMode::Write {
+                            candidates.push(LoopWriteCandidate::Target(arg.clone()));
+                        }
+                    }
+                }
                 for arg in args {
-                    self.collect_expr_writes(arg, writes);
+                    self.collect_expr_write_candidates(arg, candidates);
+                }
+            }
+            ExprKind::IndirectCall { callee, args } => {
+                candidates.push(LoopWriteCandidate::IndirectCall {
+                    callee: (**callee).clone(),
+                    args: args.clone(),
+                });
+                self.collect_expr_write_candidates(callee, candidates);
+                for arg in args {
+                    self.collect_expr_write_candidates(arg, candidates);
                 }
             }
             ExprKind::StructInit { fields, .. } => {
                 for field in fields {
-                    self.collect_expr_writes(&field.value, writes);
+                    self.collect_expr_write_candidates(&field.value, candidates);
                 }
             }
             ExprKind::MethodCall { receiver, args, .. }
             | ExprKind::OptionalCall { receiver, args, .. } => {
-                self.collect_expr_writes(receiver, writes);
+                self.collect_expr_write_candidates(receiver, candidates);
                 for arg in args {
-                    self.collect_expr_writes(arg, writes);
+                    self.collect_expr_write_candidates(arg, candidates);
                 }
             }
             ExprKind::Field { receiver, .. }
@@ -10295,42 +10407,42 @@ impl Checker {
             }
             | ExprKind::Unary {
                 value: receiver, ..
-            } => self.collect_expr_writes(receiver, writes),
-            ExprKind::Take(value) => self.collect_expr_writes(value, writes),
+            } => self.collect_expr_write_candidates(receiver, candidates),
+            ExprKind::Take(value) => self.collect_expr_write_candidates(value, candidates),
             ExprKind::GridIndex { receiver, x, y, .. } => {
-                self.collect_expr_writes(receiver, writes);
-                self.collect_expr_writes(x, writes);
-                self.collect_expr_writes(y, writes);
+                self.collect_expr_write_candidates(receiver, candidates);
+                self.collect_expr_write_candidates(x, candidates);
+                self.collect_expr_write_candidates(y, candidates);
             }
             ExprKind::QualifiedCase { args, .. } => {
                 for arg in args {
-                    self.collect_expr_writes(arg, writes);
+                    self.collect_expr_write_candidates(arg, candidates);
                 }
             }
             ExprKind::Binary { left, right, .. } => {
-                self.collect_expr_writes(left, writes);
-                self.collect_expr_writes(right, writes);
+                self.collect_expr_write_candidates(left, candidates);
+                self.collect_expr_write_candidates(right, candidates);
             }
             ExprKind::If {
                 condition,
                 then_block,
                 else_block,
             } => {
-                self.collect_expr_writes(condition, writes);
-                self.collect_loop_writes(then_block, writes);
+                self.collect_expr_write_candidates(condition, candidates);
+                candidates.extend(self.loop_write_candidates_for_block(then_block));
                 if let Some(other) = else_block {
-                    self.collect_loop_writes(other, writes);
+                    candidates.extend(self.loop_write_candidates_for_block(other));
                 }
             }
             ExprKind::Match { scrutinee, arms } => {
-                self.collect_expr_writes(scrutinee, writes);
+                self.collect_expr_write_candidates(scrutinee, candidates);
                 for arm in arms {
-                    self.collect_loop_writes(&arm.body, writes);
+                    candidates.extend(self.loop_write_candidates_for_block(&arm.body));
                 }
             }
             ExprKind::Return(value) => {
                 if let Some(value) = value {
-                    self.collect_expr_writes(value, writes);
+                    self.collect_expr_write_candidates(value, candidates);
                 }
             }
             ExprKind::Name(_)
@@ -10395,6 +10507,7 @@ impl Checker {
         };
         self.next_local += 1;
         scope.insert(name.to_owned(), binding.clone());
+        self.expression_analysis_generation = self.expression_analysis_generation.wrapping_add(1);
         Ok(binding)
     }
 
@@ -10666,14 +10779,11 @@ impl Checker {
         usize::try_from(count).ok()
     }
 
-    fn check_loop_ascii_growth(
-        &mut self,
-        before: &HashMap<usize, (usize, usize)>,
-        after: &HashMap<usize, (usize, usize)>,
-        body: &TBlock,
-        iterations: Option<usize>,
-        loop_span: Span,
-    ) -> Result<(), CheckError> {
+    fn loop_ascii_growth_roots_expr(
+        expr: &TExpr,
+        roots: &mut AsciiGrowthRoots,
+        cache: &mut HashMap<(usize, usize, usize, usize), AsciiGrowthRoots>,
+    ) {
         fn local_root(expr: &TExpr) -> Option<usize> {
             match &expr.kind {
                 TExprKind::Local(id) => Some(*id),
@@ -10684,150 +10794,192 @@ impl Checker {
             }
         }
 
-        fn append_roots_expr(
-            expr: &TExpr,
-            checked: &mut std::collections::HashSet<usize>,
-            plain: &mut std::collections::HashSet<usize>,
-        ) {
-            match &expr.kind {
-                TExprKind::AsciiTryAppend { receiver, argument } => {
-                    if let Some(root) = local_root(receiver) {
-                        checked.insert(root);
+        match &expr.kind {
+            TExprKind::AsciiTryAppend { receiver, argument } => {
+                if let Some(root) = local_root(receiver) {
+                    roots.0.insert(root);
+                }
+                Self::loop_ascii_growth_roots_expr(argument, roots, cache);
+            }
+            TExprKind::Try { value, .. } => Self::loop_ascii_growth_roots_expr(value, roots, cache),
+            TExprKind::Call { args, .. }
+            | TExprKind::Construct { args, .. }
+            | TExprKind::CollectionOp { args, .. }
+            | TExprKind::PoolOp { args, .. }
+            | TExprKind::MapOp { args, .. }
+            | TExprKind::SetOp { args, .. }
+            | TExprKind::IndirectCall { args, .. }
+            | TExprKind::OptionalCall { args, .. } => {
+                for arg in args {
+                    Self::loop_ascii_growth_roots_expr(arg, roots, cache);
+                }
+            }
+            TExprKind::AsciiUpper(value)
+            | TExprKind::AsciiFormat(value)
+            | TExprKind::AsciiCast(value)
+            | TExprKind::Take(value)
+            | TExprKind::OptionalToLong(value)
+            | TExprKind::Field {
+                receiver: value, ..
+            }
+            | TExprKind::Method {
+                receiver: value, ..
+            }
+            | TExprKind::ToLong(value)
+            | TExprKind::Cast { value, .. }
+            | TExprKind::Unary { value, .. }
+            | TExprKind::Convert { value, .. }
+            | TExprKind::Fit { value, .. }
+            | TExprKind::AsciiFit { value, .. } => {
+                Self::loop_ascii_growth_roots_expr(value, roots, cache)
+            }
+            TExprKind::Binary { left, right, .. } => {
+                Self::loop_ascii_growth_roots_expr(left, roots, cache);
+                Self::loop_ascii_growth_roots_expr(right, roots, cache);
+            }
+            TExprKind::Coalesce { option, fallback } => {
+                Self::loop_ascii_growth_roots_expr(option, roots, cache);
+                Self::loop_ascii_growth_roots_expr(fallback, roots, cache);
+            }
+            TExprKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                Self::loop_ascii_growth_roots_expr(condition, roots, cache);
+                let branches = Self::loop_ascii_growth_roots_block(then_block, cache);
+                roots.0.extend(branches.0);
+                roots.1.extend(branches.1);
+                if let Some(other) = else_block {
+                    let branches = Self::loop_ascii_growth_roots_block(other, cache);
+                    roots.0.extend(branches.0);
+                    roots.1.extend(branches.1);
+                }
+            }
+            TExprKind::Match { scrutinee, arms } => {
+                Self::loop_ascii_growth_roots_expr(scrutinee, roots, cache);
+                for arm in arms {
+                    let arm_roots = Self::loop_ascii_growth_roots_block(&arm.body, cache);
+                    roots.0.extend(arm_roots.0);
+                    roots.1.extend(arm_roots.1);
+                }
+            }
+            TExprKind::StructConstruct { fields } => {
+                for (_, value) in fields {
+                    Self::loop_ascii_growth_roots_expr(value, roots, cache);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn loop_ascii_growth_roots_block(
+        block: &TBlock,
+        cache: &mut HashMap<(usize, usize, usize, usize), AsciiGrowthRoots>,
+    ) -> AsciiGrowthRoots {
+        let key = (
+            block.span.file,
+            block.span.start_offset,
+            block.span.end_offset,
+            block.scope_id,
+        );
+        if let Some(roots) = cache.get(&key) {
+            return roots.clone();
+        }
+
+        let mut roots = AsciiGrowthRoots::default();
+        for statement in &block.statements {
+            match &statement.kind {
+                TStmtKind::Assign {
+                    place,
+                    op: AssignOp::Add,
+                    value,
+                    ..
+                } => {
+                    roots.1.insert(place.root);
+                    Self::loop_ascii_growth_roots_expr(value, &mut roots, cache);
+                }
+                TStmtKind::Let { value, .. }
+                | TStmtKind::Assign { value, .. }
+                | TStmtKind::Expr(value)
+                | TStmtKind::Discard(value) => {
+                    Self::loop_ascii_growth_roots_expr(value, &mut roots, cache)
+                }
+                TStmtKind::Return(value) => {
+                    if let Some(value) = value {
+                        Self::loop_ascii_growth_roots_expr(value, &mut roots, cache);
                     }
-                    append_roots_expr(argument, checked, plain);
                 }
-                TExprKind::Try { value, .. } => append_roots_expr(value, checked, plain),
-                TExprKind::Call { args, .. }
-                | TExprKind::Construct { args, .. }
-                | TExprKind::CollectionOp { args, .. }
-                | TExprKind::PoolOp { args, .. }
-                | TExprKind::MapOp { args, .. }
-                | TExprKind::SetOp { args, .. }
-                | TExprKind::IndirectCall { args, .. }
-                | TExprKind::OptionalCall { args, .. } => {
-                    for arg in args {
-                        append_roots_expr(arg, checked, plain);
-                    }
-                }
-                TExprKind::AsciiUpper(value)
-                | TExprKind::AsciiFormat(value)
-                | TExprKind::AsciiCast(value)
-                | TExprKind::Take(value)
-                | TExprKind::OptionalToLong(value)
-                | TExprKind::Field {
-                    receiver: value, ..
-                }
-                | TExprKind::Method {
-                    receiver: value, ..
-                }
-                | TExprKind::ToLong(value)
-                | TExprKind::Cast { value, .. }
-                | TExprKind::Unary { value, .. }
-                | TExprKind::Convert { value, .. }
-                | TExprKind::Fit { value, .. }
-                | TExprKind::AsciiFit { value, .. } => append_roots_expr(value, checked, plain),
-                TExprKind::Binary { left, right, .. } => {
-                    append_roots_expr(left, checked, plain);
-                    append_roots_expr(right, checked, plain);
-                }
-                TExprKind::Coalesce { option, fallback } => {
-                    append_roots_expr(option, checked, plain);
-                    append_roots_expr(fallback, checked, plain);
-                }
-                TExprKind::If {
+                TStmtKind::If {
                     condition,
                     then_block,
                     else_block,
                 } => {
-                    append_roots_expr(condition, checked, plain);
-                    append_roots_block(then_block, checked, plain);
+                    Self::loop_ascii_growth_roots_expr(condition, &mut roots, cache);
+                    let branches = Self::loop_ascii_growth_roots_block(then_block, cache);
+                    roots.0.extend(branches.0);
+                    roots.1.extend(branches.1);
                     if let Some(other) = else_block {
-                        append_roots_block(other, checked, plain);
+                        let branches = Self::loop_ascii_growth_roots_block(other, cache);
+                        roots.0.extend(branches.0);
+                        roots.1.extend(branches.1);
                     }
                 }
-                TExprKind::Match { scrutinee, arms } => {
-                    append_roots_expr(scrutinee, checked, plain);
-                    for arm in arms {
-                        append_roots_block(&arm.body, checked, plain);
-                    }
+                TStmtKind::For {
+                    start, end, body, ..
+                } => {
+                    Self::loop_ascii_growth_roots_expr(start, &mut roots, cache);
+                    Self::loop_ascii_growth_roots_expr(end, &mut roots, cache);
+                    let nested = Self::loop_ascii_growth_roots_block(body, cache);
+                    roots.0.extend(nested.0);
+                    roots.1.extend(nested.1);
                 }
-                TExprKind::StructConstruct { fields } => {
-                    for (_, value) in fields {
-                        append_roots_expr(value, checked, plain);
-                    }
+                TStmtKind::ForEach {
+                    collection, body, ..
+                } => {
+                    Self::loop_ascii_growth_roots_expr(collection, &mut roots, cache);
+                    let nested = Self::loop_ascii_growth_roots_block(body, cache);
+                    roots.0.extend(nested.0);
+                    roots.1.extend(nested.1);
                 }
-                _ => {}
+                TStmtKind::Block(body) => {
+                    let nested = Self::loop_ascii_growth_roots_block(body, cache);
+                    roots.0.extend(nested.0);
+                    roots.1.extend(nested.1);
+                }
+                TStmtKind::Expect { kind, .. } => match kind {
+                    TExpectKind::Bool(value) => {
+                        Self::loop_ascii_growth_roots_expr(value, &mut roots, cache)
+                    }
+                    TExpectKind::Compare { left, right, .. } => {
+                        Self::loop_ascii_growth_roots_expr(left, &mut roots, cache);
+                        Self::loop_ascii_growth_roots_expr(right, &mut roots, cache);
+                    }
+                },
+                TStmtKind::Break | TStmtKind::Continue => {}
             }
         }
-
-        fn append_roots_block(
-            block: &TBlock,
-            checked: &mut std::collections::HashSet<usize>,
-            plain: &mut std::collections::HashSet<usize>,
-        ) {
-            for statement in &block.statements {
-                match &statement.kind {
-                    TStmtKind::Assign {
-                        place,
-                        op: AssignOp::Add,
-                        value,
-                        ..
-                    } => {
-                        plain.insert(place.root);
-                        append_roots_expr(value, checked, plain);
-                    }
-                    TStmtKind::Let { value, .. }
-                    | TStmtKind::Assign { value, .. }
-                    | TStmtKind::Expr(value)
-                    | TStmtKind::Discard(value) => append_roots_expr(value, checked, plain),
-                    TStmtKind::Return(value) => {
-                        if let Some(value) = value {
-                            append_roots_expr(value, checked, plain);
-                        }
-                    }
-                    TStmtKind::If {
-                        condition,
-                        then_block,
-                        else_block,
-                    } => {
-                        append_roots_expr(condition, checked, plain);
-                        append_roots_block(then_block, checked, plain);
-                        if let Some(other) = else_block {
-                            append_roots_block(other, checked, plain);
-                        }
-                    }
-                    TStmtKind::For {
-                        start, end, body, ..
-                    } => {
-                        append_roots_expr(start, checked, plain);
-                        append_roots_expr(end, checked, plain);
-                        append_roots_block(body, checked, plain);
-                    }
-                    TStmtKind::ForEach {
-                        collection, body, ..
-                    } => {
-                        append_roots_expr(collection, checked, plain);
-                        append_roots_block(body, checked, plain);
-                    }
-                    TStmtKind::Block(body) => append_roots_block(body, checked, plain),
-                    TStmtKind::Expect { kind, .. } => match kind {
-                        TExpectKind::Bool(value) => append_roots_expr(value, checked, plain),
-                        TExpectKind::Compare { left, right, .. } => {
-                            append_roots_expr(left, checked, plain);
-                            append_roots_expr(right, checked, plain);
-                        }
-                    },
-                    TStmtKind::Break | TStmtKind::Continue => {}
-                }
-            }
-            if let Some(tail) = &block.tail {
-                append_roots_expr(tail, checked, plain);
-            }
+        if let Some(tail) = &block.tail {
+            Self::loop_ascii_growth_roots_expr(tail, &mut roots, cache);
         }
+        cache.insert(key, roots.clone());
+        roots
+    }
 
-        let mut checked = std::collections::HashSet::new();
-        let mut plain = std::collections::HashSet::new();
-        append_roots_block(body, &mut checked, &mut plain);
+    fn check_loop_ascii_growth(
+        &mut self,
+        before: &HashMap<usize, (usize, usize)>,
+        after: &HashMap<usize, (usize, usize)>,
+        body: &TBlock,
+        iterations: Option<usize>,
+        loop_span: Span,
+    ) -> Result<(), CheckError> {
+        if before.is_empty() {
+            return Ok(());
+        }
+        let mut cache = std::mem::take(&mut self.loop_ascii_growth_roots);
+        let (checked, plain) = Self::loop_ascii_growth_roots_block(body, &mut cache);
+        self.loop_ascii_growth_roots = cache;
         for id in checked.union(&plain).copied().collect::<Vec<_>>() {
             let Some(before_range) = before.get(&id).copied() else {
                 continue;

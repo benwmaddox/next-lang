@@ -3,7 +3,6 @@ use crate::lexer::{Token, TokenKind};
 use std::collections::HashSet;
 
 const EXPRESSION_NESTING_LIMIT: usize = 1000;
-const EXPRESSION_PARSER_STACK_LIMIT: usize = 2048;
 
 #[derive(Clone, Debug)]
 pub struct ParseError {
@@ -18,6 +17,8 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> Result<Program, ParseError> {
         source,
         allow_struct_literals: true,
         expression_depth: 0,
+        expression_depth_adjustment: 0,
+        cast_depth: 0,
         parenthesis_depth: 0,
         block_depth: 0,
         type_depth: 0,
@@ -31,6 +32,8 @@ struct Parser<'a> {
     source: &'a str,
     allow_struct_literals: bool,
     expression_depth: usize,
+    expression_depth_adjustment: usize,
+    cast_depth: usize,
     parenthesis_depth: usize,
     block_depth: usize,
     type_depth: usize,
@@ -770,7 +773,7 @@ impl Parser<'_> {
         if self.block_depth >= EXPRESSION_NESTING_LIMIT {
             return Err(ParseError {
                 span: self.peek().span,
-                message: format!("expression nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"),
+                message: format!("block nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"),
             });
         }
         self.block_depth += 1;
@@ -1087,7 +1090,9 @@ impl Parser<'_> {
     }
 
     fn expression(&mut self, min_precedence: u8) -> Result<Expr, ParseError> {
-        if self.expression_depth >= EXPRESSION_PARSER_STACK_LIMIT {
+        if self.effective_expression_depth() >= EXPRESSION_NESTING_LIMIT
+            && self.expression_starts_nested_construct()
+        {
             return Err(ParseError {
                 span: self.peek().span,
                 message: format!("expression nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"),
@@ -1125,6 +1130,16 @@ impl Parser<'_> {
                 break;
             }
             let op_span = self.next().span;
+            if op == BinaryOp::Coalesce
+                && self.effective_expression_depth() > EXPRESSION_NESTING_LIMIT
+            {
+                return Err(ParseError {
+                    span: op_span,
+                    message: format!(
+                        "expression nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"
+                    ),
+                });
+            }
             let right = self.expression(if op == BinaryOp::Coalesce {
                 precedence
             } else {
@@ -1352,22 +1367,33 @@ impl Parser<'_> {
     }
 
     fn cast_expression(&mut self, span: Span) -> Result<Expr, ParseError> {
-        let ty = self.type_name()?;
-        self.expect(&TokenKind::RParen, "expected ')' after the cast type")?;
-        self.skip_newlines();
-        let value = self.prefix()?;
-        let node_span = Span {
-            end_offset: value.span.end_offset,
-            ..span
-        };
-        Ok(Expr {
-            kind: ExprKind::Cast {
-                ty,
-                cast_span: span,
-                value: Box::new(value),
-            },
-            span: node_span,
-        })
+        if self.cast_depth >= EXPRESSION_NESTING_LIMIT {
+            return Err(ParseError {
+                span,
+                message: format!("expression nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"),
+            });
+        }
+        self.cast_depth += 1;
+        let parsed = (|| {
+            let ty = self.type_name()?;
+            self.expect(&TokenKind::RParen, "expected ')' after the cast type")?;
+            self.skip_newlines();
+            let value = self.prefix()?;
+            let node_span = Span {
+                end_offset: value.span.end_offset,
+                ..span
+            };
+            Ok(Expr {
+                kind: ExprKind::Cast {
+                    ty,
+                    cast_span: span,
+                    value: Box::new(value),
+                },
+                span: node_span,
+            })
+        })();
+        self.cast_depth -= 1;
+        parsed
     }
 
     fn postfix(&mut self, mut expr: Expr) -> Result<Expr, ParseError> {
@@ -1435,7 +1461,18 @@ impl Parser<'_> {
     #[inline(never)]
     fn postfix_call(&mut self, expr: Expr) -> Result<Expr, ParseError> {
         self.expect(&TokenKind::LParen, "expected '('")?;
-        let args = self.arguments_after_lparen()?;
+        // `print` is the root-only exception in the completed-tree depth walk.
+        // Its argument expression must use the same starting depth while parsing.
+        let root_print = self.expression_depth == 1
+            && matches!(&expr.kind, ExprKind::Name(name) if name == "print");
+        if root_print {
+            self.expression_depth_adjustment += 1;
+        }
+        let parsed_args = self.arguments_after_lparen();
+        if root_print {
+            self.expression_depth_adjustment -= 1;
+        }
+        let args = parsed_args?;
         let old = expr;
         let span = Span {
             end_offset: self.last_consumed_end(),
@@ -1900,42 +1937,106 @@ impl Parser<'_> {
     }
 
     fn if_expression(&mut self, span: Span) -> Result<Expr, ParseError> {
-        let condition = self.expression(0)?;
-        let then_block = self.block()?;
-        let saved = self.pos;
-        self.skip_newlines();
-        let else_block = if self.word_is("else") {
-            self.next();
+        let mut frames = Vec::new();
+        let mut current_span = span;
+        // Count the initial `if` as clause one, matching the finished-tree walk.
+        let mut clause_count = 1;
+
+        loop {
+            let condition = self.expression(0)?;
+            let then_block = self.block()?;
+            let saved = self.pos;
             self.skip_newlines();
-            if self.at(&TokenKind::LBrace) {
-                Some(self.block()?)
-            } else if self.word_is("if") {
-                let if_span = self.next().span;
-                let nested = self.if_expression(if_span)?;
-                let nested_span = nested.span;
-                Some(Block {
-                    statements: Vec::new(),
-                    tail: Some(Box::new(nested)),
-                    span: nested_span,
-                })
+
+            let else_block = if self.word_is("else") {
+                self.next();
+                self.skip_newlines();
+                if self.at(&TokenKind::LBrace) {
+                    Some(self.block()?)
+                } else if self.word_is("if") {
+                    if clause_count >= EXPRESSION_NESTING_LIMIT {
+                        return Err(ParseError {
+                            span: self.peek().span,
+                            message: format!(
+                                "expression nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"
+                            ),
+                        });
+                    }
+                    frames.push(IfFrame {
+                        span: current_span,
+                        condition,
+                        then_block,
+                    });
+                    clause_count += 1;
+                    current_span = self.next().span;
+                    continue;
+                } else {
+                    return Err(self.error_here("expected a block or another 'if' after 'else'"));
+                }
             } else {
-                return Err(self.error_here("expected a block or another 'if' after 'else'"));
+                self.pos = saved;
+                None
+            };
+
+            let mut expression =
+                make_if_expression(current_span, condition, then_block, else_block);
+            while let Some(frame) = frames.pop() {
+                let nested_span = expression.span;
+                let else_block = Block {
+                    statements: Vec::new(),
+                    tail: Some(Box::new(expression)),
+                    span: nested_span,
+                };
+                expression = make_if_expression(
+                    frame.span,
+                    frame.condition,
+                    frame.then_block,
+                    Some(else_block),
+                );
             }
-        } else {
-            self.pos = saved;
-            None
-        };
-        let end_offset = else_block
-            .as_ref()
-            .map_or(then_block.span.end_offset, |block| block.span.end_offset);
-        Ok(Expr {
-            kind: ExprKind::If {
-                condition: Box::new(condition),
-                then_block,
-                else_block,
-            },
-            span: Span { end_offset, ..span },
-        })
+            return Ok(expression);
+        }
+    }
+
+    fn expression_starts_nested_construct(&self) -> bool {
+        match &self.peek().kind {
+            TokenKind::Bang => true,
+            TokenKind::LParen => !matches!(self.peek_n(1).kind, TokenKind::RParen),
+            TokenKind::Minus if matches!(self.peek_n(1).kind, TokenKind::Number(_)) => {
+                self.expression_has_postfix_at(2, false)
+            }
+            TokenKind::Minus => true,
+            TokenKind::Ident(name)
+                if matches!(name.as_str(), "if" | "match" | "return" | "take") =>
+            {
+                true
+            }
+            TokenKind::Ident(name) if name.chars().next().is_some_and(char::is_uppercase) => {
+                self.expression_has_postfix_at(1, true)
+            }
+            TokenKind::Ident(_) | TokenKind::Number(_) | TokenKind::String(_) => {
+                let byte_string = matches!(&self.peek().kind, TokenKind::Ident(name) if name == "b")
+                    && matches!(self.peek_n(1).kind, TokenKind::String(_));
+                self.expression_has_postfix_at(if byte_string { 2 } else { 1 }, false)
+            }
+            _ => false,
+        }
+    }
+
+    fn expression_has_postfix_at(&self, offset: usize, allow_struct_literal: bool) -> bool {
+        matches!(
+            self.peek_n(offset).kind,
+            TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::Question
+                | TokenKind::QuestionDot
+                | TokenKind::Dot
+        ) || (allow_struct_literal && matches!(self.peek_n(offset).kind, TokenKind::LBrace))
+    }
+
+    fn effective_expression_depth(&self) -> usize {
+        self.expression_depth
+            .saturating_sub(self.expression_depth_adjustment)
     }
 
     fn integer(&self, raw: String, span: Span, negative: bool) -> Result<Expr, ParseError> {
@@ -2326,6 +2427,31 @@ fn expression_nesting_exceeded(root: &Expr, limit: usize) -> Option<Span> {
         }
     }
     None
+}
+
+struct IfFrame {
+    span: Span,
+    condition: Expr,
+    then_block: Block,
+}
+
+fn make_if_expression(
+    span: Span,
+    condition: Expr,
+    then_block: Block,
+    else_block: Option<Block>,
+) -> Expr {
+    let end_offset = else_block
+        .as_ref()
+        .map_or(then_block.span.end_offset, |block| block.span.end_offset);
+    Expr {
+        kind: ExprKind::If {
+            condition: Box::new(condition),
+            then_block,
+            else_block,
+        },
+        span: Span { end_offset, ..span },
+    }
 }
 
 enum Candidate {
