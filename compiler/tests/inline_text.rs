@@ -84,7 +84,7 @@ fn copying_a_shrunk_inline_string_touches_only_its_live_bytes() {
     let output = Command::new(env!("CARGO_BIN_EXE_nlc"))
         .arg("test")
         .arg(&package)
-        .env("NLC_TEST_REPORT_STACK_TOUCHED", "1")
+        .env("NLC_TEST_REPORT_STACK_RESIDENT", "1")
         .output()
         .expect("run the dirty inline string copy probe");
     assert!(
@@ -97,19 +97,19 @@ fn copying_a_shrunk_inline_string_touches_only_its_live_bytes() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let measured = stderr
         .lines()
-        .find(|line| line.contains("reserved=") && line.contains("touched="))
+        .find(|line| line.contains("reserved=") && line.contains("resident="))
         .expect("runtime test hook reported stack residency");
-    let touched = measured
+    let resident = measured
         .split_whitespace()
-        .find_map(|part| part.strip_prefix("touched="))
+        .find_map(|part| part.strip_prefix("resident="))
         .and_then(|value| value.parse::<u64>().ok())
-        .expect("runtime report contains touched bytes");
+        .expect("runtime report contains resident bytes");
     assert!(
-        touched > 4 * 1024 * 1024,
+        resident > 4 * 1024 * 1024,
         "the probe did not dirty its source region: {measured}"
     );
     assert!(
-        touched < 12 * 1024 * 1024,
-        "copying the one-byte live value touched its full declared capacity: {measured}"
+        resident < 12 * 1024 * 1024,
+        "copying the one-byte live value made its full declared capacity resident: {measured}"
     );
 }

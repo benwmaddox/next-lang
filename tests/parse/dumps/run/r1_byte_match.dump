@@ -1,0 +1,145 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 8 1 4 "classify"
+LParen 11 1 1 12 "("
+Ident 12 5 1 13 "value"
+Colon 17 1 1 18 ":"
+Ident 19 4 1 20 "byte"
+RParen 23 1 1 24 ")"
+Arrow 25 2 1 26 "->"
+Ident 28 3 1 29 "int"
+LBrace 32 1 1 33 "{"
+Newline 33 1 1 34 "\n"
+Ident 38 5 2 5 "match"
+Ident 44 5 2 11 "value"
+LBrace 50 1 2 17 "{"
+Newline 51 1 2 18 "\n"
+Number 60 1 3 9 "0"
+FatArrow 62 2 3 11 "=>"
+Number 65 1 3 14 "0"
+Comma 66 1 3 15 ","
+Newline 67 1 3 16 "\n"
+Number 76 2 4 9 "10"
+FatArrow 79 2 4 12 "=>"
+Number 82 1 4 15 "1"
+Comma 83 1 4 16 ","
+Newline 84 1 4 17 "\n"
+Number 93 2 5 9 "13"
+FatArrow 96 2 5 12 "=>"
+Number 99 1 5 15 "2"
+Comma 100 1 5 16 ","
+Newline 101 1 5 17 "\n"
+Number 110 3 6 9 "255"
+FatArrow 114 2 6 13 "=>"
+Number 117 1 6 16 "3"
+Comma 118 1 6 17 ","
+Newline 119 1 6 18 "\n"
+Ident 128 1 7 9 "_"
+FatArrow 130 2 7 11 "=>"
+Number 133 1 7 14 "4"
+Newline 134 1 7 15 "\n"
+RBrace 139 1 8 5 "}"
+Newline 140 1 8 6 "\n"
+RBrace 141 1 9 1 "}"
+Newline 142 1 9 2 "\n"
+Ident 144 2 11 1 "fn"
+Ident 147 4 11 4 "main"
+LParen 151 1 11 8 "("
+RParen 152 1 11 9 ")"
+LBrace 154 1 11 11 "{"
+Newline 155 1 11 12 "\n"
+Ident 160 5 12 5 "print"
+LParen 165 1 12 10 "("
+Ident 166 8 12 11 "classify"
+LParen 174 1 12 19 "("
+Number 175 1 12 20 "0"
+RParen 176 1 12 21 ")"
+RParen 177 1 12 22 ")"
+Newline 178 1 12 23 "\n"
+Ident 183 5 13 5 "print"
+LParen 188 1 13 10 "("
+Ident 189 8 13 11 "classify"
+LParen 197 1 13 19 "("
+Number 198 2 13 20 "10"
+RParen 200 1 13 22 ")"
+RParen 201 1 13 23 ")"
+Newline 202 1 13 24 "\n"
+Ident 207 5 14 5 "print"
+LParen 212 1 14 10 "("
+Ident 213 8 14 11 "classify"
+LParen 221 1 14 19 "("
+Number 222 2 14 20 "13"
+RParen 224 1 14 22 ")"
+RParen 225 1 14 23 ")"
+Newline 226 1 14 24 "\n"
+Ident 231 5 15 5 "print"
+LParen 236 1 15 10 "("
+Ident 237 8 15 11 "classify"
+LParen 245 1 15 19 "("
+Number 246 3 15 20 "255"
+RParen 249 1 15 23 ")"
+RParen 250 1 15 24 ")"
+Newline 251 1 15 25 "\n"
+Ident 256 5 16 5 "print"
+LParen 261 1 16 10 "("
+Ident 262 8 16 11 "classify"
+LParen 270 1 16 19 "("
+Number 271 2 16 20 "65"
+RParen 273 1 16 22 ")"
+RParen 274 1 16 23 ")"
+Newline 275 1 16 24 "\n"
+RBrace 276 1 17 1 "}"
+Newline 277 1 17 2 "\n"
+Eof 278 0 18 1 ""
+== tree ==
+file "main.nl"
+Program 0..278
+  Function 0..142 name="classify" recursive=false generics=[]
+    Parameter 12..23 name="value" mode=read
+      ParameterType 19..23 name="byte" range=none policy=checked
+    ResultType 28..31 name="int" range=none policy=checked
+    Block 32..142
+      Match 38..140
+        Name 44..49 name="value"
+        MatchArm 60..66
+          Integer 60..61 magnitude=0 negative=false long_suffix=false
+          Block 65..66
+            Integer 65..66 magnitude=0 negative=false long_suffix=false
+        MatchArm 76..83
+          Integer 76..78 magnitude=10 negative=false long_suffix=false
+          Block 82..83
+            Integer 82..83 magnitude=1 negative=false long_suffix=false
+        MatchArm 93..100
+          Integer 93..95 magnitude=13 negative=false long_suffix=false
+          Block 99..100
+            Integer 99..100 magnitude=2 negative=false long_suffix=false
+        MatchArm 110..118
+          Integer 110..113 magnitude=255 negative=false long_suffix=false
+          Block 117..118
+            Integer 117..118 magnitude=3 negative=false long_suffix=false
+        MatchArm 128..134
+          WildcardPattern 128..129
+          Block 133..134
+            Integer 133..134 magnitude=4 negative=false long_suffix=false
+  Function 144..277 name="main" recursive=false generics=[]
+    Block 154..277
+      ExpressionStatement 160..178
+        Call 160..178 name="print"
+          Call 166..177 name="classify"
+            Integer 175..176 magnitude=0 negative=false long_suffix=false
+      ExpressionStatement 183..202
+        Call 183..202 name="print"
+          Call 189..201 name="classify"
+            Integer 198..200 magnitude=10 negative=false long_suffix=false
+      ExpressionStatement 207..226
+        Call 207..226 name="print"
+          Call 213..225 name="classify"
+            Integer 222..224 magnitude=13 negative=false long_suffix=false
+      ExpressionStatement 231..251
+        Call 231..251 name="print"
+          Call 237..250 name="classify"
+            Integer 246..249 magnitude=255 negative=false long_suffix=false
+      Call 256..275 name="print"
+        Call 262..274 name="classify"
+          Integer 271..273 magnitude=65 negative=false long_suffix=false

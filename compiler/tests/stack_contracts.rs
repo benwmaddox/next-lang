@@ -344,7 +344,7 @@ fn undersized_test_reservations_fail_before_the_test_starts() {
 }
 
 #[test]
-fn one_gib_reservation_reports_touched_pages_and_stays_within_its_bound() {
+fn one_gib_reservation_reports_resident_pages_and_stays_within_its_bound() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler crate has a workspace root");
@@ -353,7 +353,7 @@ fn one_gib_reservation_reports_touched_pages_and_stays_within_its_bound() {
     let output = Command::new(nlc)
         .arg("test")
         .arg(&package)
-        .env("NLC_TEST_REPORT_STACK_TOUCHED", "1")
+        .env("NLC_TEST_REPORT_STACK_RESIDENT", "1")
         .output()
         .expect("run the large-reservation probe");
     assert!(
@@ -365,8 +365,8 @@ fn one_gib_reservation_reports_touched_pages_and_stays_within_its_bound() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let measured = stderr
         .lines()
-        .find(|line| line.contains("reserved=") && line.contains("touched="))
-        .expect("runtime test hook reported reservation and touched pages");
+        .find(|line| line.contains("reserved=") && line.contains("resident="))
+        .expect("runtime test hook reported reservation and resident pages");
     let field = |name: &str| -> u64 {
         measured
             .split_whitespace()
@@ -397,7 +397,7 @@ fn one_gib_reservation_reports_touched_pages_and_stays_within_its_bound() {
         .expect("inspect output contains a byte count");
     assert!(field("reserved") > 64 * 1024 * 1024, "{measured}");
     assert!(
-        field("touched") > 0 && field("touched") < 16 * 1024 * 1024,
+        field("resident") > 0 && field("resident") < 16 * 1024 * 1024,
         "{measured}"
     );
     assert!(

@@ -11296,11 +11296,12 @@ impl Checker {
     ) -> Result<(TExprKind, Ty), CheckError> {
         let scrutinee = self.check_expr(scrutinee, None)?;
         let sum = self.types[scrutinee.ty.0].is_sum();
-        if !sum && !matches!(scrutinee.ty, Ty::Int | Ty::Long | Ty::Bool) {
+        let numeric = matches!(self.base_type(scrutinee.ty), Ty::Int | Ty::Long);
+        if !sum && !numeric && scrutinee.ty != Ty::Bool {
             return Err(CheckError {
                 span,
                 message: format!(
-                    "match requires an enum, Option, Result, int, long, or bool; found {}",
+                    "match requires an enum, Option, Result, int, long, a numeric refinement, or bool; found {}",
                     self.type_name(scrutinee.ty)
                 ),
             });
@@ -11335,10 +11336,10 @@ impl Checker {
                     (TPattern::Wildcard, Vec::new(), true)
                 }
                 Pattern::Integer(literal) => {
-                    if !matches!(scrutinee.ty, Ty::Int | Ty::Long) {
+                    if !numeric {
                         return Err(CheckError {
                             span: literal.span,
-                            message: "integer patterns require an int or long match value"
+                            message: "integer patterns require an int, long, or numeric refinement match value"
                                 .to_owned(),
                         });
                     }
@@ -11585,6 +11586,12 @@ impl Checker {
                     });
                 }
                 _ => {}
+            }
+            if numeric {
+                return Err(CheckError {
+                    span,
+                    message: "integer matches need a '_' catch-all arm".to_owned(),
+                });
             }
         }
         let result_ty = reachable_ty.unwrap_or(Ty::Never);
