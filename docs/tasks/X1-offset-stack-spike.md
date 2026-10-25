@@ -1,6 +1,8 @@
-# X1: measurement spike, a relocatable data stack addressed by offsets
+# X1: measurement spike, a relocatable data stack addressed by offsets — done, historical record
 
-An experiment, not a feature: it decides whether next-lang adopts a movable data stack (Ben, 2026-10-25). It runs on the branch `spike/offset-stack` in its own worktree and is never merged as is. T28 (the capped reservation) is on hold until this is measured.
+**Done (2026-10-25); nothing below is to be built.** The spike's results are in docs/tasks/X1-report.md (rounds 1 to 3; round 3 passed the adoption gate) and docs/reviews/claude-X1-review.md. Ben adopted offsets (DESIGN.md "References into the data stack are offsets"), T28 was cancelled, and O1 ports the spike's code onto main by hand (docs/tasks/O1-offset-runtime-and-inline-alloc.md). The text below is the original spike spec, kept only as a record.
+
+An experiment, not a feature: it decided whether next-lang adopts a movable data stack. It ran on the branch `spike/offset-stack` in its own worktree and is never merged.
 
 ## The idea being tested
 

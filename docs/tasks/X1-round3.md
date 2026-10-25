@@ -1,4 +1,6 @@
-# X1 round 3: cache the base, then re-measure
+# X1 round 3: cache the base, then re-measure — done, historical record
+
+**Done (2026-10-25); nothing below is to be built.** Results: docs/tasks/X1-report.md "Round 3" (the adoption gate passed; the optional 32-bit offsets were not attempted). Ben adopted offsets, and O1 ports the spike onto main. The text below is the original round spec, kept only as a record.
 
 Round 2 (docs/tasks/X1-report.md, "Round 2") made a working offset slice and found tight list loops about 2x slower than pointer mode. Its IR shows the cause: every access calls the external runtime function `nl_context_base(ctx)`, which LLVM can't see through, so it can't hoist the base or the list count out of the loop. That's an implementation gap, not the cost of offsets themselves. The approved design (DESIGN.md "The job's data stack") keeps the base in a register like the cached top.
 

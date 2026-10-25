@@ -1,4 +1,6 @@
-# X1 round 2: a working offset-mode vertical slice
+# X1 round 2: a working offset-mode vertical slice — done, historical record
+
+**Done (2026-10-25); nothing below is to be built.** Results: docs/tasks/X1-report.md "Round 2"; round 3 (docs/tasks/X1-round3.md) followed, and O1 ports the slice onto main. The text below is the original round spec, kept only as a record.
 
 Round 1 (docs/tasks/X1-report.md) built the runtime (mremap growth, guard page) and a fail-closed compiler mode, but no program that touches the data stack compiles in offset mode, so the per-access cost is still unmeasured. This round must produce **running offset-mode programs** for a narrow slice and measure them. Everything outside the slice keeps failing closed (a clear build error), never a miscompile.
 
