@@ -5,7 +5,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::ast::Span;
-use crate::emit::StackContract;
+use crate::emit::{EntryStackReservation, StackContract};
 use crate::{checker, emit, lexer, parser, syntax_dump};
 
 static TEMP_ID: AtomicUsize = AtomicUsize::new(0);
@@ -42,8 +42,21 @@ pub struct CompileOutput {
     pub tests: Vec<String>,
     pub memory: MemoryReport,
     pub contracts: Vec<StackContract>,
+    pub stack_entries: Vec<EntryStackReservation>,
+    pub stack_peak_expectations: Vec<StackPeakExpectation>,
     call_graph: Vec<Vec<usize>>,
     recursive_functions: Vec<bool>,
+    recursion_budget_bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct StackPeakExpectation {
+    pub test_index: usize,
+    pub function_id: usize,
+    pub function_name: String,
+    pub limit_bytes: u64,
+    pub source: String,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -368,6 +381,15 @@ fn compile_package_on_worker(
     let function_contracts = emit::stack_contracts(&typed);
     emit::apply_function_type_stack_contracts(&mut typed, &function_contracts);
     let contracts = emit::stack_contracts(&typed);
+    let stack_entries = emit::entry_stack_reservations(&typed, &contracts);
+    let mut stack_peak_expectations = Vec::new();
+    for (test_index, test) in typed.tests.iter().enumerate() {
+        collect_stack_peak_expectations(
+            &typed.functions[test.function_id].body,
+            test_index,
+            &mut stack_peak_expectations,
+        );
+    }
     let memory = MemoryReport {
         globals: typed
             .globals
@@ -398,9 +420,56 @@ fn compile_package_on_worker(
         tests: typed.tests.iter().map(|test| test.name.clone()).collect(),
         memory,
         contracts,
+        stack_entries,
+        stack_peak_expectations,
         call_graph,
         recursive_functions,
+        recursion_budget_bytes: typed.recursion_budget_bytes,
     })
+}
+
+fn collect_stack_peak_expectations(
+    block: &crate::typed::TBlock,
+    test_index: usize,
+    output: &mut Vec<StackPeakExpectation>,
+) {
+    for statement in &block.statements {
+        match &statement.kind {
+            crate::typed::TStmtKind::Expect { source, kind } => {
+                if let crate::typed::TExpectKind::StackPeak {
+                    function_id,
+                    function_name,
+                    limit_bytes,
+                } = kind
+                {
+                    output.push(StackPeakExpectation {
+                        test_index,
+                        function_id: *function_id,
+                        function_name: function_name.clone(),
+                        limit_bytes: *limit_bytes,
+                        source: source.clone(),
+                        span: statement.span,
+                    });
+                }
+            }
+            crate::typed::TStmtKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                collect_stack_peak_expectations(then_block, test_index, output);
+                if let Some(other) = else_block {
+                    collect_stack_peak_expectations(other, test_index, output);
+                }
+            }
+            crate::typed::TStmtKind::For { body, .. }
+            | crate::typed::TStmtKind::ForEach { body, .. }
+            | crate::typed::TStmtKind::Block(body) => {
+                collect_stack_peak_expectations(body, test_index, output);
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn build_package(package: &Path, output: &Path) -> Result<(), PackageError> {
@@ -462,11 +531,48 @@ pub fn test_package(package: &Path) -> Result<u8, PackageError> {
     });
     fs::write(&ir, &compiled.llvm_ir)
         .map_err(|e| PackageError::Tool(format!("cannot write generated LLVM IR: {e}")))?;
-    clang(&ir, &binary, true, &compiled)?;
+    let native_frames = if compiled.stack_peak_expectations.is_empty() {
+        clang(&ir, &binary, true, &compiled)?;
+        None
+    } else {
+        Some(clang_with_frames(&ir, &binary, true, &compiled)?)
+    };
+    let native_bounds = native_frames
+        .as_ref()
+        .map(|frames| native_stack_bounds(&compiled, frames));
 
     let mut passed = 0usize;
     let mut failed = 0usize;
     for (index, name) in compiled.tests.iter().enumerate() {
+        let budget_failures = compiled
+            .stack_peak_expectations
+            .iter()
+            .filter(|expectation| expectation.test_index == index)
+            .filter_map(|expectation| {
+                let peak = function_stack_peak(
+                    &compiled,
+                    native_bounds.as_ref().expect("frame sizes were collected"),
+                    expectation.function_id,
+                );
+                (peak >= expectation.limit_bytes).then(|| {
+                    format!(
+                        "  stack_peak({}) exceeded {} bytes\n",
+                        expectation.function_name, expectation.limit_bytes
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        if !budget_failures.is_empty() {
+            println!("FAIL {name}");
+            for failure in budget_failures {
+                print!("{failure}");
+            }
+            failed += 1;
+            io::stdout()
+                .flush()
+                .map_err(|e| PackageError::Tool(format!("cannot write test status: {e}")))?;
+            continue;
+        }
         let output = Command::new(&binary)
             .env("NLC_TEST_INDEX", index.to_string())
             .output()
@@ -546,12 +652,214 @@ pub fn inspect_contracts(package: &Path) -> Result<(), PackageError> {
     Ok(())
 }
 
+pub fn inspect_stacks(package: &Path) -> Result<(), PackageError> {
+    let compiled = compile_package_internal(package, false)?;
+    let temp = TempDir::new().map_err(|error| {
+        PackageError::Tool(format!("cannot create temporary directory: {error}"))
+    })?;
+    let ir = temp.path.join("module.ll");
+    let binary = temp.path.join(if cfg!(windows) {
+        "program.exe"
+    } else {
+        "program"
+    });
+    fs::write(&ir, &compiled.llvm_ir)
+        .map_err(|error| PackageError::Tool(format!("cannot write generated LLVM IR: {error}")))?;
+    let frames = clang_with_frames(&ir, &binary, false, &compiled)?;
+    let native_bounds = native_stack_bounds(&compiled, &frames);
+
+    for entry in &compiled.stack_entries {
+        let contract = compiled
+            .contracts
+            .get(entry.function_id)
+            .ok_or_else(|| PackageError::Tool("entry stack contract is missing".to_owned()))?;
+        println!("entry point {}", entry.name);
+        match entry.required_bytes {
+            Some(bytes) => println!("  data stack worst case: {bytes} bytes"),
+            None => println!("  data stack worst case: unbounded"),
+        }
+        println!(
+            "  data stack reservation: {} bytes",
+            entry.reservation_bytes
+        );
+        println!("  data stack touched: measured at runtime (test hook available)");
+        let native = native_bounds
+            .get(entry.function_id)
+            .and_then(Option::as_ref);
+        match native {
+            Some(bound) => {
+                println!("  native stack worst case: {} bytes", bound.bytes);
+                println!(
+                    "  native stack: {}",
+                    if bound.recursive {
+                        "recursive"
+                    } else {
+                        "nonrecursive"
+                    }
+                );
+                if !bound.path.is_empty() {
+                    let chain = bound
+                        .path
+                        .iter()
+                        .filter_map(|id| compiled.contracts.get(*id))
+                        .map(|contract| contract.function.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" -> ");
+                    println!("  native stack call chain: {chain}");
+                }
+            }
+            None => println!("  native stack worst case: unbounded"),
+        }
+
+        let reachable = reachable_functions(&compiled.call_graph, entry.function_id);
+        let mut source_lines = Vec::new();
+        for function_id in &reachable {
+            let Some(function_contract) = compiled.contracts.get(*function_id) else {
+                continue;
+            };
+            if function_contract.span.line > 0 {
+                source_lines.push(format_span(&compiled.files, function_contract.span));
+            }
+            for region in &function_contract.reserved_regions {
+                let line = format_span(&compiled.files, region.span);
+                source_lines.push(line.clone());
+                if region.bytes > 64 * 1024 {
+                    println!(
+                        "  reserved region over 64 KB: {line} {} ({} bytes)",
+                        region.name, region.bytes
+                    );
+                } else {
+                    println!(
+                        "  data region: {line} {} ({} bytes)",
+                        region.name, region.bytes
+                    );
+                }
+            }
+            for loop_bound in &function_contract.loops {
+                let line = format_span(&compiled.files, loop_bound.span);
+                source_lines.push(line.clone());
+                let growth = if loop_bound.growth_bytes_per_iteration == u64::MAX {
+                    "unbounded".to_owned()
+                } else {
+                    format!("{} bytes", loop_bound.growth_bytes_per_iteration)
+                };
+                let iterations = loop_bound
+                    .iteration_limit
+                    .map(|count| format!("; at most {count} iterations"))
+                    .unwrap_or_else(|| "; iteration limit from the checked input bound".to_owned());
+                println!("  loop at {line}: growth per iteration {growth}{iterations}");
+            }
+            for site in &function_contract.copy_down_sites {
+                let line = format_span(&compiled.files, site.span);
+                source_lines.push(line.clone());
+                println!(
+                    "  copy-down site: {line} {} (old and new peak: {} bytes)",
+                    site.name, site.bytes
+                );
+            }
+        }
+        source_lines.sort();
+        source_lines.dedup();
+        println!(
+            "  source lines driving bound: {}",
+            if source_lines.is_empty() {
+                "none".to_owned()
+            } else {
+                source_lines.join(", ")
+            }
+        );
+        if entry.required_bytes.is_none() || native.is_none() {
+            println!(
+                "  unbounded components: {}",
+                if entry.required_bytes.is_none() && native.is_none() {
+                    "data and native stack"
+                } else if entry.required_bytes.is_none() {
+                    "data stack"
+                } else {
+                    "native stack"
+                }
+            );
+        } else {
+            println!("  unbounded components: none");
+        }
+        if entry.recursive {
+            println!(
+                "  recursion budget: {} bytes",
+                recursion_budget_for_report(&compiled)
+            );
+        }
+        let _ = contract;
+    }
+    Ok(())
+}
+
+fn reachable_functions(graph: &[Vec<usize>], root: usize) -> Vec<usize> {
+    fn visit(graph: &[Vec<usize>], function: usize, seen: &mut [bool], result: &mut Vec<usize>) {
+        if seen[function] {
+            return;
+        }
+        seen[function] = true;
+        result.push(function);
+        for target in &graph[function] {
+            visit(graph, *target, seen, result);
+        }
+    }
+    let mut result = Vec::new();
+    visit(graph, root, &mut vec![false; graph.len()], &mut result);
+    result.sort_unstable();
+    result
+}
+
+fn format_span(files: &[String], span: Span) -> String {
+    format!(
+        "{}:{}",
+        files
+            .get(span.file)
+            .map(String::as_str)
+            .unwrap_or("<source>"),
+        span.line
+    )
+}
+
+fn recursion_budget_for_report(compiled: &CompileOutput) -> u64 {
+    const DEFAULT_NATIVE_STACK_BYTES: u64 = 8 * 1024 * 1024;
+    const NATIVE_STACK_SAFETY_BYTES: u64 = 80 * 1024;
+    if compiled.recursion_budget_bytes == 0 {
+        DEFAULT_NATIVE_STACK_BYTES - NATIVE_STACK_SAFETY_BYTES
+    } else {
+        compiled
+            .recursion_budget_bytes
+            .min(DEFAULT_NATIVE_STACK_BYTES - NATIVE_STACK_SAFETY_BYTES)
+    }
+}
+
 fn clang(
     ir: &Path,
     output: &Path,
     test_build: bool,
     compiled: &CompileOutput,
 ) -> Result<(), PackageError> {
+    clang_internal(ir, output, test_build, compiled, false).map(|_| ())
+}
+
+fn clang_with_frames(
+    ir: &Path,
+    output: &Path,
+    test_build: bool,
+    compiled: &CompileOutput,
+) -> Result<std::collections::HashMap<usize, u64>, PackageError> {
+    clang_internal(ir, output, test_build, compiled, true)?.ok_or_else(|| {
+        PackageError::Tool("optimized native frame sizes were not collected".to_owned())
+    })
+}
+
+fn clang_internal(
+    ir: &Path,
+    output: &Path,
+    test_build: bool,
+    compiled: &CompileOutput,
+    collect_native_frames: bool,
+) -> Result<Option<std::collections::HashMap<usize, u64>>, PackageError> {
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/nl_runtime.c");
     if !runtime.is_file() {
         return Err(PackageError::Tool(format!(
@@ -571,7 +879,19 @@ fn clang(
     let source = fs::read_to_string(ir)
         .map_err(|error| PackageError::Tool(format!("cannot read generated LLVM IR: {error}")))?;
     if !source.contains("nlc.recursion.targets=") {
-        return run_clang(ir, output, &runtime, test_build, optimization, false);
+        run_clang(
+            ir,
+            output,
+            &runtime,
+            test_build,
+            optimization,
+            collect_native_frames,
+        )?;
+        return if collect_native_frames {
+            read_native_frame_sizes(output).map(Some)
+        } else {
+            Ok(None)
+        };
     }
 
     let parent = ir.parent().unwrap_or_else(|| Path::new("."));
@@ -594,7 +914,11 @@ fn clang(
         )?;
         let final_frames = read_native_frame_sizes(output)?;
         if final_frames == frames {
-            return Ok(());
+            return if collect_native_frames {
+                Ok(Some(final_frames))
+            } else {
+                Ok(None)
+            };
         }
         frames = final_frames;
     }
@@ -726,6 +1050,132 @@ fn native_stack_requirement(
         .saturating_add(64 * 1024); // DESIGN's foreign-call margin, kept on every path
     memo[function] = Some(total);
     total
+}
+
+#[derive(Clone, Debug)]
+struct NativeStackBound {
+    bytes: u64,
+    path: Vec<usize>,
+    recursive: bool,
+}
+
+fn native_stack_bounds(
+    compiled: &CompileOutput,
+    frame_sizes: &std::collections::HashMap<usize, u64>,
+) -> Vec<Option<NativeStackBound>> {
+    const DEFAULT_NATIVE_STACK_BYTES: u64 = 8 * 1024 * 1024;
+    const NATIVE_STACK_SAFETY_BYTES: u64 = 80 * 1024;
+    const NATIVE_HELPER_MARGIN_BYTES: u64 = 64 * 1024;
+
+    fn visit(
+        function: usize,
+        compiled: &CompileOutput,
+        frames: &std::collections::HashMap<usize, u64>,
+        recursive_cycle: &[bool],
+        recursion_budget: u64,
+        memo: &mut [Option<NativeStackBound>],
+        visiting: &mut [bool],
+    ) -> Option<NativeStackBound> {
+        if recursive_cycle[function] {
+            return Some(NativeStackBound {
+                bytes: recursion_budget,
+                path: vec![function],
+                recursive: true,
+            });
+        }
+        if let Some(bound) = &memo[function] {
+            return Some(bound.clone());
+        }
+        if visiting[function] {
+            return None;
+        }
+        visiting[function] = true;
+        let frame = frames.get(&function).copied()?;
+        let mut deepest = NativeStackBound {
+            bytes: 0,
+            path: Vec::new(),
+            recursive: false,
+        };
+        for target in &compiled.call_graph[function] {
+            if let Some(candidate) = visit(
+                *target,
+                compiled,
+                frames,
+                recursive_cycle,
+                recursion_budget,
+                memo,
+                visiting,
+            ) {
+                if candidate.bytes > deepest.bytes {
+                    deepest = candidate;
+                }
+            } else {
+                visiting[function] = false;
+                return None;
+            }
+        }
+        visiting[function] = false;
+        let mut path = vec![function];
+        path.extend(deepest.path);
+        let bound = NativeStackBound {
+            bytes: frame.saturating_add(128).saturating_add(deepest.bytes),
+            path,
+            recursive: deepest.recursive,
+        };
+        memo[function] = Some(bound.clone());
+        Some(bound)
+    }
+
+    let graph = &compiled.call_graph;
+    // Marked recursive functions carry T19's run-time budget check even when
+    // a particular target set happens not to recurse, so treating each as a
+    // budgeted terminal path is conservative and linear in the graph size.
+    let recursive_cycle = compiled.recursive_functions.clone();
+    let default_recursion = DEFAULT_NATIVE_STACK_BYTES.saturating_sub(NATIVE_STACK_SAFETY_BYTES);
+    let recursion_budget = if compiled.recursion_budget_bytes == 0 {
+        default_recursion
+    } else {
+        compiled.recursion_budget_bytes.min(default_recursion)
+    };
+    let mut memo = vec![None; graph.len()];
+    let mut results = Vec::with_capacity(graph.len());
+    for function in 0..graph.len() {
+        let result = visit(
+            function,
+            compiled,
+            frame_sizes,
+            &recursive_cycle,
+            recursion_budget,
+            &mut memo,
+            &mut vec![false; graph.len()],
+        )
+        .map(|mut bound| {
+            bound.bytes = bound.bytes.saturating_add(NATIVE_HELPER_MARGIN_BYTES);
+            bound
+        });
+        results.push(result);
+    }
+    results
+}
+
+fn function_stack_peak(
+    compiled: &CompileOutput,
+    native_bounds: &[Option<NativeStackBound>],
+    function_id: usize,
+) -> u64 {
+    let data = compiled
+        .contracts
+        .get(function_id)
+        .map(|contract| contract.byte_requirement)
+        .unwrap_or(u64::MAX)
+        .saturating_add(emit::DATA_STACK_HELPER_MARGIN);
+    data.saturating_add(
+        native_bounds
+            .get(function_id)
+            .and_then(Option::as_ref)
+            .map(|bound| bound.bytes)
+            .unwrap_or(u64::MAX),
+    )
 }
 
 fn read_native_frame_sizes(

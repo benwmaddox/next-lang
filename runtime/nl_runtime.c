@@ -39,6 +39,9 @@ const char *nl_runtime_unicode_version(void) {
 typedef struct {
     void *mapping;
     size_t mapping_bytes;
+    uint64_t reservation_bytes;
+    uint64_t peak_used_bytes;
+    const char *entry_name;
     unsigned char *base;
     unsigned char *top;
     unsigned char *limit;
@@ -55,7 +58,18 @@ static void nl_stack_startup_failure(const char *message) {
     exit(1);
 }
 
-static uint64_t nl_data_stack_reservation(void) {
+static void nl_stack_startup_failure_for(const char *entry_name, uint64_t bytes,
+                                         const char *message) {
+    fprintf(stderr,
+            "nlc: data stack startup failure for entry '%s' (reservation %llu bytes): %s\n",
+            entry_name ? entry_name : "<unknown>",
+            (unsigned long long)bytes,
+            message);
+    exit(1);
+}
+
+static uint64_t nl_data_stack_reservation(uint64_t requested_bytes,
+                                          const char *entry_name) {
 #if defined(NLC_TEST_BUILD)
     const char *override = getenv("NLC_TEST_DATA_STACK_BYTES");
     if (override && *override) {
@@ -63,12 +77,19 @@ static uint64_t nl_data_stack_reservation(void) {
         char *end = NULL;
         unsigned long long value = strtoull(override, &end, 10);
         if (errno || end == override || *end || value == 0) {
-            nl_stack_startup_failure("NLC_TEST_DATA_STACK_BYTES must be a positive byte count");
+            nl_stack_startup_failure_for(entry_name, requested_bytes,
+                                         "NLC_TEST_DATA_STACK_BYTES must be a positive byte count");
         }
-        return (uint64_t)value;
+        uint64_t reservation = (uint64_t)value;
+        const char *allow_small = getenv("NLC_TEST_ALLOW_STACK_EXHAUSTION");
+        if (reservation < requested_bytes && (!allow_small || strcmp(allow_small, "1") != 0)) {
+            nl_stack_startup_failure_for(entry_name, requested_bytes,
+                                         "test reservation is below the computed worst case");
+        }
+        return reservation;
     }
 #endif
-    return UINT64_C(67108864);
+    return requested_bytes;
 }
 
 static uintptr_t nl_current_stack_pointer(void) {
@@ -124,18 +145,24 @@ static void nl_native_stack_setup(nl_data_stack_context *context,
         : default_budget;
 }
 
-void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_budget) {
+void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_budget,
+                        const char *entry_name) {
 #if defined(__linux__)
     long page = sysconf(_SC_PAGESIZE);
-    if (page <= 0) nl_stack_startup_failure("could not determine the system page size");
-    uint64_t bytes = requested_bytes ? requested_bytes : nl_data_stack_reservation();
+    if (page <= 0) nl_stack_startup_failure_for(entry_name, requested_bytes,
+                                                 "could not determine the system page size");
+    uint64_t bytes = nl_data_stack_reservation(requested_bytes, entry_name);
+    if (bytes == 0) {
+        nl_stack_startup_failure_for(entry_name, requested_bytes,
+                                     "computed data stack reservation is zero");
+    }
     uint64_t page_size = (uint64_t)page;
     if (bytes > UINT64_MAX - (page_size - 1)) {
-        nl_stack_startup_failure("requested reservation is too large");
+        nl_stack_startup_failure_for(entry_name, bytes, "requested reservation is too large");
     }
     bytes = ((bytes + page_size - 1) / page_size) * page_size;
     if (bytes > SIZE_MAX - page_size) {
-        nl_stack_startup_failure("requested reservation is too large");
+        nl_stack_startup_failure_for(entry_name, bytes, "requested reservation is too large");
     }
     size_t total = (size_t)bytes + (size_t)page_size;
     void *mapping = mmap(NULL, total, PROT_NONE,
@@ -145,19 +172,23 @@ void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_b
 #endif
                          , -1, 0);
     if (mapping == MAP_FAILED) {
-        nl_stack_startup_failure("could not reserve the requested address range");
+        nl_stack_startup_failure_for(entry_name, bytes,
+                                     "could not reserve the requested address range");
     }
     if (mprotect(mapping, (size_t)bytes, PROT_READ | PROT_WRITE) != 0) {
         munmap(mapping, total);
-        nl_stack_startup_failure("could not enable writable data stack pages");
+        nl_stack_startup_failure_for(entry_name, bytes,
+                                     "could not enable writable data stack pages");
     }
     nl_data_stack_context *context = calloc(1, sizeof(*context));
     if (!context) {
         munmap(mapping, total);
-        nl_stack_startup_failure("could not allocate stack context");
+        nl_stack_startup_failure_for(entry_name, bytes, "could not allocate stack context");
     }
     context->mapping = mapping;
     context->mapping_bytes = total;
+    context->reservation_bytes = bytes;
+    context->entry_name = entry_name;
     context->base = (unsigned char *)mapping;
     context->top = context->base;
     context->limit = context->base + bytes;
@@ -214,6 +245,30 @@ void nl_context_destroy(void *opaque) {
     nl_data_stack_context *context = opaque;
     if (!context) return;
 #if defined(__linux__)
+#if defined(NLC_TEST_BUILD)
+    const char *report = getenv("NLC_TEST_REPORT_STACK_TOUCHED");
+    if (report && strcmp(report, "1") == 0) {
+        long page = sysconf(_SC_PAGESIZE);
+        if (page > 0) {
+            size_t pages = (size_t)(context->reservation_bytes / (uint64_t)page);
+            unsigned char *residency = calloc(pages ? pages : 1, 1);
+            if (residency && mincore(context->mapping, (size_t)context->reservation_bytes,
+                                     residency) == 0) {
+                uint64_t touched = 0;
+                for (size_t index = 0; index < pages; ++index) {
+                    if (residency[index] & 1) touched += (uint64_t)page;
+                }
+                fprintf(stderr,
+                        "nlc stack entry '%s': reserved=%llu bytes touched=%llu bytes peak_used=%llu bytes\n",
+                        context->entry_name ? context->entry_name : "<unknown>",
+                        (unsigned long long)context->reservation_bytes,
+                        (unsigned long long)touched,
+                        (unsigned long long)context->peak_used_bytes);
+            }
+            free(residency);
+        }
+    }
+#endif
     munmap(context->mapping, context->mapping_bytes);
 #endif
     free(context);
@@ -236,6 +291,8 @@ void *nl_stack_alloc(void *opaque, void *top, uint64_t bytes, uint64_t alignment
         nl_fail(18, file_id, line, col);
     }
     context->top = (void *)(aligned + (uintptr_t)bytes);
+    uint64_t used = (uint64_t)(aligned + (uintptr_t)bytes - base);
+    if (used > context->peak_used_bytes) context->peak_used_bytes = used;
     return (void *)aligned;
 }
 

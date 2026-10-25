@@ -530,6 +530,11 @@ pub enum TExpectKind {
         left: TExpr,
         right: TExpr,
     },
+    StackPeak {
+        function_id: usize,
+        function_name: String,
+        limit_bytes: u64,
+    },
 }
 
 #[derive(Clone, Debug)]

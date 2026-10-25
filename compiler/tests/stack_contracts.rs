@@ -26,6 +26,7 @@ fn test_runtime_stack_override_reports_exhaustion() {
         .arg("test")
         .arg(&package)
         .env("NLC_TEST_DATA_STACK_BYTES", "16384")
+        .env("NLC_TEST_ALLOW_STACK_EXHAUSTION", "1")
         .output()
         .expect("run the bounded workload with a shrunken test reservation");
     assert_eq!(small.status.code(), Some(1));
@@ -77,7 +78,7 @@ fn fixed_large_values_use_regions_and_large_results_use_destinations() {
         .find(|contract| contract.function == "call_indirect")
         .expect("indirect caller has a stack contract");
     assert!(indirect.byte_requirement >= 8192);
-    assert!(indirect.parameters[0].contains("function targets need up to 8192 data-stack bytes"));
+    assert!(indirect.parameters[0].contains("function targets need up to 16384 data-stack bytes"));
 
     let no_stack_loop = ir
         .split("; function no_stack_loop\n")
@@ -153,5 +154,132 @@ fn gathered_large_struct_arguments_count_in_the_caller_contract() {
         caller.byte_requirement >= 8_004,
         "the caller contract must include the gathered Big argument, got {} bytes",
         caller.byte_requirement
+    );
+}
+
+#[test]
+fn worked_reservation_is_small_and_reports_loop_growth() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler crate has a workspace root");
+    let package = root.join("tests/run/t17_worked_reservation");
+    let output = Command::new(env!("CARGO_BIN_EXE_nlc"))
+        .arg("inspect")
+        .arg("stacks")
+        .arg(&package)
+        .output()
+        .expect("inspect the worked reservation example");
+    assert!(
+        output.status.success(),
+        "inspect stacks failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("entry point main"));
+    assert!(
+        stdout.contains("data stack worst case: 40348 bytes"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("data stack reservation: 40960 bytes"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("growth per iteration 80 bytes"), "{stdout}");
+    assert!(stdout.contains("data region: main.nl:"), "{stdout}");
+}
+
+#[test]
+fn undersized_test_reservations_fail_before_the_test_starts() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler crate has a workspace root");
+    let package = root.join("tests/test/t17_startup_reservation");
+    let nlc = env!("CARGO_BIN_EXE_nlc");
+    let normal = Command::new(nlc)
+        .arg("test")
+        .arg(&package)
+        .output()
+        .expect("run with the computed reservation");
+    assert!(
+        normal.status.success(),
+        "{}",
+        String::from_utf8_lossy(&normal.stderr)
+    );
+
+    let small = Command::new(nlc)
+        .arg("test")
+        .arg(&package)
+        .env("NLC_TEST_DATA_STACK_BYTES", "1024")
+        .output()
+        .expect("run with an undersized test reservation");
+    assert_eq!(small.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&small.stderr);
+    assert!(stderr.contains("data stack startup failure for entry 'test 'reservation has room for the computed bound'"), "{stderr}");
+    assert!(
+        stderr.contains("test reservation is below the computed worst case"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn one_gib_reservation_reports_touched_pages_and_stays_within_its_bound() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler crate has a workspace root");
+    let package = root.join("tests/test/t17_large_reservation");
+    let nlc = env!("CARGO_BIN_EXE_nlc");
+    let output = Command::new(nlc)
+        .arg("test")
+        .arg(&package)
+        .env("NLC_TEST_REPORT_STACK_TOUCHED", "1")
+        .output()
+        .expect("run the large-reservation probe");
+    assert!(
+        output.status.success(),
+        "large reservation test failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let measured = stderr
+        .lines()
+        .find(|line| line.contains("reserved=") && line.contains("touched="))
+        .expect("runtime test hook reported reservation and touched pages");
+    let field = |name: &str| -> u64 {
+        measured
+            .split_whitespace()
+            .find_map(|part| part.strip_prefix(&format!("{name}=")))
+            .and_then(|part| part.parse().ok())
+            .unwrap_or_else(|| panic!("missing {name} in {measured}"))
+    };
+    let inspect = Command::new(nlc)
+        .arg("inspect")
+        .arg("stacks")
+        .arg(&package)
+        .output()
+        .expect("inspect the large reservation");
+    assert!(
+        inspect.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+    let inspect_stdout = String::from_utf8_lossy(&inspect.stdout);
+    let stack_line = inspect_stdout
+        .lines()
+        .find(|line| line.contains("data stack worst case:"))
+        .expect("inspect output reports the data stack bound");
+    let computed = stack_line
+        .split_whitespace()
+        .nth(4)
+        .and_then(|value| value.parse::<u64>().ok())
+        .expect("inspect output contains a byte count");
+    assert!(field("reserved") > 64 * 1024 * 1024, "{measured}");
+    assert!(
+        field("touched") > 0 && field("touched") < 16 * 1024 * 1024,
+        "{measured}"
+    );
+    assert!(
+        field("peak_used") <= computed,
+        "{measured}; computed={computed}"
     );
 }

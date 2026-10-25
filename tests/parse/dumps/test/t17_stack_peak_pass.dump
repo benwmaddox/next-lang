@@ -1,0 +1,78 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 12 1 4 "bounded_work"
+LParen 15 1 1 16 "("
+RParen 16 1 1 17 ")"
+Arrow 18 2 1 19 "->"
+Ident 21 4 1 22 "long"
+LBrace 26 1 1 27 "{"
+Newline 27 1 1 28 "\n"
+Ident 32 3 2 5 "let"
+Ident 36 7 2 9 "scratch"
+Colon 43 1 2 16 ":"
+Ident 45 4 2 18 "long"
+LBracket 49 1 2 22 "["
+Number 50 3 2 23 "128"
+RBracket 53 1 2 26 "]"
+Eq 55 1 2 28 "="
+Ident 57 4 2 30 "fill"
+LParen 61 1 2 34 "("
+Number 62 2 2 35 "0L"
+RParen 64 1 2 37 ")"
+Newline 65 1 2 38 "\n"
+Ident 70 7 3 5 "scratch"
+LBracket 77 1 3 12 "["
+Number 78 2 3 13 "0L"
+RBracket 80 1 3 15 "]"
+Newline 81 1 3 16 "\n"
+RBrace 82 1 4 1 "}"
+Newline 83 1 4 2 "\n"
+Ident 85 4 6 1 "test"
+String 90 38 6 6 "\"stack_peak accepts a generous budget\""
+LBrace 129 1 6 45 "{"
+Newline 130 1 6 46 "\n"
+Ident 135 6 7 5 "expect"
+Ident 142 10 7 12 "stack_peak"
+LParen 152 1 7 22 "("
+Ident 153 12 7 23 "bounded_work"
+RParen 165 1 7 35 ")"
+Lt 167 1 7 37 "<"
+Number 169 1 7 39 "2"
+Ident 171 2 7 41 "MB"
+Newline 173 1 7 43 "\n"
+Ident 178 6 8 5 "expect"
+Ident 185 12 8 12 "bounded_work"
+LParen 197 1 8 24 "("
+RParen 198 1 8 25 ")"
+EqEq 200 2 8 27 "=="
+Number 203 2 8 30 "0L"
+Newline 205 1 8 32 "\n"
+RBrace 206 1 9 1 "}"
+Newline 207 1 9 2 "\n"
+Eof 208 0 10 1 ""
+== tree ==
+file "main.nl"
+Program 0..208
+  Function 0..83 name="bounded_work" recursive=false generics=[]
+    ResultType 21..25 name="long" range=none policy=checked
+    Block 26..83
+      Let 32..65 mutable=false name="scratch"
+        Annotation 45..54 name="long" range=none policy=checked
+          Integer 50..53 magnitude=128 negative=false long_suffix=false
+        Call 57..65 name="fill"
+          Integer 62..64 magnitude=0 negative=false long_suffix=true
+      Index 70..81
+        Name 70..77 name="scratch"
+        Integer 78..80 magnitude=0 negative=false long_suffix=true
+  Test 85..207 name="stack_peak accepts a generous budget"
+    Block 129..207
+      Expect 135..173 source="expect stack_peak(bounded_work) < 2 MB"
+        Binary 142..173 op=lt
+          Call 142..166 name="stack_peak"
+            Name 153..165 name="bounded_work"
+          Integer 169..173 magnitude=2097152 negative=false long_suffix=false
+      Expect 178..205 source="expect bounded_work() == 0L"
+        Binary 185..205 op=eq
+          Call 185..199 name="bounded_work"
+          Integer 203..205 magnitude=0 negative=false long_suffix=true

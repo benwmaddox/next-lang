@@ -887,7 +887,11 @@ impl Parser<'_> {
                 return Err(self.error_here("expected a bool expression after 'expect'"));
             }
             let first = self.pos;
-            let value = self.expression(0)?;
+            let value = if self.word_is("stack_peak") {
+                self.stack_peak_comparison()?
+            } else {
+                self.expression(0)?
+            };
             let end = self.tokens[self.pos.saturating_sub(1)].end_offset;
             let begin = self.tokens[first].start_offset;
             let expression_source = self.source.get(begin..end).unwrap_or("").trim_start();
@@ -970,6 +974,85 @@ impl Parser<'_> {
         }
 
         unreachable!("keyword statement dispatch did not match")
+    }
+
+    fn stack_peak_comparison(&mut self) -> Result<Expr, ParseError> {
+        let start = self.expect_word("stack_peak", "expected 'stack_peak'")?;
+        self.expect(&TokenKind::LParen, "expected '(' after 'stack_peak'")?;
+        let (function_name, function_span) =
+            self.expect_ident("expected a function name inside 'stack_peak'")?;
+        let close = self.expect(&TokenKind::RParen, "expected ')' after the function name")?;
+        let operator = self.expect(
+            &TokenKind::Lt,
+            "expected '<' after stack_peak(function); write a byte budget such as '2 MB'",
+        )?;
+        let number = self.next().clone();
+        let TokenKind::Number(raw) = number.kind else {
+            return Err(ParseError {
+                span: number.span,
+                message: "expected a byte budget after '<'".to_owned(),
+            });
+        };
+        let mut limit = self.integer(raw, number.span, false)?;
+        let mut end_offset = number.end_offset;
+        let multiplier = if let TokenKind::Ident(unit) = &self.peek().kind {
+            match unit.as_str() {
+                "B" => Some(1u64),
+                "KB" => Some(1024),
+                "MB" => Some(1024 * 1024),
+                "GB" => Some(1024 * 1024 * 1024),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(multiplier) = multiplier {
+            let unit = self.next().clone();
+            end_offset = unit.end_offset;
+            let ExprKind::Integer {
+                magnitude,
+                negative: false,
+                ..
+            } = &mut limit.kind
+            else {
+                unreachable!("parsed byte budget is an integer")
+            };
+            *magnitude = magnitude
+                .checked_mul(multiplier as u128)
+                .ok_or_else(|| ParseError {
+                    span: number.span,
+                    message: "stack_peak byte budget is too large; use a smaller value".to_owned(),
+                })?;
+        }
+        let call_span = Span {
+            end_offset: close.end_offset,
+            ..start.span
+        };
+        let left = Expr {
+            kind: ExprKind::Call {
+                name: "stack_peak".to_owned(),
+                call_span,
+                args: vec![Expr {
+                    kind: ExprKind::Name(function_name),
+                    span: function_span,
+                }],
+            },
+            span: call_span,
+        };
+        limit.span.start_offset = number.start_offset;
+        limit.span.end_offset = end_offset;
+        Ok(Expr {
+            kind: ExprKind::Binary {
+                op: BinaryOp::Lt,
+                operator_span: operator.span,
+                left: Box::new(left),
+                right: Box::new(limit),
+            },
+            span: Span {
+                end_offset,
+                ..start.span
+            },
+        })
     }
 
     fn expression_statement_candidate(&mut self) -> Result<Candidate, ParseError> {

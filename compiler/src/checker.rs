@@ -491,7 +491,7 @@ impl Checker {
                 let id = self.ast_functions.len();
                 if matches!(
                     function.name.as_str(),
-                    "print" | "min" | "max" | "sort" | "sort_by" | "binary_search"
+                    "print" | "min" | "max" | "sort" | "sort_by" | "binary_search" | "stack_peak"
                 ) {
                     return Err(CheckError {
                         span: function.span,
@@ -5245,27 +5245,46 @@ impl Checker {
                         message: "'expect' is only valid inside a test block".to_owned(),
                     });
                 }
-                let typed = self.check_expr(value, Some(Ty::Bool))?;
-                let kind = if let ExprKind::Binary { op, .. } = &value.kind {
-                    if is_comparison(*op) {
-                        if let TExprKind::Binary { left, right, .. } = typed.kind {
-                            TExpectKind::Compare {
-                                op: *op,
-                                left: *left,
-                                right: *right,
+                if let Some((function_name, limit_bytes)) = stack_peak_assertion(value) {
+                    let Some(signature) = self.signatures.get(function_name) else {
+                        return Err(CheckError {
+                            span: value.span,
+                            message: format!(
+                                "stack_peak target '{function_name}' is not a declared function; name a function whose stack use should be pinned"
+                            ),
+                        });
+                    };
+                    TStmtKind::Expect {
+                        source: source.clone(),
+                        kind: TExpectKind::StackPeak {
+                            function_id: signature.id,
+                            function_name: function_name.to_owned(),
+                            limit_bytes,
+                        },
+                    }
+                } else {
+                    let typed = self.check_expr(value, Some(Ty::Bool))?;
+                    let kind = if let ExprKind::Binary { op, .. } = &value.kind {
+                        if is_comparison(*op) {
+                            if let TExprKind::Binary { left, right, .. } = typed.kind {
+                                TExpectKind::Compare {
+                                    op: *op,
+                                    left: *left,
+                                    right: *right,
+                                }
+                            } else {
+                                unreachable!("comparison expression typechecks as binary")
                             }
                         } else {
-                            unreachable!("comparison expression typechecks as binary")
+                            TExpectKind::Bool(typed)
                         }
                     } else {
                         TExpectKind::Bool(typed)
+                    };
+                    TStmtKind::Expect {
+                        source: source.clone(),
+                        kind,
                     }
-                } else {
-                    TExpectKind::Bool(typed)
-                };
-                TStmtKind::Expect {
-                    source: source.clone(),
-                    kind,
                 }
             }
             StmtKind::Block(block) => {
@@ -11899,6 +11918,7 @@ impl Checker {
                         Self::loop_ascii_growth_roots_expr(left, &mut roots, cache);
                         Self::loop_ascii_growth_roots_expr(right, &mut roots, cache);
                     }
+                    TExpectKind::StackPeak { .. } => {}
                 },
                 TStmtKind::Break | TStmtKind::Continue => {}
             }
@@ -13445,6 +13465,7 @@ fn check_recursive_region_block(
                         active_regions,
                     )?;
                 }
+                TExpectKind::StackPeak { .. } => {}
             },
             TStmtKind::Block(inner) => check_recursive_region_block(
                 checker,
@@ -14081,6 +14102,7 @@ fn collect_global_block_effects(
                     collect_global_expr_effects(left, effects, functions);
                     collect_global_expr_effects(right, effects, functions);
                 }
+                TExpectKind::StackPeak { .. } => {}
             },
             TStmtKind::Block(inner) => collect_global_block_effects(inner, effects, functions),
             TStmtKind::Break | TStmtKind::Continue => {}
@@ -14424,6 +14446,7 @@ fn visit_global_calls_block(
                     visit_global_calls_expr(left, active_views, check)?;
                     visit_global_calls_expr(right, active_views, check)?;
                 }
+                TExpectKind::StackPeak { .. } => {}
             },
             TStmtKind::Block(inner) => visit_global_calls_block(inner, active_views, check)?,
             TStmtKind::Break | TStmtKind::Continue => {}
@@ -14849,6 +14872,36 @@ fn statement_falls_through(stmt: &TStmtKind) -> bool {
         TStmtKind::Break | TStmtKind::Continue => false,
         TStmtKind::Block(block) => block.falls_through,
     }
+}
+
+fn stack_peak_assertion(value: &Expr) -> Option<(&str, u64)> {
+    let ExprKind::Binary {
+        op: BinaryOp::Lt,
+        left,
+        right,
+        ..
+    } = &value.kind
+    else {
+        return None;
+    };
+    let ExprKind::Call { name, args, .. } = &left.kind else {
+        return None;
+    };
+    if name != "stack_peak" || args.len() != 1 {
+        return None;
+    }
+    let ExprKind::Name(function_name) = &args[0].kind else {
+        return None;
+    };
+    let ExprKind::Integer {
+        magnitude,
+        negative: false,
+        ..
+    } = &right.kind
+    else {
+        return None;
+    };
+    Some((function_name, u64::try_from(*magnitude).ok()?))
 }
 
 fn is_comparison(op: BinaryOp) -> bool {

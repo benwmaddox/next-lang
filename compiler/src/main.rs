@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use next_lang::{
-    PackageError, build_package, inspect_contracts, inspect_memory, parse_package,
+    PackageError, build_package, inspect_contracts, inspect_memory, inspect_stacks, parse_package,
     run_package_args, test_package,
 };
 
@@ -79,6 +79,12 @@ fn main() -> ExitCode {
                 Err(error) => report_error(error),
             }
         }
+        "inspect" if rest.len() == 2 && rest[0] == "stacks" => {
+            match inspect_stacks(Path::new(&rest[1])) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => report_error(error),
+            }
+        }
         _ => {
             usage();
             ExitCode::from(3)
@@ -101,6 +107,6 @@ fn report_error(error: PackageError) -> ExitCode {
 
 fn usage() {
     eprintln!(
-        "usage: nlc run <package-dir> [--allow-overcommit] | nlc build <package-dir> -o <file> | nlc test <package-dir> | nlc parse <package-dir> [--tree] [--tokens] | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir>"
+        "usage: nlc run <package-dir> [--allow-overcommit] | nlc build <package-dir> -o <file> | nlc test <package-dir> | nlc parse <package-dir> [--tree] [--tokens] | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir> | nlc inspect stacks <package-dir>"
     );
 }

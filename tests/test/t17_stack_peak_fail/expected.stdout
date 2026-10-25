@@ -1,0 +1,3 @@
+FAIL stack_peak rejects an over-budget function
+  stack_peak(bounded_work) exceeded 1024 bytes
+0 passed, 1 failed

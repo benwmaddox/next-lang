@@ -286,6 +286,7 @@ fn collect_constant_references_block(block: &TBlock, references: &mut Vec<(usize
                     collect_constant_references_expr(left, references);
                     collect_constant_references_expr(right, references);
                 }
+                TExpectKind::StackPeak { .. } => {}
             },
             TStmtKind::Block(inner) => collect_constant_references_block(inner, references),
             TStmtKind::Break | TStmtKind::Continue => {}
@@ -527,6 +528,7 @@ fn expression_reads_global(expr: &TExpr) -> bool {
                     TExpectKind::Compare { left, right, .. } => {
                         expression_reads_global(left) || expression_reads_global(right)
                     }
+                    TExpectKind::StackPeak { .. } => false,
                 },
                 TStmtKind::Block(inner) => block_reads(inner),
                 TStmtKind::Break | TStmtKind::Continue => false,
@@ -687,6 +689,7 @@ fn block_reads_global(block: &TBlock) -> bool {
                 TExpectKind::Compare { left, right, .. } => {
                     expression_reads_global(left) || expression_reads_global(right)
                 }
+                TExpectKind::StackPeak { .. } => false,
             },
             TStmtKind::Block(inner) => block_reads_global(inner),
             TStmtKind::Break | TStmtKind::Continue => false,
@@ -816,6 +819,7 @@ fn collect_calls_block(
                     collect_calls_expr(left, calls, effects);
                     collect_calls_expr(right, calls, effects);
                 }
+                TExpectKind::StackPeak { .. } => {}
             },
             TStmtKind::Block(inner) => collect_calls_block(inner, calls, effects),
             TStmtKind::Break | TStmtKind::Continue => {}
@@ -2115,6 +2119,7 @@ impl Evaluator<'_> {
                                 stmt.span,
                             )?)
                         }
+                        TExpectKind::StackPeak { .. } => true,
                     };
                     if !passed {
                         return Err(self.failure(
