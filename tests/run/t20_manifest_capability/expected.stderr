@@ -1,0 +1,1 @@
+main.nl:2:18: error: package manifest must grant capability 'fs' in the 'capabilities' key

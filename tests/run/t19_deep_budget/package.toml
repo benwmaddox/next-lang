@@ -1,1 +1,2 @@
 recursion_budget = 256KiB
+capabilities = ["out"]

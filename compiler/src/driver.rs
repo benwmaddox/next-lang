@@ -158,7 +158,13 @@ fn compile_package_on_worker(
         files.push(file);
         programs.push(program);
     }
-    let mut typed = checker::check_package(programs, files.clone(), require_main).map_err(|e| {
+    let mut typed = checker::check_package(
+        programs,
+        files.clone(),
+        require_main,
+        memory_config.capabilities.clone(),
+    )
+    .map_err(|e| {
         PackageError::Compile({
             let file = files
                 .get(e.span.file)
@@ -707,15 +713,16 @@ fn read_uleb128(bytes: &[u8], offset: usize) -> Result<(u64, usize), PackageErro
     ))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct MemoryConfig {
     job_headroom_bytes: u64,
     globals_budget_bytes: u64,
     recursion_budget_bytes: u64,
+    capabilities: std::collections::HashSet<String>,
 }
 
 fn read_memory_config(package: &Path) -> Result<MemoryConfig, PackageError> {
-    let path = package.join("next-lang.toml");
+    let path = package.join("package.toml");
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -723,11 +730,12 @@ fn read_memory_config(package: &Path) -> Result<MemoryConfig, PackageError> {
                 job_headroom_bytes: 256 * 1024 * 1024,
                 globals_budget_bytes: 64 * 1024 * 1024,
                 recursion_budget_bytes: 0,
+                capabilities: ["out".to_owned()].into_iter().collect(),
             });
         }
         Err(error) => {
             return Err(PackageError::Tool(format!(
-                "cannot read package memory manifest '{}': {error}",
+                "cannot read package manifest '{}': {error}",
                 path.display()
             )));
         }
@@ -736,7 +744,9 @@ fn read_memory_config(package: &Path) -> Result<MemoryConfig, PackageError> {
         job_headroom_bytes: 256 * 1024 * 1024,
         globals_budget_bytes: 64 * 1024 * 1024,
         recursion_budget_bytes: 0,
+        capabilities: ["out".to_owned()].into_iter().collect(),
     };
+    let mut capabilities_seen = false;
     for (line_number, line) in contents.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() || (line.starts_with('[') && line.ends_with(']')) {
@@ -746,6 +756,61 @@ fn read_memory_config(package: &Path) -> Result<MemoryConfig, PackageError> {
             continue;
         };
         let key = key.trim();
+        if key == "capabilities" {
+            if capabilities_seen {
+                return Err(PackageError::Tool(format!(
+                    "{}:{}: capabilities is listed more than once",
+                    path.display(),
+                    line_number + 1
+                )));
+            }
+            capabilities_seen = true;
+            config.capabilities.clear();
+            let value = value.trim();
+            let Some(items) = value
+                .strip_prefix('[')
+                .and_then(|value| value.strip_suffix(']'))
+            else {
+                return Err(PackageError::Tool(format!(
+                    "{}:{}: expected capabilities to be an array such as [\"fs\", \"out\"]",
+                    path.display(),
+                    line_number + 1
+                )));
+            };
+            for item in items
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+            {
+                let Some(capability) = item
+                    .strip_prefix('"')
+                    .and_then(|item| item.strip_suffix('"'))
+                else {
+                    return Err(PackageError::Tool(format!(
+                        "{}:{}: capability names must be quoted strings",
+                        path.display(),
+                        line_number + 1
+                    )));
+                };
+                if !matches!(capability, "fs" | "out" | "env") {
+                    return Err(PackageError::Tool(format!(
+                        "{}:{}: unknown capability '{}'; capabilities currently supports fs, out, and env",
+                        path.display(),
+                        line_number + 1,
+                        capability
+                    )));
+                }
+                if !config.capabilities.insert(capability.to_owned()) {
+                    return Err(PackageError::Tool(format!(
+                        "{}:{}: capability '{}' is listed more than once",
+                        path.display(),
+                        line_number + 1,
+                        capability
+                    )));
+                }
+            }
+            continue;
+        }
         if key != "job_headroom" && key != "globals_budget" && key != "recursion_budget" {
             continue;
         }

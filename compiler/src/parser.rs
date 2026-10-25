@@ -233,9 +233,48 @@ impl Parser<'_> {
             });
         };
         self.skip_newlines();
+        let mut params = Vec::new();
+        if self.take(&TokenKind::LParen) {
+            self.skip_newlines();
+            if !self.at(&TokenKind::RParen) {
+                loop {
+                    self.skip_newlines();
+                    let (param_name, pspan) =
+                        self.expect_ident("expected a test parameter name")?;
+                    self.expect(
+                        &TokenKind::Colon,
+                        "expected ':' after the test parameter name",
+                    )?;
+                    let mode = if self.word_is("write") {
+                        self.next();
+                        ParamMode::Write
+                    } else {
+                        ParamMode::Read
+                    };
+                    let ty = self.type_name()?;
+                    params.push(Param {
+                        name: param_name,
+                        mode,
+                        ty,
+                        span: pspan,
+                    });
+                    self.skip_newlines();
+                    if !self.take(&TokenKind::Comma) {
+                        break;
+                    }
+                    self.skip_newlines();
+                    if self.at(&TokenKind::RParen) {
+                        break;
+                    }
+                }
+            }
+            self.expect(&TokenKind::RParen, "expected ')' after the test parameters")?;
+            self.skip_newlines();
+        }
         let body = self.block()?;
         Ok(Test {
             name,
+            params,
             body,
             span: start,
         })
@@ -513,7 +552,24 @@ impl Parser<'_> {
                 let (effect, effect_span) =
                     self.expect_ident("expected an effect after 'effects'")?;
                 match effect.as_str() {
-                    "print" => effects.push(FunctionEffectAst::Print),
+                    "out" => effects.push(FunctionEffectAst::Out),
+                    "env" => effects.push(FunctionEffectAst::Env),
+                    "fs" => {
+                        self.expect(&TokenKind::Dot, "expected '.read' or '.write' after 'fs'")?;
+                        let (operation, operation_span) =
+                            self.expect_ident("expected 'read' or 'write' after 'fs.'")?;
+                        match operation.as_str() {
+                            "read" => effects.push(FunctionEffectAst::FsRead),
+                            "write" => effects.push(FunctionEffectAst::FsWrite),
+                            _ => {
+                                return Err(ParseError {
+                                    span: operation_span,
+                                    message: "filesystem effects are 'fs.read' and 'fs.write'"
+                                        .to_owned(),
+                                });
+                            }
+                        }
+                    }
                     "reads" | "writes" => {
                         let (root, root_span) = self.expect_ident(if effect == "reads" {
                             "expected a global path after 'reads'"
@@ -542,7 +598,7 @@ impl Parser<'_> {
                         return Err(ParseError {
                             span: effect_span,
                             message: format!(
-                                "unknown function effect '{}'; use print, reads global, or writes global",
+                                "unknown function effect '{}'; use out, env, fs.read, fs.write, reads global, or writes global",
                                 effect
                             ),
                         });
@@ -555,7 +611,7 @@ impl Parser<'_> {
                     TokenKind::Ident(name) => name.as_str(),
                     _ => break,
                 };
-                if !matches!(next, "print" | "reads" | "writes") {
+                if !matches!(next, "out" | "env" | "fs" | "reads" | "writes") {
                     break;
                 }
                 self.next();
@@ -1000,6 +1056,20 @@ impl Parser<'_> {
             TokenKind::Ident(name) if name == "if" => self.if_postfix(span),
             TokenKind::Ident(name) if name == "match" => self.match_postfix(span),
             TokenKind::Ident(name) if name == "return" => self.return_postfix(span),
+            TokenKind::Ident(name)
+                if name == "b"
+                    && matches!(self.peek().kind, TokenKind::String(_))
+                    && self.peek().span.line == span.line
+                    && self.peek().span.col == span.col + 1 =>
+            {
+                let TokenKind::String(value) = self.next().kind.clone() else {
+                    unreachable!()
+                };
+                self.postfix(Expr {
+                    kind: ExprKind::ByteString(value.into_bytes()),
+                    span,
+                })
+            }
             kind => self.prefix_leaf_postfix(kind, span),
         }
     }
@@ -1090,6 +1160,10 @@ impl Parser<'_> {
     fn prefix_leaf(&mut self, kind: TokenKind, span: Span) -> Result<Expr, ParseError> {
         Ok(match kind {
             TokenKind::Number(raw) => self.integer(raw, span, false)?,
+            TokenKind::String(value) => Expr {
+                kind: ExprKind::ByteString(value.into_bytes()),
+                span,
+            },
             TokenKind::Ident(name) if name == "true" => Expr {
                 kind: ExprKind::Bool(true),
                 span,
@@ -1921,6 +1995,7 @@ fn expression_nesting_exceeded(root: &Expr, limit: usize) -> Option<Span> {
                     ExprKind::Unit
                     | ExprKind::Integer { .. }
                     | ExprKind::Bool(_)
+                    | ExprKind::ByteString(_)
                     | ExprKind::Name(_)
                     | ExprKind::ListLiteral
                     | ExprKind::PoolLiteral

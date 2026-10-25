@@ -1,0 +1,1 @@
+main.nl:2:20: error: package manifest must grant capability 'env' in the 'capabilities' key

@@ -1,1 +1,1 @@
-main.nl:6:5: error: this collection operation returns Result<(), Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended
+main.nl:6:5: error: this collection operation returns a Result with error type Full; handle it with '?', 'match', or '??' where supported, or write 'discard' when dropping Full is intended

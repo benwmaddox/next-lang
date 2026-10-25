@@ -2,6 +2,132 @@ use crate::ast::{AssignOp, BinaryOp, ParamMode, RefinePolicy, Span, UnaryOp};
 use crate::typed::*;
 use std::collections::HashMap;
 
+fn result_error_type(ty: Ty, types: &[TType]) -> Option<Ty> {
+    match &types[base_type(ty, types).0].kind {
+        TTypeKind::Result(ok, error) if base_type(*ok, types) == Ty::Unit => Some(*error),
+        _ => None,
+    }
+}
+
+fn error_printer_function(id: usize, error_ty: Ty) -> TFunction {
+    let span = Span::default();
+    let argument = TExpr {
+        kind: TExprKind::Local(0),
+        ty: error_ty,
+        span,
+    };
+    let body = TExpr {
+        kind: TExprKind::Call {
+            target: CallTarget::Print,
+            args: vec![argument],
+            effect: Effect::Observable,
+        },
+        ty: Ty::Unit,
+        span,
+    };
+    TFunction {
+        id,
+        name: format!("__nl_print_error_{}", error_ty.0),
+        params: vec![TParam {
+            id: 0,
+            name: "error".to_owned(),
+            ty: error_ty,
+            mode: ParamMode::Read,
+            span,
+        }],
+        result: Ty::Unit,
+        body: TBlock {
+            statements: Vec::new(),
+            tail: Some(Box::new(body)),
+            falls_through: true,
+            scope_id: 0,
+            span,
+        },
+        span,
+        is_test: false,
+        recursive: false,
+    }
+}
+
+fn emit_entry_call(
+    out: &mut String,
+    program: &TProgram,
+    entry: &TFunction,
+    error_printer: Option<usize>,
+    label_prefix: &str,
+) -> bool {
+    let Some(error_ty) = result_error_type(entry.result, &program.types) else {
+        let mut args = vec!["ptr %nl.ctx".to_owned(), "ptr %nl.top".to_owned()];
+        if entry.params.first().is_some() {
+            args.push("ptr %nl.env".to_owned());
+        }
+        out.push_str(&format!(
+            "  call void @nl_fn_{}({})\n",
+            entry.id,
+            args.join(", ")
+        ));
+        return false;
+    };
+
+    let result_ty = base_type(entry.result, &program.types);
+    let result_llvm_ty = llvm_type(result_ty, &program.types);
+    let result_storage = format!("%{label_prefix}.result");
+    let is_large_result = is_large_type(result_ty, &program.types);
+    out.push_str(&format!(
+        "  {result_storage} = alloca {result_llvm_ty}, align 1\n"
+    ));
+    let mut args = vec!["ptr %nl.ctx".to_owned(), "ptr %nl.top".to_owned()];
+    if is_large_result {
+        args.push(format!("ptr {result_storage}"));
+    }
+    if entry.params.first().is_some() {
+        args.push("ptr %nl.env".to_owned());
+    }
+    if is_large_result {
+        out.push_str(&format!(
+            "  call void @nl_fn_{}({})\n",
+            entry.id,
+            args.join(", ")
+        ));
+    } else {
+        let result_value = format!("%{label_prefix}.value");
+        out.push_str(&format!(
+            "  {result_value} = call {result_llvm_ty} @nl_fn_{}({})\n  store {result_llvm_ty} {result_value}, ptr {result_storage}, align 1\n",
+            entry.id,
+            args.join(", ")
+        ));
+    }
+
+    let tag_pointer = format!("%{label_prefix}.tag.ptr");
+    let tag = format!("%{label_prefix}.tag");
+    let is_error = format!("%{label_prefix}.is.error");
+    let error_label = format!("{label_prefix}.error");
+    let success_label = format!("{label_prefix}.success");
+    out.push_str(&format!(
+        "  {tag_pointer} = getelementptr {result_llvm_ty}, ptr {result_storage}, i32 0, i32 0\n  {tag} = load i32, ptr {tag_pointer}, align 4\n  {is_error} = icmp eq i32 {tag}, 1\n  br i1 {is_error}, label %{error_label}, label %{success_label}\n{error_label}:\n  call void @nl_print_set_fd(i32 2)\n  call void @nl_print_error_prefix()\n"
+    ));
+    let payload_pointer = format!("%{label_prefix}.payload.ptr");
+    let error_pointer = format!("%{label_prefix}.error.ptr");
+    out.push_str(&format!(
+        "  {payload_pointer} = getelementptr {result_llvm_ty}, ptr {result_storage}, i32 0, i32 1\n  {error_pointer} = getelementptr i8, ptr {payload_pointer}, i64 0\n"
+    ));
+    let printer_id = error_printer.expect("Result entry point has an error printer");
+    let printer_param = if is_large_type(error_ty, &program.types) {
+        format!("ptr {error_pointer}")
+    } else {
+        let value = format!("%{label_prefix}.error.value");
+        out.push_str(&format!(
+            "  {value} = load {}, ptr {error_pointer}, align 1\n",
+            llvm_type(error_ty, &program.types)
+        ));
+        format!("{} {value}", llvm_type(error_ty, &program.types))
+    };
+    out.push_str(&format!(
+        "  call void @nl_fn_{printer_id}(ptr %nl.ctx, ptr %nl.top, {printer_param})\n  call void @nl_print_set_fd(i32 1)\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 1\n{success_label}:\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 0\n"
+    ));
+    true
+}
+
 pub fn emit(program: &TProgram) -> String {
     let mut out = String::new();
     out.push_str("; generated by nlc\nsource_filename = \"next-lang\"\n\n");
@@ -15,6 +141,23 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
     out.push_str("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
     out.push_str("declare void @nl_register_file(i32, ptr)\n");
+    out.push_str("declare ptr @nl_env_create(i32, ptr, i32)\n");
+    out.push_str("declare void @nl_env_destroy(ptr)\n");
+    out.push_str("declare ptr @nl_env_args(ptr)\n");
+    out.push_str("declare ptr @nl_env_fs(ptr)\n");
+    out.push_str("declare ptr @nl_env_out(ptr, i32)\n");
+    out.push_str("declare i64 @nl_args_count(ptr)\n");
+    out.push_str("declare ptr @nl_args_get(ptr, i64)\n");
+    out.push_str("declare i64 @nl_arg_length(ptr)\n");
+    out.push_str("declare i32 @nl_arg_byte(ptr, i64)\n");
+    out.push_str("declare void @nl_fs_read(ptr, ptr, i32, i64, ptr, i64, ptr)\n");
+    out.push_str("declare void @nl_fs_list(ptr, ptr, i32, i64, ptr, i64, ptr)\n");
+    out.push_str("declare void @nl_fs_write(ptr, ptr, i32, i64, ptr, i32, i64, ptr)\n");
+    out.push_str("declare void @nl_fs_join(ptr, ptr, i32, i64, ptr, i32, i64, ptr)\n");
+    out.push_str("declare void @nl_out_write(ptr, ptr, i32, i64, i32, ptr)\n");
+    out.push_str("declare void @nl_out_int(ptr, i32, ptr)\n");
+    out.push_str("declare void @nl_out_long(ptr, i64, ptr)\n");
+    out.push_str("declare void @nl_out_arg(ptr, ptr, i32, ptr)\n");
     out.push_str("declare i1 @nl_has_argument(i32, ptr, ptr)\n");
     out.push_str("declare void @nl_claim_memory(ptr, i64, i64, i1)\n");
     out.push_str("declare i32 @nl_test_selected_index()\n");
@@ -29,6 +172,9 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare void @nl_print_bool_raw(i1)\n");
     out.push_str("declare void @nl_print_text(ptr)\n");
     out.push_str("declare void @nl_print_newline()\n");
+    out.push_str("declare void @nl_print_arg(ptr)\n");
+    out.push_str("declare void @nl_print_set_fd(i32)\n");
+    out.push_str("declare void @nl_print_error_prefix()\n");
     out.push_str("declare void @nl_expect_fail_header(i32, i32, i32, ptr)\n");
     out.push_str("declare void @nl_expect_fail_left()\n");
     out.push_str("declare void @nl_expect_fail_right()\n");
@@ -43,7 +189,10 @@ pub fn emit(program: &TProgram) -> String {
     let mut size_cache = vec![None; program.types.len()];
     for (id, ty) in program.types.iter().enumerate().skip(5) {
         match &ty.kind {
-            TTypeKind::Refinement { .. } | TTypeKind::Id { .. } | TTypeKind::Function { .. } => {}
+            TTypeKind::Refinement { .. }
+            | TTypeKind::Id { .. }
+            | TTypeKind::Function { .. }
+            | TTypeKind::Capability(_) => {}
             TTypeKind::Struct(fields) => {
                 let fields = fields
                     .iter()
@@ -306,6 +455,10 @@ pub fn emit(program: &TProgram) -> String {
         ));
     }
     out.push('\n');
+    let entry = program.functions.iter().find(|f| f.name == "main");
+    let main_error_type =
+        entry.and_then(|function| result_error_type(function.result, &program.types));
+    let error_printer_id = main_error_type.map(|_| program.functions.len() + program.globals.len());
     for function in &program.functions {
         let mut emitter = FunctionEmitter::new(program, function, &expect_ids, &print_ids);
         out.push_str(&emitter.emit_function());
@@ -320,11 +473,22 @@ pub fn emit(program: &TProgram) -> String {
             out.push('\n');
         }
     }
-    let entry = program.functions.iter().find(|f| f.name == "main");
+    if let (Some(error_ty), Some(id)) = (main_error_type, error_printer_id) {
+        let printer = error_printer_function(id, error_ty);
+        let mut emitter = FunctionEmitter::new(program, &printer, &expect_ids, &print_ids);
+        out.push_str(&emitter.emit_function());
+        out.push('\n');
+    }
     out.push_str("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n");
     out.push_str(&format!(
         "  %nl.ctx = call ptr @nl_context_create(i64 0, i64 {})\n  %nl.top = call ptr @nl_context_base(ptr %nl.ctx)\n",
         program.recursion_budget_bytes
+    ));
+    let capability_mask = (i32::from(program.capabilities.iter().any(|cap| cap == "fs")))
+        | (i32::from(program.capabilities.iter().any(|cap| cap == "out")) << 1)
+        | (i32::from(program.capabilities.iter().any(|cap| cap == "env")) << 2);
+    out.push_str(&format!(
+        "  %nl.env = call ptr @nl_env_create(i32 %argc, ptr %argv, i32 {capability_mask})\n"
     ));
     for (id, file) in program.files.iter().enumerate() {
         let len = file.len() + 1;
@@ -351,17 +515,20 @@ pub fn emit(program: &TProgram) -> String {
         }
     }
     if program.tests.is_empty() {
+        let mut entry_handles_exit = false;
         if let Some(entry) = entry {
             if entry.recursive {
                 out.push_str(&recursion_check_instruction(&[entry.id], entry.span));
             }
-            out.push_str(&format!(
-                "  call void @nl_fn_{}(ptr %nl.ctx, ptr %nl.top)\n",
-                entry.id
-            ));
+            entry_handles_exit =
+                emit_entry_call(&mut out, program, entry, error_printer_id, "nl.main");
         }
-        out.push_str("  call void @nl_context_destroy(ptr %nl.ctx)\n");
-        out.push_str("  ret i32 0\n}\n");
+        if !entry_handles_exit {
+            out.push_str("  call void @nl_env_destroy(ptr %nl.env)\n");
+            out.push_str("  call void @nl_context_destroy(ptr %nl.ctx)\n");
+            out.push_str("  ret i32 0\n");
+        }
+        out.push_str("}\n");
     } else {
         out.push_str(
             "  %test.selected = call i32 @nl_test_selected_index()\n  br label %test.dispatch.0\n",
@@ -371,20 +538,28 @@ pub fn emit(program: &TProgram) -> String {
             let next = format!("test.dispatch.{}", index + 1);
             let run = format!("test.run.{index}");
             out.push_str(&format!("  %test.is.{index} = icmp eq i32 %test.selected, {index}\n  br i1 %test.is.{index}, label %{run}, label %{next}\n"));
-            out.push_str(&format!("{run}:\n  call void @nl_set_test_mode()\n  %test.result.{index} = call i32 @nl_fn_{}(ptr %nl.ctx, ptr %nl.top)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 %test.result.{index}\n", test.function_id));
+            let test_function = &program.functions[test.function_id];
+            if test_function.params.is_empty() {
+                out.push_str(&format!("{run}:\n  call void @nl_set_test_mode()\n  %test.result.{index} = call i32 @nl_fn_{}(ptr %nl.ctx, ptr %nl.top)\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 %test.result.{index}\n", test.function_id));
+            } else {
+                out.push_str(&format!("{run}:\n  call void @nl_set_test_mode()\n  %test.result.{index} = call i32 @nl_fn_{}(ptr %nl.ctx, ptr %nl.top, ptr %nl.env)\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 %test.result.{index}\n", test.function_id));
+            }
         }
         out.push_str(&format!("test.dispatch.{}:\n", program.tests.len()));
+        let mut entry_handles_exit = false;
         if let Some(entry) = entry {
             if entry.recursive {
                 out.push_str(&recursion_check_instruction(&[entry.id], entry.span));
             }
-            out.push_str(&format!(
-                "  call void @nl_fn_{}(ptr %nl.ctx, ptr %nl.top)\n",
-                entry.id
-            ));
+            entry_handles_exit =
+                emit_entry_call(&mut out, program, entry, error_printer_id, "nl.fallback");
         }
-        out.push_str("  call void @nl_context_destroy(ptr %nl.ctx)\n");
-        out.push_str("  ret i32 0\n}\n");
+        if !entry_handles_exit {
+            out.push_str("  call void @nl_env_destroy(ptr %nl.env)\n");
+            out.push_str("  call void @nl_context_destroy(ptr %nl.ctx)\n");
+            out.push_str("  ret i32 0\n");
+        }
+        out.push_str("}\n");
     }
     out.push_str("\n!0 = !{!\"branch_weights\", i32 1, i32 2000}\n");
     out
@@ -800,6 +975,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
             TExprKind::Unit
             | TExprKind::Integer(_)
             | TExprKind::Bool(_)
+            | TExprKind::ByteString(_)
             | TExprKind::Local(_)
             | TExprKind::Global(_)
             | TExprKind::Constant(_)
@@ -1195,6 +1371,7 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         }
         TExprKind::Integer(_)
         | TExprKind::Bool(_)
+        | TExprKind::ByteString(_)
         | TExprKind::Unit
         | TExprKind::Local(_)
         | TExprKind::Global(_)
@@ -1309,7 +1486,7 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
                             .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
                             .sum::<usize>(),
                     ),
-                TTypeKind::Id { .. } => 8,
+                TTypeKind::Id { .. } | TTypeKind::Capability(_) => 8,
                 TTypeKind::Function { .. } => 8,
                 _ => {
                     let payload = enum_payload_size(ty, types, cache);
@@ -1365,6 +1542,7 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType], functions: &[TFunc
             ConstValue::Function(id) => format!("@nl_fn_{id}"),
             _ => unreachable!("function value constant has a non-function value"),
         },
+        TTypeKind::Capability(_) => unreachable!("capabilities cannot be constants"),
         TTypeKind::Struct(fields) => {
             let ConstValue::Struct(values) = value else {
                 unreachable!("struct constant has a non-struct value")
@@ -1807,6 +1985,7 @@ fn serialize_constant(
         TTypeKind::Function { .. } => {
             unreachable!("function pointers are emitted as LLVM relocations, not serialized bytes")
         }
+        TTypeKind::Capability(_) => unreachable!("capabilities cannot be serialized as constants"),
         TTypeKind::Struct(fields) => {
             let ConstValue::Struct(values) = value else {
                 unreachable!("struct constant has a non-struct value")
@@ -2150,17 +2329,26 @@ impl<'a> FunctionEmitter<'a> {
                     out.push_str("}\n");
                     return out.replace(ENTRY_STACK_TOP, &final_top);
                 }
-                let value = self.emit_expr(tail);
-                if !self.terminated {
-                    if self.function.is_test {
-                        self.terminate("ret i32 0");
-                    } else if self.function.result == Ty::Unit {
-                        self.terminate("ret void");
+                if self.function.is_test {
+                    if let Some(error_ty) = result_error_type(tail.ty, &self.program.types) {
+                        self.emit_test_result_tail(tail, error_ty);
                     } else {
-                        self.terminate(format!(
-                            "ret {} {value}",
-                            self.lltype(self.function.result)
-                        ));
+                        let _ = self.emit_expr(tail);
+                        if !self.terminated {
+                            self.terminate("ret i32 0");
+                        }
+                    }
+                } else {
+                    let value = self.emit_expr(tail);
+                    if !self.terminated {
+                        if self.function.result == Ty::Unit {
+                            self.terminate("ret void");
+                        } else {
+                            self.terminate(format!(
+                                "ret {} {value}",
+                                self.lltype(self.function.result)
+                            ));
+                        }
                     }
                 }
             } else if self.function.is_test {
@@ -2183,6 +2371,73 @@ impl<'a> FunctionEmitter<'a> {
         out.push_str("}\n");
         out = out.replace(ENTRY_STACK_TOP, &final_top);
         out
+    }
+
+    fn emit_test_result_tail(&mut self, expr: &TExpr, error_ty: Ty) {
+        let result_ty = base_type(expr.ty, &self.program.types);
+        let result_llvm_ty = self.lltype(result_ty);
+        let large = is_large_type(result_ty, &self.program.types);
+        let storage = if large {
+            Some(self.emit_expr_storage(expr))
+        } else {
+            None
+        };
+        if self.terminated {
+            return;
+        }
+        let value = if storage.is_none() {
+            self.emit_expr(expr)
+        } else {
+            String::new()
+        };
+        if self.terminated {
+            return;
+        }
+        let tag = if let Some(storage) = &storage {
+            let pointer = self.temp();
+            self.instruction(format!(
+                "{pointer} = getelementptr {result_llvm_ty}, ptr {storage}, i32 0, i32 0"
+            ));
+            let tag = self.temp();
+            self.instruction(format!("{tag} = load i32, ptr {pointer}, align 4"));
+            tag
+        } else {
+            self.emit_tag(result_ty, &value)
+        };
+        let is_error = self.temp();
+        self.instruction(format!("{is_error} = icmp eq i32 {tag}, 1"));
+        let error_label = self.new_label("test.result.error");
+        let success_label = self.new_label("test.result.ok");
+        self.terminate(format!(
+            "br i1 {is_error}, label %{error_label}, label %{success_label}"
+        ));
+        self.start_block(&error_label);
+        self.instruction("call void @nl_print_set_fd(i32 2)");
+        self.instruction("call void @nl_print_error_prefix()");
+        let error_value = if let Some(storage) = &storage {
+            let payload = self.temp();
+            self.instruction(format!(
+                "{payload} = getelementptr {result_llvm_ty}, ptr {storage}, i32 0, i32 1"
+            ));
+            let pointer = self.temp();
+            self.instruction(format!(
+                "{pointer} = getelementptr i8, ptr {payload}, i64 0"
+            ));
+            let error = self.temp();
+            self.instruction(format!(
+                "{error} = load {}, ptr {pointer}, align 1",
+                self.lltype(error_ty)
+            ));
+            error
+        } else {
+            self.emit_payload(result_ty, &value, 1, 0).1
+        };
+        self.emit_print_value(error_ty, &error_value);
+        self.instruction("call void @nl_print_newline()");
+        self.instruction("call void @nl_print_set_fd(i32 1)");
+        self.terminate("ret i32 1");
+        self.start_block(&success_label);
+        self.terminate("ret i32 0");
     }
 
     fn emit_region_alloc_lines(
@@ -2478,6 +2733,7 @@ impl<'a> FunctionEmitter<'a> {
             }
             TExprKind::Integer(_)
             | TExprKind::Bool(_)
+            | TExprKind::ByteString(_)
             | TExprKind::Unit
             | TExprKind::Global(_)
             | TExprKind::Constant(_)
@@ -4145,6 +4401,35 @@ impl<'a> FunctionEmitter<'a> {
         result
     }
 
+    fn emit_byte_string_to(&mut self, destination: &str, ty: Ty, bytes: &[u8]) {
+        let TTypeKind::List { capacity, .. } = self.program.types[ty.0].kind else {
+            unreachable!("byte strings are lowered to byte lists")
+        };
+        self.instruction(format!(
+            "call void @llvm.memset.p0.i64(ptr {destination}, i8 0, i64 {}, i1 false)",
+            type_size(
+                ty,
+                &self.program.types,
+                &mut vec![None; self.program.types.len()]
+            )
+        ));
+        let count = self.temp();
+        self.instruction(format!(
+            "{count} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+            self.lltype(ty)
+        ));
+        self.instruction(format!("store i64 {}, ptr {count}, align 1", bytes.len()));
+        for (index, byte) in bytes.iter().enumerate() {
+            debug_assert!(index < capacity);
+            let slot = self.temp();
+            self.instruction(format!(
+                "{slot} = getelementptr {}, ptr {destination}, i32 0, i32 1, i64 {index}",
+                self.lltype(ty)
+            ));
+            self.instruction(format!("store i32 {byte}, ptr {slot}, align 1"));
+        }
+    }
+
     fn emit_fill(&mut self, collection_ty: Ty, value: &TExpr, capacity: usize) -> String {
         debug_assert!(matches!(
             self.program.types[collection_ty.0].kind,
@@ -5354,12 +5639,20 @@ impl<'a> FunctionEmitter<'a> {
                     self.start_block(&done);
                 }
             }
+            TExprKind::ByteString(value) => self.emit_byte_string_to(destination, expr.ty, value),
             TExprKind::Call {
                 target: CallTarget::Function(function_id),
                 args,
                 ..
             } => {
                 self.emit_direct_call(*function_id, args, Some(destination), expr.span);
+            }
+            TExprKind::Call {
+                target: CallTarget::FsJoin,
+                args,
+                ..
+            } => {
+                self.emit_capability_call_to(destination, expr, &CallTarget::FsJoin, args);
             }
             TExprKind::IndirectCall {
                 callee,
@@ -8953,7 +9246,12 @@ impl<'a> FunctionEmitter<'a> {
                     return String::new();
                 }
                 let ty = base_type(arg.ty, &self.program.types);
-                if matches!(ty, Ty::Int | Ty::Long | Ty::Bool) {
+                if matches!(
+                    self.program.types[ty.0].kind,
+                    TTypeKind::Capability(CapabilityKind::Arg)
+                ) {
+                    self.instruction(format!("call void @nl_print_arg(ptr {value})"));
+                } else if matches!(ty, Ty::Int | Ty::Long | Ty::Bool) {
                     let name = match ty {
                         Ty::Int => "nl_print_int",
                         Ty::Long => "nl_print_long",
@@ -9011,6 +9309,316 @@ impl<'a> FunctionEmitter<'a> {
                 debug_assert_eq!(*effect, Effect::None);
                 self.emit_binary_search(expr, args, *capacity, *is_list)
             }
+            CallTarget::EnvArgs
+            | CallTarget::EnvFs
+            | CallTarget::EnvOut
+            | CallTarget::EnvErr
+            | CallTarget::ArgsCount
+            | CallTarget::ArgsGet
+            | CallTarget::ArgLength
+            | CallTarget::ArgByte
+            | CallTarget::FsRead
+            | CallTarget::FsList
+            | CallTarget::FsWrite
+            | CallTarget::FsJoin
+            | CallTarget::OutWrite
+            | CallTarget::OutLine
+            | CallTarget::OutInt
+            | CallTarget::OutLong => self.emit_capability_call(expr, target, args),
+        }
+    }
+
+    fn emit_io_bytes_argument(&mut self, expr: &TExpr) -> (String, i32, usize) {
+        if matches!(
+            self.program.types[expr.ty.0].kind,
+            TTypeKind::Capability(CapabilityKind::Arg)
+        ) {
+            let value = self.emit_expr(expr);
+            (value, 1, 0)
+        } else {
+            let TTypeKind::List { capacity, .. } = self.program.types[expr.ty.0].kind else {
+                unreachable!("checker validates I/O byte arguments")
+            };
+            (self.emit_expr_storage(expr), 0, capacity)
+        }
+    }
+
+    fn emit_capability_call(
+        &mut self,
+        expr: &TExpr,
+        target: &CallTarget,
+        args: &[TExpr],
+    ) -> String {
+        match target {
+            CallTarget::EnvArgs | CallTarget::EnvFs => {
+                let env = self.emit_expr(&args[0]);
+                if self.terminated {
+                    return String::new();
+                }
+                let function = if matches!(target, CallTarget::EnvArgs) {
+                    "nl_env_args"
+                } else {
+                    "nl_env_fs"
+                };
+                let value = self.temp();
+                self.instruction(format!("{value} = call ptr @{function}(ptr {env})"));
+                value
+            }
+            CallTarget::EnvOut | CallTarget::EnvErr => {
+                let env = self.emit_expr(&args[0]);
+                if self.terminated {
+                    return String::new();
+                }
+                let fd = if matches!(target, CallTarget::EnvErr) {
+                    2
+                } else {
+                    1
+                };
+                let value = self.temp();
+                self.instruction(format!(
+                    "{value} = call ptr @nl_env_out(ptr {env}, i32 {fd})"
+                ));
+                value
+            }
+            CallTarget::ArgsCount | CallTarget::ArgLength => {
+                let receiver = self.emit_expr(&args[0]);
+                if self.terminated {
+                    return String::new();
+                }
+                let function = if matches!(target, CallTarget::ArgsCount) {
+                    "nl_args_count"
+                } else {
+                    "nl_arg_length"
+                };
+                let value = self.temp();
+                self.instruction(format!("{value} = call i64 @{function}(ptr {receiver})"));
+                value
+            }
+            CallTarget::ArgsGet => {
+                let receiver = self.emit_expr(&args[0]);
+                if self.terminated {
+                    return String::new();
+                }
+                let index = self.emit_expr(&args[1]);
+                if self.terminated {
+                    return String::new();
+                }
+                let pointer = self.temp();
+                self.instruction(format!(
+                    "{pointer} = call ptr @nl_args_get(ptr {receiver}, i64 {index})"
+                ));
+                let present = self.temp();
+                self.instruction(format!("{present} = icmp ne ptr {pointer}, null"));
+                self.emit_option_pointer(
+                    expr.ty,
+                    &pointer,
+                    &present,
+                    self.program.types[expr.ty.0].cases()[0].payload[0],
+                )
+            }
+            CallTarget::ArgByte => {
+                let receiver = self.emit_expr(&args[0]);
+                if self.terminated {
+                    return String::new();
+                }
+                let index = self.emit_expr(&args[1]);
+                if self.terminated {
+                    return String::new();
+                }
+                let byte = self.temp();
+                self.instruction(format!(
+                    "{byte} = call i32 @nl_arg_byte(ptr {receiver}, i64 {index})"
+                ));
+                let present = self.temp();
+                self.instruction(format!("{present} = icmp sge i32 {byte}, 0"));
+                let some = self.new_label("arg.byte.some");
+                let none = self.new_label("arg.byte.none");
+                let merge = self.new_label("arg.byte.end");
+                self.terminate(format!("br i1 {present}, label %{some}, label %{none}"));
+                self.start_block(&some);
+                let some_value = self.emit_construct_values(expr.ty, 0, vec![(Ty::Int, byte)]);
+                let some_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&none);
+                let none_value = self.emit_construct_values(expr.ty, 1, Vec::new());
+                let none_pred = self.current_label.clone();
+                self.terminate(format!("br label %{merge}"));
+                self.start_block(&merge);
+                let result = self.temp();
+                self.instruction(format!("{result} = phi {} [ {some_value}, %{some_pred} ], [ {none_value}, %{none_pred} ]", self.lltype(expr.ty)));
+                result
+            }
+            CallTarget::FsRead | CallTarget::FsList | CallTarget::FsWrite => {
+                let fs = self.emit_expr(&args[0]);
+                if self.terminated {
+                    return String::new();
+                }
+                let (path, path_is_arg, path_capacity) = self.emit_io_bytes_argument(&args[1]);
+                if self.terminated {
+                    return String::new();
+                }
+                let result_storage = self.entry_alloca(expr.ty);
+                match target {
+                    CallTarget::FsRead => {
+                        let buffer = self.emit_expr_storage(&args[2]);
+                        if self.terminated {
+                            return String::new();
+                        }
+                        let TTypeKind::List { capacity, .. } =
+                            self.program.types[args[2].ty.0].kind
+                        else {
+                            unreachable!()
+                        };
+                        self.instruction(format!("call void @nl_fs_read(ptr {fs}, ptr {path}, i32 {path_is_arg}, i64 {path_capacity}, ptr {buffer}, i64 {capacity}, ptr {result_storage})"));
+                    }
+                    CallTarget::FsList => {
+                        let output = self.emit_expr_storage(&args[2]);
+                        if self.terminated {
+                            return String::new();
+                        }
+                        let TTypeKind::List { capacity, .. } =
+                            self.program.types[args[2].ty.0].kind
+                        else {
+                            unreachable!()
+                        };
+                        self.instruction(format!("call void @nl_fs_list(ptr {fs}, ptr {path}, i32 {path_is_arg}, i64 {path_capacity}, ptr {output}, i64 {capacity}, ptr {result_storage})"));
+                    }
+                    CallTarget::FsWrite => {
+                        let (data, data_is_arg, data_capacity) =
+                            self.emit_io_bytes_argument(&args[2]);
+                        if self.terminated {
+                            return String::new();
+                        }
+                        self.instruction(format!("call void @nl_fs_write(ptr {fs}, ptr {path}, i32 {path_is_arg}, i64 {path_capacity}, ptr {data}, i32 {data_is_arg}, i64 {data_capacity}, ptr {result_storage})"));
+                    }
+                    _ => unreachable!(),
+                }
+                let value = self.temp();
+                self.instruction(format!(
+                    "{value} = load {}, ptr {result_storage}, align 1",
+                    self.lltype(expr.ty)
+                ));
+                value
+            }
+            CallTarget::FsJoin => {
+                let result_storage = self.entry_alloca(expr.ty);
+                self.emit_capability_call_to(&result_storage, expr, target, args);
+                if self.terminated {
+                    return String::new();
+                }
+                let value = self.temp();
+                self.instruction(format!(
+                    "{value} = load {}, ptr {result_storage}, align 1",
+                    self.lltype(expr.ty)
+                ));
+                value
+            }
+            CallTarget::OutWrite
+            | CallTarget::OutLine
+            | CallTarget::OutInt
+            | CallTarget::OutLong => {
+                let output = self.emit_expr(&args[0]);
+                if self.terminated {
+                    return String::new();
+                }
+                let result_storage = self.entry_alloca(expr.ty);
+                match target {
+                    CallTarget::OutWrite | CallTarget::OutLine => {
+                        if matches!(
+                            self.program.types[args[1].ty.0].kind,
+                            TTypeKind::Capability(CapabilityKind::Arg)
+                        ) {
+                            let data = self.emit_expr(&args[1]);
+                            if self.terminated {
+                                return String::new();
+                            }
+                            self.instruction(format!("call void @nl_out_arg(ptr {output}, ptr {data}, i32 {}, ptr {result_storage})", i32::from(matches!(target, CallTarget::OutLine))));
+                        } else {
+                            let (data, _, capacity) = self.emit_io_bytes_argument(&args[1]);
+                            if self.terminated {
+                                return String::new();
+                            }
+                            self.instruction(format!("call void @nl_out_write(ptr {output}, ptr {data}, i32 {}, i64 {capacity}, i32 {}, ptr {result_storage})", 0, i32::from(matches!(target, CallTarget::OutLine))));
+                        }
+                    }
+                    CallTarget::OutInt => {
+                        let value = self.emit_expr(&args[1]);
+                        if self.terminated {
+                            return String::new();
+                        }
+                        self.instruction(format!(
+                            "call void @nl_out_int(ptr {output}, i32 {value}, ptr {result_storage})"
+                        ));
+                    }
+                    CallTarget::OutLong => {
+                        let value = self.emit_expr(&args[1]);
+                        if self.terminated {
+                            return String::new();
+                        }
+                        self.instruction(format!("call void @nl_out_long(ptr {output}, i64 {value}, ptr {result_storage})"));
+                    }
+                    _ => unreachable!(),
+                }
+                let value = self.temp();
+                self.instruction(format!(
+                    "{value} = load {}, ptr {result_storage}, align 1",
+                    self.lltype(expr.ty)
+                ));
+                value
+            }
+            CallTarget::Function(_)
+            | CallTarget::Print
+            | CallTarget::Min
+            | CallTarget::Max
+            | CallTarget::Sort { .. }
+            | CallTarget::SortBy { .. }
+            | CallTarget::BinarySearch { .. } => unreachable!(),
+        }
+    }
+
+    fn emit_option_pointer(
+        &mut self,
+        option_ty: Ty,
+        pointer: &str,
+        present: &str,
+        payload_ty: Ty,
+    ) -> String {
+        let some_label = self.new_label("option.ptr.some");
+        let none_label = self.new_label("option.ptr.none");
+        let merge = self.new_label("option.ptr.end");
+        self.terminate(format!(
+            "br i1 {present}, label %{some_label}, label %{none_label}"
+        ));
+        self.start_block(&some_label);
+        let some_value =
+            self.emit_construct_values(option_ty, 0, vec![(payload_ty, pointer.to_owned())]);
+        let some_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&none_label);
+        let none_value = self.emit_construct_values(option_ty, 1, Vec::new());
+        let none_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&merge);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi {} [ {some_value}, %{some_pred} ], [ {none_value}, %{none_pred} ]",
+            self.lltype(option_ty)
+        ));
+        result
+    }
+
+    fn emit_capability_call_to(
+        &mut self,
+        destination: &str,
+        _expr: &TExpr,
+        target: &CallTarget,
+        args: &[TExpr],
+    ) {
+        if matches!(target, CallTarget::FsJoin) {
+            let fs = self.emit_expr(&args[0]);
+            let (dir, dir_is_arg, dir_capacity) = self.emit_io_bytes_argument(&args[1]);
+            let (name, name_is_arg, name_capacity) = self.emit_io_bytes_argument(&args[2]);
+            self.instruction(format!("call void @nl_fs_join(ptr {fs}, ptr {dir}, i32 {dir_is_arg}, i64 {dir_capacity}, ptr {name}, i32 {name_is_arg}, i64 {name_capacity}, ptr {destination})"));
         }
     }
 
@@ -9022,6 +9630,16 @@ impl<'a> FunctionEmitter<'a> {
             TExprKind::Unit => String::new(),
             TExprKind::Integer(value) => value.to_string(),
             TExprKind::Bool(value) => if *value { "true" } else { "false" }.to_owned(),
+            TExprKind::ByteString(bytes) => {
+                let pointer = self.entry_alloca(expr.ty);
+                self.emit_byte_string_to(&pointer, expr.ty, bytes);
+                let value = self.temp();
+                self.instruction(format!(
+                    "{value} = load {}, ptr {pointer}, align 1",
+                    self.lltype(expr.ty)
+                ));
+                value
+            }
             TExprKind::Local(id) => {
                 if let Some(view) = self.views.get(id).cloned() {
                     let index = self.temp();

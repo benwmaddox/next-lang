@@ -50,10 +50,10 @@ fn main() {
     print(mapped(11, 12))
 
     print(global_add(13, 14))
-    let print_allowed: fn(int) -> int effects print = increment
+    let print_allowed: fn(int) -> int effects out = increment
     print(print_allowed(14))
 
-    let printer: fn(int) -> int effects print = announce
+    let printer: fn(int) -> int effects out = announce
     print(printer(16))
     print(add == add)
     print(add == subtract)

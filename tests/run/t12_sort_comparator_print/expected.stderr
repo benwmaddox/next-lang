@@ -1,1 +1,1 @@
-main.nl:8:24: error: function 'noisy' has extra effect 'print'; a sort comparator must be pure
+main.nl:8:24: error: function 'noisy' has extra effect 'out'; a sort comparator must be pure

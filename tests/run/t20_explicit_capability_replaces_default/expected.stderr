@@ -1,0 +1,1 @@
+main.nl:2:5: error: package manifest must grant capability 'out' in the 'capabilities' key

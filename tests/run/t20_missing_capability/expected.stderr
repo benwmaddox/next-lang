@@ -1,0 +1,1 @@
+main.nl:3:13: error: function has no Fs capability; add an Fs parameter (or pass env.fs from main)

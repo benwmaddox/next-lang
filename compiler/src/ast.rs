@@ -35,7 +35,10 @@ pub struct FunctionTypeParamAst {
 
 #[derive(Clone, Debug)]
 pub enum FunctionEffectAst {
-    Print,
+    Out,
+    Env,
+    FsRead,
+    FsWrite,
     Reads { path: String, span: Span },
     Writes { path: String, span: Span },
 }
@@ -122,6 +125,7 @@ pub struct EnumCase {
 #[derive(Clone, Debug)]
 pub struct Test {
     pub name: String,
+    pub params: Vec<Param>,
     pub body: Block,
     pub span: Span,
 }
@@ -231,6 +235,7 @@ pub enum ExprKind {
         long_suffix: bool,
     },
     Bool(bool),
+    ByteString(Vec<u8>),
     Name(String),
     Call {
         name: String,

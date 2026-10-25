@@ -1,0 +1,1 @@
+main.nl:1:15: error: capabilities cannot be stored in globals; receive them through parameters and keep them in locals

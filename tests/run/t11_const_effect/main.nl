@@ -3,7 +3,7 @@ fn loud(value: int) -> int {
     value
 }
 
-fn invoke(callback: fn(int) -> int effects print, value: int) -> int {
+fn invoke(callback: fn(int) -> int effects out, value: int) -> int {
     callback(value)
 }
 

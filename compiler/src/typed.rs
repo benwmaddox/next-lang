@@ -84,6 +84,7 @@ pub enum TTypeKind {
         effects: TFunctionEffects,
         data_stack_requirement: u64,
     },
+    Capability(CapabilityKind),
     Id {
         owner: usize,
     },
@@ -102,9 +103,21 @@ pub struct TFunctionTypeParam {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct TFunctionEffects {
-    pub print: bool,
+    pub out: bool,
+    pub env: bool,
+    pub fs_read: bool,
+    pub fs_write: bool,
     pub reads: Vec<String>,
     pub writes: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CapabilityKind {
+    Env,
+    Fs,
+    Out,
+    Arg,
+    Args,
 }
 
 #[derive(Clone, Debug)]
@@ -200,6 +213,7 @@ pub struct TProgram {
     pub job_headroom_bytes: u64,
     pub globals_budget_bytes: u64,
     pub recursion_budget_bytes: u64,
+    pub capabilities: Vec<String>,
     pub files: Vec<String>,
     pub call_graph: Vec<Vec<TCallEdge>>,
     pub function_type_targets: Vec<Vec<usize>>,
@@ -441,6 +455,22 @@ pub struct TExpr {
 pub enum CallTarget {
     Function(usize),
     Print,
+    EnvArgs,
+    EnvFs,
+    EnvOut,
+    EnvErr,
+    ArgsCount,
+    ArgsGet,
+    ArgLength,
+    ArgByte,
+    FsRead,
+    FsList,
+    FsWrite,
+    FsJoin,
+    OutWrite,
+    OutLine,
+    OutInt,
+    OutLong,
     Min,
     Max,
     Sort {
@@ -539,6 +569,7 @@ pub enum TExprKind {
     Unit,
     Integer(i128),
     Bool(bool),
+    ByteString(Vec<u8>),
     Local(usize),
     Global(usize),
     Constant(usize),
@@ -685,7 +716,13 @@ pub fn llvm_type(ty: Ty, types: &[TType]) -> String {
         Ty::Long => "i64".to_owned(),
         Ty::Bool => "i1".to_owned(),
         Ty::Unit | Ty::Never => "void".to_owned(),
-        _ if matches!(types[ty.0].kind, TTypeKind::Function { .. }) => "ptr".to_owned(),
+        _ if matches!(
+            types[ty.0].kind,
+            TTypeKind::Function { .. } | TTypeKind::Capability(_)
+        ) =>
+        {
+            "ptr".to_owned()
+        }
         Ty(id) => {
             debug_assert!(id < types.len());
             format!("%nl.ty.{id}")

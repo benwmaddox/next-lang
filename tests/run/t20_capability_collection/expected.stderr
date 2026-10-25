@@ -1,0 +1,1 @@
+main.nl:2:17: error: capabilities cannot be stored in structs, enums, or collections; pass them as parameters and keep them in locals

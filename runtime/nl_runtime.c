@@ -5,7 +5,13 @@
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <signal.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <linux/openat2.h>
 
 #if defined(__linux__)
 #include <sys/mman.h>
@@ -16,6 +22,7 @@
 static const char **nl_files;
 static size_t nl_file_capacity;
 static int nl_test_mode;
+static int nl_print_fd = STDOUT_FILENO;
 
 typedef struct {
     void *mapping;
@@ -29,6 +36,7 @@ typedef struct {
 } nl_data_stack_context;
 
 _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col);
+static int nl_write_all(int fd, const unsigned char *bytes, uint64_t length);
 
 static void nl_stack_startup_failure(const char *message) {
     fprintf(stderr, "nlc: data stack startup failure: %s\n", message);
@@ -554,6 +562,7 @@ _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col)
         case 17: message = "binary_search requires sorted input"; break;
         case 18: message = "data stack exhausted"; break;
         case 19: message = "recursion budget exhausted"; break;
+        case 20: message = "standard output write failed"; break;
     }
     fprintf(stderr, "%s:%d:%d: %s\n", file, line, col, message);
     exit(nl_test_mode ? 70 : 1);
@@ -573,27 +582,535 @@ void nl_expect_fail_compare(int32_t file_id, int32_t line, int32_t col,
     }
     printf("  %s:%d:%d: %s\n    left:  %s\n    right: %s\n",
            nl_file_name(file_id), line, col, source, left_text, right_text);
+    (void)fflush(stdout);
 }
 
 void nl_expect_fail_bool(int32_t file_id, int32_t line, int32_t col,
                          const char *source) {
     printf("  %s:%d:%d: %s\n    value: false\n",
            nl_file_name(file_id), line, col, source);
+    (void)fflush(stdout);
 }
 
-void nl_print_int(int32_t value) { printf("%d\n", value); }
-void nl_print_long(int64_t value) { printf("%lld\n", (long long)value); }
-void nl_print_bool(_Bool value) { puts(value ? "true" : "false"); }
+static void nl_print_bytes(const unsigned char *bytes, uint64_t length) {
+    if (nl_write_all(nl_print_fd, bytes, length) != 0) nl_fail(20, -1, 0, 0);
+}
 
-void nl_print_int_raw(int32_t value) { printf("%d", value); }
-void nl_print_long_raw(int64_t value) { printf("%lld", (long long)value); }
-void nl_print_bool_raw(_Bool value) { fputs(value ? "true" : "false", stdout); }
-void nl_print_text(const char *value) { fputs(value, stdout); }
-void nl_print_newline(void) { putchar('\n'); }
+void nl_print_set_fd(int32_t fd) {
+    if (fd == STDOUT_FILENO || fd == STDERR_FILENO) nl_print_fd = fd;
+}
+
+void nl_print_error_prefix(void) {
+    static const unsigned char prefix[] = "error: ";
+    if (nl_write_all(STDERR_FILENO, prefix, sizeof(prefix) - 1) != 0) nl_fail(20, -1, 0, 0);
+}
+
+void nl_print_int(int32_t value) {
+    char buffer[32];
+    int length = snprintf(buffer, sizeof(buffer), "%d\n", value);
+    if (length < 0 || (size_t)length >= sizeof(buffer)) nl_fail(20, -1, 0, 0);
+    nl_print_bytes((const unsigned char *)buffer, (uint64_t)length);
+}
+
+void nl_print_long(int64_t value) {
+    char buffer[32];
+    int length = snprintf(buffer, sizeof(buffer), "%lld\n", (long long)value);
+    if (length < 0 || (size_t)length >= sizeof(buffer)) nl_fail(20, -1, 0, 0);
+    nl_print_bytes((const unsigned char *)buffer, (uint64_t)length);
+}
+
+void nl_print_bool(_Bool value) {
+    static const unsigned char yes[] = "true\n";
+    static const unsigned char no[] = "false\n";
+    nl_print_bytes(value ? yes : no, value ? sizeof(yes) - 1 : sizeof(no) - 1);
+}
+
+void nl_print_int_raw(int32_t value) {
+    char buffer[32];
+    int length = snprintf(buffer, sizeof(buffer), "%d", value);
+    if (length < 0 || (size_t)length >= sizeof(buffer)) nl_fail(20, -1, 0, 0);
+    nl_print_bytes((const unsigned char *)buffer, (uint64_t)length);
+}
+
+void nl_print_long_raw(int64_t value) {
+    char buffer[32];
+    int length = snprintf(buffer, sizeof(buffer), "%lld", (long long)value);
+    if (length < 0 || (size_t)length >= sizeof(buffer)) nl_fail(20, -1, 0, 0);
+    nl_print_bytes((const unsigned char *)buffer, (uint64_t)length);
+}
+
+void nl_print_bool_raw(_Bool value) {
+    static const unsigned char yes[] = "true";
+    static const unsigned char no[] = "false";
+    nl_print_bytes(value ? yes : no, value ? sizeof(yes) - 1 : sizeof(no) - 1);
+}
+
+void nl_print_text(const char *value) {
+    if (value) nl_print_bytes((const unsigned char *)value, (uint64_t)strlen(value));
+}
+
+void nl_print_newline(void) {
+    static const unsigned char newline = '\n';
+    nl_print_bytes(&newline, 1);
+}
 
 void nl_expect_fail_header(int32_t file_id, int32_t line, int32_t col,
                            const char *source) {
     printf("  %s:%d:%d: %s\n", nl_file_name(file_id), line, col, source);
+    (void)fflush(stdout);
 }
-void nl_expect_fail_left(void) { fputs("    left:  ", stdout); }
-void nl_expect_fail_right(void) { fputs("    right: ", stdout); }
+void nl_expect_fail_left(void) {
+    fputs("    left:  ", stdout);
+    (void)fflush(stdout);
+}
+void nl_expect_fail_right(void) {
+    fputs("    right: ", stdout);
+    (void)fflush(stdout);
+}
+
+typedef struct { int root_fd; } nl_fs_handle;
+typedef struct { int fd; } nl_out_handle;
+typedef struct { int argc; char **argv; } nl_args_view;
+typedef struct {
+    int capabilities;
+    int root_fd;
+    char *test_directory;
+    nl_fs_handle fs;
+    nl_out_handle out[2];
+    nl_args_view args;
+} nl_environment;
+
+static void nl_io_error(void *result, int error_tag, int error_code) {
+    unsigned char *bytes = (unsigned char *)result;
+    memset(bytes, 0, 12);
+    int32_t *words = (int32_t *)bytes;
+    words[0] = error_tag < 0 ? 0 : 1;
+    if (error_tag >= 0) {
+        words[1] = error_tag;
+        if (error_tag == 7) words[2] = error_code;
+    }
+}
+
+static int nl_errno_error(int error) {
+    if (error == ENOENT) return 0;
+    if (error == EACCES || error == EPERM || error == EROFS) return 1;
+    if (error == EXDEV || error == ELOOP) return 6;
+    return 7;
+}
+
+static void nl_args_startup_failure(const char *message) {
+    fprintf(stderr, "nlc: startup argument failure: %s\n", message);
+    exit(1);
+}
+
+static void nl_remove_tree(const char *path) {
+    DIR *directory = opendir(path);
+    if (!directory) {
+        unlink(path);
+        return;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        size_t length = strlen(path) + strlen(entry->d_name) + 2;
+        char *child = (char *)malloc(length);
+        if (!child) continue;
+        snprintf(child, length, "%s/%s", path, entry->d_name);
+        struct stat status;
+        if (lstat(child, &status) == 0 && S_ISDIR(status.st_mode)) nl_remove_tree(child);
+        else unlink(child);
+        free(child);
+    }
+    closedir(directory);
+    rmdir(path);
+}
+
+void *nl_env_create(int argc, char **argv, int capabilities) {
+    nl_environment *environment = (nl_environment *)calloc(1, sizeof(nl_environment));
+    if (!environment) nl_stack_startup_failure("cannot allocate capability environment");
+    environment->capabilities = capabilities;
+    (void)signal(SIGPIPE, SIG_IGN);
+    environment->root_fd = -1;
+    environment->fs.root_fd = -1;
+    environment->args.argv = argv;
+    for (int i = 1; i < argc; ++i) {
+        if (environment->args.argc == 64) nl_args_startup_failure("more than 64 program arguments were supplied");
+        size_t length = strlen(argv[i]);
+        if (length > 4096) nl_args_startup_failure("a program argument is longer than 4096 bytes");
+        environment->args.argc++;
+    }
+#if defined(NLC_TEST_BUILD)
+    char temporary[] = "/tmp/next-lang-test-XXXXXX";
+    char *directory = mkdtemp(temporary);
+    if (!directory) nl_stack_startup_failure("cannot create the test file-system root");
+    environment->test_directory = strdup(directory);
+    if (!environment->test_directory) nl_stack_startup_failure("cannot save the test file-system root");
+    environment->root_fd = open(directory, O_PATH | O_DIRECTORY | O_CLOEXEC);
+#else
+    environment->root_fd = open(".", O_PATH | O_DIRECTORY | O_CLOEXEC);
+#endif
+    if (environment->root_fd < 0) nl_stack_startup_failure("cannot open the file-system root");
+    environment->fs.root_fd = environment->root_fd;
+    environment->out[0].fd = STDOUT_FILENO;
+    environment->out[1].fd = STDERR_FILENO;
+    return environment;
+}
+
+void nl_env_destroy(void *value) {
+    nl_environment *environment = (nl_environment *)value;
+    if (!environment) return;
+    if (environment->root_fd >= 0) close(environment->root_fd);
+    if (environment->test_directory) {
+        nl_remove_tree(environment->test_directory);
+        free(environment->test_directory);
+    }
+    free(environment);
+}
+
+void *nl_env_args(void *value) { return &((nl_environment *)value)->args; }
+void *nl_env_fs(void *value) { return &((nl_environment *)value)->fs; }
+void *nl_env_out(void *value, int fd) {
+    nl_environment *environment = (nl_environment *)value;
+    return &environment->out[fd == STDERR_FILENO ? 1 : 0];
+}
+int64_t nl_args_count(void *value) { return ((nl_args_view *)value)->argc; }
+void *nl_args_get(void *value, int64_t index) {
+    nl_args_view *args = (nl_args_view *)value;
+    if (index < 0 || index >= args->argc) return NULL;
+    return args->argv[index + 1];
+}
+int64_t nl_arg_length(void *value) { return value ? (int64_t)strlen((const char *)value) : 0; }
+int32_t nl_arg_byte(void *value, int64_t index) {
+    if (!value || index < 0) return -1;
+    const unsigned char *argument = (const unsigned char *)value;
+    size_t length = strlen((const char *)value);
+    return (uint64_t)index < length ? (int32_t)argument[index] : -1;
+}
+
+static int nl_extract_path(const void *value, int is_argument, uint64_t capacity,
+                           char output[4097], int *error_tag, int *error_code) {
+    uint64_t length;
+    if (is_argument) {
+        if (!value) { *error_tag = 0; return 0; }
+        length = strlen((const char *)value);
+        if (length > 4096) { *error_tag = 2; return 0; }
+        memcpy(output, value, (size_t)length);
+    } else {
+        if (!value) { *error_tag = 5; return 0; }
+        int64_t count = *(const int64_t *)value;
+        if (count < 0 || (uint64_t)count > capacity) { *error_tag = 5; return 0; }
+        length = (uint64_t)count;
+        if (length > 4096) { *error_tag = 2; return 0; }
+        const int32_t *items = (const int32_t *)((const unsigned char *)value + 8);
+        for (uint64_t i = 0; i < length; ++i) {
+            if (items[i] == 0) { *error_tag = 5; return 0; }
+            if (items[i] < 0 || items[i] > 255) { *error_tag = 7; *error_code = EINVAL; return 0; }
+            output[i] = (char)items[i];
+        }
+    }
+    output[length] = 0;
+    if (length && output[0] == '/') { *error_tag = 6; return 0; }
+    if (!length) memcpy(output, ".", 2);
+    return 1;
+}
+
+static int nl_extract_raw(const void *value, int is_argument, uint64_t capacity,
+                          unsigned char scratch[4096],
+                          const unsigned char **bytes, uint64_t *length,
+                          int *error_tag, int *error_code) {
+    if (is_argument) {
+        if (!value) { *error_tag = 0; return 0; }
+        *bytes = (const unsigned char *)value;
+        *length = strlen((const char *)value);
+        return 1;
+    }
+    if (!value) { *error_tag = 5; return 0; }
+    int64_t count = *(const int64_t *)value;
+    if (count < 0 || (uint64_t)count > capacity) { *error_tag = 5; return 0; }
+    if ((uint64_t)count > 4096) { *error_tag = 2; return 0; }
+    const int32_t *items = (const int32_t *)((const unsigned char *)value + 8);
+    for (int64_t i = 0; i < count; ++i) {
+        if (items[i] < 0 || items[i] > 255) { *error_tag = 7; *error_code = EINVAL; return 0; }
+        scratch[i] = (unsigned char)items[i];
+    }
+    *bytes = scratch;
+    *length = (uint64_t)count;
+    return 1;
+}
+
+static int nl_open_beneath(int root_fd, const char *path, int flags, mode_t mode) {
+#if defined(__linux__) && defined(SYS_openat2)
+    struct open_how how;
+    memset(&how, 0, sizeof(how));
+    how.flags = (uint64_t)flags;
+    how.mode = (uint64_t)mode;
+    how.resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS;
+    return (int)syscall(SYS_openat2, root_fd, path, &how, sizeof(how));
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+static int nl_write_all(int fd, const unsigned char *bytes, uint64_t length) {
+    uint64_t written = 0;
+    while (written < length) {
+        size_t chunk = length - written > (uint64_t)SSIZE_MAX ? (size_t)SSIZE_MAX : (size_t)(length - written);
+        ssize_t result = write(fd, bytes + written, chunk);
+        if (result < 0 && errno == EINTR) continue;
+        if (result <= 0) return errno ? errno : EIO;
+        written += (uint64_t)result;
+    }
+    return 0;
+}
+
+static int nl_write_byte_list(int fd, const void *value, uint64_t capacity) {
+    if (!value) return EINVAL;
+    int64_t count = *(const int64_t *)value;
+    if (count < 0 || (uint64_t)count > capacity) return EINVAL;
+    const int32_t *items = (const int32_t *)((const unsigned char *)value + 8);
+    unsigned char scratch[8192];
+    uint64_t offset = 0;
+    while (offset < (uint64_t)count) {
+        size_t amount = (size_t)(((uint64_t)count - offset) < sizeof(scratch) ? ((uint64_t)count - offset) : sizeof(scratch));
+        for (size_t i = 0; i < amount; ++i) {
+            int32_t byte = items[offset + i];
+            if (byte < 0 || byte > 255) return EINVAL;
+            scratch[i] = (unsigned char)byte;
+        }
+        int error = nl_write_all(fd, scratch, amount);
+        if (error) return error;
+        offset += amount;
+    }
+    return 0;
+}
+
+void nl_fs_read(void *handle, void *path_value, int path_is_argument, uint64_t path_capacity,
+                void *buffer, uint64_t capacity, void *result) {
+    int error_tag = -1, error_code = 0;
+    char path[4097];
+    if (!nl_extract_path(path_value, path_is_argument, path_capacity, path, &error_tag, &error_code)) {
+        if (buffer && capacity <= (SIZE_MAX - 8) / 4) memset(buffer, 0, 8 + (size_t)capacity * 4);
+        nl_io_error(result, error_tag, error_code); return;
+    }
+    if (capacity > (SIZE_MAX - 8) / 4 || !buffer) {
+        nl_io_error(result, 2, 0); return;
+    }
+    memset(buffer, 0, 8 + (size_t)capacity * 4);
+    int fd = nl_open_beneath(((nl_fs_handle *)handle)->root_fd, path, O_RDONLY | O_CLOEXEC, 0);
+    if (fd < 0) { int error = errno; nl_io_error(result, nl_errno_error(error), error); return; }
+    int32_t *items = (int32_t *)((unsigned char *)buffer + 8);
+    unsigned char scratch[8192];
+    uint64_t total = 0;
+    int failure = 0;
+    while (total < capacity) {
+        size_t amount = (size_t)((capacity - total) < sizeof(scratch) ? capacity - total : sizeof(scratch));
+        ssize_t got = read(fd, scratch, amount);
+        if (got < 0 && errno == EINTR) continue;
+        if (got < 0) { failure = errno; break; }
+        if (got == 0) break;
+        for (ssize_t i = 0; i < got; ++i) items[total + (uint64_t)i] = scratch[i];
+        total += (uint64_t)got;
+    }
+    if (!failure && total == capacity) {
+        unsigned char extra;
+        for (;;) {
+            ssize_t got = read(fd, &extra, 1);
+            if (got < 0 && errno == EINTR) continue;
+            if (got < 0) failure = errno;
+            else if (got > 0) error_tag = 2;
+            break;
+        }
+    }
+    close(fd);
+    if (failure || error_tag == 2) {
+        memset(buffer, 0, 8 + (size_t)capacity * 4);
+        nl_io_error(result, error_tag == 2 ? 2 : nl_errno_error(failure), failure);
+        return;
+    }
+    *(int64_t *)buffer = (int64_t)total;
+    nl_io_error(result, -1, 0);
+}
+
+typedef struct { char *name; size_t length; int kind; } nl_dir_item;
+static int nl_dir_compare(const void *left_value, const void *right_value) {
+    const nl_dir_item *left = (const nl_dir_item *)left_value;
+    const nl_dir_item *right = (const nl_dir_item *)right_value;
+    size_t common = left->length < right->length ? left->length : right->length;
+    int comparison = memcmp(left->name, right->name, common);
+    if (comparison) return comparison;
+    return left->length < right->length ? -1 : left->length > right->length;
+}
+
+void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t path_capacity,
+                void *output, uint64_t capacity, void *result) {
+    int error_tag = -1, error_code = 0;
+    char path[4097];
+    if (capacity > (SIZE_MAX - 8) / 16396 || !output) { nl_io_error(result, 3, 0); return; }
+    memset(output, 0, 8 + (size_t)capacity * 16396);
+    if (!nl_extract_path(path_value, path_is_argument, path_capacity, path, &error_tag, &error_code)) {
+        nl_io_error(result, error_tag, error_code); return;
+    }
+    int fd = nl_open_beneath(((nl_fs_handle *)handle)->root_fd, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
+    if (fd < 0) { int error = errno; nl_io_error(result, nl_errno_error(error), error); return; }
+    DIR *directory = fdopendir(fd);
+    if (!directory) { int error = errno; close(fd); nl_io_error(result, nl_errno_error(error), error); return; }
+    size_t allocated = capacity < 64 ? (size_t)capacity + 1 : 65;
+    if (allocated == 0) allocated = 1;
+    nl_dir_item *items = (nl_dir_item *)calloc(allocated, sizeof(nl_dir_item));
+    if (!items) { closedir(directory); nl_io_error(result, 7, ENOMEM); return; }
+    size_t count = 0;
+    int failure_tag = -1, failure_code = 0;
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        size_t length = strlen(entry->d_name);
+        if (length > 4096) { failure_tag = 4; break; }
+        if ((uint64_t)count >= capacity) { failure_tag = 3; break; }
+        if (count >= allocated) {
+            size_t next = allocated * 2;
+            if (next > (size_t)capacity + 1) next = (size_t)capacity + 1;
+            nl_dir_item *grown = (nl_dir_item *)realloc(items, next * sizeof(nl_dir_item));
+            if (!grown) { failure_tag = 7; failure_code = ENOMEM; break; }
+            memset(grown + allocated, 0, (next - allocated) * sizeof(nl_dir_item));
+            items = grown; allocated = next;
+        }
+        items[count].name = strdup(entry->d_name);
+        if (!items[count].name) { failure_tag = 7; failure_code = ENOMEM; break; }
+        items[count].length = length;
+        struct stat status;
+        if (fstatat(dirfd(directory), entry->d_name, &status, AT_SYMLINK_NOFOLLOW) != 0) {
+            failure_tag = nl_errno_error(errno); failure_code = errno; break;
+        }
+        items[count].kind = S_ISREG(status.st_mode) ? 0 : S_ISDIR(status.st_mode) ? 1 : 2;
+        count++;
+    }
+    closedir(directory);
+    if (failure_tag < 0) qsort(items, count, sizeof(nl_dir_item), nl_dir_compare);
+    if (failure_tag >= 0) {
+        for (size_t i = 0; i < count; ++i) free(items[i].name);
+        free(items);
+        nl_io_error(result, failure_tag, failure_code); return;
+    }
+    *(int64_t *)output = (int64_t)count;
+    unsigned char *base = (unsigned char *)output;
+    for (size_t i = 0; i < count; ++i) {
+        unsigned char *name = base + 8 + i * 16392;
+        *(int64_t *)name = (int64_t)items[i].length;
+        int32_t *bytes = (int32_t *)(name + 8);
+        for (size_t j = 0; j < items[i].length; ++j) bytes[j] = (unsigned char)items[i].name[j];
+        int32_t *kind = (int32_t *)(base + 8 + (size_t)capacity * 16392 + i * 4);
+        *kind = items[i].kind;
+        free(items[i].name);
+    }
+    free(items);
+    nl_io_error(result, -1, 0);
+}
+
+void nl_fs_write(void *handle, void *path_value, int path_is_argument, uint64_t path_capacity,
+                 void *data_value, int data_is_argument, uint64_t data_capacity, void *result) {
+    int error_tag = -1, error_code = 0;
+    char path[4097];
+    if (!nl_extract_path(path_value, path_is_argument, path_capacity, path, &error_tag, &error_code)) {
+        nl_io_error(result, error_tag, error_code); return;
+    }
+    int fd = nl_open_beneath(((nl_fs_handle *)handle)->root_fd, path,
+                             O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+    if (fd < 0) { int error = errno; nl_io_error(result, nl_errno_error(error), error); return; }
+    int failure = 0;
+    if (data_is_argument) {
+        const unsigned char *bytes; uint64_t length;
+        unsigned char scratch[4096];
+        if (nl_extract_raw(data_value, 1, data_capacity, scratch, &bytes, &length, &error_tag, &error_code)) failure = nl_write_all(fd, bytes, length);
+        else failure = error_code ? error_code : EINVAL;
+    } else {
+        failure = nl_write_byte_list(fd, data_value, data_capacity);
+    }
+    if (close(fd) != 0 && !failure) failure = errno;
+    nl_io_error(result, failure ? nl_errno_error(failure) : -1, failure);
+}
+
+static int nl_join_path(void *dir_value, int dir_is_argument, uint64_t dir_capacity,
+                        void *name_value, int name_is_argument, uint64_t name_capacity,
+                        unsigned char output[4096], uint64_t *output_length,
+                        int *error_tag, int *error_code) {
+    const unsigned char *dir_bytes, *name_bytes; uint64_t dir_length, name_length;
+    unsigned char dir_scratch[4096], name_scratch[4096];
+    if (!nl_extract_raw(dir_value, dir_is_argument, dir_capacity, dir_scratch, &dir_bytes, &dir_length, error_tag, error_code)) return 0;
+    if (!nl_extract_raw(name_value, name_is_argument, name_capacity, name_scratch, &name_bytes, &name_length, error_tag, error_code)) return 0;
+    if ((dir_length && dir_bytes[0] == '/') || (name_length && name_bytes[0] == '/')) { *error_tag = 6; return 0; }
+    uint64_t length = dir_length + name_length + (dir_length && name_length && dir_bytes[dir_length - 1] != '/' ? 1 : 0);
+    if (length > 4096) { *error_tag = 2; return 0; }
+    uint64_t index = 0;
+    if (dir_length) { memcpy(output, dir_bytes, (size_t)dir_length); index = dir_length; }
+    if (index && name_length && output[index - 1] != '/') output[index++] = '/';
+    if (name_length) { memcpy(output + index, name_bytes, (size_t)name_length); index += name_length; }
+    int depth = 0;
+    for (uint64_t i = 0; i < index;) {
+        while (i < index && output[i] == '/') ++i;
+        uint64_t start = i;
+        while (i < index && output[i] != '/') ++i;
+        uint64_t part = i - start;
+        if (!part || (part == 1 && output[start] == '.')) continue;
+        if (part == 2 && output[start] == '.' && output[start + 1] == '.') {
+            if (depth == 0) { *error_tag = 6; return 0; }
+            --depth;
+        } else ++depth;
+    }
+    for (uint64_t i = 0; i < index; ++i) if (output[i] == 0) { *error_tag = 5; return 0; }
+    *output_length = index;
+    return 1;
+}
+
+void nl_fs_join(void *handle, void *dir_value, int dir_is_argument, uint64_t dir_capacity,
+                void *name_value, int name_is_argument, uint64_t name_capacity, void *result) {
+    (void)handle;
+    unsigned char joined[4096]; uint64_t length = 0; int error_tag = -1, error_code = 0;
+    memset(result, 0, 4 + 16392);
+    if (!nl_join_path(dir_value, dir_is_argument, dir_capacity, name_value, name_is_argument, name_capacity, joined, &length, &error_tag, &error_code)) {
+        int32_t *words = (int32_t *)result; words[0] = 1; words[1] = error_tag; if (error_tag == 7) words[2] = error_code; return;
+    }
+    int32_t *tag = (int32_t *)result; *tag = 0;
+    unsigned char *path = (unsigned char *)result + 4;
+    *(int64_t *)path = (int64_t)length;
+    int32_t *items = (int32_t *)(path + 8);
+    for (uint64_t i = 0; i < length; ++i) items[i] = joined[i];
+}
+
+void nl_out_write(void *handle, void *data_value, int data_is_argument, uint64_t data_capacity,
+                  int line, void *result) {
+    nl_out_handle *out = (nl_out_handle *)handle;
+    int error = 0;
+    if (data_is_argument) {
+        const unsigned char *bytes; uint64_t length; int tag = -1, code = 0;
+        unsigned char scratch[4096];
+        if (!nl_extract_raw(data_value, 1, data_capacity, scratch, &bytes, &length, &tag, &code)) error = code ? code : EINVAL;
+        else error = nl_write_all(out->fd, bytes, length);
+    } else error = nl_write_byte_list(out->fd, data_value, data_capacity);
+    if (!error && line) error = nl_write_all(out->fd, (const unsigned char *)"\n", 1);
+    nl_io_error(result, error ? nl_errno_error(error) : -1, error);
+}
+
+void nl_out_arg(void *handle, void *argument, int line, void *result) {
+    nl_out_handle *out = (nl_out_handle *)handle;
+    const unsigned char *bytes = argument ? (const unsigned char *)argument : (const unsigned char *)"";
+    int error = nl_write_all(out->fd, bytes, strlen((const char *)bytes));
+    if (!error && line) error = nl_write_all(out->fd, (const unsigned char *)"\n", 1);
+    nl_io_error(result, error ? nl_errno_error(error) : -1, error);
+}
+
+void nl_out_int(void *handle, int32_t value, void *result) {
+    char buffer[32]; int length = snprintf(buffer, sizeof(buffer), "%d", value);
+    int error = length < 0 ? EIO : nl_write_all(((nl_out_handle *)handle)->fd, (unsigned char *)buffer, (uint64_t)length);
+    nl_io_error(result, error ? nl_errno_error(error) : -1, error);
+}
+void nl_out_long(void *handle, int64_t value, void *result) {
+    char buffer[32]; int length = snprintf(buffer, sizeof(buffer), "%lld", (long long)value);
+    int error = length < 0 ? EIO : nl_write_all(((nl_out_handle *)handle)->fd, (unsigned char *)buffer, (uint64_t)length);
+    nl_io_error(result, error ? nl_errno_error(error) : -1, error);
+}
+void nl_print_arg(void *argument) {
+    if (!argument) return;
+    nl_print_bytes((const unsigned char *)argument, (uint64_t)strlen((const char *)argument));
+    nl_print_newline();
+}

@@ -14,10 +14,17 @@ fn main() -> ExitCode {
     };
     let rest = args.collect::<Vec<_>>();
     match command.as_str() {
-        "run" if !rest.is_empty() => match run_package_args(Path::new(&rest[0]), &rest[1..]) {
-            Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
-            Err(error) => report_error(error),
-        },
+        "run" if !rest.is_empty() => {
+            let arguments = if rest.get(1).is_some_and(|arg| arg == "--") {
+                &rest[2..]
+            } else {
+                &rest[1..]
+            };
+            match run_package_args(Path::new(&rest[0]), arguments) {
+                Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+                Err(error) => report_error(error),
+            }
+        }
         "test" if rest.len() == 1 => match test_package(Path::new(&rest[0])) {
             Ok(code) => ExitCode::from(code),
             Err(error) => report_error(error),

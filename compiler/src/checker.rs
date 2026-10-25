@@ -68,14 +68,16 @@ pub fn check_package(
     programs: Vec<Program>,
     files: Vec<String>,
     require_main: bool,
+    package_capabilities: std::collections::HashSet<String>,
 ) -> Result<TProgram, CheckError> {
-    Checker::new(programs, files, require_main).run()
+    Checker::new(programs, files, require_main, package_capabilities).run()
 }
 
 struct Checker {
     programs: Vec<Program>,
     files: Vec<String>,
     require_main: bool,
+    package_capabilities: std::collections::HashSet<String>,
     signatures: HashMap<String, Signature>,
     function_signatures: HashMap<usize, Signature>,
     generic_functions: HashMap<String, Function>,
@@ -144,11 +146,17 @@ struct Checker {
 }
 
 impl Checker {
-    fn new(programs: Vec<Program>, files: Vec<String>, require_main: bool) -> Self {
+    fn new(
+        programs: Vec<Program>,
+        files: Vec<String>,
+        require_main: bool,
+        package_capabilities: std::collections::HashSet<String>,
+    ) -> Self {
         let mut checker = Self {
             programs,
             files,
             require_main,
+            package_capabilities,
             signatures: HashMap::new(),
             function_signatures: HashMap::new(),
             generic_functions: HashMap::new(),
@@ -252,6 +260,130 @@ impl Checker {
             span: Span::default(),
         });
         checker.type_ids.insert("Full".to_owned(), full_ty);
+        let byte_ty = Ty(checker.types.len());
+        checker.types.push(TType {
+            name: "byte".to_owned(),
+            kind: TTypeKind::Refinement {
+                base: Ty::Int,
+                min: 0,
+                max: 255,
+                policy: RefinePolicy::Checked,
+            },
+            span: Span::default(),
+        });
+        checker.type_ids.insert("byte".to_owned(), byte_ty);
+        let io_error_ty = Ty(checker.types.len());
+        checker.types.push(TType {
+            name: "IoError".to_owned(),
+            kind: TTypeKind::Enum(vec![
+                TCase {
+                    name: "NotFound".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+                TCase {
+                    name: "NoPermission".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+                TCase {
+                    name: "TooLarge".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+                TCase {
+                    name: "TooMany".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+                TCase {
+                    name: "NameTooLong".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+                TCase {
+                    name: "BadPath".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+                TCase {
+                    name: "Outside".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+                TCase {
+                    name: "Other".to_owned(),
+                    payload: vec![Ty::Int],
+                    span: Span::default(),
+                },
+            ]),
+            span: Span::default(),
+        });
+        checker.type_ids.insert("IoError".to_owned(), io_error_ty);
+        let file_kind_ty = Ty(checker.types.len());
+        checker.types.push(TType {
+            name: "FileKind".to_owned(),
+            kind: TTypeKind::Enum(vec![
+                TCase {
+                    name: "File".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+                TCase {
+                    name: "Directory".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+                TCase {
+                    name: "Other".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+            ]),
+            span: Span::default(),
+        });
+        checker.type_ids.insert("FileKind".to_owned(), file_kind_ty);
+        for (name, capability) in [
+            ("Env", CapabilityKind::Env),
+            ("Fs", CapabilityKind::Fs),
+            ("Out", CapabilityKind::Out),
+            ("Arg", CapabilityKind::Arg),
+            ("Args", CapabilityKind::Args),
+        ] {
+            let ty = Ty(checker.types.len());
+            checker.types.push(TType {
+                name: name.to_owned(),
+                kind: TTypeKind::Capability(capability),
+                span: Span::default(),
+            });
+            checker.type_ids.insert(name.to_owned(), ty);
+        }
+        let path_ty = Ty(checker.types.len());
+        checker.types.push(TType {
+            name: "Path".to_owned(),
+            kind: TTypeKind::List {
+                element: byte_ty,
+                capacity: 4096,
+            },
+            span: Span::default(),
+        });
+        checker.type_ids.insert("Path".to_owned(), path_ty);
+        let dir_entry_ty = Ty(checker.types.len());
+        checker.types.push(TType {
+            name: "DirEntry".to_owned(),
+            kind: TTypeKind::Struct(vec![
+                TField {
+                    name: "name".to_owned(),
+                    ty: path_ty,
+                },
+                TField {
+                    name: "kind".to_owned(),
+                    ty: file_kind_ty,
+                },
+            ]),
+            span: Span::default(),
+        });
+        checker.type_ids.insert("DirEntry".to_owned(), dir_entry_ty);
         checker
     }
 
@@ -281,6 +413,9 @@ impl Checker {
                 }
                 let ty = self.parse_type(&constant.ty)?;
                 self.pending_owner = saved_pending;
+                if self.type_contains_capability(ty) {
+                    return Err(CheckError { span: constant.ty.span, message: "capabilities cannot be stored in constants; receive them through parameters".to_owned() });
+                }
                 if self.type_contains_pool(ty) {
                     return Err(CheckError {
                         span: constant.ty.span,
@@ -443,6 +578,15 @@ impl Checker {
             job_headroom_bytes: 256 * 1024 * 1024,
             globals_budget_bytes: 64 * 1024 * 1024,
             recursion_budget_bytes: 0,
+            capabilities: {
+                let mut capabilities = self
+                    .package_capabilities
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                capabilities.sort();
+                capabilities
+            },
             files: self.files,
             call_graph,
             function_type_targets,
@@ -1098,6 +1242,14 @@ impl Checker {
                         .to_owned(),
             });
         }
+        if self.type_contains_capability(result)
+            && !matches!(self.types[result.0].kind, TTypeKind::Capability(_))
+        {
+            return Err(CheckError {
+                span: ty.span,
+                message: "capabilities cannot be stored in structs, enums, or collections; pass them as parameters and keep them in locals".to_owned(),
+            });
+        }
         Ok(result)
     }
 
@@ -1132,7 +1284,10 @@ impl Checker {
         let mut effect_path_spans = Vec::new();
         for effect in &function.effects {
             match effect {
-                FunctionEffectAst::Print => effects.print = true,
+                FunctionEffectAst::Out => effects.out = true,
+                FunctionEffectAst::Env => effects.env = true,
+                FunctionEffectAst::FsRead => effects.fs_read = true,
+                FunctionEffectAst::FsWrite => effects.fs_write = true,
                 FunctionEffectAst::Reads { path, span } => {
                     if !effects.reads.contains(path) {
                         effects.reads.push(path.clone());
@@ -1183,8 +1338,17 @@ impl Checker {
             .collect::<Vec<_>>()
             .join(", ");
         let mut effect_text = Vec::new();
-        if effects.print {
-            effect_text.push("print".to_owned());
+        if effects.out {
+            effect_text.push("out".to_owned());
+        }
+        if effects.env {
+            effect_text.push("env".to_owned());
+        }
+        if effects.fs_read {
+            effect_text.push("fs.read".to_owned());
+        }
+        if effects.fs_write {
+            effect_text.push("fs.write".to_owned());
         }
         effect_text.extend(effects.reads.iter().map(|path| format!("reads {path}")));
         effect_text.extend(effects.writes.iter().map(|path| format!("writes {path}")));
@@ -1328,6 +1492,40 @@ impl Checker {
                 | TTypeKind::Queue { element, .. }
                 | TTypeKind::Ring { element, .. }
                 | TTypeKind::Grid { element, .. } => visit(checker, *element, seen),
+                TTypeKind::Map { key, value, .. } => {
+                    visit(checker, *key, seen) || visit(checker, *value, seen)
+                }
+                TTypeKind::Set { key, .. } => visit(checker, *key, seen),
+                _ => false,
+            }
+        }
+        visit(self, ty, &mut std::collections::HashSet::new())
+    }
+
+    fn type_contains_capability(&self, ty: Ty) -> bool {
+        fn visit(checker: &Checker, ty: Ty, seen: &mut std::collections::HashSet<Ty>) -> bool {
+            if !seen.insert(ty) {
+                return false;
+            }
+            match &checker.types[ty.0].kind {
+                TTypeKind::Capability(_) => true,
+                TTypeKind::Struct(fields) => {
+                    fields.iter().any(|field| visit(checker, field.ty, seen))
+                }
+                TTypeKind::Enum(cases) => cases
+                    .iter()
+                    .flat_map(|case| &case.payload)
+                    .any(|ty| visit(checker, *ty, seen)),
+                TTypeKind::Option(inner) => visit(checker, *inner, seen),
+                TTypeKind::Result(ok, err) => {
+                    visit(checker, *ok, seen) || visit(checker, *err, seen)
+                }
+                TTypeKind::Array { element, .. }
+                | TTypeKind::List { element, .. }
+                | TTypeKind::Queue { element, .. }
+                | TTypeKind::Ring { element, .. }
+                | TTypeKind::Grid { element, .. }
+                | TTypeKind::Pool { element, .. } => visit(checker, *element, seen),
                 TTypeKind::Map { key, value, .. } => {
                     visit(checker, *key, seen) || visit(checker, *value, seen)
                 }
@@ -2098,7 +2296,7 @@ impl Checker {
                 // occupied flags, generations, reusable-slot stack, active and free counts.
                 checked_add(16 + (*capacity as u128) * 9, payload)?
             }
-            TTypeKind::Id { .. } => 8,
+            TTypeKind::Id { .. } | TTypeKind::Capability(_) => 8,
             TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
                 let mut payload = 0u128;
                 for case in self.types[ty.0].cases() {
@@ -2131,6 +2329,24 @@ impl Checker {
 
     fn check_all_type_sizes(&self) -> Result<(), CheckError> {
         for (id, definition) in self.types.iter().enumerate().skip(5) {
+            if self.type_contains_capability(Ty(id)) {
+                match &definition.kind {
+                    TTypeKind::Struct(_)
+                    | TTypeKind::Enum(_)
+                    | TTypeKind::Option(_)
+                    | TTypeKind::Result(..)
+                    | TTypeKind::Array { .. }
+                    | TTypeKind::List { .. }
+                    | TTypeKind::Queue { .. }
+                    | TTypeKind::Ring { .. }
+                    | TTypeKind::Grid { .. }
+                    | TTypeKind::Map { .. }
+                    | TTypeKind::Set { .. } => {
+                        return Err(CheckError { span: definition.span, message: "capabilities cannot be stored in structs, enums, or collections; pass them as parameters and keep them in locals".to_owned() });
+                    }
+                    _ => {}
+                }
+            }
             if let TTypeKind::Array { element, .. }
             | TTypeKind::List { element, .. }
             | TTypeKind::Queue { element, .. }
@@ -2360,10 +2576,97 @@ impl Checker {
             });
         };
         let function = &self.ast_functions[sig.id];
-        if !sig.params.is_empty() || sig.result != Ty::Unit {
-            return Err(CheckError { span: function.span, message: "'main' must take no arguments and return (); change its signature to 'fn main()'".to_owned() });
+        let env_ty = self.type_ids["Env"];
+        let result_ok = if sig.result == Ty::Unit {
+            true
+        } else {
+            match &self.types[self.base_type(sig.result).0].kind {
+                TTypeKind::Result(ok, error) => *ok == Ty::Unit && self.is_printable_type(*error),
+                _ => false,
+            }
+        };
+        if !(sig.params.is_empty() || (sig.params.len() == 1 && sig.params[0].ty == env_ty))
+            || !result_ok
+        {
+            return Err(CheckError { span: function.span, message: "'main' must take no arguments or one Env parameter, and return () or Result<(), E> with a printable error; use 'fn main()' or 'fn main(env: Env)'".to_owned() });
         }
         Ok(())
+    }
+
+    fn is_printable_type(&self, ty: Ty) -> bool {
+        let ty = self.base_type(ty);
+        matches!(ty, Ty::Int | Ty::Long | Ty::Bool)
+            || self.types[ty.0].is_sum()
+            || matches!(
+                self.types[ty.0].kind,
+                TTypeKind::Struct(_)
+                    | TTypeKind::Array { .. }
+                    | TTypeKind::List { .. }
+                    | TTypeKind::Queue { .. }
+                    | TTypeKind::Ring { .. }
+                    | TTypeKind::Grid { .. }
+                    | TTypeKind::Map { .. }
+                    | TTypeKind::Set { .. }
+                    | TTypeKind::Pool { .. }
+                    | TTypeKind::Function { .. }
+            )
+    }
+
+    fn result_error_type(&self, ty: Ty) -> Option<Ty> {
+        match &self.types[self.base_type(ty).0].kind {
+            TTypeKind::Result(ok, error) if *ok == Ty::Unit => Some(*error),
+            _ => None,
+        }
+    }
+
+    fn require_handled_result(&self, expr: &TExpr, span: Span) -> Result<(), CheckError> {
+        let ty = self.base_type(expr.ty);
+        let TTypeKind::Result(_, error_ty) = &self.types[ty.0].kind else {
+            return Ok(());
+        };
+        if matches!(
+            &expr.kind,
+            TExprKind::CollectionOp {
+                op: CollectionOp::Push | CollectionOp::Insert,
+                proven_success: true,
+                ..
+            } | TExprKind::PoolOp {
+                op: PoolOp::Add,
+                proven_success: true,
+                ..
+            } | TExprKind::MapOp {
+                op: MapOp::Set,
+                proven_success: true,
+                ..
+            } | TExprKind::SetOp {
+                op: SetOp::Add,
+                proven_success: true,
+                ..
+            }
+        ) {
+            return Ok(());
+        }
+        let is_collection_result = matches!(
+            &expr.kind,
+            TExprKind::CollectionOp {
+                op: CollectionOp::Push | CollectionOp::Insert,
+                ..
+            } | TExprKind::PoolOp {
+                op: PoolOp::Add,
+                ..
+            } | TExprKind::MapOp { op: MapOp::Set, .. }
+                | TExprKind::SetOp { op: SetOp::Add, .. }
+        );
+        let full_ty = self.type_ids["Full"];
+        let message = if is_collection_result && *error_ty == full_ty {
+            "this collection operation returns a Result with error type Full; handle it with '?', 'match', or '??' where supported, or write 'discard' when dropping Full is intended"
+        } else {
+            "this Result value is unused; handle it with '?', 'match', or '??' where supported"
+        };
+        Err(CheckError {
+            span,
+            message: message.to_owned(),
+        })
     }
 
     fn check_function(&mut self, id: usize) -> Result<TFunction, CheckError> {
@@ -2552,6 +2855,9 @@ impl Checker {
             let ty = self.parse_type(&declaration.ty);
             self.pending_owner = saved_pending;
             let mut ty = ty?;
+            if self.type_contains_capability(ty) {
+                return Err(CheckError { span: declaration.ty.span, message: "capabilities cannot be stored in globals; receive them through parameters and keep them in locals".to_owned() });
+            }
             if self.type_contains_pool(ty) {
                 ty = self.localize_embedded_pool_owners(ty, &declaration.name, declaration.span)?;
             }
@@ -2606,12 +2912,21 @@ impl Checker {
             let mut effects = GlobalEffects::default();
             collect_global_expr_effects(&initializer, &mut effects, functions);
             close_global_effects(&mut effects, &function_effects);
-            if effects.prints {
+            if effects.out || effects.env || effects.fs_read || effects.fs_write {
                 return Err(CheckError {
                     span: declaration.value.span,
                     message: format!(
-                        "global '{}' initializer cannot call print or another effectful function",
-                        declaration.name
+                        "global '{}' initializer cannot use effect '{}'; initializers must be effect free",
+                        declaration.name,
+                        if effects.fs_read {
+                            "fs.read"
+                        } else if effects.fs_write {
+                            "fs.write"
+                        } else if effects.env {
+                            "env"
+                        } else {
+                            "out"
+                        }
                     ),
                 });
             }
@@ -2960,18 +3275,52 @@ impl Checker {
         self.next_scope = 1;
         self.scope_ids.clear();
         self.scope_ids.push(0);
+        let mut params = Vec::new();
+        if test.params.len() > 1
+            || test
+                .params
+                .iter()
+                .any(|param| param.ty.name != "Env" || param.mode != ParamMode::Read)
+        {
+            return Err(CheckError { span: test.span, message: "tests may take one read-only Env parameter; use 'test \"name\" (env: Env) { ... }'".to_owned() });
+        }
+        for param in &test.params {
+            let ty = self.parse_type(&param.ty)?;
+            let binding =
+                self.declare_mode(&param.name, ty, false, ParamMode::Read, param.span, false)?;
+            params.push(TParam {
+                id: binding.id,
+                name: binding.name,
+                ty,
+                mode: ParamMode::Read,
+                span: param.span,
+            });
+        }
         let body = self.check_block(&test.body, false, None)?;
+        let mut test_result = Ty::Unit;
         if body.falls_through {
             if let Some(tail) = &body.tail {
                 if tail.ty != Ty::Unit && tail.ty != Ty::Never {
-                    return Err(CheckError {
-                        span: tail.span,
-                        message: format!(
-                            "test '{}' ends with {}; remove the value or use it in a statement",
-                            test.name,
-                            self.type_name(tail.ty)
-                        ),
-                    });
+                    let Some(error_ty) = self.result_error_type(tail.ty) else {
+                        return Err(CheckError {
+                            span: tail.span,
+                            message: format!(
+                                "test '{}' ends with {}; remove the value or use it in a statement",
+                                test.name,
+                                self.type_name(tail.ty)
+                            ),
+                        });
+                    };
+                    if !self.is_printable_type(error_ty) {
+                        return Err(CheckError {
+                            span: tail.span,
+                            message: format!(
+                                "test '{}' returns a Result with an error type that cannot be printed",
+                                test.name
+                            ),
+                        });
+                    }
+                    test_result = tail.ty;
                 }
             }
         }
@@ -2981,8 +3330,8 @@ impl Checker {
             TFunction {
                 id,
                 name: format!("__nl_test_{index}"),
-                params: Vec::new(),
-                result: Ty::Unit,
+                params,
+                result: test_result,
                 body,
                 span: test.span,
                 is_test: true,
@@ -3047,9 +3396,9 @@ impl Checker {
                 if let Some(proven_success) = unhandled_collection {
                     if !proven_success {
                         let message = if matches!(&typed.kind, TExprKind::PoolOp { .. }) {
-                            "this pool add returns Result<Id, Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                            "this pool add returns Result<Id, Full>; handle it with '?', 'match', or '??' where supported, or write 'discard' when dropping Full is intended"
                         } else {
-                            "this collection operation returns Result<(), Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                            "this collection operation returns a Result with error type Full; handle it with '?', 'match', or '??' where supported, or write 'discard' when dropping Full is intended"
                         };
                         return Err(CheckError {
                             span: expr.span,
@@ -3062,6 +3411,7 @@ impl Checker {
                     });
                     None
                 } else {
+                    self.require_handled_result(&typed, expr.span)?;
                     Some(Box::new(self.coerce_store(typed, Ty::Unit)?))
                 }
             } else if let Some(target) = expected {
@@ -3093,9 +3443,9 @@ impl Checker {
                 };
                 if unhandled == Some(false) {
                     let message = if matches!(&typed.kind, TExprKind::PoolOp { .. }) {
-                        "this pool add returns Result<Id, Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                        "this pool add returns Result<Id, Full>; handle it with '?', 'match', or '??' where supported, or write 'discard' when dropping Full is intended"
                     } else {
-                        "this collection operation returns Result<(), Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                        "this collection operation returns a Result with error type Full; handle it with '?', 'match', or '??' where supported, or write 'discard' when dropping Full is intended"
                     };
                     return Err(CheckError {
                         span: expr.span,
@@ -3481,15 +3831,16 @@ impl Checker {
                         }
                     ) {
                         let message = if matches!(&typed.kind, TExprKind::PoolOp { .. }) {
-                            "this pool add returns Result<Id, Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                            "this pool add returns Result<Id, Full>; handle it with '?', 'match', or '??' where supported, or write 'discard' when dropping Full is intended"
                         } else {
-                            "this collection operation returns Result<(), Full>; handle it with match, '?', or unwrap(), or write 'discard' when dropping a full result is intended"
+                            "this collection operation returns a Result with error type Full; handle it with '?', 'match', or '??' where supported, or write 'discard' when dropping Full is intended"
                         };
                         return Err(CheckError {
                             span: expr.span,
                             message: message.to_owned(),
                         });
                     }
+                    self.require_handled_result(&typed, expr.span)?;
                     TStmtKind::Expr(typed)
                 }
             }
@@ -3534,6 +3885,9 @@ impl Checker {
                 self.loop_writes.push(loop_writes.clone());
                 self.loop_depth += 1;
                 let typed_body = self.check_block(body, true, None)?;
+                if let Some(tail) = typed_body.tail.as_deref() {
+                    self.require_handled_result(tail, tail.span)?;
+                }
                 let after_body_counts = self.collection_counts.clone();
                 self.loop_depth -= 1;
                 self.loop_writes.pop();
@@ -3731,6 +4085,9 @@ impl Checker {
                 }
                 self.loop_depth += 1;
                 let typed_body = self.check_block(body, true, None)?;
+                if let Some(tail) = typed_body.tail.as_deref() {
+                    self.require_handled_result(tail, tail.span)?;
+                }
                 let after_body_counts = self.collection_counts.clone();
                 self.loop_depth -= 1;
                 self.active_views.pop();
@@ -3831,7 +4188,13 @@ impl Checker {
                     kind,
                 }
             }
-            StmtKind::Block(block) => TStmtKind::Block(self.check_block(block, true, None)?),
+            StmtKind::Block(block) => {
+                let typed = self.check_block(block, true, None)?;
+                if let Some(tail) = typed.tail.as_deref() {
+                    self.require_handled_result(tail, tail.span)?;
+                }
+                TStmtKind::Block(typed)
+            }
         };
         Ok(TStmt {
             kind,
@@ -3910,6 +4273,7 @@ impl Checker {
             } => Some(Ty::Long),
             ExprKind::Integer { .. } => None,
             ExprKind::Bool(_) => Some(Ty::Bool),
+            ExprKind::ByteString(_) => None,
             ExprKind::Name(name) if shadowed_counter == Some(name.as_str()) => None,
             ExprKind::Name(name) if self.current_generic_capacities.contains_key(name) => {
                 let value = self.current_generic_capacities[name];
@@ -4186,6 +4550,7 @@ impl Checker {
                 }
             }
             ExprKind::Name(_) | ExprKind::Integer { .. } | ExprKind::Bool(_) | ExprKind::Unit => {}
+            ExprKind::ByteString(_) => {}
             ExprKind::Call { name, args, .. } => {
                 let parameters = self
                     .signatures
@@ -4585,6 +4950,372 @@ impl Checker {
         span: Span,
     ) -> Result<(TExprKind, Ty), CheckError> {
         let typed_collection = self.check_expr(receiver, None)?;
+        if let TTypeKind::Capability(kind) = self.types[typed_collection.ty.0].kind {
+            match kind {
+                CapabilityKind::Env if name == "args" => {
+                    if !args.is_empty() {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: "Env.args() takes no arguments".to_owned(),
+                        });
+                    }
+                    self.require_manifest_capability("env", method_span)?;
+                    let result = self.type_ids["Args"];
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::Call {
+                            target: CallTarget::EnvArgs,
+                            args: vec![typed_collection],
+                            effect: Effect::None,
+                        },
+                        result,
+                    ));
+                }
+                CapabilityKind::Args if name == "count" && args.is_empty() => {
+                    let result = Ty::Long;
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::Call {
+                            target: CallTarget::ArgsCount,
+                            args: vec![typed_collection],
+                            effect: Effect::None,
+                        },
+                        result,
+                    ));
+                }
+                CapabilityKind::Args if name == "get" => {
+                    if args.len() != 1 {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: "Args.get(index) takes one long index".to_owned(),
+                        });
+                    }
+                    let index = self.check_expr(&args[0], Some(Ty::Long))?;
+                    let result = self.option_type(self.type_ids["Arg"], method_span);
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::Call {
+                            target: CallTarget::ArgsGet,
+                            args: vec![typed_collection, index],
+                            effect: Effect::None,
+                        },
+                        result,
+                    ));
+                }
+                CapabilityKind::Arg if matches!(name, "count" | "len") && args.is_empty() => {
+                    let result = Ty::Long;
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::Call {
+                            target: CallTarget::ArgLength,
+                            args: vec![typed_collection],
+                            effect: Effect::None,
+                        },
+                        result,
+                    ));
+                }
+                CapabilityKind::Arg if name == "get" => {
+                    if args.len() != 1 {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: "Arg.get(index) takes one long index".to_owned(),
+                        });
+                    }
+                    let index = self.check_expr(&args[0], Some(Ty::Long))?;
+                    let result = self.option_type(self.type_ids["byte"], method_span);
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::Call {
+                            target: CallTarget::ArgByte,
+                            args: vec![typed_collection, index],
+                            effect: Effect::None,
+                        },
+                        result,
+                    ));
+                }
+                CapabilityKind::Fs => {
+                    self.require_manifest_capability("fs", method_span)?;
+                    let path = |checker: &mut Checker, expr: &Expr| -> Result<TExpr, CheckError> {
+                        if matches!(expr.kind, ExprKind::ByteString(_)) {
+                            return checker.check_expr(expr, Some(checker.type_ids["Path"]));
+                        }
+                        let typed = checker.check_expr(expr, None)?;
+                        if typed.ty == checker.type_ids["Arg"] || checker.is_byte_list(typed.ty) {
+                            Ok(typed)
+                        } else {
+                            Err(CheckError {
+                                span: expr.span,
+                                message: "filesystem paths must be Arg or a bounded byte list"
+                                    .to_owned(),
+                            })
+                        }
+                    };
+                    let io_error = self.type_ids["IoError"];
+                    match name {
+                        "read" => {
+                            if args.len() != 2 {
+                                return Err(CheckError {
+                                    span: method_span,
+                                    message:
+                                        "fs.read(path, buffer) takes a path and a write byte list"
+                                            .to_owned(),
+                                });
+                            }
+                            let typed_path = path(self, &args[0])?;
+                            let typed_buffer = self.check_expr(&args[1], None)?;
+                            if !self.is_byte_list(typed_buffer.ty) {
+                                return Err(CheckError {
+                                    span: args[1].span,
+                                    message: "fs.read buffer must be a bounded byte list"
+                                        .to_owned(),
+                                });
+                            }
+                            let place = self.resolve_place(&args[1]).map_err(|_| CheckError {
+                                span: args[1].span,
+                                message:
+                                    "fs.read buffer must be a mutable list passed by write mode"
+                                        .to_owned(),
+                            })?;
+                            if !self.place_is_mutable(&place) {
+                                return Err(CheckError { span: args[1].span, message: "fs.read buffer must be mutable; use var or a write parameter".to_owned() });
+                            }
+                            let result = self.intern_generic(
+                                2,
+                                Ty::Unit,
+                                io_error,
+                                "Result<(), IoError>".to_owned(),
+                                span,
+                                TTypeKind::Result(Ty::Unit, io_error),
+                            );
+                            if let Some(want) = expected {
+                                self.type_mismatch(result, want, span)?;
+                            }
+                            return Ok((
+                                TExprKind::Call {
+                                    target: CallTarget::FsRead,
+                                    args: vec![typed_collection, typed_path, typed_buffer],
+                                    effect: Effect::None,
+                                },
+                                result,
+                            ));
+                        }
+                        "list" => {
+                            if args.len() != 2 {
+                                return Err(CheckError { span: method_span, message: "fs.list(dir, entries) takes a directory and a write list of DirEntry".to_owned() });
+                            }
+                            let typed_dir = path(self, &args[0])?;
+                            let typed_entries = self.check_expr(&args[1], None)?;
+                            let TTypeKind::List { element, .. } =
+                                self.types[typed_entries.ty.0].kind
+                            else {
+                                return Err(CheckError {
+                                    span: args[1].span,
+                                    message: "fs.list output must be a bounded list<DirEntry, N>"
+                                        .to_owned(),
+                                });
+                            };
+                            if element != self.type_ids["DirEntry"] {
+                                return Err(CheckError {
+                                    span: args[1].span,
+                                    message: "fs.list output must be a bounded list<DirEntry, N>"
+                                        .to_owned(),
+                                });
+                            }
+                            let place = self.resolve_place(&args[1]).map_err(|_| CheckError {
+                                span: args[1].span,
+                                message:
+                                    "fs.list output must be mutable; use var or a write parameter"
+                                        .to_owned(),
+                            })?;
+                            if !self.place_is_mutable(&place) {
+                                return Err(CheckError { span: args[1].span, message: "fs.list output must be mutable; use var or a write parameter".to_owned() });
+                            }
+                            let result = self.intern_generic(
+                                2,
+                                Ty::Unit,
+                                io_error,
+                                "Result<(), IoError>".to_owned(),
+                                span,
+                                TTypeKind::Result(Ty::Unit, io_error),
+                            );
+                            if let Some(want) = expected {
+                                self.type_mismatch(result, want, span)?;
+                            }
+                            return Ok((
+                                TExprKind::Call {
+                                    target: CallTarget::FsList,
+                                    args: vec![typed_collection, typed_dir, typed_entries],
+                                    effect: Effect::None,
+                                },
+                                result,
+                            ));
+                        }
+                        "write" => {
+                            if args.len() != 2 {
+                                return Err(CheckError {
+                                    span: method_span,
+                                    message: "fs.write(path, data) takes a path and a byte list"
+                                        .to_owned(),
+                                });
+                            }
+                            let typed_path = path(self, &args[0])?;
+                            let typed_data = path(self, &args[1])?;
+                            let result = self.intern_generic(
+                                2,
+                                Ty::Unit,
+                                io_error,
+                                "Result<(), IoError>".to_owned(),
+                                span,
+                                TTypeKind::Result(Ty::Unit, io_error),
+                            );
+                            if let Some(want) = expected {
+                                self.type_mismatch(result, want, span)?;
+                            }
+                            return Ok((
+                                TExprKind::Call {
+                                    target: CallTarget::FsWrite,
+                                    args: vec![typed_collection, typed_path, typed_data],
+                                    effect: Effect::None,
+                                },
+                                result,
+                            ));
+                        }
+                        "join" => {
+                            if args.len() != 2 {
+                                return Err(CheckError {
+                                    span: method_span,
+                                    message: "fs.join(dir, name) takes two bounded paths"
+                                        .to_owned(),
+                                });
+                            }
+                            let dir = path(self, &args[0])?;
+                            let name = path(self, &args[1])?;
+                            let path_ty = self.type_ids["Path"];
+                            let result = self.intern_generic(
+                                2,
+                                path_ty,
+                                io_error,
+                                "Result<Path, IoError>".to_owned(),
+                                span,
+                                TTypeKind::Result(path_ty, io_error),
+                            );
+                            if let Some(want) = expected {
+                                self.type_mismatch(result, want, span)?;
+                            }
+                            return Ok((
+                                TExprKind::Call {
+                                    target: CallTarget::FsJoin,
+                                    args: vec![typed_collection, dir, name],
+                                    effect: Effect::None,
+                                },
+                                result,
+                            ));
+                        }
+                        _ => {
+                            return Err(CheckError {
+                                span: method_span,
+                                message: "Fs supports read, list, write, and join".to_owned(),
+                            });
+                        }
+                    }
+                }
+                CapabilityKind::Out => {
+                    self.require_manifest_capability("out", method_span)?;
+                    let target = match name {
+                        "write" => CallTarget::OutWrite,
+                        "line" => CallTarget::OutLine,
+                        "int" => CallTarget::OutInt,
+                        "long" => CallTarget::OutLong,
+                        _ => {
+                            return Err(CheckError {
+                                span: method_span,
+                                message: "Out supports write, line, int, and long".to_owned(),
+                            });
+                        }
+                    };
+                    let value = if matches!(target, CallTarget::OutInt) {
+                        self.check_expr(
+                            args.first().ok_or_else(|| CheckError {
+                                span: method_span,
+                                message: "out.int(n) takes one int".to_owned(),
+                            })?,
+                            Some(Ty::Int),
+                        )?
+                    } else if matches!(target, CallTarget::OutLong) {
+                        self.check_expr(
+                            args.first().ok_or_else(|| CheckError {
+                                span: method_span,
+                                message: "out.long(n) takes one long".to_owned(),
+                            })?,
+                            Some(Ty::Long),
+                        )?
+                    } else if let Some(arg) = args.first() {
+                        if args.len() != 1 {
+                            return Err(CheckError {
+                                span: method_span,
+                                message: format!("out.{}(data) takes one byte list", name),
+                            });
+                        }
+                        if matches!(arg.kind, ExprKind::ByteString(_)) {
+                            self.check_expr(arg, Some(self.type_ids["Path"]))?
+                        } else {
+                            let typed = self.check_expr(arg, None)?;
+                            if typed.ty != self.type_ids["Arg"] && !self.is_byte_list(typed.ty) {
+                                return Err(CheckError {
+                                    span: arg.span,
+                                    message:
+                                        "out.write and out.line require Arg or a bounded byte list"
+                                            .to_owned(),
+                                });
+                            }
+                            typed
+                        }
+                    } else {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: format!("out.{} takes one argument", name),
+                        });
+                    };
+                    if args.len() != 1 {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: format!("out.{} takes one argument", name),
+                        });
+                    }
+                    let io_error = self.type_ids["IoError"];
+                    let result = self.intern_generic(
+                        2,
+                        Ty::Unit,
+                        io_error,
+                        "Result<(), IoError>".to_owned(),
+                        span,
+                        TTypeKind::Result(Ty::Unit, io_error),
+                    );
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::Call {
+                            target,
+                            args: vec![typed_collection, value],
+                            effect: Effect::None,
+                        },
+                        result,
+                    ));
+                }
+                _ => {}
+            }
+        }
         // The parser represents `value.field(args)` as a method call when the
         // field name also belongs to the built-in method vocabulary. Give a
         // function-typed struct field precedence in that case so function
@@ -5385,6 +6116,28 @@ impl Checker {
         Ok(index)
     }
 
+    fn require_manifest_capability(&self, capability: &str, span: Span) -> Result<(), CheckError> {
+        if self.package_capabilities.contains(capability) {
+            Ok(())
+        } else {
+            Err(CheckError {
+                span,
+                message: format!(
+                    "package manifest must grant capability '{}' in the 'capabilities' key",
+                    capability
+                ),
+            })
+        }
+    }
+
+    fn is_byte_type(&self, ty: Ty) -> bool {
+        self.type_ids.get("byte") == Some(&ty)
+    }
+
+    fn is_byte_list(&self, ty: Ty) -> bool {
+        matches!(self.types.get(ty.0).map(|ty| &ty.kind), Some(TTypeKind::List { element, .. }) if self.is_byte_type(*element))
+    }
+
     fn default_typed_value(&mut self, ty: Ty, span: Span) -> Result<TExpr, CheckError> {
         let expr = match self.types[ty.0].kind.clone() {
             TTypeKind::Refinement {
@@ -5428,6 +6181,14 @@ impl Checker {
                 ty,
                 span,
             },
+            TTypeKind::Capability(_) => {
+                return Err(CheckError {
+                    span,
+                    message:
+                        "capabilities cannot be constructed in code; receive one as a parameter"
+                            .to_owned(),
+                });
+            }
             TTypeKind::List { .. } => TExpr {
                 kind: TExprKind::EmptyList,
                 ty,
@@ -6631,6 +7392,7 @@ impl Checker {
             }) {
                 self.check_unqualified_constructor(name, args, *call_span, expected)?
             } else if name == "print" {
+                self.require_manifest_capability("out", *call_span)?;
                 if args.len() != 1 {
                     return Err(CheckError {
                         span: *call_span,
@@ -6887,6 +7649,29 @@ impl Checker {
                 }
                 (TExprKind::Bool(*value), Ty::Bool)
             }
+            ExprKind::ByteString(bytes) => {
+                let Some(ty) = expected.filter(|ty| self.is_byte_list(*ty)) else {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "a byte string needs a byte-list context such as list<byte, 4096>"
+                            .to_owned(),
+                    });
+                };
+                let TTypeKind::List { capacity, .. } = self.types[ty.0].kind else {
+                    unreachable!()
+                };
+                if bytes.len() > capacity {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: format!(
+                            "byte string has {} bytes, exceeding list capacity {}; increase the capacity",
+                            bytes.len(),
+                            capacity
+                        ),
+                    });
+                }
+                (TExprKind::ByteString(bytes.clone()), ty)
+            }
             ExprKind::Name(name) => {
                 if let Some(value) = self.current_generic_capacities.get(name).copied() {
                     let ty = expected
@@ -7039,45 +7824,78 @@ impl Checker {
                     }
                 }
                 let typed_receiver = self.check_expr(receiver, None)?;
-                let TTypeKind::Struct(fields) = &self.types[typed_receiver.ty.0].kind else {
-                    return Err(CheckError {
-                        span: *field_span,
-                        message: format!(
-                            "{} has no fields; cannot read '{}'",
-                            self.type_name(typed_receiver.ty),
-                            name
-                        ),
-                    });
-                };
-                let Some(field_index) = fields.iter().position(|field| field.name == *name) else {
-                    let names = fields
-                        .iter()
-                        .map(|field| field.name.clone())
-                        .collect::<Vec<_>>();
-                    let suffix = close_name(name, &names)
-                        .map(|suggestion| format!("; did you mean '{}'", suggestion))
-                        .unwrap_or_default();
-                    return Err(CheckError {
-                        span: *field_span,
-                        message: format!(
-                            "unknown field '{}' on {}{}",
-                            name,
-                            self.type_name(typed_receiver.ty),
-                            suffix
-                        ),
-                    });
-                };
-                let field_ty = fields[field_index].ty;
-                if let Some(want) = expected {
-                    self.type_mismatch(field_ty, want, expr.span)?;
+                if matches!(
+                    self.types[typed_receiver.ty.0].kind,
+                    TTypeKind::Capability(CapabilityKind::Env)
+                ) {
+                    let (capability, target, key) = match name.as_str() {
+                        "fs" => (self.type_ids["Fs"], CallTarget::EnvFs, "fs"),
+                        "out" => (self.type_ids["Out"], CallTarget::EnvOut, "out"),
+                        "err" => (self.type_ids["Out"], CallTarget::EnvErr, "out"),
+                        _ => {
+                            return Err(CheckError {
+                                span: *field_span,
+                                message: format!(
+                                    "Env has no field '{}'; available capabilities are args(), fs, out, and err",
+                                    name
+                                ),
+                            });
+                        }
+                    };
+                    self.require_manifest_capability(key, *field_span)?;
+                    if let Some(want) = expected {
+                        self.type_mismatch(capability, want, expr.span)?;
+                    }
+                    (
+                        TExprKind::Call {
+                            target,
+                            args: vec![typed_receiver],
+                            effect: Effect::None,
+                        },
+                        capability,
+                    )
+                } else {
+                    let TTypeKind::Struct(fields) = &self.types[typed_receiver.ty.0].kind else {
+                        return Err(CheckError {
+                            span: *field_span,
+                            message: format!(
+                                "{} has no fields; cannot read '{}'",
+                                self.type_name(typed_receiver.ty),
+                                name
+                            ),
+                        });
+                    };
+                    let Some(field_index) = fields.iter().position(|field| field.name == *name)
+                    else {
+                        let names = fields
+                            .iter()
+                            .map(|field| field.name.clone())
+                            .collect::<Vec<_>>();
+                        let suffix = close_name(name, &names)
+                            .map(|suggestion| format!("; did you mean '{}'", suggestion))
+                            .unwrap_or_default();
+                        return Err(CheckError {
+                            span: *field_span,
+                            message: format!(
+                                "unknown field '{}' on {}{}",
+                                name,
+                                self.type_name(typed_receiver.ty),
+                                suffix
+                            ),
+                        });
+                    };
+                    let field_ty = fields[field_index].ty;
+                    if let Some(want) = expected {
+                        self.type_mismatch(field_ty, want, expr.span)?;
+                    }
+                    (
+                        TExprKind::Field {
+                            receiver: Box::new(typed_receiver),
+                            field_index,
+                        },
+                        field_ty,
+                    )
                 }
-                (
-                    TExprKind::Field {
-                        receiver: Box::new(typed_receiver),
-                        field_index,
-                    },
-                    field_ty,
-                )
             }
             ExprKind::Index {
                 receiver,
@@ -8267,6 +9085,11 @@ impl Checker {
         self.narrow_from_condition(&condition, true);
         let then_block =
             self.check_block(then_ast, true, if value_context { expected } else { None })?;
+        if !value_context {
+            if let Some(tail) = then_block.tail.as_deref() {
+                self.require_handled_result(tail, tail.span)?;
+            }
+        }
         let then_facts = self.facts.clone();
         let then_counts = self.collection_counts.clone();
         self.facts = entry_facts.clone();
@@ -8275,6 +9098,11 @@ impl Checker {
         let else_block = else_ast
             .map(|b| self.check_block(b, true, if value_context { expected } else { None }))
             .transpose()?;
+        if !value_context {
+            if let Some(tail) = else_block.as_ref().and_then(|block| block.tail.as_deref()) {
+                self.require_handled_result(tail, tail.span)?;
+            }
+        }
         let else_facts = self.facts.clone();
         let else_counts = self.collection_counts.clone();
         self.facts = match (
@@ -8575,6 +9403,7 @@ impl Checker {
             | ExprKind::Unit
             | ExprKind::Integer { .. }
             | ExprKind::Bool(_)
+            | ExprKind::ByteString(_)
             | ExprKind::LoopExit(_) => {}
         }
     }
@@ -8966,6 +9795,7 @@ impl Checker {
                 | ExprKind::Unit
                 | ExprKind::Integer { .. }
                 | ExprKind::Bool(_)
+                | ExprKind::ByteString(_)
                 | ExprKind::Name(_)
                 | ExprKind::ListLiteral
                 | ExprKind::PoolLiteral
@@ -9213,6 +10043,21 @@ impl Checker {
     }
 
     fn unknown_local(&self, name: &str, span: Span) -> CheckError {
+        let capability = match name {
+            "env" => Some(("Env", "an Env parameter")),
+            "fs" => Some(("Fs", "an Fs parameter (or pass env.fs from main)")),
+            "out" | "err" => Some((
+                "Out",
+                "an Out parameter (or pass env.out/env.err from main)",
+            )),
+            _ => None,
+        };
+        if let Some((ty, hint)) = capability {
+            return CheckError {
+                span,
+                message: format!("function has no {ty} capability; add {hint}"),
+            };
+        }
         let mut candidates = self
             .locals
             .iter()
@@ -9394,7 +10239,10 @@ impl Checker {
         actual: &TFunctionEffects,
         expected: &TFunctionEffects,
     ) -> bool {
-        (!actual.print || expected.print)
+        (!actual.out || expected.out)
+            && (!actual.env || expected.env)
+            && (!actual.fs_read || expected.fs_read)
+            && (!actual.fs_write || expected.fs_write)
             && actual.reads.iter().all(|path| {
                 expected
                     .reads
@@ -9437,8 +10285,17 @@ impl Checker {
         if actual_params != expected_params || actual_result != expected_result {
             return None;
         }
-        if actual_effects.print && !expected_effects.print {
-            return Some("print".to_owned());
+        if actual_effects.out && !expected_effects.out {
+            return Some("out".to_owned());
+        }
+        if actual_effects.env && !expected_effects.env {
+            return Some("env".to_owned());
+        }
+        if actual_effects.fs_read && !expected_effects.fs_read {
+            return Some("fs.read".to_owned());
+        }
+        if actual_effects.fs_write && !expected_effects.fs_write {
+            return Some("fs.write".to_owned());
         }
         actual_effects
             .reads
@@ -9777,8 +10634,17 @@ impl Checker {
         actual: &GlobalEffects,
         allowed: &TFunctionEffects,
     ) -> Option<String> {
-        if actual.prints && !allowed.print {
-            return Some("print".to_owned());
+        if actual.out && !allowed.out {
+            return Some("out".to_owned());
+        }
+        if actual.env && !allowed.env {
+            return Some("env".to_owned());
+        }
+        if actual.fs_read && !allowed.fs_read {
+            return Some("fs.read".to_owned());
+        }
+        if actual.fs_write && !allowed.fs_write {
+            return Some("fs.write".to_owned());
         }
         for path in &actual.reads {
             let name = self.global_path_name(path);
@@ -10474,6 +11340,7 @@ fn check_recursive_region_expr(
         TExprKind::Unit
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
+        | TExprKind::ByteString(_)
         | TExprKind::Local(_)
         | TExprKind::Global(_)
         | TExprKind::Constant(_)
@@ -10627,7 +11494,10 @@ struct GlobalEffects {
     writes: Vec<GlobalWrite>,
     structural_writes: Vec<GlobalPath>,
     calls: Vec<usize>,
-    prints: bool,
+    out: bool,
+    env: bool,
+    fs_read: bool,
+    fs_write: bool,
 }
 
 impl GlobalEffects {
@@ -10763,8 +11633,20 @@ fn infer_global_effects(
                         changed = true;
                     }
                 }
-                if callee.prints && !effect.prints {
-                    effect.prints = true;
+                if callee.out && !effect.out {
+                    effect.out = true;
+                    changed = true;
+                }
+                if callee.env && !effect.env {
+                    effect.env = true;
+                    changed = true;
+                }
+                if callee.fs_read && !effect.fs_read {
+                    effect.fs_read = true;
+                    changed = true;
+                }
+                if callee.fs_write && !effect.fs_write {
+                    effect.fs_write = true;
                     changed = true;
                 }
             }
@@ -10797,7 +11679,10 @@ fn close_global_effects(effects: &mut GlobalEffects, functions: &[GlobalEffects]
                 effects.structural_writes.push(write.clone());
             }
         }
-        effects.prints |= callee.prints;
+        effects.out |= callee.out;
+        effects.env |= callee.env;
+        effects.fs_read |= callee.fs_read;
+        effects.fs_write |= callee.fs_write;
         pending.extend(callee.calls.iter().copied());
     }
 }
@@ -10918,7 +11803,23 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
                         }
                     }
                 }
-                CallTarget::Print => effects.prints = true,
+                CallTarget::Print
+                | CallTarget::OutWrite
+                | CallTarget::OutLine
+                | CallTarget::OutInt
+                | CallTarget::OutLong => effects.out = true,
+                CallTarget::EnvArgs
+                | CallTarget::ArgsCount
+                | CallTarget::ArgsGet
+                | CallTarget::ArgLength
+                | CallTarget::ArgByte => effects.env = true,
+                CallTarget::FsRead => effects.fs_read = true,
+                CallTarget::FsWrite => effects.fs_write = true,
+                CallTarget::FsList => effects.fs_read = true,
+                CallTarget::FsJoin
+                | CallTarget::EnvFs
+                | CallTarget::EnvOut
+                | CallTarget::EnvErr => {}
                 CallTarget::Min | CallTarget::Max => {}
                 CallTarget::Sort { .. } | CallTarget::SortBy { .. } => {
                     if let Some(path) = args.first().and_then(global_path_from_expr) {
@@ -11079,6 +11980,7 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         TExprKind::Unit
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
+        | TExprKind::ByteString(_)
         | TExprKind::Local(_)
         | TExprKind::Constant(_)
         | TExprKind::FunctionValue(_)
@@ -11285,6 +12187,7 @@ fn visit_global_calls_expr(
         TExprKind::Unit
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
+        | TExprKind::ByteString(_)
         | TExprKind::Local(_)
         | TExprKind::Global(_)
         | TExprKind::Constant(_)

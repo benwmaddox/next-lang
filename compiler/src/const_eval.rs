@@ -401,6 +401,7 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         TExprKind::Unit
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
+        | TExprKind::ByteString(_)
         | TExprKind::Local(_)
         | TExprKind::Global(_)
         | TExprKind::FunctionValue(_)
@@ -575,6 +576,7 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         TExprKind::Unit
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
+        | TExprKind::ByteString(_)
         | TExprKind::Local(_)
         | TExprKind::Constant(_)
         | TExprKind::FunctionValue(_)
@@ -772,7 +774,22 @@ fn collect_calls_expr(
         TExprKind::Call { target, args, .. } => {
             match target {
                 CallTarget::Function(id) => calls.push((*id, expr.span)),
-                CallTarget::Print => effects.push((expr.span, "print")),
+                CallTarget::Print
+                | CallTarget::OutWrite
+                | CallTarget::OutLine
+                | CallTarget::OutInt
+                | CallTarget::OutLong => effects.push((expr.span, "out")),
+                CallTarget::EnvArgs
+                | CallTarget::ArgsCount
+                | CallTarget::ArgsGet
+                | CallTarget::ArgLength
+                | CallTarget::ArgByte => effects.push((expr.span, "env")),
+                CallTarget::FsRead | CallTarget::FsList => effects.push((expr.span, "fs.read")),
+                CallTarget::FsWrite => effects.push((expr.span, "fs.write")),
+                CallTarget::EnvFs
+                | CallTarget::EnvOut
+                | CallTarget::EnvErr
+                | CallTarget::FsJoin => {}
                 CallTarget::Min | CallTarget::Max => {}
                 CallTarget::Sort { .. } | CallTarget::SortBy { .. } => {
                     effects.push((expr.span, "sort"))
@@ -881,6 +898,7 @@ fn collect_calls_expr(
         TExprKind::Unit
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
+        | TExprKind::ByteString(_)
         | TExprKind::Local(_)
         | TExprKind::Global(_)
         | TExprKind::Constant(_)
@@ -2038,10 +2056,41 @@ impl Evaluator<'_> {
                     }
                     self.call_function(*id, values, expr.span)?
                 }
-                CallTarget::Print => {
+                CallTarget::Print
+                | CallTarget::OutWrite
+                | CallTarget::OutLine
+                | CallTarget::OutInt
+                | CallTarget::OutLong
+                | CallTarget::EnvArgs
+                | CallTarget::ArgsCount
+                | CallTarget::ArgsGet
+                | CallTarget::ArgLength
+                | CallTarget::ArgByte
+                | CallTarget::FsRead
+                | CallTarget::FsList
+                | CallTarget::FsWrite
+                | CallTarget::EnvFs
+                | CallTarget::EnvOut
+                | CallTarget::EnvErr
+                | CallTarget::FsJoin => {
+                    let effect = match target {
+                        CallTarget::Print
+                        | CallTarget::OutWrite
+                        | CallTarget::OutLine
+                        | CallTarget::OutInt
+                        | CallTarget::OutLong => "out",
+                        CallTarget::EnvArgs
+                        | CallTarget::ArgsCount
+                        | CallTarget::ArgsGet
+                        | CallTarget::ArgLength
+                        | CallTarget::ArgByte => "env",
+                        CallTarget::FsRead | CallTarget::FsList => "fs.read",
+                        CallTarget::FsWrite => "fs.write",
+                        _ => "capability access",
+                    };
                     return Err(self.failure(
                         expr.span,
-                        "effect 'print' reached during constant evaluation",
+                        &format!("effect '{}' reached during constant evaluation", effect),
                     ));
                 }
                 CallTarget::Min | CallTarget::Max => {
@@ -2716,6 +2765,12 @@ impl Evaluator<'_> {
             TExprKind::Unit => ConstValue::Unit,
             TExprKind::Integer(value) => ConstValue::Integer(*value),
             TExprKind::Bool(value) => ConstValue::Bool(*value),
+            TExprKind::ByteString(bytes) => ConstValue::List(
+                bytes
+                    .iter()
+                    .map(|byte| ConstValue::Integer(i128::from(*byte)))
+                    .collect(),
+            ),
             TExprKind::FunctionValue(id) => ConstValue::Function(*id),
             TExprKind::Local(id) => {
                 if let Some(view) = self.views.get(id).cloned() {

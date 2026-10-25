@@ -22,11 +22,17 @@ fn every_run_fixture_matches_its_expected_result() {
     let mut failures = Vec::new();
     for fixture in fixtures {
         let name = fixture.file_name().unwrap().to_string_lossy();
-        let output = Command::new(env!("CARGO_BIN_EXE_nlc"))
-            .arg("run")
-            .arg(&fixture)
+        let mut command = Command::new(env!("CARGO_BIN_EXE_nlc"));
+        command.arg("run").arg(&fixture);
+        if name == "t20_probe" {
+            command.current_dir(&fixture);
+        }
+        let output = command
             .output()
             .unwrap_or_else(|e| panic!("{name}: could not launch nlc: {e}"));
+        if name == "t20_probe" {
+            let _ = fs::remove_file(fixture.join("a.txt"));
+        }
         let expected_stdout = fs::read_to_string(fixture.join("expected.stdout"))
             .unwrap_or_else(|e| panic!("{name}: cannot read expected.stdout: {e}"));
         let expected_stderr = fs::read_to_string(fixture.join("expected.stderr"))

@@ -1,1 +1,1 @@
-main.nl:8:23: error: constant 'REJECTED' is not cacheable: compile-time evaluation cannot reach an effect; call chain: constant REJECTED -> first -> middle -> last_step -> print
+main.nl:8:23: error: constant 'REJECTED' is not cacheable: compile-time evaluation cannot reach an effect; call chain: constant REJECTED -> first -> middle -> last_step -> out
