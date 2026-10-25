@@ -61,7 +61,7 @@ fn display_name(path: Path) -> Bytes max 4096 {
     }
 }
 
-fn invalid_utf8_position(value: Bytes max 16777216, offset: long) -> SourcePosition {
+fn invalid_utf8_position(value: Bytes max FILE_SOURCE_CAPACITY, offset: long) -> SourcePosition {
     var line = 1L
     var col = 1L
     for index in 0L..offset {
@@ -207,11 +207,11 @@ fn load_and_lex(
     env: Env,
     package: Arg,
     entries: write list<DirEntry, MAX_DIRECTORY_ENTRIES>,
-    source: grow Bytes max MAX_SOURCE_BYTES_PER_PACKAGE,
+    source: grow Bytes max SOURCE_BUFFER_CAPACITY,
     files: write list<SourceFile, MAX_SOURCE_FILES>,
     tokens: write list<Token, TOKEN_STORAGE_CAPACITY>,
     delimiters: write list<DelimiterKind, MAX_DELIMITER_NESTING>,
-    file_data: grow Bytes max MAX_SOURCE_BYTES_PER_FILE,
+    file_data: grow Bytes max FILE_SOURCE_CAPACITY,
 ) {
     match env.fs.list_with_extension(package, "nl", entries) {
         ok(_) => (),
@@ -223,7 +223,7 @@ fn load_and_lex(
         if entries[index].kind == FileKind.File { source_count += 1L }
     }
     if source_count == 0L { fail_tool(env, "package has no .nl source files") }
-    if source_count > MAX_SOURCE_FILES {
+    if source_count > MAX_PARSE_SOURCE_FILES {
         fail_diagnostic(env, write_file_count_limit(env.err))
     }
 
@@ -289,12 +289,13 @@ fn load_and_parse(
     env: Env,
     package: Arg,
     entries: write list<DirEntry, MAX_DIRECTORY_ENTRIES>,
-    source: grow Bytes max MAX_SOURCE_BYTES_PER_PACKAGE,
+    source: grow Bytes max SOURCE_BUFFER_CAPACITY,
     files: write list<SourceFile, MAX_SOURCE_FILES>,
     tokens: write list<Token, TOKEN_STORAGE_CAPACITY>,
     delimiters: write list<DelimiterKind, MAX_DELIMITER_NESTING>,
-    file_data: grow Bytes max MAX_SOURCE_BYTES_PER_FILE,
+    file_data: grow Bytes max FILE_SOURCE_CAPACITY,
     tables: write ParseTables,
+    compile_policy: bool,
 ) {
     match env.fs.list_with_extension(package, "nl", entries) {
         ok(_) => (),
@@ -306,7 +307,7 @@ fn load_and_parse(
         if entries[index].kind == FileKind.File { source_count += 1L }
     }
     if source_count == 0L { fail_tool(env, "package has no .nl source files") }
-    if source_count > MAX_SOURCE_FILES {
+    if !compile_policy && source_count > MAX_PARSE_SOURCE_FILES {
         fail_diagnostic(env, write_file_count_limit(env.err))
     }
 
@@ -326,25 +327,27 @@ fn load_and_parse(
                 ok(_) => (),
                 err(error) => {
                     if error == IoError.TooLarge {
-                        fail_diagnostic(env, write_file_byte_limit(env.err, file_name))
+                        if compile_policy { fail_tool(env, "source file exceeds the selfhost buffer capacity") }
+                        else { fail_diagnostic(env, write_file_byte_limit(env.err, file_name)) }
                     } else {
                         fail_tool(env, "cannot read source file")
                     }
                 },
             }
             let file_length = file_data.count()
-            if file_length > MAX_SOURCE_BYTES_PER_FILE {
+            if !compile_policy && file_length > MAX_SOURCE_BYTES_PER_FILE {
                 fail_diagnostic(env, write_file_byte_limit(env.err, file_name))
             }
             package_bytes += file_length
-            if package_bytes > MAX_SOURCE_BYTES_PER_PACKAGE {
+            if !compile_policy && package_bytes > MAX_SOURCE_BYTES_PER_PACKAGE {
                 fail_diagnostic(env, write_package_byte_limit(env.err, file_name))
             }
             match file_data.validate_utf8() {
                 ok(_) => (),
                 err(error) => {
                     let position = invalid_utf8_position(file_data, error.valid_up_to)
-                    fail_diagnostic(env, write_source_invalid_utf8(env.err, file_name, position))
+                    if compile_policy { fail_tool(env, "source is not valid UTF-8") }
+                    else { fail_diagnostic(env, write_source_invalid_utf8(env.err, file_name, position)) }
                 },
             }
 
@@ -359,7 +362,7 @@ fn load_and_parse(
                 err(problem) => fail_lex(env, file_name, problem),
             }
             package_tokens += summary.token_count
-            if package_tokens > MAX_TOKENS_PER_PACKAGE {
+            if !compile_policy && package_tokens > MAX_TOKENS_PER_PACKAGE {
                 fail_diagnostic(env, write_package_token_limit(env.err, file_name))
             }
 
@@ -369,28 +372,31 @@ fn load_and_parse(
                 err(problem) => fail_parse(env, source, tokens, file_name, base, file_length, problem),
             }
             let file_nodes = tables.nodes.count() - prior_nodes
-            if file_nodes > MAX_TREE_NODES {
+            if !compile_policy && file_nodes > MAX_TREE_NODES {
                 fail_parse_limit(env, file_name, "node limit of 2000000 per package exceeded")
             }
             package_nodes += file_nodes
-            if package_nodes > MAX_TREE_NODES {
+            if !compile_policy && package_nodes > MAX_TREE_NODES {
                 fail_parse_limit(env, file_name, "node limit of 2000000 per package exceeded")
             }
             // Each file contributes one Program node, so edges are always
             // nodes - files. The node cap makes edge overflow unreachable.
             let file_edges = file_nodes - 1L
             package_edges += file_edges
-            if package_edges > MAX_TREE_EDGES {
+            if !compile_policy && package_edges > MAX_TREE_EDGES {
                 fail_parse_limit(env, file_name, "child edge limit of 2000000 per package exceeded")
             }
             let work = package_bytes + package_tokens + package_nodes + package_edges
-            if work > MAX_PARSE_WORK {
+            if !compile_policy && work > MAX_PARSE_WORK {
                 fail_parse_limit(env, file_name, "parse work limit of 72000000 units per package exceeded")
             }
             let source_file = SourceFile { name: file_name, base, length: file_length, first_token, token_count: summary.token_count, end_line: summary.end_line, end_col: summary.end_col, tree_root: root }
             match files.push(source_file) {
                 ok(_) => (),
-                err(Full) => fail_diagnostic(env, write_file_count_limit(env.err)),
+                err(Full) => {
+                    if compile_policy { fail_tool(env, "package exceeds selfhost file capacity") }
+                    else { fail_diagnostic(env, write_file_count_limit(env.err)) }
+                },
             }
         }
     }

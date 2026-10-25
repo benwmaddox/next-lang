@@ -6158,7 +6158,11 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn stack_top_llvm_type(&self) -> &'static str {
-        if self.offset_stack { "i64" } else { "ptr" }
+        if self.offset_stack {
+            "i64"
+        } else {
+            "ptr"
+        }
     }
 
     fn publish_stack_top(&mut self) {
@@ -22074,7 +22078,11 @@ fn failure_for(ty: Ty, op: BinaryOp, unary: bool) -> Failure {
 }
 
 fn width(ty: Ty) -> u32 {
-    if ty == Ty::Int { 32 } else { 64 }
+    if ty == Ty::Int {
+        32
+    } else {
+        64
+    }
 }
 
 fn assign_binary(op: AssignOp) -> BinaryOp {
@@ -22140,7 +22148,7 @@ fn lower_signature_mode(
 
 #[cfg(test)]
 mod stack_reservation_tests {
-    use super::{STACK_PAGE_BYTES, UNBOUNDED_DATA_STACK_DEFAULT, data_stack_reservation};
+    use super::{data_stack_reservation, STACK_PAGE_BYTES, UNBOUNDED_DATA_STACK_DEFAULT};
 
     #[test]
     fn unbounded_entry_uses_the_64_mib_default() {

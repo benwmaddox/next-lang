@@ -4,7 +4,7 @@ struct DumpTask {
     role: long
 }
 
-fn write_source_range(out: Out, source: Bytes max 67108864, start: long, end: long) -> Result<(), IoError> {
+fn write_source_range(out: Out, source: Bytes max SOURCE_BUFFER_CAPACITY, start: long, end: long) -> Result<(), IoError> {
     var buffer: Bytes max 1024 = Bytes.empty()
     for index in start..end {
         buffer.push(source[index]).unwrap()
@@ -19,7 +19,7 @@ fn write_source_range(out: Out, source: Bytes max 67108864, start: long, end: lo
 
 fn write_token_raw(
     out: Out,
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     base: long,
     token: long,
@@ -28,7 +28,7 @@ fn write_token_raw(
     write_source_range(out, source, base + tokens[token].start, base + tokens[token].start + tokens[token].length)
 }
 
-fn parse_error_position(source: Bytes max 67108864, base: long, length: long, offset: long) -> SourcePosition {
+fn parse_error_position(source: Bytes max SOURCE_BUFFER_CAPACITY, base: long, length: long, offset: long) -> SourcePosition {
     let stop = if offset < 0L { 0L } else if offset > length { length } else { offset }
     var line = 1L
     var col = 1L
@@ -45,7 +45,7 @@ fn parse_error_position(source: Bytes max 67108864, base: long, length: long, of
 
 fn write_parse_diagnostic(
     out: Out,
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     file: Bytes max 4096,
     base: long,
     length: long,
@@ -65,7 +65,7 @@ fn write_parse_diagnostic(
 
 fn write_parse_message(
     out: Out,
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     base: long,
     error: ParseError,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -228,7 +228,7 @@ fn write_parse_message(
     ok(())
 }
 
-fn fail_parse(env: Env, source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, file: Bytes max 4096, base: long, length: long, error: ParseError) -> never {
+fn fail_parse(env: Env, source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, file: Bytes max 4096, base: long, length: long, error: ParseError) -> never {
     match write_parse_diagnostic(env.err, source, file, base, length, error, tokens) {
         ok(_) => env.exit(2),
         err(_) => env.exit(3),
@@ -298,7 +298,7 @@ fn dump_invalid_byte(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value
     ok(())
 }
 
-fn utf8_sequence_valid(value: Bytes max 67108864, start: long, width: long) -> bool {
+fn utf8_sequence_valid(value: Bytes max SOURCE_BUFFER_CAPACITY, start: long, width: long) -> bool {
     if start + width > value.count() { return false }
     let first = value[start]
     if width == 2L { return first >= 194 && first <= 223 && value[start + 1L] >= 128 && value[start + 1L] <= 191 }
@@ -311,7 +311,7 @@ fn utf8_sequence_valid(value: Bytes max 67108864, start: long, width: long) -> b
     return value[start + 2L] >= 128 && value[start + 2L] <= 191 && value[start + 3L] >= 128 && value[start + 3L] <= 191 && second >= 128 && second <= 191 && !(first == 240 && second < 144) && !(first == 244 && second > 143) && first >= 240 && first <= 244
 }
 
-fn dump_json_bytes(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: Bytes max 67108864) -> Result<(), IoError> {
+fn dump_json_bytes(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: Bytes max SOURCE_BUFFER_CAPACITY) -> Result<(), IoError> {
     var index = 0L
     for step in 0L..value.count() {
         if index >= value.count() { break }
@@ -333,12 +333,12 @@ fn dump_json_bytes(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: 
     ok(())
 }
 
-fn dump_json_source(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, source: Bytes max 67108864, start: long, end: long) -> Result<(), IoError> {
+fn dump_json_source(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, source: Bytes max SOURCE_BUFFER_CAPACITY, start: long, end: long) -> Result<(), IoError> {
     for index in start..end { dump_json_byte(out, buffer, source[index])? }
     ok(())
 }
 
-fn append_unicode_byte_value(value: grow Bytes max MAX_SOURCE_BYTES_PER_FILE, byte_value: byte) {
+fn append_unicode_byte_value(value: grow Bytes max FILE_SOURCE_CAPACITY, byte_value: byte) {
     if byte_value < 128 {
         value.push(byte_value).unwrap()
     } else {
@@ -355,13 +355,13 @@ fn decoded_hex_byte(value: byte) -> byte {
 }
 
 fn decode_string_token(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     base: long,
     token: long,
     raw_bytes: bool,
-) -> Bytes max 16777216 {
-    var value: Bytes max MAX_SOURCE_BYTES_PER_FILE = Bytes.empty()
+) -> Bytes max 16777217 {
+    var value: Bytes max FILE_SOURCE_CAPACITY = Bytes.empty()
     if token < 0L || token >= tokens.count() { return value }
     let start = base + tokens[token].start + 1L
     let end = base + tokens[token].start + tokens[token].length - 1L
@@ -400,7 +400,7 @@ fn decode_string_token(
 fn dump_quoted_token(
     out: Out,
     buffer: grow Bytes max OUTPUT_BUFFER_BYTES,
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     base: long,
     token: long,
@@ -415,7 +415,7 @@ fn dump_quoted_token(
 fn dump_quoted_decoded_token(
     out: Out,
     buffer: grow Bytes max OUTPUT_BUFFER_BYTES,
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     base: long,
     token: long,
@@ -430,7 +430,7 @@ fn dump_quoted_decoded_token(
 fn dump_quoted_name(
     out: Out,
     buffer: grow Bytes max OUTPUT_BUFFER_BYTES,
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     base: long,
     token: long,
@@ -556,7 +556,7 @@ fn dump_quoted_ascii(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value
     dump_push(out, buffer, 34)
 }
 
-fn dump_name_field(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, label: Ascii max 32, source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, base: long, token: long) -> Result<(), IoError> {
+fn dump_name_field(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, label: Ascii max 32, source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, base: long, token: long) -> Result<(), IoError> {
     dump_ascii(out, buffer, label)?
     dump_quoted_name(out, buffer, source, tokens, base, token)
 }
@@ -574,7 +574,7 @@ fn dump_mode(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, flags: long) 
 fn dump_name_list(
     out: Out,
     buffer: grow Bytes max OUTPUT_BUFFER_BYTES,
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: ParseTables,
     base: long,
@@ -589,12 +589,12 @@ fn dump_name_list(
     dump_push(out, buffer, 93)
 }
 
-fn dump_type_name(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables, base: long, node: Node) -> Result<(), IoError> {
+fn dump_type_name(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables, base: long, node: Node) -> Result<(), IoError> {
     if (node.flags & FLAG_TYPE_FN) != 0L { return dump_quoted_ascii(out, buffer, "fn") }
     if (node.flags & FLAG_TYPE_UNIT) != 0L { return dump_quoted_ascii(out, buffer, "()") }
     if (node.flags & FLAG_TYPE_TEXT_BYTES) != 0L { return dump_quoted_ascii(out, buffer, "TextBytes") }
     dump_push(out, buffer, 34)?
-    for index in 0L..node.aux {
+    for index in 0L..node.meta0 {
         if index > 0L { dump_push(out, buffer, 46)? }
         let token = tables.extra[node.extra + index]
         if token >= 0L && token < tokens.count() {
@@ -659,7 +659,7 @@ fn dump_binary_op(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, op: long
     else { dump_bytes(out, buffer, b"coalesce") }
 }
 
-fn dump_effect(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables, base: long, node: Node) -> Result<(), IoError> {
+fn dump_effect(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables, base: long, node: Node) -> Result<(), IoError> {
     dump_bytes(out, buffer, b" kind=")?
     if node.flags == 1L { dump_bytes(out, buffer, b"out")? }
     else if node.flags == 2L { dump_bytes(out, buffer, b"env")? }
@@ -686,7 +686,7 @@ fn dump_effect(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, source: Byt
 fn dump_node_fields(
     out: Out,
     buffer: grow Bytes max OUTPUT_BUFFER_BYTES,
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: ParseTables,
     base: long,
@@ -802,7 +802,7 @@ fn dump_node_fields(
 fn dump_node_line(
     out: Out,
     buffer: grow Bytes max OUTPUT_BUFFER_BYTES,
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: ParseTables,
     base: long,
@@ -824,7 +824,7 @@ fn dump_node_line(
 
 fn output_tree_dump(
     out: Out,
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
@@ -854,4 +854,189 @@ fn output_tree_dump(
         }
     }
     dump_flush(out, buffer)
+}
+
+fn wire_token_tag(kind: TokenKind) -> long {
+    match kind {
+        TokenKind.Ident => 0L, TokenKind.Number => 1L, TokenKind.String => 2L,
+        TokenKind.Newline => 3L, TokenKind.LParen => 4L, TokenKind.RParen => 5L,
+        TokenKind.LBrace => 6L, TokenKind.RBrace => 7L, TokenKind.LBracket => 8L,
+        TokenKind.RBracket => 9L, TokenKind.Comma => 10L, TokenKind.Colon => 11L,
+        TokenKind.Semicolon => 12L, TokenKind.Dot => 13L, TokenKind.Question => 14L,
+        TokenKind.QuestionDot => 15L, TokenKind.QuestionQuestion => 16L,
+        TokenKind.Range => 17L, TokenKind.RangeInclusive => 18L, TokenKind.Arrow => 19L,
+        TokenKind.FatArrow => 20L, TokenKind.Plus => 21L, TokenKind.Minus => 22L,
+        TokenKind.Star => 23L, TokenKind.Slash => 24L, TokenKind.Percent => 25L,
+        TokenKind.WrapPlus => 26L, TokenKind.WrapMinus => 27L, TokenKind.WrapStar => 28L,
+        TokenKind.PlusEq => 29L, TokenKind.MinusEq => 30L, TokenKind.StarEq => 31L,
+        TokenKind.SlashEq => 32L, TokenKind.PercentEq => 33L, TokenKind.ShrEq => 34L,
+        TokenKind.Eq => 35L, TokenKind.EqEq => 36L, TokenKind.Bang => 37L,
+        TokenKind.BangEq => 38L, TokenKind.Lt => 39L, TokenKind.Le => 40L,
+        TokenKind.Gt => 41L, TokenKind.Ge => 42L, TokenKind.And => 43L,
+        TokenKind.AndAnd => 44L, TokenKind.Or => 45L, TokenKind.OrOr => 46L,
+        TokenKind.Caret => 47L, TokenKind.Shl => 48L, TokenKind.Shr => 49L,
+        TokenKind.Eof => 50L,
+    }
+}
+
+fn wire_node_tag(kind: NodeKind) -> long {
+    match kind {
+        NodeKind.Program => 0L, NodeKind.Enum => 1L, NodeKind.EnumCase => 2L,
+        NodeKind.Struct => 3L, NodeKind.StructField => 4L, NodeKind.TypeAlias => 5L,
+        NodeKind.Const => 6L, NodeKind.Global => 7L, NodeKind.Function => 8L,
+        NodeKind.Test => 9L, NodeKind.Parameter => 10L, NodeKind.Block => 11L,
+        NodeKind.FunctionType => 12L, NodeKind.FunctionTypeParameter => 13L,
+        NodeKind.Effect => 14L, NodeKind.ParameterType => 15L,
+        NodeKind.ResultType => 16L, NodeKind.Annotation => 17L,
+        NodeKind.FieldType => 18L, NodeKind.PayloadType => 19L,
+        NodeKind.AliasedType => 20L, NodeKind.DeclaredType => 21L,
+        NodeKind.TypeArgument => 22L, NodeKind.FitType => 23L, NodeKind.CastType => 24L,
+        NodeKind.Let => 25L, NodeKind.Assign => 26L, NodeKind.ReturnStatement => 27L,
+        NodeKind.ExpressionStatement => 28L, NodeKind.For => 29L, NodeKind.ForEach => 30L,
+        NodeKind.Discard => 31L, NodeKind.Expect => 32L, NodeKind.BreakStatement => 33L,
+        NodeKind.ContinueStatement => 34L, NodeKind.Unit => 35L, NodeKind.Integer => 36L,
+        NodeKind.Bool => 37L, NodeKind.ByteString => 38L, NodeKind.BytesLiteral => 39L,
+        NodeKind.Take => 40L, NodeKind.Name => 41L, NodeKind.Call => 42L,
+        NodeKind.IndirectCall => 43L, NodeKind.QualifiedCase => 44L,
+        NodeKind.MethodCall => 45L, NodeKind.Index => 46L, NodeKind.OptionalCall => 47L,
+        NodeKind.Field => 48L, NodeKind.StructInit => 49L,
+        NodeKind.InitializerField => 50L, NodeKind.ArrayLiteral => 51L,
+        NodeKind.ListLiteral => 52L, NodeKind.PoolLiteral => 53L,
+        NodeKind.MapLiteral => 54L, NodeKind.SetLiteral => 55L,
+        NodeKind.QueueLiteral => 56L, NodeKind.RingLiteral => 57L,
+        NodeKind.GridIndex => 58L, NodeKind.Fit => 59L, NodeKind.Try => 60L,
+        NodeKind.Return => 61L, NodeKind.LoopExit => 62L, NodeKind.Match => 63L,
+        NodeKind.MatchArm => 64L, NodeKind.ToLong => 65L, NodeKind.Cast => 66L,
+        NodeKind.Unary => 67L, NodeKind.Binary => 68L, NodeKind.If => 69L,
+        NodeKind.WildcardPattern => 70L, NodeKind.BoolPattern => 71L,
+        NodeKind.CasePattern => 72L, NodeKind.PatternBinding => 73L,
+        NodeKind.IgnoredPatternBinding => 74L,
+    }
+}
+
+fn wire_push(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: byte) -> Result<(), IoError> {
+    if buffer.count() >= OUTPUT_BUFFER_BYTES { dump_flush(out, buffer)? }
+    buffer.push(value).unwrap()
+    ok(())
+}
+
+fn wire_u32(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: long) -> Result<(), IoError> {
+    for index in 0L..4L {
+        wire_push(out, buffer, ((int)((value >> (index * 8L)) & 255L)).fit<byte>().unwrap())?
+    }
+    ok(())
+}
+
+fn wire_i64(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: long) -> Result<(), IoError> {
+    for index in 0L..8L {
+        wire_push(out, buffer, ((int)((value >> (index * 8L)) & 255L)).fit<byte>().unwrap())?
+    }
+    ok(())
+}
+
+fn wire_source_bytes(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, source: Bytes max SOURCE_BUFFER_CAPACITY) -> Result<(), IoError> {
+    for index in 0L..source.count() { wire_push(out, buffer, source[index])? }
+    ok(())
+}
+
+fn output_binary_tree(
+    out: Out,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+) -> Result<(), IoError> {
+    var buffer: Bytes max OUTPUT_BUFFER_BYTES = Bytes.empty()
+    let magic = b"NLASTB01"
+    for index in 0L..magic.count() { wire_push(out, buffer, magic[index])? }
+    wire_u32(out, buffer, 1L)?
+    wire_u32(out, buffer, 72L)?
+    wire_i64(out, buffer, files.count())?
+    wire_i64(out, buffer, source.count())?
+    wire_i64(out, buffer, tokens.count())?
+    wire_i64(out, buffer, tables.nodes.count())?
+    wire_i64(out, buffer, tables.extra.count())?
+    wire_i64(out, buffer, tables.literals.count())?
+    var name_bytes = 0L
+    for file_index in 0L..files.count() { name_bytes += files[file_index].name.count() }
+    wire_i64(out, buffer, name_bytes)?
+
+    var name_offset = 0L
+    for file_index in 0L..files.count() {
+        let file = files[file_index]
+        let node_count = tables.nodes[file.tree_root].subtree
+        let node_first = file.tree_root - node_count + 1L
+        wire_i64(out, buffer, name_offset)?
+        wire_i64(out, buffer, file.name.count())?
+        wire_i64(out, buffer, file.base)?
+        wire_i64(out, buffer, file.length)?
+        wire_i64(out, buffer, file.first_token)?
+        wire_i64(out, buffer, file.token_count)?
+        wire_i64(out, buffer, node_first)?
+        wire_i64(out, buffer, node_count)?
+        name_offset += file.name.count()
+    }
+    for file_index in 0L..files.count() {
+        let file = files[file_index]
+        for index in 0L..file.name.count() { wire_push(out, buffer, file.name[index])? }
+    }
+    wire_source_bytes(out, buffer, source)?
+
+    for file_index in 0L..files.count() {
+        let file = files[file_index]
+        var source_cursor = 0L
+        var line = 1L
+        var col = 1L
+        for local_index in 0L..file.token_count {
+            let token_index = file.first_token + local_index
+            let token = tokens[token_index]
+            if token.kind == TokenKind.Eof {
+                line = file.end_line
+                col = file.end_col
+            } else {
+                for offset in source_cursor..token.start {
+                    if source[file.base + offset] == 10 { line += 1L; col = 1L }
+                    else { col += 1L }
+                }
+            }
+            wire_u32(out, buffer, wire_token_tag(token.kind))?
+            wire_u32(out, buffer, token.start)?
+            wire_u32(out, buffer, token.length)?
+            wire_u32(out, buffer, file_index)?
+            wire_u32(out, buffer, line)?
+            wire_u32(out, buffer, col)?
+            if token.kind != TokenKind.Eof {
+                for offset in token.start..token.start + token.length {
+                    if source[file.base + offset] == 10 { line += 1L; col = 1L }
+                    else { col += 1L }
+                }
+                source_cursor = token.start + token.length
+            }
+        }
+    }
+
+    for index in 0L..tables.nodes.count() {
+        let node = tables.nodes[index]
+        wire_u32(out, buffer, wire_node_tag(node.kind))?
+        wire_u32(out, buffer, node.flags)?
+        wire_i64(out, buffer, node.token)?
+        wire_i64(out, buffer, node.start)?
+        wire_i64(out, buffer, node.end)?
+        wire_i64(out, buffer, node.anchor)?
+        wire_i64(out, buffer, node.subtree)?
+        wire_i64(out, buffer, node.extra)?
+        wire_i64(out, buffer, node.aux)?
+        wire_i64(out, buffer, node.meta0)?
+        wire_i64(out, buffer, node.meta1)?
+    }
+    for index in 0L..tables.extra.count() { wire_i64(out, buffer, tables.extra[index])? }
+    for index in 0L..tables.literals.count() {
+        let literal = tables.literals[index]
+        wire_u32(out, buffer, literal.limb0)?
+        wire_u32(out, buffer, literal.limb1)?
+        wire_u32(out, buffer, literal.limb2)?
+        wire_u32(out, buffer, literal.limb3)?
+    }
+    if buffer.count() > 0L { out.write(buffer)? }
+    ok(())
 }

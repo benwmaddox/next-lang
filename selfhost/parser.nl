@@ -230,6 +230,8 @@ struct Node {
     subtree: long
     extra: long
     aux: long
+    meta0: long
+    meta1: long
 }
 
 struct Literal128 {
@@ -393,6 +395,10 @@ const NEST_EXPR: long = 0L
 const NEST_BLOCK: long = 1L
 const NEST_TYPE: long = 2L
 
+fn pack_type_counts(args: long, constants: long, arrays: long) -> long {
+    args | (constants << 21L) | (arrays << 42L)
+}
+
 fn empty_parse_tables() -> ParseTables {
     ParseTables {
         state: ParserState {
@@ -434,7 +440,7 @@ fn initialize_parse_tables(tables: write ParseTables) {
 }
 
 fn same_source_word(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     token: long,
     start: long,
     length: long,
@@ -447,7 +453,7 @@ fn same_source_word(
     true
 }
 
-fn token_is_word(source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, token: long, base: long, expected: Ascii max 96) -> bool {
+fn token_is_word(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, token: long, base: long, expected: Ascii max 96) -> bool {
     if token < 0L || token >= tokens.count() { return false }
     if tokens[token].kind != TokenKind.Ident { return false }
     same_source_word(source, token, base + tokens[token].start, tokens[token].length, expected)
@@ -472,7 +478,7 @@ fn cursor_peek(tables: ParseTables, tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     CursorToken { kind: token.kind, token: index, start: token.start, length: token.length, virtual_piece: false }
 }
 
-fn cursor_word_is(source: Bytes max 67108864, tables: ParseTables, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, word: Ascii max 96) -> bool {
+fn cursor_word_is(source: Bytes max SOURCE_BUFFER_CAPACITY, tables: ParseTables, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, word: Ascii max 96) -> bool {
     let token = cursor_peek(tables, tokens, 0L)
     if token.kind != TokenKind.Ident { return false }
     same_source_word(source, token.token, tables.state.file_base + token.start, token.length, word)
@@ -519,7 +525,7 @@ fn cursor_expect(tables: write ParseTables, tokens: list<Token, TOKEN_STORAGE_CA
     }
 }
 
-fn cursor_expect_word(source: Bytes max 67108864, tables: write ParseTables, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, word: Ascii max 96, problem: ParseProblemKind) -> Result<CursorToken, ParseError> {
+fn cursor_expect_word(source: Bytes max SOURCE_BUFFER_CAPACITY, tables: write ParseTables, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, word: Ascii max 96, problem: ParseProblemKind) -> Result<CursorToken, ParseError> {
     if cursor_word_is(source, tables, tokens, word) {
         ok(cursor_next(tables, tokens))
     } else {
@@ -620,6 +626,8 @@ fn append_node(
         subtree: index - first_child + 1L,
         extra,
         aux,
+        meta0: 0L,
+        meta1: 0L,
     }
     match tables.nodes.push(node) {
         ok(_) => ok(index),
@@ -687,7 +695,7 @@ fn parse_empty_error(offset: long, token: long, kind: ParseProblemKind) -> Parse
 }
 
 recursive fn parse_file(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     file_base: long,
@@ -714,7 +722,7 @@ recursive fn parse_file(
 }
 
 recursive fn parse_program(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     file_length: long,
@@ -761,7 +769,7 @@ recursive fn parse_program(
 }
 
 recursive fn parse_enum_decl(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -812,7 +820,7 @@ recursive fn parse_enum_decl(
 }
 
 recursive fn parse_struct_decl(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -852,7 +860,7 @@ recursive fn parse_struct_decl(
 }
 
 recursive fn parse_alias_decl(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -866,7 +874,7 @@ recursive fn parse_alias_decl(
 }
 
 recursive fn parse_const_decl(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -882,7 +890,7 @@ recursive fn parse_const_decl(
 }
 
 recursive fn parse_global_decl(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -911,7 +919,7 @@ recursive fn parse_global_decl(
 }
 
 recursive fn parse_test_decl(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -945,7 +953,7 @@ recursive fn parse_test_decl(
 }
 
 recursive fn parse_function_decl(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -988,7 +996,7 @@ recursive fn parse_function_decl(
 }
 
 recursive fn parse_parameter(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     is_test: bool,
@@ -1013,7 +1021,7 @@ recursive fn parse_parameter(
 }
 
 recursive fn parse_identifier(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     problem: ParseProblemKind,
@@ -1022,7 +1030,7 @@ recursive fn parse_identifier(
 }
 
 recursive fn parse_generic_params(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -1061,7 +1069,7 @@ recursive fn parse_generic_params(
     ok(count)
 }
 
-fn same_token_spelling(source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, base: long, left: long, right: long) -> bool {
+fn same_token_spelling(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, base: long, left: long, right: long) -> bool {
     if tokens[left].length != tokens[right].length { return false }
     for index in 0L..tokens[left].length {
         if source[base + tokens[left].start + index] != source[base + tokens[right].start + index] { return false }
@@ -1070,7 +1078,7 @@ fn same_token_spelling(source: Bytes max 67108864, tokens: list<Token, TOKEN_STO
 }
 
 recursive fn parse_type(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     label: NodeKind,
@@ -1087,7 +1095,7 @@ recursive fn parse_type(
 }
 
 recursive fn parse_type_inner(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     label: NodeKind,
@@ -1105,7 +1113,9 @@ recursive fn parse_type_inner(
             array_count += 1L
         }
         let end = tables.state.last_end
-        append_node(tables, label, first, -1L, start, end, start, FLAG_TYPE_FN, -1L, 0L)
+        let node = append_node(tables, label, first, -1L, start, end, start, FLAG_TYPE_FN, -1L, 0L)?
+        tables.nodes[node].meta1 = pack_type_counts(0L, 0L, array_count)
+        ok(node)
     } else if cursor_take(tables, tokens, TokenKind.LParen) {
         let open = tables.state.last_end - 1L
         if cursor_take(tables, tokens, TokenKind.RParen) {
@@ -1122,19 +1132,29 @@ recursive fn parse_type_inner(
             let anchor = tables.nodes[inner].anchor
             let extra = tables.nodes[inner].extra
             let aux = tables.nodes[inner].aux
+            let meta0 = tables.nodes[inner].meta0
+            let meta1 = tables.nodes[inner].meta1
             if cursor_peek(tables, tokens, 0L).kind != TokenKind.LBracket {
                 tables.nodes[inner].start = open
                 tables.nodes[inner].end = tables.state.last_end
                 return ok(inner)
             }
             tables.nodes.pop()
+            var added_arrays = 0L
             for step in 0L..MAX_TOKENS_PER_FILE {
                 if !cursor_take(tables, tokens, TokenKind.LBracket) { break }
                 parse_expression(source, tokens, tables, 8L)?
                 cursor_expect(tables, tokens, TokenKind.RBracket, ParseProblemKind.ExpectedCloseBracket)?
+                added_arrays += 1L
             }
             let end = tables.state.last_end
-            append_node(tables, kind, first_child, token, open, end, anchor, flags, extra, aux)
+            let node = append_node(tables, kind, first_child, token, open, end, anchor, flags, extra, aux)?
+            tables.nodes[node].meta0 = meta0
+            let old_args = meta1 & 2097151L
+            let old_constants = (meta1 >> 21L) & 2097151L
+            let old_arrays = (meta1 >> 42L) & 2097151L
+            tables.nodes[node].meta1 = pack_type_counts(old_args, old_constants, old_arrays + added_arrays)
+            ok(node)
         }
     } else {
         parse_named_type(source, tokens, tables, label, current)
@@ -1142,7 +1162,7 @@ recursive fn parse_type_inner(
 }
 
 recursive fn parse_named_type(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     label: NodeKind,
@@ -1269,15 +1289,18 @@ recursive fn parse_named_type(
         arrays += 1L
     }
     let end = tables.state.last_end
-    append_node(tables, label, children_first, name.token, start_token.start, end, range_extra, flags, extra_start, extra_names)
+    let node = append_node(tables, label, children_first, name.token, start_token.start, end, range_extra, flags, extra_start, 0L)?
+    tables.nodes[node].meta0 = extra_names
+    tables.nodes[node].meta1 = pack_type_counts(args, constants, arrays)
+    ok(node)
 }
 
-fn type_name_is(source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables, token: long, expected: Ascii max 96) -> bool {
+fn type_name_is(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables, token: long, expected: Ascii max 96) -> bool {
     token_is_word(source, tokens, token, tables.state.file_base, expected)
 }
 
 recursive fn parse_function_type(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -1368,7 +1391,7 @@ recursive fn parse_function_type(
 }
 
 recursive fn parse_range_bound(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<RangeBound, ParseError> {
@@ -1389,7 +1412,7 @@ recursive fn parse_range_bound(
 }
 
 recursive fn parse_literal(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tables: write ParseTables,
     token_index: long,
     start: long,
@@ -1482,7 +1505,7 @@ fn digit_value(value: byte) -> long {
 }
 
 recursive fn parse_block(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -1496,7 +1519,7 @@ recursive fn parse_block(
 }
 
 recursive fn parse_block_body(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     open_token: long,
@@ -1535,7 +1558,7 @@ recursive fn parse_block_body(
 }
 
 recursive fn parse_statement_candidate(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<ParseCandidate, ParseError> {
@@ -1581,7 +1604,7 @@ recursive fn parse_statement_candidate(
 }
 
 recursive fn parse_let_statement(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -1609,7 +1632,7 @@ recursive fn parse_let_statement(
 }
 
 recursive fn parse_expect_statement(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -1632,7 +1655,7 @@ recursive fn parse_expect_statement(
 }
 
 recursive fn parse_stack_peak_comparison(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -1669,7 +1692,8 @@ recursive fn parse_stack_peak_comparison(
     let call_end = close.start + close.length
     let call_first = tables.nodes.count()
     append_node(tables, NodeKind.Name, call_first, function_name.token, function_name.start, function_name.start + function_name.length, function_name.start, 0L, -1L, 0L)?
-    append_node(tables, NodeKind.Call, call_first, start.token, start.start, call_end, start.start, 0L, -1L, 1L)?
+    let call = append_node(tables, NodeKind.Call, call_first, start.token, start.start, call_end, start.start, 0L, -1L, 1L)?
+    tables.nodes[call].meta0 = call_end
     let integer_first = tables.nodes.count()
     let integer = append_node(tables, NodeKind.Integer, integer_first, number.token, number.start, end, number.start, if long_suffix { FLAG_LONG_SUFFIX } else { 0L }, literal, 0L)?
     let binary_first = call_first
@@ -1677,7 +1701,7 @@ recursive fn parse_stack_peak_comparison(
 }
 
 recursive fn parse_expression_statement_candidate(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<ParseCandidate, ParseError> {
@@ -1716,7 +1740,7 @@ recursive fn parse_expression_statement_candidate(
 }
 
 recursive fn parse_for_statement(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -1748,7 +1772,7 @@ recursive fn parse_for_statement(
 }
 
 recursive fn parse_for_header(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<ForFrame, ParseError> {
@@ -1814,7 +1838,7 @@ fn append_for_node(tables: write ParseTables, frame: ForFrame, body: long) -> Re
 }
 
 recursive fn parse_expression(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     min_precedence: long,
@@ -1891,7 +1915,7 @@ recursive fn parse_expression(
 }
 
 fn direct_call_candidate(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: ParseTables,
     name: CursorToken,
@@ -1901,7 +1925,7 @@ fn direct_call_candidate(
 }
 
 fn direct_call_name_allowed(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: ParseTables,
     name: CursorToken,
@@ -1910,7 +1934,7 @@ fn direct_call_name_allowed(
 }
 
 recursive fn parse_direct_call(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     name: CursorToken,
@@ -1948,12 +1972,13 @@ recursive fn parse_direct_call(
     if root_print { tables.state.expression_depth_adjustment -= 1L }
     let end = tables.state.last_end
     let node = append_node(tables, NodeKind.Call, first, name.token, name.start, end, name.start, 0L, -1L, arg_count)?
+    tables.nodes[node].meta0 = name.start + name.length
     let call = ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start: name.start, end }
     postfix_expression(source, tokens, tables, call)
 }
 
 recursive fn parse_prefix(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<ExprRef, ParseError> {
@@ -2034,7 +2059,7 @@ recursive fn parse_prefix(
 }
 
 recursive fn parse_prefix_leaf(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     token: CursorToken,
@@ -2075,7 +2100,7 @@ recursive fn parse_prefix_leaf(
     err(ParseError { kind: ParseProblemKind.ExpectedValue, offset: token.start, token: token.token })
 }
 
-fn token_has_non_ascii_hex_escape(source: Bytes max 67108864, start: long, length: long) -> bool {
+fn token_has_non_ascii_hex_escape(source: Bytes max SOURCE_BUFFER_CAPACITY, start: long, length: long) -> bool {
     var index = 1L
     for step in 0L..length - 2L {
         if index >= length - 1L { break }
@@ -2096,7 +2121,7 @@ fn token_has_non_ascii_hex_escape(source: Bytes max 67108864, start: long, lengt
 }
 
 recursive fn parse_array_literal(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     open: CursorToken,
@@ -2143,7 +2168,7 @@ fn binary_info(kind: TokenKind) -> BinaryInfo {
 }
 
 recursive fn postfix_expression(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     initial: ExprRef,
@@ -2171,7 +2196,7 @@ recursive fn postfix_expression(
 }
 
 recursive fn postfix_index(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     expression: ExprRef,
@@ -2199,7 +2224,7 @@ recursive fn postfix_index(
 }
 
 recursive fn postfix_call(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     expression: ExprRef,
@@ -2265,6 +2290,7 @@ recursive fn postfix_call(
     let end = tables.state.last_end
     if call_kind == 1L {
         let node = append_node(tables, NodeKind.Call, first, name_token, expression.start, end, expression.start, 0L, -1L, arg_count)?
+        tables.nodes[node].meta0 = expression.end
         ok(ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start: expression.start, end })
     } else if call_kind == 2L {
         let extra = tables.extra.count()
@@ -2282,7 +2308,7 @@ recursive fn postfix_call(
 }
 
 recursive fn parse_arguments(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -2304,7 +2330,7 @@ recursive fn parse_arguments(
 }
 
 fn can_start_struct(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: ParseTables,
     expression: ExprRef,
@@ -2324,7 +2350,7 @@ fn can_start_struct(
 fn is_upper_ascii(value: byte) -> bool { value >= 65 && value <= 90 }
 
 recursive fn postfix_struct_literal(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     expression: ExprRef,
@@ -2364,7 +2390,7 @@ recursive fn postfix_struct_literal(
 }
 
 recursive fn parse_struct_init_fields(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -2401,7 +2427,7 @@ recursive fn parse_struct_init_fields(
 }
 
 recursive fn postfix_try(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     expression: ExprRef,
@@ -2415,7 +2441,7 @@ recursive fn postfix_try(
 }
 
 recursive fn postfix_optional_call(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     expression: ExprRef,
@@ -2434,7 +2460,7 @@ recursive fn postfix_optional_call(
 }
 
 recursive fn parse_arguments_after_open(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -2455,7 +2481,7 @@ recursive fn parse_arguments_after_open(
 }
 
 recursive fn postfix_dot(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     expression: ExprRef,
@@ -2529,11 +2555,11 @@ recursive fn postfix_dot(
     }
 }
 
-fn builtin_method(source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, token: long, base: long) -> bool {
+fn builtin_method(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, token: long, base: long) -> bool {
     token_is_word(source, tokens, token, base, "to_long") || token_is_word(source, tokens, token, base, "ok") || token_is_word(source, tokens, token, base, "unwrap") || token_is_word(source, tokens, token, base, "is_none") || token_is_word(source, tokens, token, base, "is_some") || token_is_word(source, tokens, token, base, "is_ok") || token_is_word(source, tokens, token, base, "is_err") || token_is_word(source, tokens, token, base, "len") || token_is_word(source, tokens, token, base, "count") || token_is_word(source, tokens, token, base, "peek") || token_is_word(source, tokens, token, base, "width") || token_is_word(source, tokens, token, base, "height") || token_is_word(source, tokens, token, base, "add") || token_is_word(source, tokens, token, base, "set") || token_is_word(source, tokens, token, base, "get") || token_is_word(source, tokens, token, base, "contains") || token_is_word(source, tokens, token, base, "push") || token_is_word(source, tokens, token, base, "pop") || token_is_word(source, tokens, token, base, "insert") || token_is_word(source, tokens, token, base, "remove") || token_is_word(source, tokens, token, base, "clear") || token_is_word(source, tokens, token, base, "empty") || token_is_word(source, tokens, token, base, "try_append")
 }
 
-fn expression_name_is_upper(source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables, expression: ExprRef) -> bool {
+fn expression_name_is_upper(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables, expression: ExprRef) -> bool {
     var token = expression.token
     if expression.node >= 0L {
         if tables.nodes[expression.node].kind != NodeKind.Name { return false }
@@ -2547,7 +2573,7 @@ fn expression_name_is_upper(source: Bytes max 67108864, tokens: list<Token, TOKE
 }
 
 recursive fn parse_parenthesized(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     open: CursorToken,
@@ -2577,7 +2603,7 @@ recursive fn parse_parenthesized(
     ok(ExprRef { node: inner, pending_kind: 0L, token: -1L, extra_token: -1L, start: open.start, end: close.start + close.length })
 }
 
-fn is_cast_start(source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
+fn is_cast_start(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
     let first = cursor_peek(tables, tokens, 0L)
     let second = cursor_peek(tables, tokens, 1L)
     let simple = token_is_word(source, tokens, first.token, tables.state.file_base, "int") || token_is_word(source, tokens, first.token, tables.state.file_base, "long") || token_is_word(source, tokens, first.token, tables.state.file_base, "bool")
@@ -2587,7 +2613,7 @@ fn is_cast_start(source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_C
 }
 
 recursive fn parse_cast_expression(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     open: CursorToken,
@@ -2610,7 +2636,7 @@ recursive fn parse_cast_expression(
 }
 
 recursive fn parse_match_expression(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     start: CursorToken,
@@ -2623,7 +2649,7 @@ recursive fn parse_match_expression(
     parse_match_after_scrutinee(source, tokens, tables, start, scrutinee)
 }
 
-fn match_expression_ends_arm(source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
+fn match_expression_ends_arm(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
     var braces = 0L
     for offset in 0L..MAX_TOKENS_PER_FILE {
         let token = cursor_peek(tables, tokens, offset)
@@ -2645,7 +2671,7 @@ fn match_expression_ends_arm(source: Bytes max 67108864, tokens: list<Token, TOK
 }
 
 recursive fn parse_match_after_scrutinee(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     start: CursorToken,
@@ -2748,7 +2774,7 @@ recursive fn parse_match_after_scrutinee(
 }
 
 recursive fn parse_pattern(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
@@ -2812,7 +2838,7 @@ recursive fn parse_pattern(
 }
 
 recursive fn parse_if_expression(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     initial_if: CursorToken,
@@ -2826,7 +2852,7 @@ recursive fn parse_if_expression(
 }
 
 recursive fn parse_if_after_condition(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: write ParseTables,
     initial_if: CursorToken,
@@ -2904,7 +2930,7 @@ fn expression_has_postfix(tables: ParseTables, tokens: list<Token, TOKEN_STORAGE
     kind == TokenKind.LParen || kind == TokenKind.LBracket || kind == TokenKind.Question || kind == TokenKind.QuestionDot || kind == TokenKind.Dot || (allow_struct && kind == TokenKind.LBrace)
 }
 
-fn expression_starts_nested(source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
+fn expression_starts_nested(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
     let token = cursor_peek(tables, tokens, 0L)
     if token.kind == TokenKind.Bang { return true }
     if token.kind == TokenKind.LParen { return cursor_peek(tables, tokens, 1L).kind != TokenKind.RParen }
@@ -2935,7 +2961,7 @@ fn push_nesting_task(tables: write ParseTables, node: long, depth: long, role: l
     }
 }
 
-fn expression_nesting_exceeded(source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: write ParseTables, root: long) -> Result<Option<long>, ParseError> {
+fn expression_nesting_exceeded(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: write ParseTables, root: long) -> Result<Option<long>, ParseError> {
     tables.nesting.clear()
     let root_depth = if tables.nodes[root].kind == NodeKind.Call && token_is_word_from_node(source, tokens, tables, root, "print") { 0L } else { 1L }
     push_nesting_task(tables, root, root_depth, NEST_EXPR)?
@@ -2956,7 +2982,7 @@ fn expression_nesting_exceeded(source: Bytes max 67108864, tokens: list<Token, T
     err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: tables.nodes[root].start, token: tables.nodes[root].token })
 }
 
-fn token_is_word_from_node(source: Bytes max 67108864, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables, node: long, expected: Ascii max 96) -> bool {
+fn token_is_word_from_node(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables, node: long, expected: Ascii max 96) -> bool {
     let token = tables.nodes[node].token
     token >= 0L && token_is_word(source, tokens, token, tables.state.file_base, expected)
 }

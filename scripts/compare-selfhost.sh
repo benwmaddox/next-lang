@@ -161,7 +161,7 @@ compare_package() {
             read -r -a flag_args <<< "$flags"
         fi
         set +e
-        "$reference" "$command" "$package" "${flag_args[@]}" >"$reference_stdout" 2>"$reference_stderr"
+        "$reference" --frontend=rust "$command" "$package" "${flag_args[@]}" >"$reference_stdout" 2>"$reference_stderr"
         reference_status=$?
         "$selfhost" "$command" "$package" "${flag_args[@]}" >"$selfhost_stdout" 2>"$selfhost_stderr"
         selfhost_status=$?
@@ -270,13 +270,13 @@ if [[ $tokens_mode == 1 ]]; then
     assert_selfhost_cli 3 "usage: nlc run selfhost -- lex <package> [--tokens] [--tree]" lex tests/run/arithmetic --tokens --tokens
     assert_selfhost_cli 3 "usage: nlc run selfhost -- lex <package> [--tokens] [--tree]" lex tests/run/arithmetic --unknown
 else
-    assert_selfhost_cli 3 "usage: nlc run selfhost -- parse <package> [--tokens] [--tree]" parse tests/run/arithmetic --tokens --tokens
-    assert_selfhost_cli 3 "usage: nlc run selfhost -- parse <package> [--tokens] [--tree]" parse tests/run/arithmetic --unknown
+    assert_selfhost_cli 3 "usage: nlc run selfhost -- parse <package> [--tokens] [--tree] [--binary] [--policy=parse|compile]" parse tests/run/arithmetic --tokens --tokens
+    assert_selfhost_cli 3 "usage: nlc run selfhost -- parse <package> [--tokens] [--tree] [--binary] [--policy=parse|compile]" parse tests/run/arithmetic --unknown
 fi
 
 compare_package "$bench_relative" benchmark
 if [[ $parse_mode == 1 ]]; then
-    "$reference" parse "$bench_relative" --tokens >"$reference_stdout"
+    "$reference" --frontend=rust parse "$bench_relative" --tokens >"$reference_stdout"
 fi
 benchmark_rows=$(($(wc -l < "$reference_stdout") - 13))
 benchmark_bytes=$(du -b "$work/benchmark"/*.nl | awk '{total += $1} END {print total + 0}')
@@ -290,7 +290,7 @@ data_live_estimate=$((benchmark_source_bytes * 14 + token_live_bytes + file_live
 reference_time="$work/reference.time"
 selfhost_time="$work/selfhost.time"
 if [[ $parse_mode == 1 ]]; then
-    /usr/bin/time -f 'elapsed_seconds=%e max_rss_kib=%M' -o "$reference_time" "$reference" parse "$bench_relative" --tokens --tree >/dev/null
+    /usr/bin/time -f 'elapsed_seconds=%e max_rss_kib=%M' -o "$reference_time" "$reference" --frontend=rust parse "$bench_relative" --tokens --tree >/dev/null
     /usr/bin/time -f 'elapsed_seconds=%e max_rss_kib=%M' -o "$selfhost_time" "$selfhost" parse "$bench_relative" --tokens --tree >/dev/null
     "$reference" inspect stacks selfhost >"$work/stack-report"
     data_reservation=$(awk '/data stack reservation:/ {print $4; exit}' "$work/stack-report")

@@ -122,7 +122,7 @@ fn emit_newline(
 }
 
 fn lex_file(
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     base: long,
     length: long,
     tokens: write list<Token, TOKEN_STORAGE_CAPACITY>,

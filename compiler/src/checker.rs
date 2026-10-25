@@ -2550,7 +2550,11 @@ impl Checker {
                             TTypeKind::Text { .. }
                         );
                         let metadata = if lane.inline {
-                            if is_text { 16 } else { 8 }
+                            if is_text {
+                                16
+                            } else {
+                                8
+                            }
                         } else if is_text {
                             24
                         } else {
@@ -5722,7 +5726,11 @@ impl Checker {
                     .as_ref()
                     .and_then(|block| block.tail.as_deref())
                     .and_then(|tail| self.natural_expr_type_inner(tail, shadowed_counter));
-                if left == right { left } else { None }
+                if left == right {
+                    left
+                } else {
+                    None
+                }
             }
             ExprKind::QualifiedCase { enum_name, .. } => self.type_ids.get(enum_name).copied(),
             ExprKind::Field { receiver, name, .. } => {

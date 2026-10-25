@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::ast::Span;
 use crate::emit::{EntryStackReservation, StackContract};
-use crate::typed::{TTypeKind, Ty, base_type, growing_collection_lanes};
-use crate::{checker, emit, lexer, parser, syntax_dump};
+use crate::typed::{base_type, growing_collection_lanes, TTypeKind, Ty};
+use crate::{checker, emit, lexer, parser, syntax_dump, tree_reader};
 
 // Rust's print macros panic on a broken pipe. CLI output is optional once a
 // caller has closed its reader, so these wrappers drop stdout write errors.
@@ -72,6 +72,32 @@ pub struct CompileOutput {
 enum StackMode {
     Pointer,
     Offset,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Frontend {
+    Rust,
+    Selfhost,
+}
+
+impl Frontend {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "rust" => Ok(Self::Rust),
+            "selfhost" => Ok(Self::Selfhost),
+            _ => Err(format!("front end must be rust or selfhost, got '{value}'")),
+        }
+    }
+
+    pub fn from_environment() -> Result<Self, String> {
+        match std::env::var("NLC_FRONTEND") {
+            Ok(value) => Self::parse(&value),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Rust),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("NLC_FRONTEND must be valid UTF-8: rust or selfhost".to_owned())
+            }
+        }
+    }
 }
 
 impl StackMode {
@@ -170,7 +196,29 @@ impl std::fmt::Display for PackageError {
 }
 
 pub fn compile_package(package: &Path) -> Result<CompileOutput, CompileError> {
-    match compile_package_internal(package, true) {
+    let frontend = Frontend::from_environment().map_err(|message| CompileError {
+        file: package
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<package>")
+            .to_owned(),
+        span: Span {
+            file: 0,
+            line: 1,
+            col: 1,
+            start_offset: 0,
+            end_offset: 0,
+        },
+        message,
+    })?;
+    compile_package_with_frontend(package, frontend)
+}
+
+pub fn compile_package_with_frontend(
+    package: &Path,
+    frontend: Frontend,
+) -> Result<CompileOutput, CompileError> {
+    match compile_package_internal(package, true, frontend, None) {
         Ok(output) => Ok(output),
         Err(PackageError::Compile(error)) => Err(error),
         Err(PackageError::Tool(message)) => Err(CompileError {
@@ -194,11 +242,21 @@ pub fn compile_package(package: &Path) -> Result<CompileOutput, CompileError> {
 /// Lex and parse a package without type checking. The dumps are deterministic for a
 /// given byte-for-byte package and are the reference format for the self-hosted parser.
 pub fn parse_package(package: &Path) -> Result<ParseDump, PackageError> {
+    let frontend = Frontend::from_environment().map_err(PackageError::Tool)?;
+    parse_package_with_frontend(package, frontend)
+}
+
+pub fn parse_package_with_frontend(
+    package: &Path,
+    frontend: Frontend,
+) -> Result<ParseDump, PackageError> {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("nlc-parse".to_owned())
             .stack_size(COMPILER_STACK_SIZE)
-            .spawn_scoped(scope, move || package_dump_on_worker(package, true))
+            .spawn_scoped(scope, move || {
+                package_dump_on_worker(package, true, frontend)
+            })
             .map_err(|error| PackageError::Tool(format!("could not start parser thread: {error}")))?
             .join()
             .map_err(|_| PackageError::Tool("parser thread panicked".to_owned()))?
@@ -212,7 +270,9 @@ pub fn lex_package(package: &Path) -> Result<String, PackageError> {
         std::thread::Builder::new()
             .name("nlc-lex".to_owned())
             .stack_size(COMPILER_STACK_SIZE)
-            .spawn_scoped(scope, move || package_dump_on_worker(package, false))
+            .spawn_scoped(scope, move || {
+                package_dump_on_worker(package, false, Frontend::Rust)
+            })
             .map_err(|error| PackageError::Tool(format!("could not start lexer thread: {error}")))?
             .join()
             .map_err(|_| PackageError::Tool("lexer thread panicked".to_owned()))?
@@ -220,15 +280,46 @@ pub fn lex_package(package: &Path) -> Result<String, PackageError> {
     })
 }
 
-fn package_dump_on_worker(package: &Path, parse_tree: bool) -> Result<ParseDump, PackageError> {
+fn package_dump_on_worker(
+    package: &Path,
+    parse_tree: bool,
+    frontend: Frontend,
+) -> Result<ParseDump, PackageError> {
+    if parse_tree && frontend == Frontend::Selfhost {
+        let files = run_selfhost_tree(package, "--policy=parse")?;
+        let mut dump = ParseDump::default();
+        for file in files {
+            dump.tokens.push_str(&syntax_dump::token_dump(
+                &file.name,
+                &file.source,
+                &file.tokens,
+            ));
+            let (tree, _, _) = syntax_dump::tree_dump(&file.name, file.source.len(), &file.program)
+                .map_err(|_| {
+                    PackageError::Tool(
+                        "self-hosted AST exceeds the Rust tree dump limits".to_owned(),
+                    )
+                })?;
+            dump.tree.push_str(&tree);
+        }
+        return Ok(dump);
+    }
     let entries = fs::read_dir(package)
         .map_err(|e| PackageError::Tool(format!("cannot read package directory: {e}")))?;
+    let package_root = fs::canonicalize(package)
+        .map_err(|e| PackageError::Tool(format!("cannot resolve package directory: {e}")))?
+        .parent()
+        .ok_or_else(|| PackageError::Tool("package directory has no parent".to_owned()))?
+        .to_owned();
     let mut paths = Vec::new();
     for entry in entries {
         let entry =
             entry.map_err(|e| PackageError::Tool(format!("cannot read package entry: {e}")))?;
         let path = entry.path();
-        if path.extension().is_some_and(|extension| extension == "nl") && path.is_file() {
+        if path.extension().is_some_and(|extension| extension == "nl")
+            && path.is_file()
+            && fs::canonicalize(&path).is_ok_and(|target| target.starts_with(&package_root))
+        {
             paths.push(path);
         }
     }
@@ -382,13 +473,15 @@ fn invalid_utf8_span(file: usize, bytes: &[u8], offset: usize) -> Span {
 fn compile_package_internal(
     package: &Path,
     require_main: bool,
+    frontend: Frontend,
+    stack_mode_override: Option<StackMode>,
 ) -> Result<CompileOutput, PackageError> {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("nlc-compile".to_owned())
             .stack_size(COMPILER_STACK_SIZE)
             .spawn_scoped(scope, move || {
-                compile_package_on_worker(package, require_main)
+                compile_package_on_worker(package, require_main, frontend, stack_mode_override)
             })
             .map_err(|error| {
                 PackageError::Tool(format!("could not start compiler thread: {error}"))
@@ -401,33 +494,46 @@ fn compile_package_internal(
 fn compile_package_on_worker(
     package: &Path,
     require_main: bool,
+    frontend: Frontend,
+    stack_mode_override: Option<StackMode>,
 ) -> Result<CompileOutput, PackageError> {
-    let stack_mode = StackMode::from_environment().map_err(|message| {
-        PackageError::Compile(CompileError {
-            file: package
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("<package>")
-                .to_owned(),
-            span: Span {
-                file: 0,
-                line: 1,
-                col: 1,
-                start_offset: 0,
-                end_offset: 0,
-            },
-            message,
-        })
-    })?;
+    let stack_mode = match stack_mode_override {
+        Some(mode) => mode,
+        None => StackMode::from_environment().map_err(|message| {
+            PackageError::Compile(CompileError {
+                file: package
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("<package>")
+                    .to_owned(),
+                span: Span {
+                    file: 0,
+                    line: 1,
+                    col: 1,
+                    start_offset: 0,
+                    end_offset: 0,
+                },
+                message,
+            })
+        })?,
+    };
     let memory_config = read_memory_config(package)?;
     let entries = fs::read_dir(package)
         .map_err(|e| PackageError::Tool(format!("cannot read package directory: {e}")))?;
+    let package_root = fs::canonicalize(package)
+        .map_err(|e| PackageError::Tool(format!("cannot resolve package directory: {e}")))?
+        .parent()
+        .ok_or_else(|| PackageError::Tool("package directory has no parent".to_owned()))?
+        .to_owned();
     let mut paths = Vec::new();
     for entry in entries {
         let entry =
             entry.map_err(|e| PackageError::Tool(format!("cannot read package entry: {e}")))?;
         let path = entry.path();
-        if path.extension().is_some_and(|e| e == "nl") && path.is_file() {
+        if path.extension().is_some_and(|e| e == "nl")
+            && path.is_file()
+            && fs::canonicalize(&path).is_ok_and(|target| target.starts_with(&package_root))
+        {
             paths.push(path);
         }
     }
@@ -439,31 +545,44 @@ fn compile_package_on_worker(
     }
     let mut files = Vec::new();
     let mut programs = Vec::new();
-    for path in paths {
-        let file = path
-            .file_name()
-            .and_then(|x| x.to_str())
-            .unwrap_or("<source>")
-            .to_owned();
-        let source = fs::read_to_string(&path)
-            .map_err(|e| PackageError::Tool(format!("cannot read source file '{}': {e}", file)))?;
-        let file_id = files.len();
-        let tokens = lexer::lex(&source, file_id).map_err(|e| {
-            PackageError::Compile(CompileError {
-                file: file.clone(),
-                span: e.span,
-                message: e.message,
-            })
-        })?;
-        let program = parser::parse(tokens, &source).map_err(|e| {
-            PackageError::Compile(CompileError {
-                file: file.clone(),
-                span: e.span,
-                message: e.message,
-            })
-        })?;
-        files.push(file);
-        programs.push(program);
+    match frontend {
+        Frontend::Selfhost => {
+            for file in run_selfhost_tree(package, "--policy=compile")? {
+                files.push(file.name);
+                programs.push(file.program);
+            }
+        }
+        Frontend::Rust => {
+            for path in paths {
+                let file = path
+                    .file_name()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or("<source>")
+                    .to_owned();
+                let source_bytes = fs::read(&path).map_err(|e| {
+                    PackageError::Tool(format!("cannot read source file '{}': {e}", file))
+                })?;
+                let source = String::from_utf8(source_bytes)
+                    .map_err(|_| PackageError::Tool("source is not valid UTF-8".to_owned()))?;
+                let file_id = files.len();
+                let tokens = lexer::lex(&source, file_id).map_err(|e| {
+                    PackageError::Compile(CompileError {
+                        file: file.clone(),
+                        span: e.span,
+                        message: e.message,
+                    })
+                })?;
+                let program = parser::parse(tokens, &source).map_err(|e| {
+                    PackageError::Compile(CompileError {
+                        file: file.clone(),
+                        span: e.span,
+                        message: e.message,
+                    })
+                })?;
+                files.push(file);
+                programs.push(program);
+            }
+        }
     }
     let mut typed = checker::check_package(
         programs,
@@ -607,7 +726,16 @@ fn collect_stack_peak_expectations(
 }
 
 pub fn build_package(package: &Path, output: &Path) -> Result<(), PackageError> {
-    let compiled = compile_package_internal(package, true)?;
+    let frontend = Frontend::from_environment().map_err(PackageError::Tool)?;
+    build_package_with_frontend(package, output, frontend)
+}
+
+pub fn build_package_with_frontend(
+    package: &Path,
+    output: &Path,
+    frontend: Frontend,
+) -> Result<(), PackageError> {
+    let compiled = compile_package_internal(package, true, frontend, None)?;
     if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)
             .map_err(|e| PackageError::Tool(format!("cannot create output directory: {e}")))?;
@@ -647,7 +775,16 @@ pub fn run_package_args(
     package: &Path,
     args: &[std::ffi::OsString],
 ) -> Result<ExitStatus, PackageError> {
-    let compiled = compile_package_internal(package, true)?;
+    let frontend = Frontend::from_environment().map_err(PackageError::Tool)?;
+    run_package_args_with_frontend(package, args, frontend)
+}
+
+pub fn run_package_args_with_frontend(
+    package: &Path,
+    args: &[std::ffi::OsString],
+    frontend: Frontend,
+) -> Result<ExitStatus, PackageError> {
+    let compiled = compile_package_internal(package, true, frontend, None)?;
     let temp = TempDir::new()
         .map_err(|e| PackageError::Tool(format!("cannot create temporary directory: {e}")))?;
     let ir = temp.path.join("module.ll");
@@ -669,7 +806,12 @@ pub fn run_package_args(
 }
 
 pub fn test_package(package: &Path) -> Result<u8, PackageError> {
-    let compiled = compile_package_internal(package, false)?;
+    let frontend = Frontend::from_environment().map_err(PackageError::Tool)?;
+    test_package_with_frontend(package, frontend)
+}
+
+pub fn test_package_with_frontend(package: &Path, frontend: Frontend) -> Result<u8, PackageError> {
+    let compiled = compile_package_internal(package, false, frontend, None)?;
     if compiled.tests.is_empty() {
         println!("0 passed, 0 failed");
         return Ok(0);
@@ -753,7 +895,8 @@ pub fn test_package(package: &Path) -> Result<u8, PackageError> {
 }
 
 pub fn inspect_memory(package: &Path, allow_overcommit: bool) -> Result<(), PackageError> {
-    let compiled = compile_package_internal(package, false)?;
+    let frontend = Frontend::from_environment().map_err(PackageError::Tool)?;
+    let compiled = compile_package_internal(package, false, frontend, None)?;
     for global in &compiled.memory.globals {
         println!(
             "global {}: {} bytes (offset {}, alignment 8)",
@@ -903,7 +1046,8 @@ fn collection_string_lane_memory(
 }
 
 pub fn inspect_contracts(package: &Path) -> Result<(), PackageError> {
-    let compiled = compile_package_internal(package, false)?;
+    let frontend = Frontend::from_environment().map_err(PackageError::Tool)?;
+    let compiled = compile_package_internal(package, false, frontend, None)?;
     for contract in &compiled.contracts {
         println!("function {}", contract.function);
         println!("  byte requirement: {}", contract.byte_requirement);
@@ -920,7 +1064,8 @@ pub fn inspect_contracts(package: &Path) -> Result<(), PackageError> {
 }
 
 pub fn inspect_stacks(package: &Path) -> Result<(), PackageError> {
-    let compiled = compile_package_internal(package, false)?;
+    let frontend = Frontend::from_environment().map_err(PackageError::Tool)?;
+    let compiled = compile_package_internal(package, false, frontend, None)?;
     let temp = TempDir::new().map_err(|error| {
         PackageError::Tool(format!("cannot create temporary directory: {error}"))
     })?;
@@ -1894,5 +2039,694 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+const SELFHOST_WIRE_VERSION: u64 = 1;
+const SELFHOST_CHILD_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct Fingerprint(u64, u64);
+
+impl Fingerprint {
+    fn new() -> Self {
+        Self(0xcbf29ce484222325, 0x84222325cbf29ce4)
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x100000001b3);
+            self.1 ^= u64::from(*byte).wrapping_add(0x9e3779b97f4a7c15);
+            self.1 = self.1.rotate_left(13).wrapping_mul(0xff51afd7ed558ccd);
+        }
+    }
+
+    fn field(&mut self, label: &[u8], value: &[u8]) {
+        self.feed(&(label.len() as u64).to_le_bytes());
+        self.feed(label);
+        self.feed(&(value.len() as u64).to_le_bytes());
+        self.feed(value);
+    }
+
+    fn hex(self) -> String {
+        format!("{:016x}{:016x}", self.0, self.1)
+    }
+}
+
+struct CacheLock {
+    path: PathBuf,
+}
+
+impl CacheLock {
+    fn acquire(path: PathBuf) -> Result<Self, PackageError> {
+        for _ in 0..600 {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    let _ = writeln!(file, "{}", std::process::id());
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    if cache_lock_is_stale(&path) {
+                        let _ = fs::remove_file(&path);
+                        continue;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(error) => {
+                    return Err(PackageError::Tool(format!(
+                        "cannot create self-hosted compiler cache lock: {error}"
+                    )))
+                }
+            }
+        }
+        Err(PackageError::Tool(
+            "timed out waiting for the self-hosted compiler cache lock".to_owned(),
+        ))
+    }
+}
+
+fn cache_lock_is_stale(path: &Path) -> bool {
+    let Ok(owner) = fs::read_to_string(path) else {
+        return fs::metadata(path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age.as_secs() > 2);
+    };
+    let Some(pid) = owner.trim().parse::<u32>().ok().filter(|pid| *pid != 0) else {
+        return fs::metadata(path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age.as_secs() > 2);
+    };
+    if pid == std::process::id() {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        !Path::new("/proc").join(pid.to_string()).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        fs::metadata(path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age.as_secs() > 300)
+    }
+}
+
+impl Drop for CacheLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn target_cache_root() -> PathBuf {
+    if let Some(path) = std::env::var_os("CARGO_TARGET_DIR") {
+        let path = PathBuf::from(path);
+        return if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir().unwrap_or_default().join(path)
+        };
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".cache/next-lang/target");
+    }
+    std::env::temp_dir().join("next-lang-target")
+}
+
+fn effective_optimization() -> Result<&'static str, PackageError> {
+    match std::env::var("NLC_OPT_LEVEL").as_deref() {
+        Ok("1") | Err(_) => Ok("1"),
+        Ok("3") => Ok("3"),
+        Ok(value) => Err(PackageError::Tool(format!(
+            "NLC_OPT_LEVEL must be 1 or 3, got '{value}'"
+        ))),
+    }
+}
+
+fn command_version(program: &str) -> Result<Vec<u8>, PackageError> {
+    let output = Command::new(program)
+        .arg("--version")
+        .output()
+        .map_err(|error| {
+            PackageError::Tool(format!("cannot query {program} toolchain version: {error}"))
+        })?;
+    if !output.status.success() {
+        return Err(PackageError::Tool(format!("{program} --version failed")));
+    }
+    let mut value = output.stdout;
+    value.extend_from_slice(&output.stderr);
+    Ok(value)
+}
+
+fn selfhost_source_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../selfhost")
+}
+
+#[derive(Clone, Copy)]
+struct SelfhostKeyInputs<'a> {
+    wire_version: u64,
+    nlc_binary: &'a [u8],
+    runtime: &'a [u8],
+    manifest: &'a [u8],
+    sources: &'a [(Vec<u8>, Vec<u8>)],
+    target: &'a [u8],
+    optimization: &'a [u8],
+    stack_mode: &'a [u8],
+    clang: &'a [u8],
+    rustc: &'a [u8],
+}
+
+fn compute_selfhost_cache_key(inputs: &SelfhostKeyInputs<'_>) -> String {
+    let mut fingerprint = Fingerprint::new();
+    fingerprint.field(b"wire-version", &inputs.wire_version.to_le_bytes());
+    fingerprint.field(b"nlc-binary", inputs.nlc_binary);
+    fingerprint.field(b"runtime-c", inputs.runtime);
+    fingerprint.field(b"selfhost/package.toml", inputs.manifest);
+    for (path, source) in inputs.sources {
+        fingerprint.field(b"selfhost-source-path", path);
+        fingerprint.field(b"selfhost-source", source);
+    }
+    fingerprint.field(b"target", inputs.target);
+    fingerprint.field(b"optimization", inputs.optimization);
+    fingerprint.field(b"stack-mode", inputs.stack_mode);
+    fingerprint.field(b"clang", inputs.clang);
+    fingerprint.field(b"rustc", inputs.rustc);
+    fingerprint.hex()
+}
+
+fn selfhost_cache_key(selfhost_dir: &Path, stack_mode: StackMode) -> Result<String, PackageError> {
+    let compiler = std::env::current_exe().map_err(|error| {
+        PackageError::Tool(format!("cannot locate nlc build identity: {error}"))
+    })?;
+    let nlc_binary = fs::read(&compiler)
+        .map_err(|error| PackageError::Tool(format!("cannot read nlc build identity: {error}")))?;
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/nl_runtime.c");
+    let runtime = fs::read(&runtime)
+        .map_err(|error| PackageError::Tool(format!("cannot read runtime source: {error}")))?;
+    let manifest = selfhost_dir.join("package.toml");
+    let manifest = fs::read(&manifest)
+        .map_err(|error| PackageError::Tool(format!("cannot read selfhost manifest: {error}")))?;
+    let mut sources = fs::read_dir(selfhost_dir)
+        .map_err(|error| PackageError::Tool(format!("cannot list selfhost sources: {error}")))?
+        .map(|entry| {
+            entry.map(|entry| entry.path()).map_err(|error| {
+                PackageError::Tool(format!("cannot read selfhost directory entry: {error}"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    sources.retain(|path| {
+        path.extension().is_some_and(|extension| extension == "nl") && path.is_file()
+    });
+    sources.sort();
+    let mut source_inputs = Vec::with_capacity(sources.len());
+    for path in sources {
+        let relative = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| PackageError::Tool("selfhost source name is not UTF-8".to_owned()))?;
+        source_inputs.push((
+            relative.as_bytes().to_vec(),
+            fs::read(&path).map_err(|error| {
+                PackageError::Tool(format!(
+                    "cannot read selfhost source '{}': {error}",
+                    path.display()
+                ))
+            })?,
+        ));
+    }
+    let target = std::env::var("TARGET")
+        .unwrap_or_else(|_| format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS));
+    let optimization = effective_optimization()?;
+    let clang = command_version("clang")?;
+    let rustc = command_version("rustc")?;
+    // Bootstrap generation is deliberately Rust-only and pointer-mode. Only
+    // code-generation settings affect this artifact; frontend/test-runner
+    // settings must not perturb its cache identity.
+    Ok(compute_selfhost_cache_key(&SelfhostKeyInputs {
+        wire_version: SELFHOST_WIRE_VERSION,
+        nlc_binary: &nlc_binary,
+        runtime: &runtime,
+        manifest: &manifest,
+        sources: &source_inputs,
+        target: target.as_bytes(),
+        optimization: optimization.as_bytes(),
+        stack_mode: if stack_mode.is_offset() {
+            b"offset"
+        } else {
+            b"pointer"
+        },
+        clang: &clang,
+        rustc: &rustc,
+    }))
+}
+
+fn selfhost_cached_binary() -> Result<PathBuf, PackageError> {
+    let selfhost_dir = selfhost_source_dir();
+    if !selfhost_dir.is_dir() {
+        return Err(PackageError::Tool(format!(
+            "selfhost source directory is missing: {}",
+            selfhost_dir.display()
+        )));
+    }
+    let stack_mode = StackMode::Pointer;
+    let key = selfhost_cache_key(&selfhost_dir, stack_mode)?;
+    let cache_root = target_cache_root().join("next-lang-selfhost");
+    fs::create_dir_all(&cache_root).map_err(|error| {
+        PackageError::Tool(format!("cannot create selfhost cache directory: {error}"))
+    })?;
+    let artifact_dir = cache_root.join(&key);
+    let binary = artifact_dir.join(if cfg!(windows) {
+        "selfhost.exe"
+    } else {
+        "selfhost"
+    });
+    if cached_artifact_valid(&artifact_dir, &binary) {
+        return Ok(binary);
+    }
+
+    let _lock = CacheLock::acquire(cache_root.join("build.lock"))?;
+    if cached_artifact_valid(&artifact_dir, &binary) {
+        return Ok(binary);
+    }
+    if artifact_dir.exists() {
+        fs::remove_dir_all(&artifact_dir).map_err(|error| {
+            PackageError::Tool(format!(
+                "cannot remove corrupt selfhost cache entry: {error}"
+            ))
+        })?;
+    }
+    let mut stage = None;
+    for _ in 0..100 {
+        let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let path = cache_root.join(format!("stage-{}-{id}", std::process::id()));
+        match fs::create_dir(&path) {
+            Ok(()) => {
+                stage = Some(path);
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(PackageError::Tool(format!(
+                    "cannot create selfhost cache staging directory: {error}"
+                )))
+            }
+        }
+    }
+    let stage = stage.ok_or_else(|| {
+        PackageError::Tool("cannot allocate a selfhost cache staging directory".to_owned())
+    })?;
+    let stage_guard = TempDir {
+        path: stage.clone(),
+    };
+    let compiled = compile_package_on_worker(
+        &selfhost_dir,
+        true,
+        Frontend::Rust,
+        Some(StackMode::Pointer),
+    )?;
+    let ir = stage.join("module.ll");
+    let staged_binary = stage.join(if cfg!(windows) {
+        "selfhost.exe"
+    } else {
+        "selfhost"
+    });
+    fs::write(&ir, &compiled.llvm_ir)
+        .map_err(|error| PackageError::Tool(format!("cannot write selfhost LLVM IR: {error}")))?;
+    clang(&ir, &staged_binary, false, &compiled)?;
+    let executable_bytes = fs::read(&staged_binary)
+        .map_err(|error| PackageError::Tool(format!("cannot read selfhost executable: {error}")))?;
+    fs::write(
+        stage.join("artifact.hash"),
+        FingerprintHash::of(&executable_bytes).as_bytes(),
+    )
+    .map_err(|error| PackageError::Tool(format!("cannot write selfhost cache marker: {error}")))?;
+    fs::remove_file(&ir)
+        .map_err(|error| PackageError::Tool(format!("cannot remove staged LLVM IR: {error}")))?;
+    fs::rename(&stage, &artifact_dir).map_err(|error| {
+        PackageError::Tool(format!("cannot publish selfhost cache artifact: {error}"))
+    })?;
+    drop(stage_guard);
+    Ok(binary)
+}
+
+struct FingerprintHash;
+impl FingerprintHash {
+    fn of(bytes: &[u8]) -> String {
+        let mut fingerprint = Fingerprint::new();
+        fingerprint.feed(bytes);
+        fingerprint.hex()
+    }
+}
+
+fn cached_artifact_valid(directory: &Path, binary: &Path) -> bool {
+    if !directory.is_dir() || !binary.is_file() {
+        return false;
+    }
+    let marker = match fs::read_to_string(directory.join("artifact.hash")) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let artifact = match fs::read(binary) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    marker == FingerprintHash::of(&artifact)
+}
+
+fn run_selfhost_tree(
+    package: &Path,
+    policy: &str,
+) -> Result<Vec<tree_reader::RebuiltFile>, PackageError> {
+    let binary = selfhost_cached_binary()?;
+    run_selfhost_tree_with_binary(package, &binary, policy)
+}
+
+fn run_selfhost_tree_with_binary(
+    package: &Path,
+    binary: &Path,
+    policy: &str,
+) -> Result<Vec<tree_reader::RebuiltFile>, PackageError> {
+    let package = fs::canonicalize(package).map_err(|error| {
+        PackageError::Tool(format!("cannot resolve package directory: {error}"))
+    })?;
+    let parent = package
+        .parent()
+        .ok_or_else(|| PackageError::Tool("package directory has no parent".to_owned()))?;
+    let name = package
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| PackageError::Tool("package directory name is not UTF-8".to_owned()))?;
+    let temp = TempDir::new().map_err(|error| {
+        PackageError::Tool(format!("cannot create temporary tree directory: {error}"))
+    })?;
+    let tree_path = temp.path.join("tree.bin");
+    let output_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tree_path)
+        .map_err(|error| {
+            PackageError::Tool(format!("cannot create temporary tree file: {error}"))
+        })?;
+    let child = Command::new(&binary)
+        .args(["parse", name, "--binary", policy])
+        .current_dir(parent)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(output_file))
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| PackageError::Tool(format!("cannot launch selfhost parser: {error}")))?;
+    let result = child
+        .wait_with_output()
+        .map_err(|error| PackageError::Tool(format!("cannot wait for selfhost parser: {error}")))?;
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+        if result.status.code() == Some(2) {
+            if let Some(error) = parse_child_diagnostic(&stderr) {
+                return Err(PackageError::Compile(error));
+            }
+            return Err(PackageError::Tool(format!(
+                "selfhost parser exited with status 2 without a diagnostic: {}",
+                stderr.trim_end()
+            )));
+        }
+        if let Some(message) = stderr.strip_prefix("nlc: tool failure: ") {
+            return Err(PackageError::Tool(message.trim_end().to_owned()));
+        }
+        return Err(PackageError::Tool(match result.status.code() {
+            Some(code) => format!(
+                "selfhost parser exited with status {code}: {}",
+                stderr.trim_end()
+            ),
+            None => format!(
+                "selfhost parser terminated by a signal: {}",
+                stderr.trim_end()
+            ),
+        }));
+    }
+    let metadata = fs::metadata(&tree_path).map_err(|error| {
+        PackageError::Tool(format!("cannot inspect temporary tree file: {error}"))
+    })?;
+    if metadata.len() > SELFHOST_CHILD_MAX_BYTES {
+        return Err(PackageError::Tool(
+            "selfhost binary tree exceeds the reader size limit".to_owned(),
+        ));
+    }
+    let bytes = fs::read(&tree_path)
+        .map_err(|error| PackageError::Tool(format!("cannot read temporary tree file: {error}")))?;
+    tree_reader::read_package(&bytes)
+        .map_err(|error| PackageError::Tool(format!("invalid selfhost binary tree: {error}")))
+}
+
+fn parse_child_diagnostic(stderr: &str) -> Option<CompileError> {
+    let line = stderr.strip_suffix('\n').unwrap_or(stderr);
+    let (location, message) = line.rsplit_once(": error: ")?;
+    let mut parts = location.rsplitn(3, ':');
+    let col = parts.next()?.parse().ok()?;
+    let line_number = parts.next()?.parse().ok()?;
+    let file = parts.next()?.to_owned();
+    Some(CompileError {
+        file,
+        span: Span {
+            file: 0,
+            line: line_number,
+            col,
+            start_offset: 0,
+            end_offset: 0,
+        },
+        message: message.to_owned(),
+    })
+}
+
+#[cfg(test)]
+mod selfhost_ast_tests {
+    use super::*;
+    use crate::ast::Program;
+
+    fn source_packages(root: &Path, relative: &str) -> Vec<PathBuf> {
+        fn visit(path: &Path, packages: &mut Vec<PathBuf>) {
+            let entries = match fs::read_dir(path) {
+                Ok(entries) => entries,
+                Err(_) => return,
+            };
+            let mut has_source = false;
+            let mut children = Vec::new();
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path
+                    .extension()
+                    .is_some_and(|extension| extension == "nl")
+                {
+                    has_source = true;
+                } else if entry_path.is_dir() {
+                    children.push(entry_path);
+                }
+            }
+            if has_source {
+                packages.push(path.to_owned());
+            }
+            children.sort();
+            for child in children {
+                visit(&child, packages);
+            }
+        }
+        let mut packages = Vec::new();
+        visit(&root.join(relative), &mut packages);
+        packages.sort();
+        packages
+    }
+
+    fn rust_programs(package: &Path) -> Option<Vec<(String, Program)>> {
+        let root = fs::canonicalize(package).ok()?;
+        let mut paths = fs::read_dir(package)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension().is_some_and(|extension| extension == "nl") && path.is_file()
+            })
+            .filter(|path| fs::canonicalize(path).is_ok_and(|target| target.starts_with(&root)))
+            .collect::<Vec<_>>();
+        paths.sort();
+        let mut programs = Vec::with_capacity(paths.len());
+        for (file_id, path) in paths.into_iter().enumerate() {
+            let name = path.file_name()?.to_str()?.to_owned();
+            let bytes = fs::read(path).ok()?;
+            let source = String::from_utf8(bytes).ok()?;
+            let tokens = lexer::lex(&source, file_id).ok()?;
+            let program = parser::parse(tokens, &source).ok()?;
+            programs.push((name, program));
+        }
+        Some(programs)
+    }
+
+    #[test]
+    fn selfhost_rebuilds_the_rust_ast_for_every_valid_fixture_package() {
+        std::thread::Builder::new()
+            .name("selfhost-ast-equality".to_owned())
+            .stack_size(256 * 1024 * 1024)
+            .spawn(compare_all_fixture_asts)
+            .expect("start AST equality worker")
+            .join()
+            .expect("AST equality worker did not panic");
+    }
+
+    #[test]
+    fn every_selfhost_cache_key_component_changes_the_key() {
+        let base_sources = vec![(b"main.nl".to_vec(), b"fn main() {}".to_vec())];
+        let base = SelfhostKeyInputs {
+            wire_version: 1,
+            nlc_binary: b"nlc-v1",
+            runtime: b"runtime-v1",
+            manifest: b"package-v1",
+            sources: &base_sources,
+            target: b"target-v1",
+            optimization: b"1",
+            stack_mode: b"pointer",
+            clang: b"clang-v1",
+            rustc: b"rustc-v1",
+        };
+        let key = compute_selfhost_cache_key(&base);
+        let changed_source_path = vec![(b"other.nl".to_vec(), b"fn main() {}".to_vec())];
+        let changed_source_content =
+            vec![(b"main.nl".to_vec(), b"fn main() { print(1) }".to_vec())];
+        let changed = [
+            compute_selfhost_cache_key(&SelfhostKeyInputs {
+                wire_version: 2,
+                ..base
+            }),
+            compute_selfhost_cache_key(&SelfhostKeyInputs {
+                nlc_binary: b"nlc-v2",
+                ..base
+            }),
+            compute_selfhost_cache_key(&SelfhostKeyInputs {
+                runtime: b"runtime-v2",
+                ..base
+            }),
+            compute_selfhost_cache_key(&SelfhostKeyInputs {
+                manifest: b"package-v2",
+                ..base
+            }),
+            compute_selfhost_cache_key(&SelfhostKeyInputs {
+                sources: &changed_source_path,
+                ..base
+            }),
+            compute_selfhost_cache_key(&SelfhostKeyInputs {
+                sources: &changed_source_content,
+                ..base
+            }),
+            compute_selfhost_cache_key(&SelfhostKeyInputs {
+                target: b"target-v2",
+                ..base
+            }),
+            compute_selfhost_cache_key(&SelfhostKeyInputs {
+                optimization: b"3",
+                ..base
+            }),
+            compute_selfhost_cache_key(&SelfhostKeyInputs {
+                stack_mode: b"offset",
+                ..base
+            }),
+            compute_selfhost_cache_key(&SelfhostKeyInputs {
+                clang: b"clang-v2",
+                ..base
+            }),
+            compute_selfhost_cache_key(&SelfhostKeyInputs {
+                rustc: b"rustc-v2",
+                ..base
+            }),
+        ];
+        assert!(changed.iter().all(|candidate| candidate != &key));
+    }
+
+    #[test]
+    fn cache_artifacts_reject_missing_or_corrupt_executables() {
+        let temp = TempDir::new().expect("create temporary cache directory");
+        let binary = temp.path.join("selfhost");
+        fs::write(&binary, b"selfhost executable").expect("write cache executable");
+        let marker = FingerprintHash::of(b"selfhost executable");
+        fs::write(temp.path.join("artifact.hash"), marker).expect("write cache marker");
+        assert!(cached_artifact_valid(&temp.path, &binary));
+        fs::write(&binary, b"corrupted executable").expect("corrupt cache executable");
+        assert!(!cached_artifact_valid(&temp.path, &binary));
+        fs::remove_file(&binary).expect("remove cache executable");
+        assert!(!cached_artifact_valid(&temp.path, &binary));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_signals_and_truncated_trees_are_tool_failures() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new().expect("create transport fixture directory");
+        let package = temp.path.join("package");
+        fs::create_dir(&package).expect("create package directory");
+        fs::write(package.join("main.nl"), "fn main() {}\n").expect("write package source");
+
+        let signal_child = temp.path.join("signal-child");
+        fs::write(&signal_child, "#!/bin/sh\nkill -TERM $$\n").expect("write signal child");
+        fs::set_permissions(&signal_child, fs::Permissions::from_mode(0o755))
+            .expect("make signal child executable");
+        let signal_error = run_selfhost_tree_with_binary(&package, &signal_child, "--policy=parse")
+            .expect_err("a child killed by a signal must fail");
+        assert!(
+            matches!(&signal_error, PackageError::Tool(message) if message.contains("terminated by a signal")),
+            "unexpected signal failure: {signal_error:?}"
+        );
+
+        let truncated_child = temp.path.join("truncated-child");
+        fs::write(&truncated_child, "#!/bin/sh\nprintf 'NLASTB01'\n")
+            .expect("write truncated-tree child");
+        fs::set_permissions(&truncated_child, fs::Permissions::from_mode(0o755))
+            .expect("make truncated-tree child executable");
+        let truncated_error =
+            run_selfhost_tree_with_binary(&package, &truncated_child, "--policy=parse")
+                .expect_err("a truncated child tree must fail");
+        assert!(
+            matches!(&truncated_error, PackageError::Tool(message) if message.contains("invalid selfhost binary tree: truncated header")),
+            "unexpected truncated-tree failure: {truncated_error:?}"
+        );
+    }
+
+    fn compare_all_fixture_asts() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root");
+        let mut packages = Vec::new();
+        for relative in ["tests/run", "tests/test", "tests/parse/cases"] {
+            packages.extend(source_packages(workspace, relative));
+        }
+        let mut checked = 0usize;
+        for package in packages {
+            let Some(expected) = rust_programs(&package) else {
+                continue;
+            };
+            let rebuilt = run_selfhost_tree(&package, "--policy=parse").unwrap_or_else(|error| {
+                panic!(
+                    "selfhost failed to rebuild Rust-valid package {}: {error}",
+                    package.display()
+                )
+            });
+            let actual = rebuilt
+                .into_iter()
+                .map(|file| (file.name, file.program))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "AST mismatch in {}", package.display());
+            checked += 1;
+        }
+        assert!(
+            checked > 50,
+            "fixture discovery found only {checked} valid packages"
+        );
     }
 }

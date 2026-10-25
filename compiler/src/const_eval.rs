@@ -3454,7 +3454,11 @@ impl Evaluator<'_> {
                 if b == 0 {
                     return Err(self.failure(span, "remainder by zero during constant evaluation"));
                 }
-                if a == min && b == -1 { 0 } else { a % b }
+                if a == min && b == -1 {
+                    0
+                } else {
+                    a % b
+                }
             }
             BinaryOp::WrapAdd => wrap_base(a.wrapping_add(b), width),
             BinaryOp::WrapSub => wrap_base(a.wrapping_sub(b), width),

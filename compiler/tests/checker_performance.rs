@@ -33,6 +33,9 @@ impl Drop for TempPackage {
 
 fn assert_compiles_quickly(name: &str, source: &str) {
     let package = TempPackage::new(name, source);
+    // Keep a cold selfhost bootstrap out of this checker-only timing assertion.
+    compile_package(package.path())
+        .unwrap_or_else(|error| panic!("{name} warmup package failed to compile: {error}"));
     let start = Instant::now();
     let result = compile_package(package.path());
     let elapsed = start.elapsed();

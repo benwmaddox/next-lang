@@ -24,16 +24,17 @@ Commands (in WSL; Codex itself runs inside WSL, with its own settings in `~/.cod
 
 This is the one queue; no other part of this plan sets a different order. Each entry is described below.
 
-1. **O1** (running): the offset runtime and slice ported onto main, and inline stack allocation (docs/tasks/O1-offset-runtime-and-inline-alloc.md).
-2. **H1:** the self-hosted front end, selectable, with Rust still the default (docs/tasks/H1-selfhost-frontend.md). Its child is built in pointer mode until O6 (a build setting, not a pointer-only feature).
-3. **R1, runtime without per-operation heap use, with buffered standard output and `match` on `byte`** (docs/tasks/R1-runtime-arena-only.md): file reads, listings and the job context stop using `malloc`/`calloc`/`realloc`/`strdup`; stdout and stderr buffered.
-4. **O2, O3, O4,** in order.
-5. **L1** nested layout flattening (after O4, keeping O4's element-reference form).
-6. **O5, O6, O7,** ending with offsets as the only mode.
-7. **Floats** (after O7, so new number paths are built for offsets only).
-8. **H2** (the declaration index), once H1's report is in and Ben has decided the default front end.
-9. **O8** (optional): a separately measured proposal for 32-bit offsets, adopted only by its own decision.
-10. **M4 onwards** (DESIGN.md's first steps 3 to 7).
+1. **O1** (done): the offset runtime and slice ported onto main, and inline stack allocation (docs/tasks/O1-offset-runtime-and-inline-alloc.md).
+2. **H1** (done): the self-hosted front end, selectable, with Rust still the default (docs/tasks/H1-selfhost-frontend.md). Its child is built in pointer mode until O6 (a build setting, not a pointer-only feature).
+3. **H1b:** a fast self-hosted front end (per-call overhead, compact wire, memory) and one input policy for both front ends and all commands (docs/tasks/H1b-frontend-speed-and-policy.md).
+4. **R1** (running, in a separate worktree), **runtime without per-operation heap use, with buffered standard output and `match` on `byte`** (docs/tasks/R1-runtime-arena-only.md): file reads, listings and the job context stop using `malloc`/`calloc`/`realloc`/`strdup`; stdout and stderr buffered.
+5. **O2, O3, O4,** in order.
+6. **L1** nested layout flattening (after O4, keeping O4's element-reference form).
+7. **O5, O6, O7,** ending with offsets as the only mode.
+8. **Floats** (after O7, so new number paths are built for offsets only).
+9. **H2** (the declaration index), once H1's report is in and Ben has decided the default front end.
+10. **O8** (optional): a separately measured proposal for 32-bit offsets, adopted only by its own decision.
+11. **M4 onwards** (DESIGN.md's first steps 3 to 7).
 
 The small fixes listed below go into whichever of these tasks touches the same code, or into a task of their own between them. Not yet placed (each needs a decision on where it goes): later hybrid steps after H2, the scheduler milestone (pooling, trimming, clearing, admission), Windows support, `strict_stack`, string-literal patterns, and the S1 parallel-tool validation.
 

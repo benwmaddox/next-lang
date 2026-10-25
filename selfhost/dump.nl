@@ -56,7 +56,7 @@ fn token_kind_name(kind: TokenKind) -> Ascii max 20 {
 
 fn output_token_dump(
     out: Out,
-    source: Bytes max 67108864,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
 ) -> Result<(), IoError> {

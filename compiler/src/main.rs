@@ -3,18 +3,70 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use next_lang::{
-    PackageError, build_package, inspect_contracts, inspect_memory, inspect_stacks, lex_package,
-    parse_package, run_package_args, test_package,
+    build_package_with_frontend, inspect_contracts, inspect_memory, inspect_stacks, lex_package,
+    parse_package_with_frontend, run_package_args_with_frontend, test_package_with_frontend,
+    Frontend, PackageError,
 };
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os();
     let _program = args.next();
-    let Some(command) = args.next().and_then(|x| x.into_string().ok()) else {
+    let mut rest = args.collect::<Vec<_>>();
+    let mut explicit_frontend = None;
+    if rest
+        .first()
+        .is_some_and(|arg| arg.to_string_lossy().starts_with("--frontend="))
+    {
+        let arg = rest.remove(0);
+        match parse_frontend_arg(&arg) {
+            Ok(frontend) => explicit_frontend = Some(frontend),
+            Err(()) => {
+                usage();
+                return ExitCode::from(3);
+            }
+        }
+    }
+    let Some(command) = rest.first().and_then(|x| x.to_str()).map(str::to_owned) else {
         usage();
         return ExitCode::from(3);
     };
-    let rest = args.collect::<Vec<_>>();
+    rest.remove(0);
+    let separator = rest.iter().position(|arg| arg == "--");
+    let frontend_end = separator.unwrap_or(rest.len());
+    let frontend_positions = rest[..frontend_end]
+        .iter()
+        .enumerate()
+        .filter_map(|(index, arg)| {
+            arg.to_string_lossy()
+                .starts_with("--frontend=")
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if frontend_positions.len() > usize::from(explicit_frontend.is_some()) + 1 {
+        usage();
+        return ExitCode::from(3);
+    }
+    if let Some(index) = frontend_positions.first().copied() {
+        if explicit_frontend.is_some() {
+            usage();
+            return ExitCode::from(3);
+        }
+        match parse_frontend_arg(&rest[index]) {
+            Ok(frontend) => explicit_frontend = Some(frontend),
+            Err(()) => {
+                usage();
+                return ExitCode::from(3);
+            }
+        }
+        rest.remove(index);
+    }
+    let frontend = match explicit_frontend {
+        Some(frontend) => frontend,
+        None => match Frontend::from_environment() {
+            Ok(frontend) => frontend,
+            Err(message) => return report_error(PackageError::Tool(message)),
+        },
+    };
     match command.as_str() {
         "run" if !rest.is_empty() => {
             let arguments = if rest.get(1).is_some_and(|arg| arg == "--") {
@@ -22,15 +74,17 @@ fn main() -> ExitCode {
             } else {
                 &rest[1..]
             };
-            match run_package_args(Path::new(&rest[0]), arguments) {
+            match run_package_args_with_frontend(Path::new(&rest[0]), arguments, frontend) {
                 Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
                 Err(error) => report_error(error),
             }
         }
-        "test" if rest.len() == 1 => match test_package(Path::new(&rest[0])) {
-            Ok(code) => ExitCode::from(code),
-            Err(error) => report_error(error),
-        },
+        "test" if rest.len() == 1 => {
+            match test_package_with_frontend(Path::new(&rest[0]), frontend) {
+                Ok(code) => ExitCode::from(code),
+                Err(error) => report_error(error),
+            }
+        }
         "lex" if rest.len() == 1 => match lex_package(Path::new(&rest[0])) {
             Ok(tokens) => {
                 write_stdout(format_args!("{tokens}"));
@@ -48,7 +102,7 @@ fn main() -> ExitCode {
                 usage();
                 ExitCode::from(3)
             } else {
-                match parse_package(Path::new(&rest[0])) {
+                match parse_package_with_frontend(Path::new(&rest[0]), frontend) {
                     Ok(dump) => {
                         match (want_tokens, want_tree) {
                             (true, true) => {
@@ -68,7 +122,7 @@ fn main() -> ExitCode {
             }
         }
         "build" if rest.len() == 3 && rest[1] == "-o" => {
-            match build_package(Path::new(&rest[0]), Path::new(&rest[2])) {
+            match build_package_with_frontend(Path::new(&rest[0]), Path::new(&rest[2]), frontend) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => report_error(error),
             }
@@ -122,6 +176,12 @@ fn write_stdout(args: std::fmt::Arguments<'_>) {
 
 fn usage() {
     eprintln!(
-        "usage: nlc run <package-dir> [--allow-overcommit] | nlc build <package-dir> -o <file> | nlc test <package-dir> | nlc lex <package-dir> | nlc parse <package-dir> [--tree] [--tokens] | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir> | nlc inspect stacks <package-dir>"
+        "usage: nlc [--frontend=rust|selfhost] run <package-dir> [--frontend=rust|selfhost] [--allow-overcommit] [-- <args...>] | nlc build <package-dir> -o <file> [--frontend=rust|selfhost] | nlc test <package-dir> [--frontend=rust|selfhost] | nlc lex <package-dir> | nlc parse <package-dir> [--tree] [--tokens] [--frontend=rust|selfhost] | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir> | nlc inspect stacks <package-dir>"
     );
+}
+
+fn parse_frontend_arg(argument: &std::ffi::OsStr) -> Result<Frontend, ()> {
+    let value = argument.to_str().ok_or(())?;
+    let value = value.strip_prefix("--frontend=").ok_or(())?;
+    Frontend::parse(value).map_err(|_| ())
 }

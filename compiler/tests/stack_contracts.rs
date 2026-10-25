@@ -62,13 +62,11 @@ fn fixed_large_values_use_regions_and_large_results_use_destinations() {
         .split("; function make_nested\n")
         .nth(1)
         .expect("large-result function is emitted");
-    assert!(
-        large_result
-            .lines()
-            .next()
-            .unwrap()
-            .contains("ptr %nl.ctx, ptr %nl.entry.top, ptr %nl.result")
-    );
+    assert!(large_result
+        .lines()
+        .next()
+        .unwrap()
+        .contains("ptr %nl.ctx, ptr %nl.entry.top, ptr %nl.result"));
     assert!(ir.contains("call void @llvm.memmove.p0.p0.i64"));
     assert!(ir.contains("ptr noalias %arg."));
     assert!(ir.contains("ptr %arg."));
@@ -121,10 +119,9 @@ fn returned_collection_local_is_built_in_the_caller_destination() {
         .expect("make has a stack contract");
 
     assert_eq!(make.byte_requirement, 0);
-    assert!(
-        make.result_placement
-            .contains("caller destination (16000008 bytes)")
-    );
+    assert!(make
+        .result_placement
+        .contains("caller destination (16000008 bytes)"));
 
     let make_ir = compiled
         .llvm_ir
@@ -224,7 +221,7 @@ fn selfhost_stack_bound_has_an_exact_attributed_path() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("main.nl:64 main.tables (616907937 bytes)"),
+        stdout.contains("main.nl:78 main.tables (680912049 bytes)"),
         "{stdout}"
     );
     for line in [68, 72, 103, 128, 175] {

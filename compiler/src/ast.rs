@@ -9,7 +9,7 @@ pub struct Span {
     pub end_offset: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TypeAst {
     pub name: String,
     pub args: Vec<TypeAst>,
@@ -23,7 +23,7 @@ pub struct TypeAst {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FunctionTypeAst {
     pub params: Vec<FunctionTypeParamAst>,
     pub result: Option<Box<TypeAst>>,
@@ -31,14 +31,14 @@ pub struct FunctionTypeAst {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FunctionTypeParamAst {
     pub mode: ParamMode,
     pub ty: TypeAst,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum FunctionEffectAst {
     Out {
         span: Span,
@@ -71,7 +71,7 @@ pub enum RefinePolicy {
     Clamp,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeRangeAst {
     pub lower: i128,
     pub upper: i128,
@@ -79,7 +79,7 @@ pub struct TypeRangeAst {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Program {
     pub enums: Vec<EnumDecl>,
     pub structs: Vec<StructDecl>,
@@ -90,7 +90,7 @@ pub struct Program {
     pub tests: Vec<Test>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GlobalDecl {
     pub name: String,
     pub ty: TypeAst,
@@ -99,7 +99,7 @@ pub struct GlobalDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ConstDecl {
     pub name: String,
     pub ty: TypeAst,
@@ -107,7 +107,7 @@ pub struct ConstDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StructDecl {
     pub name: String,
     pub generic_params: Vec<String>,
@@ -115,7 +115,7 @@ pub struct StructDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StructFieldDecl {
     pub name: String,
     pub ty: TypeAst,
@@ -123,28 +123,28 @@ pub struct StructFieldDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TypeAliasDecl {
     pub name: String,
     pub ty: TypeAst,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EnumDecl {
     pub name: String,
     pub cases: Vec<EnumCase>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EnumCase {
     pub name: String,
     pub payload: Vec<TypeAst>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Test {
     pub name: String,
     pub params: Vec<Param>,
@@ -152,7 +152,7 @@ pub struct Test {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Function {
     pub name: String,
     pub recursive: bool,
@@ -163,7 +163,7 @@ pub struct Function {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Param {
     pub name: String,
     pub mode: ParamMode,
@@ -178,20 +178,20 @@ pub enum ParamMode {
     Grow,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     pub statements: Vec<Stmt>,
     pub tail: Option<Box<Expr>>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum StmtKind {
     Let {
         mutable: bool,
@@ -243,13 +243,13 @@ pub enum AssignOp {
     Shr,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
     Unit,
     Integer {
@@ -358,14 +358,14 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StructInitField {
     pub name: String,
     pub value: Expr,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Block,
@@ -373,7 +373,7 @@ pub struct MatchArm {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Pattern {
     Wildcard,
     Integer(Expr),
