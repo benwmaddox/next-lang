@@ -147,6 +147,15 @@ The design keeps what was measured to work in four weeks of building six languag
 
 There are two lifetimes and no garbage collector: long-lived data in a declared tree of state, everything temporary on scope stacks freed in one store.
 
+**The theory being tested** (Ben, 2026-10-25): a stack-and-arena design, not a copy of how Rust, C++ or a garbage-collected runtime manage memory, should win on four things, and every memory decision is judged against them first:
+
+1. **Data locality:** values used together sit together, in one contiguous range per job, freed last in, first out; no scattering across a heap.
+2. **Modest bookkeeping:** a top (and, if the stack moves, a base) per job; no per-object headers, reference counts, ownership metadata or general allocator.
+3. **Compactness:** stored data is inline or index-based, with no addresses inside stored values; references are as small as they can be.
+4. **Ease of cleanup:** leaving a scope resets the top; a failed job resets its stack; nothing is freed one object at a time.
+
+A proposal that gives up one of these (a general heap, per-object allocation, chunked arenas that scatter a job's data, pointers stored in data) needs a stated reason and a measurement, and the places that already lean that way (size classes with free lists for large fields in collections; large values passed by address) are kept under review.
+
 **Where data lives** (decided 2026-10-24: static state is meant to be used lightly). Most data shouldn't be in a global. In order of how often a program should reach for each:
 
 | Data | Where it lives |
