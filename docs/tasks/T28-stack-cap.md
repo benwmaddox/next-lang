@@ -1,5 +1,7 @@
 # T28: capped data-stack reservations (Linux)
 
+**On hold (2026-10-25):** waiting for X1 (docs/tasks/X1-offset-stack-spike.md), which measures a relocatable, offset-addressed data stack; if X1 is adopted, this cap is replaced.
+
 Same rules (docs/PLAN.md). Depends on T27. Implements the first part of DESIGN.md "The job's data stack" as decided 2026-10-25 ("Reserve generously, commit only what's used", Reservation and Past the reservation bullets), following docs/reviews/sol-stack-policy-r1.md point 10. Pooling, demand histories, trimming, `clear_stacks_between_jobs`, admission and suspension wait for the job scheduler; Windows commit and `strict_stack` are separate later tasks.
 
 - **Cap:** each entry point reserves the smaller of its computed worst case (T17, after T27's fixes) and its cap: 64 GiB by default, set per entry point in `package.toml` (`[stack_reserve]` with `main = "8 GiB"` and test names, with binary units). An unknown or overflowing bound reserves the cap (and arithmetic overflow in the analysis is diagnosed, not wrapped). Keep the helper margin, page rounding and the inaccessible guard page.
