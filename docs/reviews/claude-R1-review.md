@@ -1,0 +1,5 @@
+# Claude: R1 review (runtime without per-operation heap use, buffered output, byte match)
+
+**Verdict:** approved, no fix round. Done in a separate worktree (branch work/r1) in parallel with H1 and merged into main.
+
+Checked: Luna's full suite in the worktree; after the merge, the full suite on main with both `NLC_FRONTEND=rust` and `NLC_FRONTEND=selfhost`. `fs.read` into Text reads into the destination and validates UTF-8 there; listings fill the caller's list from a fixed `getdents64` buffer and sort in place; the job context lives in a header page of the stack mapping. compiler/tests/runtime_heap_calls.rs wraps malloc, calloc, realloc, strdup and free at link time and asserts zero calls during program operations (startup counted separately). Remaining allocations are startup (environment, file-name registry), test-build only, or NLC_STACK_VERIFY only, each listed in the report. Buffered stdout and stderr (64 KiB, flushed at exit, env.exit, failure reports, input reads, per line on a terminal, and when switching streams on a shared terminal): bench/t32_number_output 1.39 s to about 0.55 s. `match` on `byte` works; the self-hosted lexer's cast is gone.
