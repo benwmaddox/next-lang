@@ -30,6 +30,8 @@ static int nl_print_fd = STDOUT_FILENO;
 static const void *nl_test_var_descriptors[NL_TEST_VAR_STORAGE_CAPACITY];
 static const void *nl_test_var_data[NL_TEST_VAR_STORAGE_CAPACITY];
 static uint64_t nl_test_var_lengths[NL_TEST_VAR_STORAGE_CAPACITY];
+static unsigned char *nl_test_var_metadata[NL_TEST_VAR_STORAGE_CAPACITY];
+static uint64_t nl_test_var_metadata_sizes[NL_TEST_VAR_STORAGE_CAPACITY];
 static size_t nl_test_var_count;
 
 const char *nl_runtime_unicode_version(void) {
@@ -326,11 +328,22 @@ void nl_set_test_mode(void) {
 }
 
 void nl_test_var_storage_reset(void) {
-    if (nl_test_mode) nl_test_var_count = 0;
+    if (!nl_test_mode) return;
+    for (size_t index = 0; index < nl_test_var_count; ++index) {
+        free(nl_test_var_metadata[index]);
+        nl_test_var_metadata[index] = NULL;
+        nl_test_var_metadata_sizes[index] = 0;
+    }
+    nl_test_var_count = 0;
 }
 
-void nl_test_var_storage_note(const void *descriptor, const void *data, uint64_t length) {
+void nl_test_var_storage_note(const void *descriptor, const void *data, uint64_t length,
+                              uint64_t metadata_size) {
     if (!nl_test_mode || !descriptor) return;
+    if (metadata_size > 128) {
+        fprintf(stderr, "test failure: variable-size lane metadata exceeds 128 bytes\n");
+        exit(70);
+    }
     size_t current = nl_test_var_count;
     for (size_t index = 0; index < nl_test_var_count; ++index) {
         if (nl_test_var_descriptors[index] == descriptor) {
@@ -340,11 +353,10 @@ void nl_test_var_storage_note(const void *descriptor, const void *data, uint64_t
     }
     for (size_t index = 0; index < nl_test_var_count; ++index) {
         if (index == current) continue;
-        void *observed = NULL;
-        memcpy(&observed, nl_test_var_descriptors[index], sizeof(observed));
-        if (observed != nl_test_var_data[index]) {
+        if (memcmp(nl_test_var_descriptors[index], nl_test_var_metadata[index],
+                   nl_test_var_metadata_sizes[index]) != 0) {
             fprintf(stderr,
-                    "test failure: updating one variable-size field moved another field's storage\n");
+                    "test failure: updating one variable-size field changed another field's lane\n");
             exit(70);
         }
     }
@@ -360,10 +372,17 @@ void nl_test_var_storage_note(const void *descriptor, const void *data, uint64_t
             exit(70);
         }
         nl_test_var_descriptors[current] = descriptor;
+        nl_test_var_metadata[current] = malloc((size_t)metadata_size);
+        if (!nl_test_var_metadata[current]) {
+            fprintf(stderr, "test failure: cannot allocate variable-size metadata snapshot\n");
+            exit(70);
+        }
         ++nl_test_var_count;
     }
     nl_test_var_data[current] = data;
     nl_test_var_lengths[current] = length;
+    nl_test_var_metadata_sizes[current] = metadata_size;
+    memcpy(nl_test_var_metadata[current], descriptor, (size_t)metadata_size);
 }
 
 _Bool nl_has_argument(int32_t argc, const char **argv, const char *wanted) {

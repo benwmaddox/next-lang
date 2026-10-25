@@ -2512,6 +2512,12 @@ impl Checker {
             })?;
             let mut extra = 0u128;
             for lane in lanes {
+                if lane.inline {
+                    extra = checked_add(
+                        extra,
+                        checked_mul(capacity as u128, lane.max_bytes as u128)?,
+                    )?;
+                }
                 for class_bytes in lane.class_bytes {
                     let class = class_bytes as u128;
                     let slots = checked_mul(capacity as u128, class)?;
@@ -2520,6 +2526,50 @@ impl Checker {
                 }
             }
             Ok(extra)
+        };
+        let checked_collection_element_size = |element: Ty,
+                                               cache: &mut [Option<u128>]|
+         -> Result<u128, CheckError> {
+            let lanes = match self.types.get(element.0).map(|definition| &definition.kind) {
+                Some(TTypeKind::Struct(fields)) => {
+                    fields.iter().map(|field| field.ty).collect::<Vec<_>>()
+                }
+                _ => vec![element],
+            };
+            let growing = growing_collection_lanes(ty, &self.types).ok_or_else(|| CheckError {
+                span,
+                message: "collection size class rounding overflows long; reduce a field maximum"
+                    .to_owned(),
+            })?;
+            let mut size = 0u128;
+            for (lane_index, lane_ty) in lanes.into_iter().enumerate() {
+                let lane_size =
+                    if let Some(lane) = growing.iter().find(|lane| lane.lane == lane_index) {
+                        let is_text = matches!(
+                            self.types[base_type(lane.ty, &self.types).0].kind,
+                            TTypeKind::Text { .. }
+                        );
+                        let metadata = if lane.inline {
+                            if is_text { 16 } else { 8 }
+                        } else if is_text {
+                            24
+                        } else {
+                            16
+                        };
+                        checked_add(
+                            metadata,
+                            if lane.inline {
+                                lane.max_bytes as u128
+                            } else {
+                                0
+                            },
+                        )?
+                    } else {
+                        self.type_size_checked_legacy(lane_ty, cache, span)?
+                    };
+                size = checked_add(size, lane_size)?;
+            }
+            Ok(size)
         };
         let size = match &self.types[ty.0].kind {
             TTypeKind::Refinement { base, .. } => {
@@ -2556,22 +2606,10 @@ impl Checker {
             | TTypeKind::Grid {
                 element, capacity, ..
             } => {
-                let lanes = match &self.types[element.0].kind {
-                    TTypeKind::Struct(fields) => {
-                        fields.iter().map(|field| field.ty).collect::<Vec<_>>()
-                    }
-                    _ => vec![*element],
-                };
-                let mut payload = 0u128;
-                for lane in lanes {
-                    payload = checked_add(
-                        payload,
-                        checked_mul(
-                            self.type_size_checked_legacy(lane, cache, span)?,
-                            *capacity as u128,
-                        )?,
-                    )?;
-                }
+                let payload = checked_mul(
+                    checked_collection_element_size(*element, cache)?,
+                    *capacity as u128,
+                )?;
                 let payload = if matches!(
                     self.types[ty.0].kind,
                     TTypeKind::List { .. } | TTypeKind::Queue { .. } | TTypeKind::Ring { .. }
@@ -2592,54 +2630,36 @@ impl Checker {
                 value,
                 capacity,
             } => {
-                let key_size = self.type_size_checked_legacy(*key, cache, span)?;
-                let value_size = self.type_size_checked_legacy(*value, cache, span)?;
-                let per_entry = checked_add(17, checked_add(key_size, value_size)?)?;
-                let key_storage = match self.types[key.0].kind {
-                    TTypeKind::Ascii { max_bytes } => {
-                        checked_mul(*capacity as u128, max_bytes as u128)?
-                    }
-                    _ => 0,
+                let key_size = match self.types[base_type(*key, &self.types).0].kind {
+                    TTypeKind::Ascii { max_bytes } => checked_add(8, max_bytes as u128)?,
+                    _ => self.type_size_checked_legacy(*key, cache, span)?,
                 };
+                let value_size = checked_collection_element_size(*value, cache)?;
+                let per_entry = checked_add(17, checked_add(key_size, value_size)?)?;
                 checked_add(
                     checked_add(16, checked_mul(*capacity as u128, per_entry)?)?,
-                    checked_add(key_storage, checked_var_fields()?)?,
+                    checked_var_fields()?,
                 )?
             }
             TTypeKind::Set { key, capacity } => {
-                let key_size = self.type_size_checked_legacy(*key, cache, span)?;
-                let per_entry = checked_add(17, key_size)?;
-                let key_storage = match self.types[key.0].kind {
-                    TTypeKind::Ascii { max_bytes } => {
-                        checked_mul(*capacity as u128, max_bytes as u128)?
-                    }
-                    _ => 0,
+                let key_size = match self.types[base_type(*key, &self.types).0].kind {
+                    TTypeKind::Ascii { max_bytes } => checked_add(8, max_bytes as u128)?,
+                    _ => self.type_size_checked_legacy(*key, cache, span)?,
                 };
+                let per_entry = checked_add(17, key_size)?;
                 checked_add(
                     checked_add(16, checked_mul(*capacity as u128, per_entry)?)?,
-                    key_storage,
+                    0,
                 )?
             }
             TTypeKind::Function { .. } => 8,
             TTypeKind::Pool {
                 element, capacity, ..
             } => {
-                let lanes = match &self.types[element.0].kind {
-                    TTypeKind::Struct(fields) => {
-                        fields.iter().map(|field| field.ty).collect::<Vec<_>>()
-                    }
-                    _ => vec![*element],
-                };
-                let mut payload = 0u128;
-                for lane in lanes {
-                    payload = checked_add(
-                        payload,
-                        checked_mul(
-                            self.type_size_checked_legacy(lane, cache, span)?,
-                            *capacity as u128,
-                        )?,
-                    )?;
-                }
+                let payload = checked_mul(
+                    checked_collection_element_size(*element, cache)?,
+                    *capacity as u128,
+                )?;
                 // occupied flags, generations, reusable-slot stack, active/free counts,
                 // plus the initialized-slot high-water mark.
                 checked_add(
@@ -2754,6 +2774,14 @@ impl Checker {
             let size = self.type_size_checked(Ty(id), &mut cache, definition.span)?;
             if size > i64::MAX as u128 {
                 return Err(CheckError { span: definition.span, message: "collection size overflows long; reduce a capacity or the nested element size".to_owned() });
+            }
+            let has_class_offset_handles = growing_collection_lanes(Ty(id), &self.types)
+                .is_some_and(|lanes| lanes.iter().any(|lane| !lane.inline));
+            if has_class_offset_handles && size > ((1u128 << 56) - 1) {
+                return Err(CheckError {
+                    span: definition.span,
+                    message: "collection storage with growing text fields exceeds the 56-bit size-class offset limit; reduce a capacity or field maximum".to_owned(),
+                });
             }
         }
         Ok(())

@@ -79,6 +79,39 @@ fn memory_inspection_reports_alignment_headroom_budget_and_waiver() {
 }
 
 #[test]
+fn memory_inspection_reports_collection_lane_sizes_before_and_after() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler directory has a workspace root");
+    let package = root.join("tests/run/t16_collections");
+    let output = Command::new(env!("CARGO_BIN_EXE_nlc"))
+        .args(["inspect", "memory"])
+        .arg(package)
+        .output()
+        .expect("inspect collection lane memory");
+    assert!(output.status.success());
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        report.contains("collection text lanes (before -> after, bytes per element)"),
+        "inspection should label the comparison: {report}"
+    );
+    assert!(
+        report.contains("76 -> 68, inline bytes 60 bytes/element"),
+        "inline Ascii should drop its per-element pointer: {report}"
+    );
+    assert!(
+        report.contains("24 -> 24, slot classes [128, 256, 512] bytes/element"),
+        "large Text retains its metadata size and reports its slot classes: {report}"
+    );
+    assert!(
+        report.contains(
+            "map<Ascii max 8, Payload, 2>.key (Ascii max 8; capacity 2): 24 -> 16, inline bytes 8 bytes/element"
+        ),
+        "map keys keep their inline key copy and drop the pointer field: {report}"
+    );
+}
+
+#[test]
 fn linux_startup_memory_policy_checks_each_configured_branch() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

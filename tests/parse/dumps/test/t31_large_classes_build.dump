@@ -1,0 +1,59 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "global"
+Ident 7 6 1 8 "values"
+Colon 13 1 1 14 ":"
+Ident 15 4 1 16 "list"
+Lt 19 1 1 20 "<"
+Ident 20 5 1 21 "Ascii"
+Ident 26 3 1 27 "max"
+Number 30 9 1 31 "8_388_608"
+Comma 39 1 1 40 ","
+Number 41 1 1 42 "1"
+Gt 42 1 1 43 ">"
+Eq 44 1 1 45 "="
+Ident 46 4 1 47 "list"
+LBrace 51 1 1 52 "{"
+RBrace 52 1 1 53 "}"
+Newline 53 1 1 54 "\n"
+Ident 55 4 3 1 "test"
+String 60 57 3 6 "\"an 8 MB collection layout with many size classes builds\""
+LBrace 118 1 3 64 "{"
+Newline 119 1 3 65 "\n"
+Ident 124 6 4 5 "expect"
+Ident 131 6 4 12 "values"
+Dot 137 1 4 18 "."
+Ident 138 5 4 19 "count"
+LParen 143 1 4 24 "("
+RParen 144 1 4 25 ")"
+EqEq 146 2 4 27 "=="
+Number 149 2 4 30 "0L"
+Newline 151 1 4 32 "\n"
+RBrace 152 1 5 1 "}"
+Newline 153 1 5 2 "\n"
+Ident 155 2 7 1 "fn"
+Ident 158 4 7 4 "main"
+LParen 162 1 7 8 "("
+RParen 163 1 7 9 ")"
+LBrace 165 1 7 11 "{"
+RBrace 166 1 7 12 "}"
+Newline 167 1 7 13 "\n"
+Eof 168 0 8 1 ""
+== tree ==
+file "main.nl"
+Program 0..168
+  Global 0..53 name="values" prefault=false
+    DeclaredType 15..43 name="list" range=none policy=checked
+      TypeArgument 20..39 name="Ascii" range=none policy=checked
+        Integer 30..39 magnitude=8388608 negative=false long_suffix=false
+      Integer 41..42 magnitude=1 negative=false long_suffix=false
+    ListLiteral 46..53
+  Test 55..153 name="an 8 MB collection layout with many size classes builds"
+    Block 118..153
+      Expect 124..151 source="expect values.count() == 0L"
+        Binary 131..151 op=eq
+          MethodCall 131..145 name="count"
+            Name 131..137 name="values"
+          Integer 149..151 magnitude=0 negative=false long_suffix=true
+  Function 155..167 name="main" recursive=false generics=[]
+    Block 165..167

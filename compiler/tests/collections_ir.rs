@@ -119,3 +119,96 @@ fn empty_large_lists_do_not_clear_their_element_lanes() {
         "an empty list and its first push must not clear unused element lanes"
     );
 }
+
+#[test]
+fn growing_collection_lanes_have_no_pointer_fields_or_pointer_stores() {
+    use std::collections::HashSet;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler directory has a workspace root");
+    let package = root.join("tests/run/t16_collections");
+    let compiled = compile_package(&package).expect("T16 collection fixture should compile");
+    let ir = compiled.llvm_ir;
+
+    for declaration in ir.lines().filter(|line| {
+        line.contains(" = type ")
+            && (line.starts_with("%nl.ty.") || line.starts_with("%nl.collection."))
+    }) {
+        assert!(
+            !declaration.contains("ptr"),
+            "collection and value lane declarations must not store addresses: {declaration}"
+        );
+    }
+
+    let collection_lane_pointers = ir
+        .lines()
+        .filter_map(|line| {
+            let (result, instruction) = line.split_once(" = getelementptr ")?;
+            (instruction.contains("%nl.collection.string.")
+                || instruction.contains("%nl.collection.key."))
+            .then(|| result.to_owned())
+        })
+        .collect::<HashSet<_>>();
+    for instruction in ir.lines().filter(|line| line.contains("store ptr ")) {
+        let Some((_, destination)) = instruction.rsplit_once(", ptr ") else {
+            continue;
+        };
+        let destination = destination.trim();
+        assert!(
+            !collection_lane_pointers.contains(destination),
+            "pointer stored to collection lane address {destination}: {instruction}"
+        );
+    }
+}
+
+#[test]
+fn huge_collection_class_pools_use_a_flat_byte_region() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler directory has a workspace root");
+    let package = root.join("tests/test/t31_large_classes_build");
+    let compiled = compile_package(&package).expect("T31 large-class fixture should compile");
+    let ir = compiled.llvm_ir;
+
+    let collection_decl = ir
+        .lines()
+        .find(|line| line.ends_with("; list<Ascii max 8388608, 1>"))
+        .expect("the fixture should emit its large collection prefix type");
+    let collection_type = collection_decl
+        .strip_prefix("%nl.ty.")
+        .and_then(|line| line.split_once(" ="))
+        .map(|(id, _)| format!("%nl.ty.{id}"))
+        .expect("the collection type should have an LLVM identifier");
+    assert!(
+        !collection_decl.contains("8388608 x i8"),
+        "large size-class payloads must not appear in the first-class collection type: {collection_decl}"
+    );
+
+    let globals = ir
+        .lines()
+        .find(|line| line.starts_with("@nl.globals ="))
+        .expect("the fixture should emit global collection storage");
+    let backing_bytes = globals
+        .rsplit(" x i8] zeroinitializer")
+        .nth(1)
+        .and_then(|prefix| prefix.rsplit_once('[').map(|(_, count)| count))
+        .and_then(|count| count.parse::<usize>().ok())
+        .expect("the global collection should use a flat byte-array backing region");
+    assert!(
+        backing_bytes >= 8 * 1024 * 1024,
+        "the flat backing should include the largest class and its smaller classes"
+    );
+    assert!(
+        !ir.lines().any(|line| {
+            line.contains(&format!("load {collection_type}"))
+                || line.contains(&format!("store {collection_type}"))
+        }),
+        "collection prefixes must not be loaded or stored as whole aggregates"
+    );
+    assert!(
+        !ir.lines()
+            .any(|line| { line.contains("load <{ %nl.ty.") || line.contains("store <{ %nl.ty.") }),
+        "flat class backing must not be loaded or stored with the collection prefix"
+    );
+}

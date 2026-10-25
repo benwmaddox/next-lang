@@ -1,0 +1,4 @@
+ok   global collection constants initialize large text slots
+ok   copied collections own independent text and byte slots
+ok   a dirtied large slot can be reused for a short collection value
+3 passed, 0 failed

@@ -143,6 +143,8 @@ pub struct TField {
 pub struct GrowingCollectionLane {
     pub lane: usize,
     pub ty: Ty,
+    pub max_bytes: usize,
+    pub inline: bool,
     pub class_bytes: Vec<usize>,
 }
 
@@ -187,11 +189,9 @@ pub fn growing_collection_lanes(
             TTypeKind::Text { max_bytes, .. } => *max_bytes,
             _ => continue,
         };
-        if maximum == 0 {
-            continue;
-        }
-        let class_bytes = if maximum <= 64 {
-            vec![maximum]
+        let inline = maximum <= 64;
+        let class_bytes = if inline {
+            Vec::new()
         } else {
             let mut classes = Vec::new();
             let mut size = 128usize;
@@ -207,6 +207,8 @@ pub fn growing_collection_lanes(
         result.push(GrowingCollectionLane {
             lane,
             ty,
+            max_bytes: maximum,
+            inline,
             class_bytes,
         });
     }

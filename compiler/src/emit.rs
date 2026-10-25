@@ -171,7 +171,7 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare i32 @nl_test_selected_index()\n");
     out.push_str("declare void @nl_set_test_mode()\n");
     out.push_str("declare void @nl_test_var_storage_reset()\n");
-    out.push_str("declare void @nl_test_var_storage_note(ptr, ptr, i64)\n");
+    out.push_str("declare void @nl_test_var_storage_note(ptr, ptr, i64, i64)\n");
     out.push_str("declare void @nl_expect_fail_compare(i32, i32, i32, ptr, i64, i64, i32)\n");
     out.push_str("declare void @nl_expect_fail_bool(i32, i32, i32, ptr)\n");
     out.push_str("declare void @nl_print_int(i32)\n");
@@ -229,11 +229,27 @@ pub fn emit(program: &TProgram) -> String {
                     "%nl.storage.{id} = type <{{ i64, [{max_bytes} x i8] }}> ; {}\n",
                     ty.name
                 ));
+                let collection_fields = if *max_bytes <= 64 {
+                    format!("i64, [{max_bytes} x i8]")
+                } else {
+                    "i64, i64".to_owned()
+                };
+                out.push_str(&format!(
+                    "%nl.collection.string.{id} = type <{{ {collection_fields} }}>\n%nl.collection.key.{id} = type <{{ i64, [{max_bytes} x i8] }}>\n"
+                ));
             }
             TTypeKind::Text { max_bytes, .. } => {
                 out.push_str(&format!(
                     "%nl.storage.{id} = type <{{ i64, i64, [{max_bytes} x i8] }}> ; {}\n",
                     ty.name
+                ));
+                let collection_fields = if *max_bytes <= 64 {
+                    format!("i64, i64, [{max_bytes} x i8]")
+                } else {
+                    "i64, i64, i64".to_owned()
+                };
+                out.push_str(&format!(
+                    "%nl.collection.string.{id} = type <{{ {collection_fields} }}>\n"
                 ));
             }
             TTypeKind::Struct(fields) => {
@@ -348,15 +364,15 @@ pub fn emit(program: &TProgram) -> String {
                     format!("[{capacity} x i1]"),
                     format!("[{capacity} x i64]"),
                     format!("[{capacity} x i64]"),
-                    format!("[{capacity} x {}]", llvm_type(*key, &program.types)),
+                    format!(
+                        "[{capacity} x {}]",
+                        llvm_collection_key_type(*key, &program.types)
+                    ),
                     format!(
                         "[{capacity} x {}]",
                         llvm_collection_type(*value, &program.types)
                     ),
                 ];
-                if let TTypeKind::Ascii { max_bytes } = program.types[key.0].kind {
-                    fields.push(format!("[{capacity} x [{max_bytes} x i8]]"));
-                }
                 fields.extend(collection_var_pool_field_types(Ty(id), &program.types));
                 out.push_str(&format!(
                     "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
@@ -365,17 +381,17 @@ pub fn emit(program: &TProgram) -> String {
                 ));
             }
             TTypeKind::Set { key, capacity } => {
-                let mut fields = vec![
+                let fields = vec![
                     "i64".to_owned(),
                     "i64".to_owned(),
                     format!("[{capacity} x i1]"),
                     format!("[{capacity} x i64]"),
                     format!("[{capacity} x i64]"),
-                    format!("[{capacity} x {}]", llvm_type(*key, &program.types)),
+                    format!(
+                        "[{capacity} x {}]",
+                        llvm_collection_key_type(*key, &program.types)
+                    ),
                 ];
-                if let TTypeKind::Ascii { max_bytes } = program.types[key.0].kind {
-                    fields.push(format!("[{capacity} x [{max_bytes} x i8]]"));
-                }
                 out.push_str(&format!(
                     "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
                     fields.join(", "),
@@ -418,6 +434,25 @@ pub fn emit(program: &TProgram) -> String {
                     ty.name
                 ));
             }
+        }
+    }
+    out.push('\n');
+    for id in 5..program.types.len() {
+        for layout in collection_var_lanes(Ty(id), &program.types) {
+            if layout.inline || layout.classes.is_empty() {
+                continue;
+            }
+            let lane_sizes = layout
+                .classes
+                .iter()
+                .map(|class| format!("i64 {}", class.bytes))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "@.nl.collection.sizes.{id}.{} = private constant [{} x i64] [{lane_sizes}], align 8\n",
+                layout.lane,
+                layout.classes.len(),
+            ));
         }
     }
     out.push('\n');
@@ -2726,13 +2761,6 @@ impl StaticStringPool {
         id
     }
 
-    fn id(&self, bytes: &[u8]) -> usize {
-        *self
-            .ids
-            .get(bytes)
-            .expect("constant string backing data was collected")
-    }
-
     fn collect_value(&mut self, value: &ConstValue) {
         match value {
             ConstValue::String(bytes) => self.intern(bytes),
@@ -2796,8 +2824,35 @@ fn llvm_bytes(bytes: &[u8]) -> String {
     out
 }
 
+fn llvm_fixed_byte_array(bytes: &[u8], size: usize) -> String {
+    let mut out = String::with_capacity(size);
+    for index in 0..size {
+        let byte = bytes.get(index).copied().unwrap_or(0);
+        if (0x20..=0x7e).contains(&byte) && byte != b'"' && byte != b'\\' {
+            out.push(byte as char);
+        } else {
+            out.push('\\');
+            out.push(
+                char::from_digit(u32::from(byte >> 4), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            out.push(
+                char::from_digit(u32::from(byte & 0x0f), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+        }
+    }
+    out
+}
+
 fn llvm_storage_type(ty: Ty, types: &[TType]) -> String {
     let ty = base_type(ty, types);
+    if collection_var_pool_data_size(ty, types) != 0 {
+        let backing = collection_var_pool_data_size(ty, types);
+        return format!("<{{ %nl.ty.{}, [{backing} x i8] }}>", ty.0);
+    }
     match &types[ty.0].kind {
         TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. } => {
             format!("%nl.storage.{}", ty.0)
@@ -2810,7 +2865,19 @@ fn llvm_collection_type(ty: Ty, types: &[TType]) -> String {
     let ty = base_type(ty, types);
     match types[ty.0].kind {
         TTypeKind::Struct(_) => format!("%nl.collection.{}", ty.0),
-        _ => llvm_type(ty, types),
+        TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. } => {
+            format!("%nl.collection.string.{}", ty.0)
+        }
+        _ => llvm_storage_type(ty, types),
+    }
+}
+
+fn llvm_collection_key_type(ty: Ty, types: &[TType]) -> String {
+    let ty = base_type(ty, types);
+    if matches!(types[ty.0].kind, TTypeKind::Ascii { .. }) {
+        format!("%nl.collection.key.{}", ty.0)
+    } else {
+        llvm_type(ty, types)
     }
 }
 
@@ -2833,22 +2900,38 @@ fn llvm_collection_lane_constant(
             let ConstValue::String(bytes) = value else {
                 unreachable!("collection text constants have string values")
             };
-            let id = strings.id(bytes);
-            let pointer = format!(
-                "getelementptr inbounds ([{} x i8], ptr @.nl.string.{id}, i64 0, i64 0)",
-                bytes.len() + 1
-            );
+            let _ = (functions, strings);
+            let base = base_type(ty, types);
+            let max_bytes = match &types[base.0].kind {
+                TTypeKind::Ascii { max_bytes }
+                | TTypeKind::Bytes { max_bytes }
+                | TTypeKind::Text { max_bytes, .. } => *max_bytes,
+                _ => unreachable!(),
+            };
+            if max_bytes > 64 {
+                assert!(
+                    bytes.is_empty(),
+                    "large collection text constants need collection slot storage"
+                );
+                return if matches!(types[base.0].kind, TTypeKind::Text { .. }) {
+                    "<{ i64 -1, i64 0, i64 0 }>".to_owned()
+                } else {
+                    "<{ i64 -1, i64 0 }>".to_owned()
+                };
+            }
+            let byte_data = llvm_fixed_byte_array(bytes, max_bytes);
+            let byte_array = format!("[{max_bytes} x i8] c\"{byte_data}\"");
             match &types[base_type(ty, types).0].kind {
                 TTypeKind::Text { .. } => {
                     let text = std::str::from_utf8(bytes)
                         .expect("checked Text constants contain valid UTF-8");
                     format!(
-                        "<{{ ptr {pointer}, i64 {}, i64 {} }}>",
+                        "<{{ i64 {}, i64 {}, {byte_array} }}>",
                         bytes.len(),
                         text.chars().count()
                     )
                 }
-                _ => format!("<{{ ptr {pointer}, i64 {} }}>", bytes.len()),
+                _ => format!("<{{ i64 {}, {byte_array} }}>", bytes.len()),
             }
         }
         TTypeKind::Struct(fields) => {
@@ -2870,6 +2953,28 @@ fn llvm_collection_lane_constant(
             format!("<{{ {fields} }}>")
         }
         _ => llvm_constant(ty, value, types, functions, strings),
+    }
+}
+
+fn llvm_collection_key_constant(
+    ty: Ty,
+    value: &ConstValue,
+    types: &[TType],
+    functions: &[TFunction],
+    strings: &StaticStringPool,
+) -> String {
+    let base = base_type(ty, types);
+    if let TTypeKind::Ascii { max_bytes } = types[base.0].kind {
+        let ConstValue::String(bytes) = value else {
+            unreachable!("ASCII map key constants carry string bytes")
+        };
+        let byte_data = llvm_fixed_byte_array(bytes, max_bytes);
+        format!(
+            "<{{ i64 {}, [{max_bytes} x i8] c\"{byte_data}\" }}>",
+            bytes.len()
+        )
+    } else {
+        llvm_constant(ty, value, types, functions, strings)
     }
 }
 
@@ -2910,8 +3015,8 @@ fn collection_lane_types(element: Ty, types: &[TType]) -> Vec<Ty> {
 
 #[derive(Clone)]
 struct CollectionVarClass {
+    index: usize,
     bytes: usize,
-    storage_field: usize,
     next_field: usize,
     free_count_field: usize,
     free_stack_field: usize,
@@ -2921,6 +3026,7 @@ struct CollectionVarClass {
 struct CollectionVarLane {
     lane: usize,
     ty: Ty,
+    inline: bool,
     classes: Vec<CollectionVarClass>,
 }
 
@@ -2960,10 +3066,10 @@ fn collection_var_lanes(ty: Ty, types: &[TType]) -> Vec<CollectionVarLane> {
     for lane in growing_collection_lanes(ty, types).unwrap_or_default() {
         let _ = source;
         let mut classes = Vec::new();
-        for bytes in lane.class_bytes {
+        for (index, bytes) in lane.class_bytes.into_iter().enumerate() {
             classes.push(CollectionVarClass {
+                index,
                 bytes,
-                storage_field: 0,
                 next_field: 0,
                 free_count_field: 0,
                 free_stack_field: 0,
@@ -2972,6 +3078,7 @@ fn collection_var_lanes(ty: Ty, types: &[TType]) -> Vec<CollectionVarLane> {
         layouts.push(CollectionVarLane {
             lane: lane.lane,
             ty: lane.ty,
+            inline: lane.inline,
             classes,
         });
     }
@@ -2985,19 +3092,16 @@ fn collection_var_lanes(ty: Ty, types: &[TType]) -> Vec<CollectionVarLane> {
             2 + collection_lane_types(source, types).len()
         }
         TTypeKind::Pool { .. } => 6 + collection_lane_types(source, types).len(),
-        TTypeKind::Map { key, .. } => {
-            7 + usize::from(matches!(types[key.0].kind, TTypeKind::Ascii { .. }))
-        }
+        TTypeKind::Map { .. } => 7,
         TTypeKind::Set { .. } => return Vec::new(),
         _ => return Vec::new(),
     };
     for lane in &mut layouts {
         for class in &mut lane.classes {
-            class.storage_field = field;
-            class.next_field = field + 1;
-            class.free_count_field = field + 2;
-            class.free_stack_field = field + 3;
-            field += 4;
+            class.next_field = field;
+            class.free_count_field = field + 1;
+            class.free_stack_field = field + 2;
+            field += 3;
         }
     }
     layouts
@@ -3013,9 +3117,8 @@ fn collection_var_pool_field_types(ty: Ty, types: &[TType]) -> Vec<String> {
     let capacity = collection_capacity(ty, types).unwrap_or(0);
     let mut fields = Vec::new();
     for lane in collection_var_lanes(ty, types) {
-        for class in lane.classes {
+        for _class in lane.classes {
             fields.extend([
-                format!("[{capacity} x [{} x i8]]", class.bytes),
                 "i64".to_owned(),
                 "i64".to_owned(),
                 format!("[{capacity} x i64]"),
@@ -3036,6 +3139,74 @@ fn collection_var_pool_extra_size(ty: Ty, types: &[TType]) -> usize {
                 .saturating_add(16)
                 .saturating_add(capacity.saturating_mul(8))
         })
+        .fold(0usize, usize::saturating_add)
+}
+
+fn collection_var_class_offsets(ty: Ty, types: &[TType]) -> Vec<(usize, usize, usize)> {
+    let capacity = collection_capacity(ty, types).unwrap_or(0);
+    let data_size = collection_var_pool_data_size(ty, types);
+    let total = type_size_legacy(ty, types, &mut vec![None; types.len()]);
+    let mut offset = total.saturating_sub(data_size);
+    let mut offsets = Vec::new();
+    for lane in collection_var_lanes(ty, types) {
+        for class in lane.classes {
+            offsets.push((lane.lane, class.index, offset));
+            offset = offset.saturating_add(capacity.saturating_mul(class.bytes));
+        }
+    }
+    offsets
+}
+
+fn collection_var_pool_data_size(ty: Ty, types: &[TType]) -> usize {
+    let capacity = collection_capacity(ty, types).unwrap_or(0);
+    collection_var_lanes(ty, types)
+        .into_iter()
+        .flat_map(|lane| lane.classes)
+        .map(|class| capacity.saturating_mul(class.bytes))
+        .fold(0usize, usize::saturating_add)
+}
+
+fn collection_var_class_data_offset(
+    ty: Ty,
+    types: &[TType],
+    lane: usize,
+    class_index: usize,
+) -> usize {
+    collection_var_class_offsets(ty, types)
+        .into_iter()
+        .find(|(offset_lane, offset_class, _)| *offset_lane == lane && *offset_class == class_index)
+        .expect("class offset exists for every collection lane")
+        .2
+}
+
+fn collection_lane_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
+    let base = base_type(ty, types);
+    match types[base.0].kind {
+        TTypeKind::Ascii { max_bytes } | TTypeKind::Bytes { max_bytes } => {
+            if max_bytes <= 64 {
+                8usize.saturating_add(max_bytes)
+            } else {
+                16
+            }
+        }
+        TTypeKind::Text { max_bytes, .. } => {
+            if max_bytes <= 64 {
+                16usize.saturating_add(max_bytes)
+            } else {
+                24
+            }
+        }
+        TTypeKind::Struct(ref fields) => fields.iter().fold(0usize, |size, field| {
+            size.saturating_add(collection_lane_size(field.ty, types, cache))
+        }),
+        _ => type_size_legacy(ty, types, cache),
+    }
+}
+
+fn collection_element_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
+    collection_lane_types(ty, types)
+        .into_iter()
+        .map(|lane| collection_lane_size(lane, types, cache))
         .fold(0usize, usize::saturating_add)
 }
 
@@ -3102,72 +3273,56 @@ fn type_size_legacy(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usi
                 TTypeKind::Text { .. } => 24,
                 TTypeKind::Struct(fields) => fields
                     .iter()
-                    .map(|field| type_size_legacy(field.ty, types, cache))
+                    .map(|field| collection_lane_size(field.ty, types, cache))
                     .sum(),
-                TTypeKind::Array { element, capacity } => collection_lane_types(*element, types)
-                    .iter()
-                    .map(|lane| type_size_legacy(*lane, types, cache).saturating_mul(*capacity))
-                    .sum::<usize>()
-                    .saturating_add(collection_var_pool_extra_size(Ty(id), types)),
+                TTypeKind::Array { element, capacity } => {
+                    collection_element_size(*element, types, cache)
+                        .saturating_mul(*capacity)
+                        .saturating_add(collection_var_pool_extra_size(Ty(id), types))
+                }
                 TTypeKind::List { element, capacity } => 8usize
                     .saturating_add(
-                        collection_lane_types(*element, types)
-                            .iter()
-                            .map(|lane| {
-                                type_size_legacy(*lane, types, cache).saturating_mul(*capacity)
-                            })
-                            .sum::<usize>(),
+                        collection_element_size(*element, types, cache).saturating_mul(*capacity),
                     )
                     .saturating_add(collection_var_pool_extra_size(Ty(id), types)),
                 TTypeKind::Queue { element, capacity } | TTypeKind::Ring { element, capacity } => {
                     16usize
                         .saturating_add(
-                            collection_lane_types(*element, types)
-                                .iter()
-                                .map(|lane| {
-                                    type_size_legacy(*lane, types, cache).saturating_mul(*capacity)
-                                })
-                                .sum::<usize>(),
+                            collection_element_size(*element, types, cache)
+                                .saturating_mul(*capacity),
                         )
                         .saturating_add(collection_var_pool_extra_size(Ty(id), types))
                 }
                 TTypeKind::Grid {
                     element, capacity, ..
-                } => collection_lane_types(*element, types)
-                    .iter()
-                    .map(|lane| type_size_legacy(*lane, types, cache).saturating_mul(*capacity))
-                    .sum::<usize>()
+                } => collection_element_size(*element, types, cache)
+                    .saturating_mul(*capacity)
                     .saturating_add(collection_var_pool_extra_size(Ty(id), types)),
                 TTypeKind::Map {
                     key,
                     value,
                     capacity,
                 } => {
-                    let key_storage = match types[key.0].kind {
-                        TTypeKind::Ascii { max_bytes } => capacity.saturating_mul(max_bytes),
-                        _ => 0,
+                    let key_base = base_type(*key, types);
+                    let key_size = match types[key_base.0].kind {
+                        TTypeKind::Ascii { max_bytes } => 8usize.saturating_add(max_bytes),
+                        _ => type_size_legacy(*key, types, cache),
                     };
+                    let value_size = collection_element_size(*value, types, cache);
                     16usize
-                        .saturating_add(
-                            capacity.saturating_mul(
-                                17usize
-                                    .saturating_add(type_size_legacy(*key, types, cache))
-                                    .saturating_add(type_size_legacy(*value, types, cache)),
-                            ),
-                        )
-                        .saturating_add(key_storage)
+                        .saturating_add(capacity.saturating_mul(
+                            17usize.saturating_add(key_size).saturating_add(value_size),
+                        ))
                         .saturating_add(collection_var_pool_extra_size(Ty(id), types))
                 }
                 TTypeKind::Set { key, capacity } => {
-                    let key_storage = match types[key.0].kind {
-                        TTypeKind::Ascii { max_bytes } => capacity.saturating_mul(max_bytes),
-                        _ => 0,
+                    let key_base = base_type(*key, types);
+                    let key_size = match types[key_base.0].kind {
+                        TTypeKind::Ascii { max_bytes } => 8usize.saturating_add(max_bytes),
+                        _ => type_size_legacy(*key, types, cache),
                     };
                     16usize
-                        .saturating_add(capacity.saturating_mul(
-                            17usize.saturating_add(type_size_legacy(*key, types, cache)),
-                        ))
-                        .saturating_add(key_storage)
+                        .saturating_add(capacity.saturating_mul(17usize.saturating_add(key_size)))
                         .saturating_add(collection_var_pool_extra_size(Ty(id), types))
                 }
                 TTypeKind::Pool {
@@ -3175,12 +3330,7 @@ fn type_size_legacy(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usi
                 } => 24usize
                     .saturating_add(capacity.saturating_mul(9))
                     .saturating_add(
-                        collection_lane_types(*element, types)
-                            .iter()
-                            .map(|lane| {
-                                type_size_legacy(*lane, types, cache).saturating_mul(*capacity)
-                            })
-                            .sum::<usize>(),
+                        collection_element_size(*element, types, cache).saturating_mul(*capacity),
                     )
                     .saturating_add(collection_var_pool_extra_size(Ty(id), types)),
                 TTypeKind::Id { .. } | TTypeKind::Capability(_) => 8,
@@ -4334,21 +4484,20 @@ fn llvm_constant(
                 TTypeKind::Text { max_bytes, .. } => max_bytes,
                 _ => unreachable!(),
             };
-            let data = (0..byte_max)
-                .map(|index| format!("i8 {}", bytes.get(index).copied().unwrap_or(0)))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let data = llvm_fixed_byte_array(bytes, byte_max);
             match &types[ty.0].kind {
-                TTypeKind::Ascii { .. } | TTypeKind::Bytes { .. } => {
-                    format!("<{{ i64 {}, [{} x i8] [{data}] }}> ", bytes.len(), byte_max)
-                        .trim_end()
-                        .to_owned()
-                }
+                TTypeKind::Ascii { .. } | TTypeKind::Bytes { .. } => format!(
+                    "<{{ i64 {}, [{} x i8] c\"{data}\" }}> ",
+                    bytes.len(),
+                    byte_max
+                )
+                .trim_end()
+                .to_owned(),
                 TTypeKind::Text { .. } => {
                     let text = std::str::from_utf8(bytes)
                         .expect("checked Text constants contain valid UTF-8");
                     format!(
-                        "<{{ i64 {}, i64 {}, [{} x i8] [{data}] }}> ",
+                        "<{{ i64 {}, i64 {}, [{} x i8] c\"{data}\" }}> ",
                         bytes.len(),
                         text.chars().count(),
                         byte_max
@@ -4428,7 +4577,7 @@ fn llvm_constant(
                 unreachable!("map constant has a non-map value")
             };
             map_constant(
-                *key, *value_ty, *capacity, entries, types, functions, strings,
+                ty, *key, *value_ty, *capacity, entries, types, functions, strings,
             )
         }
         TTypeKind::Set { key, capacity } => {
@@ -4469,35 +4618,29 @@ fn llvm_constant(
                 .join(", ");
             fields.push(format!("[{} x i32] [{free_values}]", capacity));
             fields.push(format!("i64 {high_water}"));
-            for (lane_index, lane_ty) in collection_lane_types(*element, types).iter().enumerate() {
-                let lane_values = (0..*capacity)
-                    .map(|index| {
-                        let value =
-                            slots.get(index).and_then(Option::as_ref).and_then(
-                                |value| match value {
-                                    ConstValue::Struct(fields) => fields.get(lane_index),
-                                    other if lane_index == 0 => Some(other),
-                                    _ => None,
-                                },
-                            );
-                        let rendered = value
-                            .map(|value| {
-                                llvm_collection_lane_constant(
-                                    *lane_ty, value, types, functions, strings,
-                                )
-                            })
-                            .unwrap_or_else(|| "zeroinitializer".to_owned());
-                        format!("{} {rendered}", llvm_type(*lane_ty, types))
-                    })
+            let values = (0..*capacity)
+                .map(|index| slots.get(index).and_then(Option::as_ref).cloned())
+                .collect::<Vec<_>>();
+            let (lanes, pools, backing) = llvm_collection_element_lane_constants(
+                ty, *element, *capacity, &values, types, functions, strings,
+            );
+            for (lane_ty, lane_values) in collection_lane_types(*element, types)
+                .into_iter()
+                .zip(lanes)
+            {
+                let lane_values = lane_values
+                    .into_iter()
+                    .map(|rendered| format!("{} {rendered}", llvm_collection_type(lane_ty, types)))
                     .collect::<Vec<_>>()
                     .join(", ");
                 fields.push(format!(
                     "[{} x {}] [{lane_values}]",
                     capacity,
-                    llvm_type(*lane_ty, types)
+                    llvm_collection_type(lane_ty, types)
                 ));
             }
-            format!("<{{ {} }}>", fields.join(", "))
+            fields.extend(pools);
+            llvm_collection_constant_initializer(ty, fields, backing, types)
         }
         TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
             let ConstValue::Enum {
@@ -4510,12 +4653,11 @@ fn llvm_constant(
             let mut cache = vec![None; types.len()];
             let payload_size = enum_payload_size(ty, types, &mut cache);
             let bytes = enum_payload_bytes(ty, *case_index, payload, types, payload_size);
-            let bytes = bytes
-                .iter()
-                .map(|byte| format!("i8 {byte}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{{ i32 {}, [{payload_size} x i8] [{bytes}] }}", case_index)
+            let bytes = llvm_fixed_byte_array(&bytes, payload_size);
+            format!(
+                "{{ i32 {}, [{payload_size} x i8] c\"{bytes}\" }}",
+                case_index
+            )
         }
         TTypeKind::Never => unreachable!("never cannot be stored as a constant"),
     }
@@ -4531,7 +4673,6 @@ fn collection_constant(
     functions: &[TFunction],
     strings: &StaticStringPool,
 ) -> String {
-    let lanes = collection_lane_types(element, types);
     let mut fields = Vec::new();
     if metadata == 1 {
         fields.push(format!("i64 {}", values.len()));
@@ -4539,41 +4680,20 @@ fn collection_constant(
         fields.push("i64 0".to_owned());
         fields.push(format!("i64 {}", values.len()));
     }
-    for lane in lanes {
-        let lane_values = values
-            .iter()
-            .map(|value| match (&types[element.0].kind, value) {
-                (TTypeKind::Struct(_), ConstValue::Struct(fields)) => {
-                    fields.first().cloned().unwrap_or(ConstValue::Unit)
-                }
-                _ => value.clone(),
-            })
-            .collect::<Vec<_>>();
-        let lane_index = fields.len() - metadata;
-        let lane_ty = lane;
-        let values_text = (0..capacity)
-            .map(|index| {
-                let value = if index < lane_values.len() {
-                    if matches!(types[element.0].kind, TTypeKind::Struct(_)) {
-                        match &values[index] {
-                            ConstValue::Struct(fields) => {
-                                fields.get(lane_index).cloned().unwrap_or(ConstValue::Unit)
-                            }
-                            _ => ConstValue::Unit,
-                        }
-                    } else {
-                        lane_values[index].clone()
-                    }
-                } else {
-                    ConstValue::Unit
-                };
-                let inner = if index < values.len() {
-                    llvm_collection_lane_constant(lane_ty, &value, types, functions, strings)
-                } else {
-                    "zeroinitializer".to_owned()
-                };
-                format!("{} {}", llvm_collection_type(lane_ty, types), inner)
-            })
+    let values = values.iter().cloned().map(Some).collect::<Vec<_>>();
+    let (lanes, pools, backing) = llvm_collection_element_lane_constants(
+        collection_ty,
+        element,
+        capacity,
+        &values,
+        types,
+        functions,
+        strings,
+    );
+    for (lane_ty, lane_values) in collection_lane_types(element, types).into_iter().zip(lanes) {
+        let values_text = lane_values
+            .into_iter()
+            .map(|value| format!("{} {value}", llvm_collection_type(lane_ty, types)))
             .collect::<Vec<_>>()
             .join(", ");
         fields.push(format!(
@@ -4583,14 +4703,8 @@ fn collection_constant(
             values_text
         ));
     }
-    fields.extend(
-        collection_var_pool_field_types(collection_ty, types)
-            .into_iter()
-            .map(|ty| format!("{ty} zeroinitializer")),
-    );
-    format!("<{{ {} }}> ", fields.join(", "))
-        .trim_end()
-        .to_owned()
+    fields.extend(pools);
+    llvm_collection_constant_initializer(collection_ty, fields, backing, types)
 }
 
 fn hash_fold(hash: u64, value: u64) -> u64 {
@@ -4665,7 +4779,191 @@ fn hash_index(capacity: usize, hashes: &[u64]) -> Vec<i64> {
     index
 }
 
+fn llvm_collection_lane_constants(
+    collection_ty: Ty,
+    lane: usize,
+    lane_ty: Ty,
+    capacity: usize,
+    values: &[Option<ConstValue>],
+    types: &[TType],
+    functions: &[TFunction],
+    strings: &StaticStringPool,
+) -> (Vec<String>, Vec<String>, Vec<u8>) {
+    let Some(layout) = collection_var_lane(collection_ty, types, lane) else {
+        let constants = (0..capacity)
+            .map(|index| {
+                values
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .map(|value| {
+                        llvm_collection_lane_constant(lane_ty, value, types, functions, strings)
+                    })
+                    .unwrap_or_else(|| "zeroinitializer".to_owned())
+            })
+            .collect();
+        return (constants, Vec::new(), Vec::new());
+    };
+    if layout.inline {
+        let constants = (0..capacity)
+            .map(|index| {
+                values
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .map(|value| {
+                        llvm_collection_lane_constant(lane_ty, value, types, functions, strings)
+                    })
+                    .unwrap_or_else(|| "zeroinitializer".to_owned())
+            })
+            .collect();
+        return (constants, Vec::new(), Vec::new());
+    }
+
+    let base = base_type(lane_ty, types);
+    let is_text = matches!(types[base.0].kind, TTypeKind::Text { .. });
+    let mut class_next = vec![0usize; layout.classes.len()];
+    let mut class_storage = vec![vec![None::<Vec<u8>>; capacity]; layout.classes.len()];
+    let mut constants = Vec::with_capacity(capacity);
+    for index in 0..capacity {
+        let value = values.get(index).and_then(Option::as_ref);
+        let bytes = match value {
+            Some(ConstValue::String(bytes)) => bytes.as_slice(),
+            Some(_) => unreachable!("growing collection constants contain string values"),
+            None => &[],
+        };
+        let (handle, length) = if bytes.is_empty() {
+            (-1i64, 0usize)
+        } else {
+            let class_index = layout
+                .classes
+                .iter()
+                .position(|class| bytes.len() <= class.bytes)
+                .expect("checked collection string fits a size class");
+            let slot = class_next[class_index];
+            class_next[class_index] += 1;
+            class_storage[class_index][slot] = Some(bytes.to_vec());
+            let slot_offset = collection_var_class_data_offset(
+                collection_ty,
+                types,
+                lane,
+                layout.classes[class_index].index,
+            )
+            .saturating_add(slot.saturating_mul(layout.classes[class_index].bytes));
+            (
+                (((layout.classes[class_index].index as u64) << 56) | slot_offset as u64) as i64,
+                bytes.len(),
+            )
+        };
+        let chars = if is_text {
+            value
+                .and_then(|value| match value {
+                    ConstValue::String(bytes) => Some(
+                        std::str::from_utf8(bytes)
+                            .expect("checked Text constants contain valid UTF-8")
+                            .chars()
+                            .count(),
+                    ),
+                    _ => None,
+                })
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        constants.push(if is_text {
+            format!("<{{ i64 {handle}, i64 {length}, i64 {chars} }}>")
+        } else {
+            format!("<{{ i64 {handle}, i64 {length} }}>")
+        });
+    }
+
+    let mut pool_fields = Vec::with_capacity(layout.classes.len() * 3);
+    let mut backing = Vec::new();
+    for (class_index, class) in layout.classes.iter().enumerate() {
+        let data_size = capacity.saturating_mul(class.bytes);
+        let class_start = backing.len();
+        for slot in &class_storage[class_index] {
+            let slot_len = slot.as_ref().map_or(0, Vec::len);
+            if let Some(bytes) = slot {
+                backing.extend_from_slice(bytes);
+            }
+            backing.resize(backing.len().saturating_add(class.bytes - slot_len), 0);
+        }
+        debug_assert_eq!(backing.len() - class_start, data_size);
+        pool_fields.push(format!("i64 {}", class_next[class_index]));
+        pool_fields.push("i64 0".to_owned());
+        pool_fields.push(format!("[{} x i64] zeroinitializer", capacity));
+    }
+    (constants, pool_fields, backing)
+}
+
+fn llvm_collection_element_lane_constants(
+    collection_ty: Ty,
+    element_ty: Ty,
+    capacity: usize,
+    values: &[Option<ConstValue>],
+    types: &[TType],
+    functions: &[TFunction],
+    strings: &StaticStringPool,
+) -> (Vec<Vec<String>>, Vec<String>, Vec<u8>) {
+    let lane_types = collection_lane_types(element_ty, types);
+    let is_struct = matches!(
+        types[base_type(element_ty, types).0].kind,
+        TTypeKind::Struct(_)
+    );
+    let mut lanes = Vec::with_capacity(lane_types.len());
+    let mut pools = Vec::new();
+    let mut backing = Vec::new();
+    for (lane, lane_ty) in lane_types.into_iter().enumerate() {
+        let lane_values = values
+            .iter()
+            .map(|value| match (is_struct, value) {
+                (true, Some(ConstValue::Struct(fields))) => fields.get(lane).cloned(),
+                (true, Some(_)) => unreachable!("struct collection values carry struct data"),
+                (true, None) => None,
+                (false, value) => value.clone(),
+            })
+            .collect::<Vec<_>>();
+        let (constants, lane_pools, lane_backing) = llvm_collection_lane_constants(
+            collection_ty,
+            lane,
+            lane_ty,
+            capacity,
+            &lane_values,
+            types,
+            functions,
+            strings,
+        );
+        lanes.push(constants);
+        pools.extend(lane_pools);
+        backing.extend(lane_backing);
+    }
+    (lanes, pools, backing)
+}
+
+fn llvm_collection_constant_initializer(
+    collection_ty: Ty,
+    fields: Vec<String>,
+    backing: Vec<u8>,
+    types: &[TType],
+) -> String {
+    let prefix = format!("<{{ {} }}>", fields.join(", "));
+    let backing_size = collection_var_pool_data_size(collection_ty, types);
+    if backing_size == 0 {
+        return prefix;
+    }
+    debug_assert_eq!(backing.len(), backing_size);
+    let backing_initializer = if backing.iter().all(|byte| *byte == 0) {
+        "zeroinitializer".to_owned()
+    } else {
+        format!("c\"{}\"", llvm_fixed_byte_array(&backing, backing_size))
+    };
+    format!(
+        "<{{ %nl.ty.{} {prefix}, [{backing_size} x i8] {backing_initializer} }}>",
+        collection_ty.0,
+    )
+}
+
 fn map_constant(
+    collection_ty: Ty,
     key_ty: Ty,
     value_ty: Ty,
     capacity: usize,
@@ -4697,44 +4995,71 @@ fn map_constant(
             let value = entries
                 .get(slot)
                 .map(|entry| {
-                    llvm_collection_lane_constant(key_ty, &entry.0, types, functions, strings)
+                    llvm_collection_key_constant(key_ty, &entry.0, types, functions, strings)
                 })
                 .unwrap_or_else(|| "zeroinitializer".to_owned());
-            format!("{} {value}", llvm_type(key_ty, types))
+            format!("{} {value}", llvm_collection_key_type(key_ty, types))
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let values = (0..capacity)
+        .map(|slot| entries.get(slot).map(|entry| entry.1.clone()))
+        .collect::<Vec<_>>();
+    let (lanes, pools, backing) = llvm_collection_element_lane_constants(
+        collection_ty,
+        value_ty,
+        capacity,
+        &values,
+        types,
+        functions,
+        strings,
+    );
+    let lane_types = collection_lane_types(value_ty, types);
     let values_text = (0..capacity)
         .map(|slot| {
-            let value = entries
-                .get(slot)
-                .map(|entry| {
-                    llvm_collection_lane_constant(value_ty, &entry.1, types, functions, strings)
-                })
-                .unwrap_or_else(|| "zeroinitializer".to_owned());
+            let value = if matches!(
+                types[base_type(value_ty, types).0].kind,
+                TTypeKind::Struct(_)
+            ) {
+                let fields = lane_types
+                    .iter()
+                    .enumerate()
+                    .map(|(lane, lane_ty)| {
+                        format!(
+                            "{} {}",
+                            llvm_collection_type(*lane_ty, types),
+                            lanes[lane][slot]
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("<{{ {fields} }}>")
+            } else {
+                lanes[0][slot].clone()
+            };
             format!("{} {value}", llvm_collection_type(value_ty, types))
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let ascii_key_storage = match types[key_ty.0].kind {
-        TTypeKind::Ascii { max_bytes } => {
-            format!(", [{} x [{} x i8]] zeroinitializer", capacity, max_bytes)
-        }
-        _ => String::new(),
-    };
-    format!(
-        "<{{ i64 {}, i64 {}, [{} x i1] [{active}], [{} x i64] [{hashes_text}], [{} x i64] [{index_text}], [{} x {}] [{keys_text}], [{} x {}] [{values_text}]{} }}>",
-        entries.len(),
-        entries.len(),
-        capacity,
-        capacity,
-        capacity,
-        capacity,
-        llvm_type(key_ty, types),
-        capacity,
-        llvm_collection_type(value_ty, types),
-        ascii_key_storage
-    )
+    let mut fields = vec![
+        format!("i64 {}", entries.len()),
+        format!("i64 {}", entries.len()),
+        format!("[{} x i1] [{active}]", capacity),
+        format!("[{} x i64] [{hashes_text}]", capacity),
+        format!("[{} x i64] [{index_text}]", capacity),
+        format!(
+            "[{} x {}] [{keys_text}]",
+            capacity,
+            llvm_collection_key_type(key_ty, types)
+        ),
+        format!(
+            "[{} x {}] [{values_text}]",
+            capacity,
+            llvm_collection_type(value_ty, types)
+        ),
+    ];
+    fields.extend(pools);
+    llvm_collection_constant_initializer(collection_ty, fields, backing, types)
 }
 
 fn set_constant(
@@ -4767,28 +5092,21 @@ fn set_constant(
         .map(|slot| {
             let value = entries
                 .get(slot)
-                .map(|key| llvm_collection_lane_constant(key_ty, key, types, functions, strings))
+                .map(|key| llvm_collection_key_constant(key_ty, key, types, functions, strings))
                 .unwrap_or_else(|| "zeroinitializer".to_owned());
-            format!("{} {value}", llvm_type(key_ty, types))
+            format!("{} {value}", llvm_collection_key_type(key_ty, types))
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let ascii_key_storage = match types[key_ty.0].kind {
-        TTypeKind::Ascii { max_bytes } => {
-            format!(", [{} x [{} x i8]] zeroinitializer", capacity, max_bytes)
-        }
-        _ => String::new(),
-    };
     format!(
-        "<{{ i64 {}, i64 {}, [{} x i1] [{active}], [{} x i64] [{hashes_text}], [{} x i64] [{index_text}], [{} x {}] [{keys_text}]{} }}>",
+        "<{{ i64 {}, i64 {}, [{} x i1] [{active}], [{} x i64] [{hashes_text}], [{} x i64] [{index_text}], [{} x {}] [{keys_text}] }}>",
         entries.len(),
         entries.len(),
         capacity,
         capacity,
         capacity,
         capacity,
-        llvm_type(key_ty, types),
-        ascii_key_storage
+        llvm_collection_key_type(key_ty, types)
     )
 }
 
@@ -6142,20 +6460,161 @@ impl<'a> FunctionEmitter<'a> {
         result
     }
 
-    fn emit_collection_var_slot_ptr(
+    fn emit_collection_var_slot_offset(
         &mut self,
         collection_ty: Ty,
-        pointer: &str,
+        lane: usize,
         class: &CollectionVarClass,
         slot: &str,
     ) -> String {
-        let capacity = collection_capacity(collection_ty, &self.program.types).unwrap_or(0);
-        let storage =
-            self.emit_collection_var_field_ptr(collection_ty, pointer, class.storage_field);
+        let slot_offset = self.temp();
+        self.instruction(format!("{slot_offset} = mul i64 {slot}, {}", class.bytes));
+        let base_offset =
+            collection_var_class_data_offset(collection_ty, &self.program.types, lane, class.index);
+        let offset = self.temp();
+        self.instruction(format!("{offset} = add i64 {slot_offset}, {base_offset}"));
+        offset
+    }
+
+    fn emit_collection_var_slot_ptr_from_offset(&mut self, pointer: &str, offset: &str) -> String {
         let result = self.temp();
         self.instruction(format!(
-            "{result} = getelementptr inbounds [{} x [{} x i8]], ptr {storage}, i32 0, i64 {slot}",
-            capacity, class.bytes
+            "{result} = getelementptr inbounds i8, ptr {pointer}, i64 {offset}"
+        ));
+        result
+    }
+
+    fn emit_collection_string_descriptor(
+        &mut self,
+        ty: Ty,
+        data: &str,
+        length: &str,
+        chars: Option<&str>,
+    ) -> String {
+        let descriptor_ty = self.lltype(ty);
+        let mut descriptor = self.temp();
+        self.instruction(format!(
+            "{descriptor} = insertvalue {descriptor_ty} zeroinitializer, ptr {data}, 0"
+        ));
+        let next = self.temp();
+        self.instruction(format!(
+            "{next} = insertvalue {descriptor_ty} {descriptor}, i64 {length}, 1"
+        ));
+        descriptor = next;
+        if let Some(chars) = chars {
+            let next = self.temp();
+            self.instruction(format!(
+                "{next} = insertvalue {descriptor_ty} {descriptor}, i64 {chars}, 2"
+            ));
+            descriptor = next;
+        }
+        descriptor
+    }
+
+    fn emit_collection_string_descriptor_from_lane(
+        &mut self,
+        collection_ty: Ty,
+        collection_pointer: &str,
+        index: &str,
+        lane: usize,
+    ) -> String {
+        let layout = collection_var_lane(collection_ty, &self.program.types, lane)
+            .expect("string collection lanes have a growing lane layout");
+        let lane_pointer =
+            self.emit_collection_lane_pointer(collection_ty, collection_pointer, index, lane);
+        if layout.inline {
+            let length = self.temp();
+            self.instruction(format!("{length} = load i64, ptr {lane_pointer}, align 1"));
+            let (data_field, chars) = if self.is_text_type(layout.ty) {
+                let chars = self.temp();
+                self.instruction(format!(
+                    "{chars} = getelementptr {}, ptr {lane_pointer}, i32 0, i32 1",
+                    llvm_collection_type(layout.ty, &self.program.types)
+                ));
+                let chars_value = self.temp();
+                self.instruction(format!("{chars_value} = load i64, ptr {chars}, align 1"));
+                (2, Some(chars_value))
+            } else {
+                (1, None)
+            };
+            let data = self.temp();
+            self.instruction(format!(
+                "{data} = getelementptr {}, ptr {lane_pointer}, i32 0, i32 {data_field}",
+                llvm_collection_type(layout.ty, &self.program.types)
+            ));
+            return self.emit_collection_string_descriptor(
+                layout.ty,
+                &data,
+                &length,
+                chars.as_deref(),
+            );
+        }
+
+        let handle = self.temp();
+        self.instruction(format!("{handle} = load i64, ptr {lane_pointer}, align 1"));
+        let length_ptr = self.temp();
+        self.instruction(format!(
+            "{length_ptr} = getelementptr {}, ptr {lane_pointer}, i32 0, i32 1",
+            llvm_collection_type(layout.ty, &self.program.types)
+        ));
+        let length = self.temp();
+        self.instruction(format!("{length} = load i64, ptr {length_ptr}, align 1"));
+        let chars = if self.is_text_type(layout.ty) {
+            let chars_ptr = self.temp();
+            self.instruction(format!(
+                "{chars_ptr} = getelementptr {}, ptr {lane_pointer}, i32 0, i32 2",
+                llvm_collection_type(layout.ty, &self.program.types)
+            ));
+            let chars = self.temp();
+            self.instruction(format!("{chars} = load i64, ptr {chars_ptr}, align 1"));
+            Some(chars)
+        } else {
+            None
+        };
+        let data =
+            self.emit_collection_var_handle_data(collection_ty, collection_pointer, lane, &handle);
+        self.emit_collection_string_descriptor(layout.ty, &data, &length, chars.as_deref())
+    }
+
+    fn emit_collection_var_handle_data(
+        &mut self,
+        collection_ty: Ty,
+        collection_pointer: &str,
+        lane: usize,
+        handle: &str,
+    ) -> String {
+        let layout = collection_var_lane(collection_ty, &self.program.types, lane)
+            .expect("handle data requires a size-class lane");
+        let class_index = self.temp();
+        self.instruction(format!("{class_index} = lshr i64 {handle}, 56"));
+        let in_range = self.temp();
+        self.instruction(format!(
+            "{in_range} = icmp ult i64 {class_index}, {}",
+            layout.classes.len()
+        ));
+        let empty = self.temp();
+        self.instruction(format!("{empty} = icmp eq i64 {handle}, -1"));
+        let not_empty = self.temp();
+        self.instruction(format!("{not_empty} = xor i1 {empty}, true"));
+        let valid = self.temp();
+        self.instruction(format!("{valid} = and i1 {in_range}, {not_empty}"));
+        let safe_class = self.temp();
+        self.instruction(format!(
+            "{safe_class} = select i1 {in_range}, i64 {class_index}, i64 0"
+        ));
+        let slot = self.temp();
+        self.instruction(format!("{slot} = and i64 {handle}, 72057594037927935"));
+        let slot_offset = self.temp();
+        self.instruction(format!(
+            "{slot_offset} = select i1 {valid}, i64 {slot}, i64 0"
+        ));
+        let data = self.temp();
+        self.instruction(format!(
+            "{data} = getelementptr i8, ptr {collection_pointer}, i64 {slot_offset}"
+        ));
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = select i1 {valid}, ptr {data}, ptr null"
         ));
         result
     }
@@ -6165,46 +6624,47 @@ impl<'a> FunctionEmitter<'a> {
         collection_ty: Ty,
         pointer: &str,
         lane: usize,
-        old_data: &str,
+        old_handle: &str,
         require_fit: Option<&str>,
     ) -> String {
         let capacity = collection_capacity(collection_ty, &self.program.types).unwrap_or(0);
         let Some(layout) = collection_var_lane(collection_ty, &self.program.types, lane) else {
             return "false".to_owned();
         };
-        let old_int = self.temp();
-        self.instruction(format!("{old_int} = ptrtoint ptr {old_data} to i64"));
-        let mut matched = "false".to_owned();
-        for class in layout.classes {
-            let base =
-                self.emit_collection_var_field_ptr(collection_ty, pointer, class.storage_field);
-            let base_int = self.temp();
-            self.instruction(format!("{base_int} = ptrtoint ptr {base} to i64"));
-            let end_int = self.temp();
+        let empty = self.temp();
+        self.instruction(format!("{empty} = icmp eq i64 {old_handle}, -1"));
+        let old_class = self.temp();
+        self.instruction(format!("{old_class} = lshr i64 {old_handle}, 56"));
+        let in_range = self.temp();
+        self.instruction(format!(
+            "{in_range} = icmp ult i64 {old_class}, {}",
+            layout.classes.len()
+        ));
+        let not_empty = self.temp();
+        self.instruction(format!("{not_empty} = xor i1 {empty}, true"));
+        let mut valid = self.temp();
+        self.instruction(format!("{valid} = and i1 {in_range}, {not_empty}"));
+        if let Some(length) = require_fit {
+            let safe_class = self.temp();
             self.instruction(format!(
-                "{end_int} = add i64 {base_int}, {}",
-                capacity.saturating_mul(class.bytes)
+                "{safe_class} = select i1 {in_range}, i64 {old_class}, i64 0"
             ));
-            let after_start = self.temp();
+            let sizes = self.temp();
             self.instruction(format!(
-                "{after_start} = icmp uge i64 {old_int}, {base_int}"
+                "{sizes} = getelementptr inbounds [{} x i64], ptr @.nl.collection.sizes.{}.{lane}, i32 0, i64 {safe_class}",
+                layout.classes.len(),
+                collection_ty.0
             ));
-            let before_end = self.temp();
-            self.instruction(format!("{before_end} = icmp ult i64 {old_int}, {end_int}"));
-            let mut in_class = self.temp();
-            self.instruction(format!("{in_class} = and i1 {after_start}, {before_end}"));
-            if let Some(length) = require_fit {
-                let fits = self.temp();
-                self.instruction(format!("{fits} = icmp ule i64 {length}, {}", class.bytes));
-                let both = self.temp();
-                self.instruction(format!("{both} = and i1 {in_class}, {fits}"));
-                in_class = both;
-            }
-            let either = self.temp();
-            self.instruction(format!("{either} = or i1 {matched}, {in_class}"));
-            matched = either;
+            let class_size = self.temp();
+            self.instruction(format!("{class_size} = load i64, ptr {sizes}, align 8"));
+            let fits = self.temp();
+            self.instruction(format!("{fits} = icmp ule i64 {length}, {class_size}"));
+            let reusable = self.temp();
+            self.instruction(format!("{reusable} = and i1 {valid}, {fits}"));
+            valid = reusable;
         }
-        matched
+        let _ = (pointer, capacity);
+        valid
     }
 
     fn emit_free_var_lane_slot(
@@ -6212,69 +6672,75 @@ impl<'a> FunctionEmitter<'a> {
         collection_ty: Ty,
         pointer: &str,
         lane: usize,
-        old_data: &str,
+        old_handle: &str,
     ) {
-        let capacity = collection_capacity(collection_ty, &self.program.types).unwrap_or(0);
         let Some(layout) = collection_var_lane(collection_ty, &self.program.types, lane) else {
             return;
         };
-        let old_int = self.temp();
-        self.instruction(format!("{old_int} = ptrtoint ptr {old_data} to i64"));
+        if layout.inline {
+            return;
+        }
+        let empty = self.temp();
+        self.instruction(format!("{empty} = icmp eq i64 {old_handle}, -1"));
         let done = self.new_label("var.slot.free.done");
-        let mut next = self.new_label("var.slot.free.inspect");
-        self.terminate(format!("br label %{next}"));
-        for class in layout.classes {
-            self.start_block(&next);
-            let after_start = self.temp();
-            let base =
-                self.emit_collection_var_field_ptr(collection_ty, pointer, class.storage_field);
-            let base_int = self.temp();
-            self.instruction(format!("{base_int} = ptrtoint ptr {base} to i64"));
-            let end_int = self.temp();
+        let inspect = self.new_label("var.slot.free.inspect");
+        self.terminate(format!("br i1 {empty}, label %{done}, label %{inspect}"));
+        self.start_block(&inspect);
+        let old_class = self.temp();
+        self.instruction(format!("{old_class} = lshr i64 {old_handle}, 56"));
+        let slot_offset = self.temp();
+        self.instruction(format!(
+            "{slot_offset} = and i64 {old_handle}, 72057594037927935"
+        ));
+        let mut next = String::new();
+        for (class_index, class) in layout.classes.iter().enumerate() {
+            if class_index != 0 {
+                self.start_block(&next);
+            }
+            let matches = self.temp();
             self.instruction(format!(
-                "{end_int} = add i64 {base_int}, {}",
-                capacity.saturating_mul(class.bytes)
+                "{matches} = icmp eq i64 {old_class}, {}",
+                class.index
             ));
-            self.instruction(format!(
-                "{after_start} = icmp uge i64 {old_int}, {base_int}"
-            ));
-            let before_end = self.temp();
-            self.instruction(format!("{before_end} = icmp ult i64 {old_int}, {end_int}"));
             let member = self.temp();
-            self.instruction(format!("{member} = and i1 {after_start}, {before_end}"));
+            self.instruction(format!("{member} = and i1 {matches}, true"));
             let free_label = self.new_label("var.slot.free.class");
             let following = self.new_label("var.slot.free.next");
             self.terminate(format!(
                 "br i1 {member}, label %{free_label}, label %{following}"
             ));
             self.start_block(&free_label);
-            if class.bytes > 64 {
-                let relative = self.temp();
-                self.instruction(format!("{relative} = sub i64 {old_int}, {base_int}"));
-                let slot = self.temp();
-                self.instruction(format!("{slot} = udiv i64 {relative}, {}", class.bytes));
-                let count_ptr = self.emit_collection_var_field_ptr(
-                    collection_ty,
-                    pointer,
-                    class.free_count_field,
-                );
-                let count = self.temp();
-                self.instruction(format!("{count} = load i64, ptr {count_ptr}, align 1"));
-                let stack_ptr = self.emit_collection_var_field_ptr(
-                    collection_ty,
-                    pointer,
-                    class.free_stack_field,
-                );
-                let item = self.temp();
-                self.instruction(format!(
-                    "{item} = getelementptr inbounds [{} x i64], ptr {stack_ptr}, i32 0, i64 {count}",
-                    capacity
-                ));
-                self.instruction(format!("store i64 {slot}, ptr {item}, align 1"));
-                let incremented = self.temp();
-                self.instruction(format!("{incremented} = add i64 {count}, 1"));
-                self.instruction(format!("store i64 {incremented}, ptr {count_ptr}, align 1"));
-            }
+            let capacity = collection_capacity(collection_ty, &self.program.types).unwrap_or(0);
+            let base_offset = collection_var_class_data_offset(
+                collection_ty,
+                &self.program.types,
+                lane,
+                class.index,
+            );
+            let relative_offset = self.temp();
+            self.instruction(format!(
+                "{relative_offset} = sub i64 {slot_offset}, {base_offset}"
+            ));
+            let slot = self.temp();
+            self.instruction(format!(
+                "{slot} = lshr i64 {relative_offset}, {}",
+                class.bytes.trailing_zeros()
+            ));
+            let count_ptr =
+                self.emit_collection_var_field_ptr(collection_ty, pointer, class.free_count_field);
+            let count = self.temp();
+            self.instruction(format!("{count} = load i64, ptr {count_ptr}, align 1"));
+            let stack_ptr =
+                self.emit_collection_var_field_ptr(collection_ty, pointer, class.free_stack_field);
+            let item = self.temp();
+            self.instruction(format!(
+                "{item} = getelementptr inbounds [{} x i64], ptr {stack_ptr}, i32 0, i64 {count}",
+                capacity
+            ));
+            self.instruction(format!("store i64 {slot}, ptr {item}, align 1"));
+            let incremented = self.temp();
+            self.instruction(format!("{incremented} = add i64 {count}, 1"));
+            self.instruction(format!("store i64 {incremented}, ptr {count_ptr}, align 1"));
             self.terminate(format!("br label %{done}"));
             next = following;
         }
@@ -6328,7 +6794,7 @@ impl<'a> FunctionEmitter<'a> {
         self.start_block(&done);
         let slot = self.temp();
         self.instruction(format!("{slot} = load i64, ptr {slot_ptr}, align 1"));
-        self.emit_collection_var_slot_ptr(collection_ty, pointer, class, &slot)
+        slot
     }
 
     fn emit_store_var_lane(
@@ -6344,26 +6810,56 @@ impl<'a> FunctionEmitter<'a> {
         };
         let descriptor =
             self.emit_collection_lane_pointer(collection_ty, collection_pointer, index, lane);
-        let old_data_field = self.temp();
-        self.instruction(format!(
-            "{old_data_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 0",
-            self.lltype(layout.ty)
-        ));
-        let old_data = self.temp();
-        self.instruction(format!(
-            "{old_data} = load ptr, ptr {old_data_field}, align 1"
-        ));
         let source_data = self.emit_inline_data_pointer(source, layout.ty);
         let source_len = self.temp();
         self.instruction(format!("{source_len} = load i64, ptr {source}, align 1"));
+        let source_chars = if self.is_text_type(layout.ty) {
+            let chars_ptr = self.temp();
+            self.instruction(format!(
+                "{chars_ptr} = getelementptr i8, ptr {source}, i64 8"
+            ));
+            let chars = self.temp();
+            self.instruction(format!("{chars} = load i64, ptr {chars_ptr}, align 1"));
+            Some(chars)
+        } else {
+            None
+        };
+        if layout.inline {
+            let data_field = if self.is_text_type(layout.ty) { 2 } else { 1 };
+            let destination_data = self.temp();
+            self.instruction(format!(
+                "{destination_data} = getelementptr {}, ptr {descriptor}, i32 0, i32 {data_field}",
+                llvm_collection_type(layout.ty, &self.program.types)
+            ));
+            self.instruction(format!("store i64 {source_len}, ptr {descriptor}, align 1"));
+            self.instruction(format!("call void @llvm.memmove.p0.p0.i64(ptr {destination_data}, ptr {source_data}, i64 {source_len}, i1 false)"));
+            if let Some(chars) = source_chars {
+                let chars_ptr = self.temp();
+                self.instruction(format!(
+                    "{chars_ptr} = getelementptr {}, ptr {descriptor}, i32 0, i32 1",
+                    llvm_collection_type(layout.ty, &self.program.types)
+                ));
+                self.instruction(format!("store i64 {chars}, ptr {chars_ptr}, align 1"));
+            }
+            self.instruction(format!(
+                "call void @nl_test_var_storage_note(ptr {descriptor}, ptr {destination_data}, i64 {source_len}, i64 {})",
+                collection_lane_size(layout.ty, &self.program.types, &mut vec![None; self.program.types.len()])
+            ));
+            return;
+        }
+        let old_handle = self.temp();
+        self.instruction(format!(
+            "{old_handle} = load i64, ptr {descriptor}, align 1"
+        ));
         let can_reuse = self.emit_var_lane_old_slot_class(
             collection_ty,
             collection_pointer,
             lane,
-            &old_data,
+            &old_handle,
             Some(&source_len),
         );
-        let chosen_ptr = self.entry_alloca_raw("ptr");
+        let chosen_data_ptr = self.entry_alloca_raw("ptr");
+        let chosen_handle_ptr = self.entry_alloca(Ty::Long);
         let reuse_flag = self.entry_alloca_raw("i1");
         let reuse_label = self.new_label("var.store.reuse");
         let allocate_label = self.new_label("var.store.allocate");
@@ -6373,7 +6869,18 @@ impl<'a> FunctionEmitter<'a> {
             "br i1 {can_reuse}, label %{reuse_label}, label %{allocate_label}"
         ));
         self.start_block(&reuse_label);
-        self.instruction(format!("store ptr {old_data}, ptr {chosen_ptr}, align 1"));
+        let old_data = self.emit_collection_var_handle_data(
+            collection_ty,
+            collection_pointer,
+            lane,
+            &old_handle,
+        );
+        self.instruction(format!(
+            "store ptr {old_data}, ptr {chosen_data_ptr}, align 1"
+        ));
+        self.instruction(format!(
+            "store i64 {old_handle}, ptr {chosen_handle_ptr}, align 1"
+        ));
         self.instruction(format!("store i1 true, ptr {reuse_flag}, align 1"));
         self.terminate(format!("br label %{select}"));
         let mut selection = allocate_label;
@@ -6381,7 +6888,18 @@ impl<'a> FunctionEmitter<'a> {
             self.start_block(&selection);
             if class_index + 1 == layout.classes.len() {
                 let slot = self.emit_alloc_var_lane_slot(collection_ty, collection_pointer, class);
-                self.instruction(format!("store ptr {slot}, ptr {chosen_ptr}, align 1"));
+                let offset =
+                    self.emit_collection_var_slot_offset(collection_ty, lane, class, &slot);
+                let data =
+                    self.emit_collection_var_slot_ptr_from_offset(collection_pointer, &offset);
+                self.instruction(format!("store ptr {data}, ptr {chosen_data_ptr}, align 1"));
+                let class_number = self.temp();
+                self.instruction(format!("{class_number} = shl i64 {}, 56", class.index));
+                let handle = self.temp();
+                self.instruction(format!("{handle} = or i64 {class_number}, {offset}"));
+                self.instruction(format!(
+                    "store i64 {handle}, ptr {chosen_handle_ptr}, align 1"
+                ));
                 self.instruction(format!("store i1 false, ptr {reuse_flag}, align 1"));
                 self.terminate(format!("br label %{select}"));
             } else {
@@ -6397,7 +6915,18 @@ impl<'a> FunctionEmitter<'a> {
                 ));
                 self.start_block(&selected);
                 let slot = self.emit_alloc_var_lane_slot(collection_ty, collection_pointer, class);
-                self.instruction(format!("store ptr {slot}, ptr {chosen_ptr}, align 1"));
+                let offset =
+                    self.emit_collection_var_slot_offset(collection_ty, lane, class, &slot);
+                let data =
+                    self.emit_collection_var_slot_ptr_from_offset(collection_pointer, &offset);
+                self.instruction(format!("store ptr {data}, ptr {chosen_data_ptr}, align 1"));
+                let class_number = self.temp();
+                self.instruction(format!("{class_number} = shl i64 {}, 56", class.index));
+                let handle = self.temp();
+                self.instruction(format!("{handle} = or i64 {class_number}, {offset}"));
+                self.instruction(format!(
+                    "store i64 {handle}, ptr {chosen_handle_ptr}, align 1"
+                ));
                 self.instruction(format!("store i1 false, ptr {reuse_flag}, align 1"));
                 self.terminate(format!("br label %{select}"));
                 selection = following;
@@ -6406,33 +6935,29 @@ impl<'a> FunctionEmitter<'a> {
         self.start_block(&select);
         let target_data = self.temp();
         self.instruction(format!(
-            "{target_data} = load ptr, ptr {chosen_ptr}, align 1"
+            "{target_data} = load ptr, ptr {chosen_data_ptr}, align 1"
+        ));
+        let target_handle = self.temp();
+        self.instruction(format!(
+            "{target_handle} = load i64, ptr {chosen_handle_ptr}, align 1"
         ));
         self.instruction(format!("call void @llvm.memmove.p0.p0.i64(ptr {target_data}, ptr {source_data}, i64 {source_len}, i1 false)"));
         self.instruction(format!(
-            "store ptr {target_data}, ptr {old_data_field}, align 1"
+            "store i64 {target_handle}, ptr {descriptor}, align 1"
         ));
         let destination_len_field = self.temp();
         self.instruction(format!(
             "{destination_len_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 1",
-            self.lltype(layout.ty)
+            llvm_collection_type(layout.ty, &self.program.types)
         ));
         self.instruction(format!(
             "store i64 {source_len}, ptr {destination_len_field}, align 1"
         ));
-        if self.is_text_type(layout.ty) {
-            let source_chars_field = self.temp();
-            self.instruction(format!(
-                "{source_chars_field} = getelementptr i8, ptr {source}, i64 8"
-            ));
-            let source_chars = self.temp();
-            self.instruction(format!(
-                "{source_chars} = load i64, ptr {source_chars_field}, align 1"
-            ));
+        if let Some(source_chars) = source_chars {
             let destination_chars_field = self.temp();
             self.instruction(format!(
                 "{destination_chars_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 2",
-                self.lltype(layout.ty)
+                llvm_collection_type(layout.ty, &self.program.types)
             ));
             self.instruction(format!(
                 "store i64 {source_chars}, ptr {destination_chars_field}, align 1"
@@ -6445,11 +6970,12 @@ impl<'a> FunctionEmitter<'a> {
             "br i1 {reused}, label %{done}, label %{free_label}"
         ));
         self.start_block(&free_label);
-        self.emit_free_var_lane_slot(collection_ty, collection_pointer, lane, &old_data);
+        self.emit_free_var_lane_slot(collection_ty, collection_pointer, lane, &old_handle);
         self.terminate(format!("br label %{done}"));
         self.start_block(&done);
         self.instruction(format!(
-            "call void @nl_test_var_storage_note(ptr {descriptor}, ptr {target_data}, i64 {source_len})"
+            "call void @nl_test_var_storage_note(ptr {descriptor}, ptr {target_data}, i64 {source_len}, i64 {})",
+            collection_lane_size(layout.ty, &self.program.types, &mut vec![None; self.program.types.len()])
         ));
     }
 
@@ -6475,29 +7001,22 @@ impl<'a> FunctionEmitter<'a> {
         for lane in collection_var_lanes(collection_ty, &self.program.types) {
             let descriptor =
                 self.emit_collection_lane_pointer(collection_ty, destination, index, lane.lane);
-            let data_field = self.temp();
-            self.instruction(format!(
-                "{data_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 0",
-                self.lltype(lane.ty)
-            ));
-            if let Some(inline) = lane.classes.iter().find(|class| class.bytes <= 64) {
-                let data =
-                    self.emit_collection_var_slot_ptr(collection_ty, destination, inline, index);
-                self.instruction(format!("store ptr {data}, ptr {data_field}, align 1"));
-            } else {
-                self.instruction(format!("store ptr null, ptr {data_field}, align 1"));
+            let length_field = if lane.inline { 0 } else { 1 };
+            if !lane.inline {
+                self.instruction(format!("store i64 -1, ptr {descriptor}, align 1"));
             }
             let length = self.temp();
             self.instruction(format!(
-                "{length} = getelementptr {}, ptr {descriptor}, i32 0, i32 1",
-                self.lltype(lane.ty)
+                "{length} = getelementptr {}, ptr {descriptor}, i32 0, i32 {length_field}",
+                llvm_collection_type(lane.ty, &self.program.types)
             ));
             self.instruction(format!("store i64 0, ptr {length}, align 1"));
             if self.is_text_type(lane.ty) {
                 let chars = self.temp();
                 self.instruction(format!(
-                    "{chars} = getelementptr {}, ptr {descriptor}, i32 0, i32 2",
-                    self.lltype(lane.ty)
+                    "{chars} = getelementptr {}, ptr {descriptor}, i32 0, i32 {}",
+                    llvm_collection_type(lane.ty, &self.program.types),
+                    if lane.inline { 1 } else { 2 }
                 ));
                 self.instruction(format!("store i64 0, ptr {chars}, align 1"));
             }
@@ -6509,34 +7028,25 @@ impl<'a> FunctionEmitter<'a> {
         for lane in collection_var_lanes(collection_ty, &self.program.types) {
             let descriptor =
                 self.emit_collection_lane_pointer(collection_ty, pointer, index, lane.lane);
-            let data_field = self.temp();
-            self.instruction(format!(
-                "{data_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 0",
-                self.lltype(lane.ty)
-            ));
-            let data = self.temp();
-            self.instruction(format!("{data} = load ptr, ptr {data_field}, align 1"));
-            self.emit_free_var_lane_slot(collection_ty, pointer, lane.lane, &data);
-            if let Some(inline) = lane.classes.iter().find(|class| class.bytes <= 64) {
-                let inline_data =
-                    self.emit_collection_var_slot_ptr(collection_ty, pointer, inline, index);
-                self.instruction(format!(
-                    "store ptr {inline_data}, ptr {data_field}, align 1"
-                ));
-            } else {
-                self.instruction(format!("store ptr null, ptr {data_field}, align 1"));
+            if !lane.inline {
+                let handle = self.temp();
+                self.instruction(format!("{handle} = load i64, ptr {descriptor}, align 1"));
+                self.emit_free_var_lane_slot(collection_ty, pointer, lane.lane, &handle);
+                self.instruction(format!("store i64 -1, ptr {descriptor}, align 1"));
             }
             let length_field = self.temp();
+            let length_index = if lane.inline { 0 } else { 1 };
             self.instruction(format!(
-                "{length_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 1",
-                self.lltype(lane.ty)
+                "{length_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 {length_index}",
+                llvm_collection_type(lane.ty, &self.program.types)
             ));
             self.instruction(format!("store i64 0, ptr {length_field}, align 1"));
             if self.is_text_type(lane.ty) {
                 let chars_field = self.temp();
                 self.instruction(format!(
-                    "{chars_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 2",
-                    self.lltype(lane.ty)
+                    "{chars_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 {}",
+                    llvm_collection_type(lane.ty, &self.program.types),
+                    if lane.inline { 1 } else { 2 }
                 ));
                 self.instruction(format!("store i64 0, ptr {chars_field}, align 1"));
             }
@@ -6574,6 +7084,14 @@ impl<'a> FunctionEmitter<'a> {
             ));
             value
         } else {
+            if collection_var_lane(collection_ty, &self.program.types, 0).is_some() {
+                return self.emit_collection_string_descriptor_from_lane(
+                    collection_ty,
+                    pointer,
+                    &index,
+                    0,
+                );
+            }
             let ptr = self.emit_collection_lane_pointer(collection_ty, pointer, &index, 0);
             let value = self.temp();
             self.instruction(format!(
@@ -6729,37 +7247,21 @@ impl<'a> FunctionEmitter<'a> {
         field_ty: Ty,
         destination: &str,
     ) {
-        let descriptor =
-            self.emit_collection_lane_pointer(collection_ty, collection_pointer, index, lane);
-        let data_field = self.temp();
-        self.instruction(format!(
-            "{data_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 0",
-            self.lltype(field_ty)
-        ));
-        let source_data = self.temp();
-        self.instruction(format!(
-            "{source_data} = load ptr, ptr {data_field}, align 1"
-        ));
-        let length_field = self.temp();
-        self.instruction(format!(
-            "{length_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 1",
-            self.lltype(field_ty)
-        ));
-        let length = self.temp();
-        self.instruction(format!("{length} = load i64, ptr {length_field}, align 1"));
+        let descriptor = self.emit_collection_string_descriptor_from_lane(
+            collection_ty,
+            collection_pointer,
+            index,
+            lane,
+        );
+        let source_data = self.ascii_field(&descriptor, field_ty, 0);
+        let length = self.ascii_field(&descriptor, field_ty, 1);
         self.instruction(format!("store i64 {length}, ptr {destination}, align 1"));
         let destination_data = self.emit_inline_data_pointer(destination, field_ty);
         self.instruction(format!(
             "call void @llvm.memmove.p0.p0.i64(ptr {destination_data}, ptr {source_data}, i64 {length}, i1 false)"
         ));
         if self.is_text_type(field_ty) {
-            let chars_field = self.temp();
-            self.instruction(format!(
-                "{chars_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 2",
-                self.lltype(field_ty)
-            ));
-            let chars = self.temp();
-            self.instruction(format!("{chars} = load i64, ptr {chars_field}, align 1"));
+            let chars = self.ascii_field(&descriptor, field_ty, 2);
             let destination_chars = self.temp();
             self.instruction(format!(
                 "{destination_chars} = getelementptr i8, ptr {destination}, i64 8"
@@ -6813,27 +7315,21 @@ impl<'a> FunctionEmitter<'a> {
         ));
     }
 
-    fn emit_print_collection_string_lane(&mut self, ty: Ty, pointer: &str) {
-        let value = self.temp();
-        self.instruction(format!(
-            "{value} = load {}, ptr {pointer}, align 1",
-            self.lltype(ty)
-        ));
+    fn emit_print_growing_collection_lane(
+        &mut self,
+        collection_ty: Ty,
+        collection_pointer: &str,
+        index: &str,
+        lane: usize,
+        ty: Ty,
+    ) {
+        let value = self.emit_collection_string_descriptor_from_lane(
+            collection_ty,
+            collection_pointer,
+            index,
+            lane,
+        );
         self.emit_print_value(ty, &value);
-    }
-
-    fn emit_equal_collection_string_lanes(&mut self, ty: Ty, left: &str, right: &str) -> String {
-        let left_value = self.temp();
-        let right_value = self.temp();
-        self.instruction(format!(
-            "{left_value} = load {}, ptr {left}, align 1",
-            self.lltype(ty)
-        ));
-        self.instruction(format!(
-            "{right_value} = load {}, ptr {right}, align 1",
-            self.lltype(ty)
-        ));
-        self.emit_binary(BinaryOp::Eq, ty, &left_value, &right_value, Span::default())
     }
 
     fn emit_scatter_collection_element(
@@ -7151,10 +7647,14 @@ impl<'a> FunctionEmitter<'a> {
     ) -> String {
         let array = self.emit_map_meta_ptr(map_ty, pointer, field);
         let result = self.temp();
+        let lane_type = if field == 5 && self.ascii_max(element_ty).is_some() {
+            llvm_collection_key_type(element_ty, &self.program.types)
+        } else {
+            llvm_collection_type(element_ty, &self.program.types)
+        };
         self.instruction(format!(
             "{result} = getelementptr inbounds [{} x {}], ptr {array}, i32 0, i64 {index}",
-            capacity,
-            llvm_collection_type(element_ty, &self.program.types)
+            capacity, lane_type
         ));
         result
     }
@@ -7198,39 +7698,35 @@ impl<'a> FunctionEmitter<'a> {
             ));
             return;
         };
-        let capacity = match self.program.types[map_ty.0].kind {
-            TTypeKind::Map { capacity, .. } | TTypeKind::Set { capacity, .. } => capacity,
-            _ => unreachable!("ASCII map keys belong to a map or set"),
-        };
-        let backing_field = match self.program.types[map_ty.0].kind {
-            TTypeKind::Map { .. } => 7,
-            TTypeKind::Set { .. } => 6,
-            _ => unreachable!("ASCII map keys belong to a map or set"),
-        };
-        let backing = self.emit_map_meta_ptr(map_ty, pointer, backing_field);
+        let destination = self.emit_map_entry_ptr(map_ty, pointer, index, false);
         let data = self.temp();
         self.instruction(format!(
-            "{data} = getelementptr inbounds [{} x [{} x i8]], ptr {backing}, i32 0, i64 {index}, i64 0",
-            capacity, max_bytes
+            "{data} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            llvm_collection_key_type(key_ty, &self.program.types)
         ));
         let source_data = self.ascii_field(value, key_ty, 0);
         let length = self.ascii_field(value, key_ty, 1);
         self.instruction(format!(
             "call void @llvm.memmove.p0.p0.i64(ptr {data}, ptr {source_data}, i64 {length}, i1 false)"
         ));
-        let destination = self.emit_map_entry_ptr(map_ty, pointer, index, false);
-        let data_field = self.temp();
+        let _ = max_bytes;
+        self.instruction(format!("store i64 {length}, ptr {destination}, align 1"));
+    }
+
+    fn emit_map_key_descriptor(&mut self, map_ty: Ty, pointer: &str, index: &str) -> String {
+        let key_ty = match self.program.types[map_ty.0].kind {
+            TTypeKind::Map { key, .. } | TTypeKind::Set { key, .. } => key,
+            _ => unreachable!("map key descriptor requires a map or set"),
+        };
+        let key = self.emit_map_entry_ptr(map_ty, pointer, index, false);
+        let data = self.temp();
         self.instruction(format!(
-            "{data_field} = getelementptr {}, ptr {destination}, i32 0, i32 0",
-            self.lltype(key_ty)
+            "{data} = getelementptr {}, ptr {key}, i32 0, i32 1",
+            llvm_collection_key_type(key_ty, &self.program.types)
         ));
-        self.instruction(format!("store ptr {data}, ptr {data_field}, align 1"));
-        let length_field = self.temp();
-        self.instruction(format!(
-            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
-            self.lltype(key_ty)
-        ));
-        self.instruction(format!("store i64 {length}, ptr {length_field}, align 1"));
+        let length = self.temp();
+        self.instruction(format!("{length} = load i64, ptr {key}, align 1"));
+        self.emit_collection_string_descriptor(key_ty, &data, &length, None)
     }
 
     fn emit_hash_fold(&mut self, ty: Ty, value: &str, hash: &str) -> String {
@@ -7451,12 +7947,17 @@ impl<'a> FunctionEmitter<'a> {
             "br i1 {same_hash}, label %{compare}, label %{advance}"
         ));
         self.start_block(&compare);
-        let stored_key_ptr = self.emit_map_entry_ptr(map_ty, pointer, &entry, false);
-        let stored_key = self.temp();
-        self.instruction(format!(
-            "{stored_key} = load {}, ptr {stored_key_ptr}, align 1",
-            self.lltype(key_ty)
-        ));
+        let stored_key = if self.ascii_max(key_ty).is_some() {
+            self.emit_map_key_descriptor(map_ty, pointer, &entry)
+        } else {
+            let stored_key_ptr = self.emit_map_entry_ptr(map_ty, pointer, &entry, false);
+            let stored_key = self.temp();
+            self.instruction(format!(
+                "{stored_key} = load {}, ptr {stored_key_ptr}, align 1",
+                self.lltype(key_ty)
+            ));
+            stored_key
+        };
         let equal = self.emit_binary(BinaryOp::Eq, key_ty, &stored_key, key, Span::default());
         self.terminate(format!("br i1 {equal}, label %{found}, label %{advance}"));
         self.start_block(&found);
@@ -7553,12 +8054,17 @@ impl<'a> FunctionEmitter<'a> {
             TTypeKind::Map { key, .. } | TTypeKind::Set { key, .. } => key,
             _ => unreachable!(),
         };
-        let key_source = self.emit_map_entry_ptr(map_ty, pointer, &source, false);
-        let key_value = self.temp();
-        self.instruction(format!(
-            "{key_value} = load {}, ptr {key_source}, align 1",
-            self.lltype(key_ty)
-        ));
+        let key_value = if self.ascii_max(key_ty).is_some() {
+            self.emit_map_key_descriptor(map_ty, pointer, &source)
+        } else {
+            let key_source = self.emit_map_entry_ptr(map_ty, pointer, &source, false);
+            let key_value = self.temp();
+            self.instruction(format!(
+                "{key_value} = load {}, ptr {key_source}, align 1",
+                self.lltype(key_ty)
+            ));
+            key_value
+        };
         self.emit_map_store_key(map_ty, pointer, key_ty, &destination, &key_value);
         let hash_source = self.emit_map_array_ptr(map_ty, pointer, 3, capacity, Ty::Long, &source);
         let hash_value = self.temp();
@@ -8608,20 +9114,51 @@ impl<'a> FunctionEmitter<'a> {
         let TTypeKind::List { capacity, .. } = self.program.types[ty.0].kind else {
             unreachable!("byte strings are lowered to byte lists")
         };
+        debug_assert!(bytes.len() <= capacity);
         let count = self.temp();
         self.instruction(format!(
             "{count} = getelementptr {}, ptr {destination}, i32 0, i32 0",
             self.lltype(ty)
         ));
         self.instruction(format!("store i64 0, ptr {count}, align 1"));
-        for (index, byte) in bytes.iter().enumerate() {
-            debug_assert!(index < capacity);
+        if !bytes.is_empty() {
+            let source_id = self.static_strings.intern_id(bytes);
+            let condition = self.new_label("byte.list.init.cond");
+            let body = self.new_label("byte.list.init.body");
+            let done = self.new_label("byte.list.init.done");
+            let preheader = self.current_label.clone();
+            self.terminate(format!("br label %{condition}"));
+            self.start_block(&condition);
+            let index = self.temp();
+            let next = self.temp();
+            self.instruction(format!(
+                "{index} = phi i64 [ 0, %{preheader} ], [ {next}, %{body} ]"
+            ));
+            let in_range = self.temp();
+            self.instruction(format!(
+                "{in_range} = icmp ult i64 {index}, {}",
+                bytes.len()
+            ));
+            self.terminate(format!("br i1 {in_range}, label %{body}, label %{done}"));
+            self.start_block(&body);
+            let source_byte = self.temp();
+            self.instruction(format!(
+                "{source_byte} = getelementptr inbounds [{} x i8], ptr @.nl.string.{source_id}, i32 0, i64 {index}",
+                bytes.len() + 1
+            ));
+            let raw = self.temp();
+            self.instruction(format!("{raw} = load i8, ptr {source_byte}, align 1"));
+            let widened = self.temp();
+            self.instruction(format!("{widened} = zext i8 {raw} to i32"));
             let slot = self.temp();
             self.instruction(format!(
                 "{slot} = getelementptr {}, ptr {destination}, i32 0, i32 1, i64 {index}",
                 self.lltype(ty)
             ));
-            self.instruction(format!("store i32 {byte}, ptr {slot}, align 1"));
+            self.instruction(format!("store i32 {widened}, ptr {slot}, align 1"));
+            self.instruction(format!("{next} = add i64 {index}, 1"));
+            self.terminate(format!("br label %{condition}"));
+            self.start_block(&done);
         }
         self.instruction(format!("store i64 {}, ptr {count}, align 1", bytes.len()));
     }
@@ -9783,14 +10320,12 @@ impl<'a> FunctionEmitter<'a> {
         if let Some((collection_ty, collection_pointer, index, lane)) =
             self.emit_growing_field_address(place)
         {
-            let pointer =
-                self.emit_collection_lane_pointer(collection_ty, &collection_pointer, &index, lane);
-            let value = self.temp();
-            self.instruction(format!(
-                "{value} = load {}, ptr {pointer}, align 1",
-                self.lltype(place.ty)
-            ));
-            return value;
+            return self.emit_collection_string_descriptor_from_lane(
+                collection_ty,
+                &collection_pointer,
+                &index,
+                lane,
+            );
         }
         if let Some((collection_ty, pointer, index)) = self.emit_struct_element_address(place) {
             return self.emit_collection_element(collection_ty, &pointer, &index);
@@ -10014,12 +10549,21 @@ impl<'a> FunctionEmitter<'a> {
                 self.instruction(format!(
                     "{start} = getelementptr i8, ptr {destination}, i64 {current}"
                 ));
-                for (index, byte) in bytes.iter().enumerate() {
-                    let ptr = self.temp();
+                if bytes.len() <= 64 {
+                    for (index, byte) in bytes.iter().enumerate() {
+                        let pointer = self.temp();
+                        self.instruction(format!(
+                            "{pointer} = getelementptr i8, ptr {start}, i64 {index}"
+                        ));
+                        self.instruction(format!("store i8 {byte}, ptr {pointer}, align 1"));
+                    }
+                } else {
+                    let descriptor = self.emit_static_string_descriptor(expr.ty, bytes);
+                    let source = self.ascii_field(&descriptor, expr.ty, 0);
                     self.instruction(format!(
-                        "{ptr} = getelementptr i8, ptr {start}, i64 {index}"
+                        "call void @llvm.memmove.p0.p0.i64(ptr {start}, ptr {source}, i64 {}, i1 false)",
+                        bytes.len()
                     ));
-                    self.instruction(format!("store i8 {byte}, ptr {ptr}, align 1"));
                 }
                 let next = self.temp();
                 self.instruction(format!("{next} = add i64 {current}, {}", bytes.len()));
@@ -12601,9 +13145,6 @@ impl<'a> FunctionEmitter<'a> {
             if destination_index == source_index {
                 return;
             }
-            if !collection_var_lanes(collection_ty, &self.program.types).is_empty() {
-                self.instruction("call void @nl_test_var_storage_reset()".to_owned());
-            }
             let equal = self.temp();
             self.instruction(format!(
                 "{equal} = icmp eq i64 {destination_index}, {source_index}"
@@ -12615,138 +13156,16 @@ impl<'a> FunctionEmitter<'a> {
             self.start_block(&same);
             self.terminate(format!("br label %{moved}"));
             self.start_block(&move_value);
-            let lanes = collection_lane_types(element, &self.program.types);
-            for (lane, lane_ty) in lanes.iter().enumerate() {
-                let destination_lane = self.emit_collection_lane_pointer(
-                    collection_ty,
-                    destination,
-                    destination_index,
-                    lane,
-                );
-                let source_lane =
-                    self.emit_collection_lane_pointer(collection_ty, source, source_index, lane);
-                if collection_var_lane(collection_ty, &self.program.types, lane).is_some() {
-                    let value = self.temp();
-                    self.instruction(format!(
-                        "{value} = load {}, ptr {source_lane}, align 1",
-                        self.lltype(*lane_ty)
-                    ));
-                    let source_descriptor = self.emit_collection_lane_pointer(
-                        collection_ty,
-                        source,
-                        source_index,
-                        lane,
-                    );
-                    let source_data_field = self.temp();
-                    self.instruction(format!(
-                        "{source_data_field} = getelementptr {}, ptr {source_descriptor}, i32 0, i32 0",
-                        self.lltype(*lane_ty)
-                    ));
-                    let source_data = self.temp();
-                    self.instruction(format!(
-                        "{source_data} = load ptr, ptr {source_data_field}, align 1"
-                    ));
-                    let source_len_field = self.temp();
-                    self.instruction(format!(
-                        "{source_len_field} = getelementptr {}, ptr {source_descriptor}, i32 0, i32 1",
-                        self.lltype(*lane_ty)
-                    ));
-                    let source_len = self.temp();
-                    self.instruction(format!(
-                        "{source_len} = load i64, ptr {source_len_field}, align 1"
-                    ));
-                    let destination_descriptor = self.emit_collection_lane_pointer(
-                        collection_ty,
-                        destination,
-                        destination_index,
-                        lane,
-                    );
-                    let destination_data_field = self.temp();
-                    self.instruction(format!(
-                        "{destination_data_field} = getelementptr {}, ptr {destination_descriptor}, i32 0, i32 0",
-                        self.lltype(*lane_ty)
-                    ));
-                    let destination_data = self.temp();
-                    self.instruction(format!(
-                        "{destination_data} = load ptr, ptr {destination_data_field}, align 1"
-                    ));
-                    self.emit_free_var_lane_slot(
-                        collection_ty,
-                        destination,
-                        lane,
-                        &destination_data,
-                    );
-                    self.instruction(format!(
-                        "store {} {value}, ptr {destination_lane}, align 1",
-                        self.lltype(*lane_ty)
-                    ));
-                    if let Some(inline) =
-                        collection_var_lane(collection_ty, &self.program.types, lane).and_then(
-                            |layout| layout.classes.into_iter().find(|class| class.bytes <= 64),
-                        )
-                    {
-                        let destination_data = self.emit_collection_var_slot_ptr(
-                            collection_ty,
-                            destination,
-                            &inline,
-                            destination_index,
-                        );
-                        self.instruction(format!("call void @llvm.memmove.p0.p0.i64(ptr {destination_data}, ptr {source_data}, i64 {source_len}, i1 false)"));
-                        let destination_data_field = self.temp();
-                        self.instruction(format!(
-                            "{destination_data_field} = getelementptr {}, ptr {destination_descriptor}, i32 0, i32 0",
-                            self.lltype(*lane_ty)
-                        ));
-                        self.instruction(format!(
-                            "store ptr {destination_data}, ptr {destination_data_field}, align 1"
-                        ));
-                        self.instruction(format!(
-                            "store ptr {source_data}, ptr {source_data_field}, align 1"
-                        ));
-                    } else {
-                        self.instruction(format!(
-                            "store ptr {source_data}, ptr {destination_data_field}, align 1"
-                        ));
-                        self.instruction(format!(
-                            "store ptr null, ptr {source_data_field}, align 1"
-                        ));
-                    }
-                    let destination_len_field = self.temp();
-                    self.instruction(format!(
-                        "{destination_len_field} = getelementptr {}, ptr {destination_descriptor}, i32 0, i32 1",
-                        self.lltype(*lane_ty)
-                    ));
-                    self.instruction(format!(
-                        "store i64 {source_len}, ptr {destination_len_field}, align 1"
-                    ));
-                    self.instruction(format!("store i64 0, ptr {source_len_field}, align 1"));
-                    if self.is_text_type(*lane_ty) {
-                        let source_chars_field = self.temp();
-                        self.instruction(format!(
-                            "{source_chars_field} = getelementptr {}, ptr {source_descriptor}, i32 0, i32 2",
-                            self.lltype(*lane_ty)
-                        ));
-                        let source_chars = self.temp();
-                        self.instruction(format!(
-                            "{source_chars} = load i64, ptr {source_chars_field}, align 1"
-                        ));
-                        let destination_chars_field = self.temp();
-                        self.instruction(format!(
-                            "{destination_chars_field} = getelementptr {}, ptr {destination_descriptor}, i32 0, i32 2",
-                            self.lltype(*lane_ty)
-                        ));
-                        self.instruction(format!(
-                            "store i64 {source_chars}, ptr {destination_chars_field}, align 1"
-                        ));
-                        self.instruction(format!("store i64 0, ptr {source_chars_field}, align 1"));
-                    }
-                } else if *lane_ty == Ty::Unit {
-                    continue;
-                } else {
-                    self.emit_copy_value_storage(&destination_lane, &source_lane, *lane_ty);
-                    self.emit_empty_storage(&source_lane, *lane_ty);
-                }
-            }
+            let bytes = stack_storage_size(element, &self.program.types);
+            let staged = self.entry_alloca_raw(&format!("[{bytes} x i8]"));
+            self.emit_gather_collection_element(collection_ty, source, source_index, &staged);
+            self.emit_clear_collection_element(collection_ty, source, source_index);
+            self.emit_scatter_collection_element(
+                collection_ty,
+                destination,
+                destination_index,
+                &staged,
+            );
             self.terminate(format!("br label %{moved}"));
             self.start_block(&moved);
             return;
@@ -12922,11 +13341,7 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!("{hash} = load i64, ptr {source_hash}, align 1"));
         let source_key = self.emit_map_entry_ptr(ty, source, &index, false);
         if self.ascii_max(key_ty).is_some() {
-            let key = self.temp();
-            self.instruction(format!(
-                "{key} = load {}, ptr {source_key}, align 1",
-                self.lltype(key_ty)
-            ));
+            let key = self.emit_map_key_descriptor(ty, source, &index);
             self.emit_map_store_key(ty, destination, key_ty, &index, &key);
         } else {
             let destination_key = self.emit_map_entry_ptr(ty, destination, &index, false);
@@ -14056,12 +14471,18 @@ impl<'a> FunctionEmitter<'a> {
                 TTypeKind::Map { key, value, .. } => (collection_ty, key, value),
                 _ => unreachable!(),
             };
-            let key_ptr = self.emit_map_entry_ptr(collection_ty, &collection_ptr, &current, false);
-            let key = self.temp();
-            self.instruction(format!(
-                "{key} = load {}, ptr {key_ptr}, align 1",
-                self.lltype(key_ty)
-            ));
+            let key = if self.ascii_max(key_ty).is_some() {
+                self.emit_map_key_descriptor(collection_ty, &collection_ptr, &current)
+            } else {
+                let key_ptr =
+                    self.emit_map_entry_ptr(collection_ty, &collection_ptr, &current, false);
+                let key = self.temp();
+                self.instruction(format!(
+                    "{key} = load {}, ptr {key_ptr}, align 1",
+                    self.lltype(key_ty)
+                ));
+                key
+            };
             if let Some(index_id) = index_id {
                 self.instruction(format!(
                     "store {} {key}, ptr %local.{index_id}, align 1",
@@ -14073,12 +14494,18 @@ impl<'a> FunctionEmitter<'a> {
                 TTypeKind::Set { key, .. } => key,
                 _ => unreachable!(),
             };
-            let key_ptr = self.emit_map_entry_ptr(collection_ty, &collection_ptr, &current, false);
-            let key = self.temp();
-            self.instruction(format!(
-                "{key} = load {}, ptr {key_ptr}, align 1",
-                self.lltype(key_ty)
-            ));
+            let key = if self.ascii_max(key_ty).is_some() {
+                self.emit_map_key_descriptor(collection_ty, &collection_ptr, &current)
+            } else {
+                let key_ptr =
+                    self.emit_map_entry_ptr(collection_ty, &collection_ptr, &current, false);
+                let key = self.temp();
+                self.instruction(format!(
+                    "{key} = load {}, ptr {key_ptr}, align 1",
+                    self.lltype(key_ty)
+                ));
+                key
+            };
             self.instruction(format!(
                 "store {} {key}, ptr %local.{id}, align 1",
                 self.lltype(key_ty)
@@ -14781,7 +15208,13 @@ impl<'a> FunctionEmitter<'a> {
                 let field_pointer =
                     self.emit_collection_lane_pointer(collection_ty, pointer, &index, lane);
                 if self.ascii_max(field.ty).is_some() {
-                    self.emit_print_collection_string_lane(field.ty, &field_pointer);
+                    self.emit_print_growing_collection_lane(
+                        collection_ty,
+                        pointer,
+                        &index,
+                        lane,
+                        field.ty,
+                    );
                 } else {
                     self.emit_print_value_storage(field.ty, &field_pointer);
                 }
@@ -14790,7 +15223,7 @@ impl<'a> FunctionEmitter<'a> {
         } else {
             let item = self.emit_collection_lane_pointer(collection_ty, pointer, &index, 0);
             if self.ascii_max(element).is_some() {
-                self.emit_print_collection_string_lane(element, &item);
+                self.emit_print_growing_collection_lane(collection_ty, pointer, &index, 0, element);
             } else {
                 self.emit_print_value_storage(element, &item);
             }
@@ -15024,7 +15457,8 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!("store i1 false, ptr {first}, align 1"));
         let key = self.emit_map_entry_ptr(ty, pointer, &index, false);
         if self.ascii_max(key_ty).is_some() {
-            self.emit_print_collection_string_lane(key_ty, &key);
+            let value = self.emit_map_key_descriptor(ty, pointer, &index);
+            self.emit_print_value(key_ty, &value);
         } else {
             self.emit_print_value_storage(key_ty, &key);
         }
@@ -15032,7 +15466,9 @@ impl<'a> FunctionEmitter<'a> {
             self.print_text(": ");
             let value = self.emit_map_entry_ptr(ty, pointer, &index, true);
             if self.ascii_max(value_ty).is_some() {
-                self.emit_print_collection_string_lane(value_ty, &value);
+                let descriptor =
+                    self.emit_collection_string_descriptor_from_lane(ty, pointer, &index, 0);
+                self.emit_print_value(value_ty, &descriptor);
             } else {
                 self.emit_print_value_storage(value_ty, &value);
             }
@@ -15062,7 +15498,7 @@ impl<'a> FunctionEmitter<'a> {
                 self.print_text(": ");
                 let value = self.emit_collection_lane_pointer(ty, pointer, index, lane);
                 if self.ascii_max(field.ty).is_some() {
-                    self.emit_print_collection_string_lane(field.ty, &value);
+                    self.emit_print_growing_collection_lane(ty, pointer, index, lane, field.ty);
                 } else {
                     self.emit_print_value_storage(field.ty, &value);
                 }
@@ -15071,7 +15507,7 @@ impl<'a> FunctionEmitter<'a> {
         } else {
             let value = self.emit_collection_lane_pointer(ty, pointer, index, 0);
             if self.ascii_max(element).is_some() {
-                self.emit_print_collection_string_lane(element, &value);
+                self.emit_print_growing_collection_lane(ty, pointer, index, 0, element);
             } else {
                 self.emit_print_value_storage(element, &value);
             }
@@ -15371,24 +15807,34 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!("store i1 false, ptr {first}, align 1"));
         match self.program.types[ty.0].kind {
             TTypeKind::Map { key, value, .. } => {
-                let key_ptr = self.emit_map_entry_ptr(ty, &pointer, &index, false);
-                let key_value = self.temp();
-                self.instruction(format!(
-                    "{key_value} = load {}, ptr {key_ptr}, align 1",
-                    self.lltype(key)
-                ));
+                let key_value = if self.ascii_max(key).is_some() {
+                    self.emit_map_key_descriptor(ty, &pointer, &index)
+                } else {
+                    let key_ptr = self.emit_map_entry_ptr(ty, &pointer, &index, false);
+                    let key_value = self.temp();
+                    self.instruction(format!(
+                        "{key_value} = load {}, ptr {key_ptr}, align 1",
+                        self.lltype(key)
+                    ));
+                    key_value
+                };
                 self.emit_print_value(key, &key_value);
                 self.print_text(": ");
                 let item_value = self.emit_collection_element(ty, &pointer, &index);
                 self.emit_print_value(value, &item_value);
             }
             TTypeKind::Set { key, .. } => {
-                let key_ptr = self.emit_map_entry_ptr(ty, &pointer, &index, false);
-                let key_value = self.temp();
-                self.instruction(format!(
-                    "{key_value} = load {}, ptr {key_ptr}, align 1",
-                    self.lltype(key)
-                ));
+                let key_value = if self.ascii_max(key).is_some() {
+                    self.emit_map_key_descriptor(ty, &pointer, &index)
+                } else {
+                    let key_ptr = self.emit_map_entry_ptr(ty, &pointer, &index, false);
+                    let key_value = self.temp();
+                    self.instruction(format!(
+                        "{key_value} = load {}, ptr {key_ptr}, align 1",
+                        self.lltype(key)
+                    ));
+                    key_value
+                };
                 self.emit_print_value(key, &key_value);
             }
             _ => unreachable!(),
@@ -15530,6 +15976,33 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_method(&mut self, expr: &TExpr, kind: MethodKind, receiver: &TExpr) -> String {
+        if matches!(
+            kind,
+            MethodKind::IsNone | MethodKind::IsSome | MethodKind::IsErr | MethodKind::IsOk
+        ) && is_large_type(receiver.ty, &self.program.types)
+        {
+            let receiver_pointer = self.emit_expr_storage(receiver);
+            if self.terminated {
+                return String::new();
+            }
+            let tag_pointer = self.temp();
+            self.instruction(format!(
+                "{tag_pointer} = getelementptr {}, ptr {receiver_pointer}, i32 0, i32 0",
+                self.lltype(receiver.ty)
+            ));
+            let tag = self.temp();
+            self.instruction(format!("{tag} = load i32, ptr {tag_pointer}, align 4"));
+            let result = self.temp();
+            self.instruction(format!(
+                "{result} = icmp eq i32 {tag}, {}",
+                if matches!(kind, MethodKind::IsNone | MethodKind::IsErr) {
+                    1
+                } else {
+                    0
+                }
+            ));
+            return result;
+        }
         let value = self.emit_expr(receiver);
         if kind == MethodKind::AsciiLen {
             return self.ascii_field(&value, receiver.ty, 1);
@@ -16811,7 +17284,25 @@ impl<'a> FunctionEmitter<'a> {
                 let right_field =
                     self.emit_collection_lane_pointer(collection_ty, right, &right_index, lane);
                 let field_equal = if self.ascii_max(field.ty).is_some() {
-                    self.emit_equal_collection_string_lanes(field.ty, &left_field, &right_field)
+                    let left_value = self.emit_collection_string_descriptor_from_lane(
+                        collection_ty,
+                        left,
+                        &left_index,
+                        lane,
+                    );
+                    let right_value = self.emit_collection_string_descriptor_from_lane(
+                        collection_ty,
+                        right,
+                        &right_index,
+                        lane,
+                    );
+                    self.emit_binary(
+                        BinaryOp::Eq,
+                        field.ty,
+                        &left_value,
+                        &right_value,
+                        Span::default(),
+                    )
                 } else {
                     self.emit_equal_storage(field.ty, &left_field, &right_field)
                 };
@@ -16826,7 +17317,25 @@ impl<'a> FunctionEmitter<'a> {
             let right_element =
                 self.emit_collection_lane_pointer(collection_ty, right, &right_index, 0);
             if self.ascii_max(element).is_some() {
-                self.emit_equal_collection_string_lanes(element, &left_element, &right_element)
+                let left_value = self.emit_collection_string_descriptor_from_lane(
+                    collection_ty,
+                    left,
+                    &left_index,
+                    0,
+                );
+                let right_value = self.emit_collection_string_descriptor_from_lane(
+                    collection_ty,
+                    right,
+                    &right_index,
+                    0,
+                );
+                self.emit_binary(
+                    BinaryOp::Eq,
+                    element,
+                    &left_value,
+                    &right_value,
+                    Span::default(),
+                )
             } else {
                 self.emit_equal_storage(element, &left_element, &right_element)
             }
@@ -17022,16 +17531,21 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!("{active} = load i1, ptr {active_ptr}, align 1"));
         self.terminate(format!("br i1 {active}, label %{compare}, label %{skip}"));
         self.start_block(&compare);
-        let key_ptr = self.emit_map_entry_ptr(ty, left, &index, false);
-        let key = self.temp();
-        self.instruction(format!(
-            "{key} = load {}, ptr {key_ptr}, align 1",
-            self.lltype(key_ty)
-        ));
+        let key = if self.ascii_max(key_ty).is_some() {
+            self.emit_map_key_descriptor(ty, left, &index)
+        } else {
+            let key_ptr = self.emit_map_entry_ptr(ty, left, &index, false);
+            let key = self.temp();
+            self.instruction(format!(
+                "{key} = load {}, ptr {key_ptr}, align 1",
+                self.lltype(key_ty)
+            ));
+            key
+        };
         let (found_entry, _, _) = self.emit_map_lookup(ty, right, key_ty, &key, capacity);
         let found = self.temp();
         self.instruction(format!("{found} = icmp sge i64 {found_entry}, 0"));
-        let matched = if let Some(value_ty) = value_ty {
+        let matched = if value_ty.is_some() {
             let value_label = self.new_label("equal.map.value");
             let missing_label = self.new_label("equal.map.missing");
             let value_merge = self.new_label("equal.map.value.end");
@@ -17042,9 +17556,7 @@ impl<'a> FunctionEmitter<'a> {
             let missing_pred = self.current_label.clone();
             self.terminate(format!("br label %{value_merge}"));
             self.start_block(&value_label);
-            let left_value = self.emit_map_entry_ptr(ty, left, &index, true);
-            let right_value = self.emit_map_entry_ptr(ty, right, &found_entry, true);
-            let equal = self.emit_equal_storage(value_ty, &left_value, &right_value);
+            let equal = self.emit_equal_collection_elements(ty, left, &index, right, &found_entry);
             let equal_pred = self.current_label.clone();
             self.terminate(format!("br label %{value_merge}"));
             self.start_block(&value_merge);
@@ -17120,7 +17632,21 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 let left_field = self.emit_collection_lane_pointer(ty, left, index, lane);
                 let right_field = self.emit_collection_lane_pointer(ty, right, index, lane);
-                let field_equal = self.emit_equal_storage(field.ty, &left_field, &right_field);
+                let field_equal = if self.ascii_max(field.ty).is_some() {
+                    let left_value =
+                        self.emit_collection_string_descriptor_from_lane(ty, left, index, lane);
+                    let right_value =
+                        self.emit_collection_string_descriptor_from_lane(ty, right, index, lane);
+                    self.emit_binary(
+                        BinaryOp::Eq,
+                        field.ty,
+                        &left_value,
+                        &right_value,
+                        Span::default(),
+                    )
+                } else {
+                    self.emit_equal_storage(field.ty, &left_field, &right_field)
+                };
                 let next = self.temp();
                 self.instruction(format!("{next} = and i1 {equal}, {field_equal}"));
                 equal = next;
@@ -17129,7 +17655,21 @@ impl<'a> FunctionEmitter<'a> {
         } else {
             let left_element = self.emit_collection_lane_pointer(ty, left, index, 0);
             let right_element = self.emit_collection_lane_pointer(ty, right, index, 0);
-            self.emit_equal_storage(element, &left_element, &right_element)
+            if self.ascii_max(element).is_some() {
+                let left_value =
+                    self.emit_collection_string_descriptor_from_lane(ty, left, index, 0);
+                let right_value =
+                    self.emit_collection_string_descriptor_from_lane(ty, right, index, 0);
+                self.emit_binary(
+                    BinaryOp::Eq,
+                    element,
+                    &left_value,
+                    &right_value,
+                    Span::default(),
+                )
+            } else {
+                self.emit_equal_storage(element, &left_element, &right_element)
+            }
         }
     }
 
@@ -17299,12 +17839,17 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!("{active} = load i1, ptr {active_ptr}, align 1"));
         self.terminate(format!("br i1 {active}, label %{compare}, label %{skip}"));
         self.start_block(&compare);
-        let key_ptr = self.emit_map_entry_ptr(ty, &left_ptr, &index, false);
-        let key = self.temp();
-        self.instruction(format!(
-            "{key} = load {}, ptr {key_ptr}, align 1",
-            self.lltype(key_ty)
-        ));
+        let key = if self.ascii_max(key_ty).is_some() {
+            self.emit_map_key_descriptor(ty, &left_ptr, &index)
+        } else {
+            let key_ptr = self.emit_map_entry_ptr(ty, &left_ptr, &index, false);
+            let key = self.temp();
+            self.instruction(format!(
+                "{key} = load {}, ptr {key_ptr}, align 1",
+                self.lltype(key_ty)
+            ));
+            key
+        };
         let (found_entry, _, _) = self.emit_map_lookup(ty, &right_ptr, key_ty, &key, capacity);
         let found = self.temp();
         self.instruction(format!("{found} = icmp sge i64 {found_entry}, 0"));
@@ -18342,11 +18887,9 @@ impl<'a> FunctionEmitter<'a> {
                     return self.emit_short_circuit(*op, left, right);
                 }
                 if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
-                    && contains_lazy_collection(
-                        left.ty,
-                        &self.program.types,
-                        &mut vec![false; self.program.types.len()],
-                    )
+                    && is_large_type(left.ty, &self.program.types)
+                    && self.ascii_max(left.ty).is_none()
+                    && self.ascii_max(right.ty).is_none()
                 {
                     let lhs = self.emit_expr_storage(left);
                     if self.terminated {
@@ -19926,5 +20469,24 @@ mod stack_reservation_tests {
             data_stack_reservation(Some(1024 * 1024 * 1024)),
             1024 * 1024 * 1024 + STACK_PAGE_BYTES
         );
+    }
+}
+
+#[cfg(test)]
+mod collection_constant_tests {
+    use super::llvm_fixed_byte_array;
+
+    #[test]
+    fn fixed_byte_arrays_use_compact_llvm_string_constants() {
+        let bytes = vec![b'x'; 8_388_608];
+        let encoded = llvm_fixed_byte_array(&bytes, bytes.len());
+        assert_eq!(encoded.len(), bytes.len());
+        assert!(encoded.starts_with("xxx"));
+        assert!(encoded.ends_with("xxx"));
+    }
+
+    #[test]
+    fn fixed_byte_arrays_escape_and_zero_pad() {
+        assert_eq!(llvm_fixed_byte_array(b"A\0\"", 5), "A\\00\\22\\00\\00");
     }
 }

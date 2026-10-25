@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::ast::Span;
 use crate::emit::{EntryStackReservation, StackContract};
+use crate::typed::{TTypeKind, Ty, base_type, growing_collection_lanes};
 use crate::{checker, emit, lexer, parser, syntax_dump};
 
 // Rust's print macros panic on a broken pipe. CLI output is optional once a
@@ -85,6 +86,7 @@ pub struct ParseDump {
 #[derive(Clone, Debug, Default)]
 pub struct MemoryReport {
     pub globals: Vec<GlobalMemory>,
+    pub collection_lanes: Vec<CollectionLaneMemory>,
     pub startup_claim_bytes: u64,
     pub job_headroom_bytes: u64,
     pub globals_budget_bytes: u64,
@@ -95,6 +97,18 @@ pub struct GlobalMemory {
     pub name: String,
     pub offset_bytes: u64,
     pub size_bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct CollectionLaneMemory {
+    pub collection: String,
+    pub field: String,
+    pub value_type: String,
+    pub capacity: usize,
+    pub before_bytes_per_element: usize,
+    pub after_bytes_per_element: usize,
+    pub inline_bytes: Option<usize>,
+    pub size_classes: Vec<usize>,
 }
 
 #[derive(Debug)]
@@ -451,6 +465,7 @@ fn compile_package_on_worker(
                 size_bytes: global.size_bytes,
             })
             .collect(),
+        collection_lanes: collection_lane_memory(&typed.types),
         startup_claim_bytes: typed.global_state_bytes,
         job_headroom_bytes: typed.job_headroom_bytes,
         globals_budget_bytes: typed.globals_budget_bytes,
@@ -689,6 +704,26 @@ pub fn inspect_memory(package: &Path, allow_overcommit: bool) -> Result<(), Pack
     );
     println!("local storage: excluded from startup claim");
     println!("map/set initialization: 9 bytes per slot (8-byte bucket plus 1-byte occupancy flag)");
+    if !compiled.memory.collection_lanes.is_empty() {
+        println!("collection text lanes (before -> after, bytes per element):");
+        for lane in &compiled.memory.collection_lanes {
+            print!(
+                "  {}.{} ({}; capacity {}): {} -> {}",
+                lane.collection,
+                lane.field,
+                lane.value_type,
+                lane.capacity,
+                lane.before_bytes_per_element,
+                lane.after_bytes_per_element
+            );
+            if let Some(inline_bytes) = lane.inline_bytes {
+                print!(", inline bytes {inline_bytes}");
+            } else {
+                print!(", slot classes {:?}", lane.size_classes);
+            }
+            println!(" bytes/element");
+        }
+    }
     if compiled.memory.startup_claim_bytes > compiled.memory.globals_budget_bytes {
         println!(
             "warning: globals use {} bytes, above globals_budget of {} bytes",
@@ -696,6 +731,108 @@ pub fn inspect_memory(package: &Path, allow_overcommit: bool) -> Result<(), Pack
         );
     }
     Ok(())
+}
+
+fn collection_lane_memory(types: &[crate::typed::TType]) -> Vec<CollectionLaneMemory> {
+    let mut report = Vec::new();
+    for (id, definition) in types.iter().enumerate() {
+        let (element, capacity, map_or_set_key) = match &definition.kind {
+            TTypeKind::Array { element, capacity }
+            | TTypeKind::List { element, capacity }
+            | TTypeKind::Queue { element, capacity }
+            | TTypeKind::Ring { element, capacity }
+            | TTypeKind::Grid {
+                element, capacity, ..
+            }
+            | TTypeKind::Pool {
+                element, capacity, ..
+            } => (Some(*element), *capacity, None),
+            TTypeKind::Map {
+                key,
+                value,
+                capacity,
+            } => (Some(*value), *capacity, Some(*key)),
+            TTypeKind::Set { key, capacity } => (None, *capacity, Some(*key)),
+            _ => continue,
+        };
+        if capacity == 0 {
+            continue;
+        }
+        if let Some(element) = element {
+            for lane in growing_collection_lanes(Ty(id), types).unwrap_or_default() {
+                let (field, element_ty) = match &types[element.0].kind {
+                    TTypeKind::Struct(fields) => (
+                        fields
+                            .get(lane.lane)
+                            .map(|field| field.name.clone())
+                            .unwrap_or_else(|| format!("lane{}", lane.lane)),
+                        lane.ty,
+                    ),
+                    _ => ("element".to_owned(), lane.ty),
+                };
+                if let Some(memory) = collection_string_lane_memory(
+                    &definition.name,
+                    field,
+                    element_ty,
+                    capacity,
+                    lane.max_bytes,
+                    lane.class_bytes,
+                    types,
+                ) {
+                    report.push(memory);
+                }
+            }
+        }
+        if let Some(key) = map_or_set_key {
+            let key_ty = base_type(key, types);
+            if let TTypeKind::Ascii { max_bytes } = &types[key_ty.0].kind {
+                report.push(CollectionLaneMemory {
+                    collection: definition.name.clone(),
+                    field: "key".to_owned(),
+                    value_type: format!("Ascii max {max_bytes}"),
+                    capacity,
+                    before_bytes_per_element: 16 + max_bytes,
+                    after_bytes_per_element: 8 + max_bytes,
+                    inline_bytes: Some(*max_bytes),
+                    size_classes: Vec::new(),
+                });
+            }
+        }
+    }
+    report
+}
+
+fn collection_string_lane_memory(
+    collection: &str,
+    field: String,
+    ty: Ty,
+    capacity: usize,
+    max_bytes: usize,
+    size_classes: Vec<usize>,
+    types: &[crate::typed::TType],
+) -> Option<CollectionLaneMemory> {
+    let base = base_type(ty, types);
+    let (value_type, descriptor_bytes, compact_descriptor_bytes) = match &types[base.0].kind {
+        TTypeKind::Ascii { .. } => ("Ascii", 16usize, 8usize),
+        TTypeKind::Bytes { .. } => ("Bytes", 16usize, 8usize),
+        TTypeKind::Text { .. } => ("Text", 24usize, 16usize),
+        _ => return None,
+    };
+    let inline = max_bytes <= 64;
+    Some(CollectionLaneMemory {
+        collection: collection.to_owned(),
+        field,
+        value_type: format!("{value_type} max {max_bytes}"),
+        capacity,
+        before_bytes_per_element: descriptor_bytes + usize::from(inline) * max_bytes,
+        after_bytes_per_element: if inline {
+            compact_descriptor_bytes + max_bytes
+        } else {
+            descriptor_bytes
+        },
+        inline_bytes: inline.then_some(max_bytes),
+        size_classes,
+    })
 }
 
 pub fn inspect_contracts(package: &Path) -> Result<(), PackageError> {
