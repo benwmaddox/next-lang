@@ -1,0 +1,3 @@
+ok   Ascii comparison uses bytes including NUL
+ok   Ascii Option expectation uses the other operand's type
+2 passed, 0 failed

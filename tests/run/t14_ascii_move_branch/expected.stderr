@@ -1,0 +1,1 @@
+main.nl:4:21: error: a move inside a branch can have two different owners; move the value before the branch or copy it

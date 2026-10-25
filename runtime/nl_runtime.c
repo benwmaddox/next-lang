@@ -596,6 +596,59 @@ static void nl_print_bytes(const unsigned char *bytes, uint64_t length) {
     if (nl_write_all(nl_print_fd, bytes, length) != 0) nl_fail(20, -1, 0, 0);
 }
 
+void nl_print_ascii(const unsigned char *bytes, uint64_t length) {
+    nl_print_bytes(bytes, length);
+}
+
+int32_t nl_ascii_compare(const unsigned char *left, uint64_t left_length,
+                         const unsigned char *right, uint64_t right_length) {
+    uint64_t shared = left_length < right_length ? left_length : right_length;
+    int comparison = shared ? memcmp(left, right, (size_t)shared) : 0;
+    if (comparison != 0) return comparison < 0 ? -1 : 1;
+    if (left_length < right_length) return -1;
+    if (left_length > right_length) return 1;
+    return 0;
+}
+
+uint64_t nl_hash_ascii(const unsigned char *bytes, uint64_t length,
+                       uint64_t hash) {
+    hash = (hash ^ length) * UINT64_C(1099511628211);
+    for (uint64_t index = 0; index < length; ++index) {
+        hash = (hash ^ bytes[index]) * UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+uint64_t nl_ascii_format_i64(int64_t value, unsigned char *destination) {
+    unsigned char reversed[20];
+    uint64_t length = 0;
+    uint64_t magnitude;
+    int negative = value < 0;
+    if (negative) {
+        magnitude = (uint64_t)(-(value + 1)) + 1;
+    } else {
+        magnitude = (uint64_t)value;
+    }
+    do {
+        reversed[length++] = (unsigned char)('0' + magnitude % 10);
+        magnitude /= 10;
+    } while (magnitude != 0);
+    if (negative) destination[0] = '-';
+    uint64_t offset = (uint64_t)negative;
+    while (length != 0) destination[offset++] = reversed[--length];
+    return offset;
+}
+
+void nl_ascii_upper_copy(const unsigned char *source,
+                         unsigned char *destination, uint64_t length) {
+    for (uint64_t index = 0; index < length; ++index) {
+        unsigned char byte = source[index];
+        destination[index] = byte >= 'a' && byte <= 'z'
+                                 ? (unsigned char)(byte - ('a' - 'A'))
+                                 : byte;
+    }
+}
+
 void nl_print_set_fd(int32_t fd) {
     if (fd == STDOUT_FILENO || fd == STDERR_FILENO) nl_print_fd = fd;
 }

@@ -175,6 +175,7 @@ pub struct Param {
 pub enum ParamMode {
     Read,
     Write,
+    Grow,
 }
 
 #[derive(Clone, Debug)]
@@ -258,6 +259,7 @@ pub enum ExprKind {
     },
     Bool(bool),
     ByteString(Vec<u8>),
+    Take(Box<Expr>),
     Name(String),
     Call {
         name: String,

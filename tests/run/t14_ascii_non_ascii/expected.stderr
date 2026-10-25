@@ -1,0 +1,1 @@
+main.nl:2:19: error: an Ascii literal may contain only bytes 0 through 127; encode non-ASCII text as Text

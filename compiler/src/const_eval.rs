@@ -323,6 +323,10 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::Try {
             value: receiver, ..
         }
+        | TExprKind::AsciiUpper(receiver)
+        | TExprKind::AsciiFormat(receiver)
+        | TExprKind::AsciiCast(receiver)
+        | TExprKind::Take(receiver)
         | TExprKind::Cast {
             value: receiver, ..
         }
@@ -413,7 +417,13 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::EmptyGrid
         | TExprKind::EmptyQueue
         | TExprKind::EmptyRing
-        | TExprKind::LoopExit(_) => {}
+        | TExprKind::LoopExit(_)
+        | TExprKind::AsciiEmpty => {}
+        TExprKind::AsciiFit { value, .. } => collect_constant_references_expr(value, references),
+        TExprKind::AsciiTryAppend { receiver, argument } => {
+            collect_constant_references_expr(receiver, references);
+            collect_constant_references_expr(argument, references);
+        }
     }
 }
 
@@ -523,6 +533,10 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         | TExprKind::Try {
             value: receiver, ..
         }
+        | TExprKind::AsciiUpper(receiver)
+        | TExprKind::AsciiFormat(receiver)
+        | TExprKind::AsciiCast(receiver)
+        | TExprKind::Take(receiver)
         | TExprKind::Cast {
             value: receiver, ..
         }
@@ -545,6 +559,10 @@ fn expression_reads_global(expr: &TExpr) -> bool {
                 })
         }
         TExprKind::Fill { value, .. } => expression_reads_global(value),
+        TExprKind::AsciiFit { value, .. } => expression_reads_global(value),
+        TExprKind::AsciiTryAppend { receiver, argument } => {
+            expression_reads_global(receiver) || expression_reads_global(argument)
+        }
         TExprKind::CollectionOp { receiver, args, .. }
         | TExprKind::PoolOp { receiver, args, .. }
         | TExprKind::MapOp { receiver, args, .. }
@@ -588,7 +606,8 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         | TExprKind::EmptySet
         | TExprKind::EmptyGrid
         | TExprKind::EmptyQueue
-        | TExprKind::EmptyRing => false,
+        | TExprKind::EmptyRing
+        | TExprKind::AsciiEmpty => false,
     }
 }
 
@@ -863,8 +882,17 @@ fn collect_calls_expr(
         TExprKind::Convert { value, .. }
         | TExprKind::Fit { value, .. }
         | TExprKind::Try { value, .. }
+        | TExprKind::AsciiUpper(value)
+        | TExprKind::AsciiFormat(value)
+        | TExprKind::AsciiCast(value)
+        | TExprKind::Take(value)
         | TExprKind::Cast { value, .. }
         | TExprKind::Unary { value, .. } => collect_calls_expr(value, calls, effects),
+        TExprKind::AsciiFit { value, .. } => collect_calls_expr(value, calls, effects),
+        TExprKind::AsciiTryAppend { receiver, argument } => {
+            collect_calls_expr(receiver, calls, effects);
+            collect_calls_expr(argument, calls, effects);
+        }
         TExprKind::Coalesce { option, fallback } => {
             collect_calls_expr(option, calls, effects);
             collect_calls_expr(fallback, calls, effects);
@@ -911,7 +939,8 @@ fn collect_calls_expr(
         | TExprKind::EmptyGrid
         | TExprKind::EmptyQueue
         | TExprKind::EmptyRing
-        | TExprKind::LoopExit(_) => {}
+        | TExprKind::LoopExit(_)
+        | TExprKind::AsciiEmpty => {}
     }
 }
 
@@ -2847,6 +2876,18 @@ impl Evaluator<'_> {
             | TExprKind::ToLong(_)
             | TExprKind::Cast { .. }
             | TExprKind::Unary { .. } => return self.eval_misc_expr(expr, locals),
+            TExprKind::AsciiEmpty
+            | TExprKind::AsciiUpper(_)
+            | TExprKind::AsciiFormat(_)
+            | TExprKind::AsciiTryAppend { .. }
+            | TExprKind::AsciiCast(_)
+            | TExprKind::AsciiFit { .. }
+            | TExprKind::Take(_) => {
+                return Err(self.failure(
+                    expr.span,
+                    "Ascii values are not supported during compile-time evaluation",
+                ));
+            }
             TExprKind::Binary {
                 op,
                 operator_span,
@@ -2984,6 +3025,12 @@ impl Evaluator<'_> {
             return Err(self.failure(span, "enum method receiver was not an enum"));
         };
         Ok(match kind {
+            MethodKind::AsciiLen => {
+                return Err(self.failure(
+                    span,
+                    "Ascii values are not supported during compile-time evaluation",
+                ));
+            }
             MethodKind::IsNone => ConstValue::Bool(case_index == 1),
             MethodKind::IsSome => ConstValue::Bool(case_index == 0),
             MethodKind::IsOk => ConstValue::Bool(case_index == 0),

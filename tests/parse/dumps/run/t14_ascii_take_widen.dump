@@ -1,0 +1,51 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "let"
+Ident 20 6 2 9 "source"
+Colon 26 1 2 15 ":"
+Ident 28 5 2 17 "Ascii"
+Ident 34 3 2 23 "max"
+Number 38 1 2 27 "4"
+Eq 40 1 2 29 "="
+String 42 3 2 31 "\"x\""
+Newline 45 1 2 34 "\n"
+Ident 50 3 3 5 "let"
+Ident 54 5 3 9 "moved"
+Colon 59 1 3 14 ":"
+Ident 61 5 3 16 "Ascii"
+Ident 67 3 3 22 "max"
+Number 71 1 3 26 "8"
+Eq 73 1 3 28 "="
+Ident 75 4 3 30 "take"
+Ident 80 6 3 35 "source"
+Newline 86 1 3 41 "\n"
+Ident 91 5 4 5 "print"
+LParen 96 1 4 10 "("
+Ident 97 5 4 11 "moved"
+RParen 102 1 4 16 ")"
+Newline 103 1 4 17 "\n"
+RBrace 104 1 5 1 "}"
+Newline 105 1 5 2 "\n"
+Eof 106 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..106
+  Function 0..105 name="main" recursive=false generics=[]
+    Block 10..105
+      Let 16..45 mutable=false name="source"
+        Annotation 28..39 name="Ascii" range=none policy=checked
+          Integer 38..39 magnitude=4 negative=false long_suffix=false
+        ByteString 42..45 value="x"
+      Let 50..86 mutable=false name="moved"
+        Annotation 61..72 name="Ascii" range=none policy=checked
+          Integer 71..72 magnitude=8 negative=false long_suffix=false
+        Take 75..86
+          Name 80..86 name="source"
+      Call 91..103 name="print"
+        Name 97..102 name="moved"

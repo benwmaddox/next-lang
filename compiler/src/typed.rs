@@ -85,6 +85,9 @@ pub enum TTypeKind {
         data_stack_requirement: u64,
     },
     Capability(CapabilityKind),
+    Ascii {
+        max_bytes: usize,
+    },
     Id {
         owner: usize,
     },
@@ -496,6 +499,7 @@ pub enum Effect {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MethodKind {
+    AsciiLen,
     IsNone,
     IsSome,
     IsOk,
@@ -593,6 +597,19 @@ pub enum TExprKind {
         kind: MethodKind,
         receiver: Box<TExpr>,
     },
+    AsciiEmpty,
+    AsciiUpper(Box<TExpr>),
+    AsciiFormat(Box<TExpr>),
+    AsciiTryAppend {
+        receiver: Box<TExpr>,
+        argument: Box<TExpr>,
+    },
+    AsciiCast(Box<TExpr>),
+    AsciiFit {
+        value: Box<TExpr>,
+        option_ty: Ty,
+    },
+    Take(Box<TExpr>),
     OptionalCall {
         receiver: Box<TExpr>,
         function_id: usize,
@@ -710,6 +727,13 @@ pub fn llvm_type(ty: Ty, types: &[TType]) -> String {
     let ty = base_type(ty, types);
     if matches!(types[ty.0].kind, TTypeKind::Id { .. }) {
         return "i64".to_owned();
+    }
+    if matches!(types[ty.0].kind, TTypeKind::Ascii { .. }) {
+        return "%nl.ascii".to_owned();
+    }
+    if matches!(types[ty.0].kind, TTypeKind::Option(inner) if matches!(types[inner.0].kind, TTypeKind::Ascii { .. }))
+    {
+        return "%nl.option.ascii".to_owned();
     }
     match ty {
         Ty::Int => "i32".to_owned(),

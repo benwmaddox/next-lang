@@ -1,0 +1,1 @@
+main.nl:2:5: error: appending through a parameter requires 'grow' mode; 'write' cannot increase its length

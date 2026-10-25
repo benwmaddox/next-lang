@@ -1,1 +1,1 @@
-main.nl:4:21: error: map key type 'BadKey' is not hashable; use integers, bool, enums, ids, or structs built from those types
+main.nl:4:21: error: map key type 'BadKey' is not hashable; use Ascii, integers, bool, enums, ids, or structs built from those types

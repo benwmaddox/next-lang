@@ -1,0 +1,472 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "enum"
+Ident 5 4 1 6 "Stop"
+LBrace 10 1 1 11 "{"
+Ident 12 6 1 13 "Failed"
+RBrace 19 1 1 20 "}"
+Newline 20 1 1 21 "\n"
+Ident 22 2 3 1 "fn"
+Ident 25 10 3 4 "make_value"
+LParen 35 1 3 14 "("
+RParen 36 1 3 15 ")"
+Arrow 38 2 3 17 "->"
+Ident 41 6 3 20 "Result"
+Lt 47 1 3 26 "<"
+Ident 48 4 3 27 "long"
+Comma 52 1 3 31 ","
+Ident 54 4 3 33 "Stop"
+Gt 58 1 3 37 ">"
+LBrace 60 1 3 39 "{"
+Ident 62 3 3 41 "err"
+LParen 65 1 3 44 "("
+Ident 66 4 3 45 "Stop"
+Dot 70 1 3 49 "."
+Ident 71 6 3 50 "Failed"
+RParen 77 1 3 56 ")"
+RBrace 79 1 3 58 "}"
+Newline 80 1 3 59 "\n"
+Ident 82 2 5 1 "fn"
+Ident 85 14 5 4 "temporary_loop"
+LParen 99 1 5 18 "("
+RParen 100 1 5 19 ")"
+Arrow 102 2 5 21 "->"
+Ident 105 4 5 24 "long"
+LBrace 110 1 5 29 "{"
+Newline 111 1 5 30 "\n"
+Ident 116 3 6 5 "var"
+Ident 120 5 6 9 "total"
+Colon 125 1 6 14 ":"
+Ident 127 4 6 16 "long"
+Eq 132 1 6 21 "="
+Number 134 2 6 23 "0L"
+Newline 136 1 6 25 "\n"
+Ident 141 3 7 5 "for"
+Ident 145 1 7 9 "i"
+Colon 146 1 7 10 ":"
+Ident 148 4 7 12 "long"
+Ident 153 2 7 17 "in"
+Number 156 2 7 20 "0L"
+Range 158 2 7 22 ".."
+Number 160 7 7 24 "100000L"
+LBrace 168 1 7 32 "{"
+Newline 169 1 7 33 "\n"
+Ident 178 3 8 9 "let"
+Ident 182 9 8 13 "temporary"
+Colon 191 1 8 22 ":"
+Ident 193 5 8 24 "Ascii"
+Ident 199 3 8 30 "max"
+Number 203 4 8 34 "1024"
+Eq 208 1 8 39 "="
+String 210 1026 8 41 "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\""
+Newline 1236 1 8 1067 "\n"
+Ident 1245 5 9 9 "total"
+PlusEq 1251 2 9 15 "+="
+Ident 1254 9 9 18 "temporary"
+Dot 1263 1 9 27 "."
+Ident 1264 3 9 28 "len"
+LParen 1267 1 9 31 "("
+RParen 1268 1 9 32 ")"
+Newline 1269 1 9 33 "\n"
+RBrace 1274 1 10 5 "}"
+Newline 1275 1 10 6 "\n"
+Ident 1280 5 11 5 "total"
+Newline 1285 1 11 10 "\n"
+RBrace 1286 1 12 1 "}"
+Newline 1287 1 12 2 "\n"
+Ident 1289 2 14 1 "fn"
+Ident 1292 23 14 4 "continue_and_break_loop"
+LParen 1315 1 14 27 "("
+RParen 1316 1 14 28 ")"
+Arrow 1318 2 14 30 "->"
+Ident 1321 4 14 33 "long"
+LBrace 1326 1 14 38 "{"
+Newline 1327 1 14 39 "\n"
+Ident 1332 3 15 5 "var"
+Ident 1336 5 15 9 "total"
+Colon 1341 1 15 14 ":"
+Ident 1343 4 15 16 "long"
+Eq 1348 1 15 21 "="
+Number 1350 2 15 23 "0L"
+Newline 1352 1 15 25 "\n"
+Ident 1357 3 16 5 "for"
+Ident 1361 1 16 9 "i"
+Colon 1362 1 16 10 ":"
+Ident 1364 4 16 12 "long"
+Ident 1369 2 16 17 "in"
+Number 1372 2 16 20 "0L"
+Range 1374 2 16 22 ".."
+Number 1376 7 16 24 "100000L"
+LBrace 1384 1 16 32 "{"
+Newline 1385 1 16 33 "\n"
+Ident 1394 3 17 9 "let"
+Ident 1398 9 17 13 "temporary"
+Colon 1407 1 17 22 ":"
+Ident 1409 5 17 24 "Ascii"
+Ident 1415 3 17 30 "max"
+Number 1419 4 17 34 "1024"
+Eq 1424 1 17 39 "="
+String 1426 1026 17 41 "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\""
+Newline 2452 1 17 1067 "\n"
+Ident 2461 2 18 9 "if"
+Ident 2464 1 18 12 "i"
+Percent 2466 1 18 14 "%"
+Number 2468 2 18 16 "2L"
+EqEq 2471 2 18 19 "=="
+Number 2474 2 18 22 "0L"
+LBrace 2477 1 18 25 "{"
+Newline 2478 1 18 26 "\n"
+Ident 2491 5 19 13 "total"
+PlusEq 2497 2 19 19 "+="
+Ident 2500 9 19 22 "temporary"
+Dot 2509 1 19 31 "."
+Ident 2510 3 19 32 "len"
+LParen 2513 1 19 35 "("
+RParen 2514 1 19 36 ")"
+Newline 2515 1 19 37 "\n"
+Ident 2528 8 20 13 "continue"
+Newline 2536 1 20 21 "\n"
+RBrace 2545 1 21 9 "}"
+Newline 2546 1 21 10 "\n"
+Ident 2555 2 22 9 "if"
+Ident 2558 1 22 12 "i"
+EqEq 2560 2 22 14 "=="
+Number 2563 6 22 17 "99999L"
+LBrace 2570 1 22 24 "{"
+Ident 2572 5 22 26 "break"
+RBrace 2578 1 22 32 "}"
+Newline 2579 1 22 33 "\n"
+Ident 2588 5 23 9 "total"
+PlusEq 2594 2 23 15 "+="
+Ident 2597 9 23 18 "temporary"
+Dot 2606 1 23 27 "."
+Ident 2607 3 23 28 "len"
+LParen 2610 1 23 31 "("
+RParen 2611 1 23 32 ")"
+Newline 2612 1 23 33 "\n"
+RBrace 2617 1 24 5 "}"
+Newline 2618 1 24 6 "\n"
+Ident 2623 5 25 5 "total"
+Newline 2628 1 25 10 "\n"
+RBrace 2629 1 26 1 "}"
+Newline 2630 1 26 2 "\n"
+Ident 2632 2 28 1 "fn"
+Ident 2635 13 28 4 "nested_return"
+LParen 2648 1 28 17 "("
+RParen 2649 1 28 18 ")"
+Arrow 2651 2 28 20 "->"
+Ident 2654 4 28 23 "long"
+LBrace 2659 1 28 28 "{"
+Newline 2660 1 28 29 "\n"
+Ident 2665 3 29 5 "for"
+Ident 2669 1 29 9 "i"
+Colon 2670 1 29 10 ":"
+Ident 2672 4 29 12 "long"
+Ident 2677 2 29 17 "in"
+Number 2680 2 29 20 "0L"
+Range 2682 2 29 22 ".."
+Number 2684 3 29 24 "10L"
+LBrace 2688 1 29 28 "{"
+Newline 2689 1 29 29 "\n"
+Ident 2698 3 30 9 "for"
+Ident 2702 1 30 13 "j"
+Colon 2703 1 30 14 ":"
+Ident 2705 4 30 16 "long"
+Ident 2710 2 30 21 "in"
+Number 2713 2 30 24 "0L"
+Range 2715 2 30 26 ".."
+Number 2717 3 30 28 "10L"
+LBrace 2721 1 30 32 "{"
+Newline 2722 1 30 33 "\n"
+Ident 2735 3 31 13 "let"
+Ident 2739 9 31 17 "temporary"
+Colon 2748 1 31 26 ":"
+Ident 2750 5 31 28 "Ascii"
+Ident 2756 3 31 34 "max"
+Number 2760 4 31 38 "1024"
+Eq 2765 1 31 43 "="
+String 2767 1026 31 45 "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\""
+Newline 3793 1 31 1071 "\n"
+Ident 3806 2 32 13 "if"
+Ident 3809 1 32 16 "i"
+EqEq 3811 2 32 18 "=="
+Number 3814 2 32 21 "1L"
+AndAnd 3817 2 32 24 "&&"
+Ident 3820 1 32 27 "j"
+EqEq 3822 2 32 29 "=="
+Number 3825 2 32 32 "2L"
+LBrace 3828 1 32 35 "{"
+Ident 3830 6 32 37 "return"
+Ident 3837 9 32 44 "temporary"
+Dot 3846 1 32 53 "."
+Ident 3847 3 32 54 "len"
+LParen 3850 1 32 57 "("
+RParen 3851 1 32 58 ")"
+RBrace 3853 1 32 60 "}"
+Newline 3854 1 32 61 "\n"
+RBrace 3863 1 33 9 "}"
+Newline 3864 1 33 10 "\n"
+RBrace 3869 1 34 5 "}"
+Newline 3870 1 34 6 "\n"
+Number 3875 2 35 5 "0L"
+Newline 3877 1 35 7 "\n"
+RBrace 3878 1 36 1 "}"
+Newline 3879 1 36 2 "\n"
+Ident 3881 2 38 1 "fn"
+Ident 3884 15 38 4 "nested_question"
+LParen 3899 1 38 19 "("
+RParen 3900 1 38 20 ")"
+Arrow 3902 2 38 22 "->"
+Ident 3905 6 38 25 "Result"
+Lt 3911 1 38 31 "<"
+Ident 3912 4 38 32 "long"
+Comma 3916 1 38 36 ","
+Ident 3918 4 38 38 "Stop"
+Gt 3922 1 38 42 ">"
+LBrace 3924 1 38 44 "{"
+Newline 3925 1 38 45 "\n"
+Ident 3930 3 39 5 "for"
+Ident 3934 1 39 9 "i"
+Colon 3935 1 39 10 ":"
+Ident 3937 4 39 12 "long"
+Ident 3942 2 39 17 "in"
+Number 3945 2 39 20 "0L"
+Range 3947 2 39 22 ".."
+Number 3949 3 39 24 "10L"
+LBrace 3953 1 39 28 "{"
+Newline 3954 1 39 29 "\n"
+Ident 3963 3 40 9 "for"
+Ident 3967 1 40 13 "j"
+Colon 3968 1 40 14 ":"
+Ident 3970 4 40 16 "long"
+Ident 3975 2 40 21 "in"
+Number 3978 2 40 24 "0L"
+Range 3980 2 40 26 ".."
+Number 3982 3 40 28 "10L"
+LBrace 3986 1 40 32 "{"
+Newline 3987 1 40 33 "\n"
+Ident 4000 3 41 13 "let"
+Ident 4004 9 41 17 "temporary"
+Colon 4013 1 41 26 ":"
+Ident 4015 5 41 28 "Ascii"
+Ident 4021 3 41 34 "max"
+Number 4025 4 41 38 "1024"
+Eq 4030 1 41 43 "="
+String 4032 1026 41 45 "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\""
+Newline 5058 1 41 1071 "\n"
+Ident 5071 3 42 13 "let"
+Ident 5075 5 42 17 "value"
+Eq 5081 1 42 23 "="
+Ident 5083 10 42 25 "make_value"
+LParen 5093 1 42 35 "("
+RParen 5094 1 42 36 ")"
+Question 5095 1 42 37 "?"
+Newline 5096 1 42 38 "\n"
+Ident 5109 3 43 13 "let"
+Ident 5113 11 43 17 "text_length"
+Eq 5125 1 43 29 "="
+Ident 5127 9 43 31 "temporary"
+Dot 5136 1 43 40 "."
+Ident 5137 3 43 41 "len"
+LParen 5140 1 43 44 "("
+RParen 5141 1 43 45 ")"
+Newline 5142 1 43 46 "\n"
+Ident 5155 3 44 13 "let"
+Ident 5159 13 44 17 "checked_value"
+Eq 5173 1 44 31 "="
+Ident 5175 5 44 33 "value"
+Newline 5180 1 44 38 "\n"
+RBrace 5189 1 45 9 "}"
+Newline 5190 1 45 10 "\n"
+RBrace 5195 1 46 5 "}"
+Newline 5196 1 46 6 "\n"
+Ident 5201 2 47 5 "ok"
+LParen 5203 1 47 7 "("
+Number 5204 2 47 8 "1L"
+RParen 5206 1 47 10 ")"
+Newline 5207 1 47 11 "\n"
+RBrace 5208 1 48 1 "}"
+Newline 5209 1 48 2 "\n"
+Ident 5211 2 50 1 "fn"
+Ident 5214 4 50 4 "main"
+LParen 5218 1 50 8 "("
+RParen 5219 1 50 9 ")"
+LBrace 5221 1 50 11 "{"
+Newline 5222 1 50 12 "\n"
+Ident 5227 5 51 5 "print"
+LParen 5232 1 51 10 "("
+Ident 5233 14 51 11 "temporary_loop"
+LParen 5247 1 51 25 "("
+RParen 5248 1 51 26 ")"
+RParen 5249 1 51 27 ")"
+Newline 5250 1 51 28 "\n"
+Ident 5255 5 52 5 "print"
+LParen 5260 1 52 10 "("
+Ident 5261 23 52 11 "continue_and_break_loop"
+LParen 5284 1 52 34 "("
+RParen 5285 1 52 35 ")"
+RParen 5286 1 52 36 ")"
+Newline 5287 1 52 37 "\n"
+Ident 5292 5 53 5 "print"
+LParen 5297 1 53 10 "("
+Ident 5298 13 53 11 "nested_return"
+LParen 5311 1 53 24 "("
+RParen 5312 1 53 25 ")"
+RParen 5313 1 53 26 ")"
+Newline 5314 1 53 27 "\n"
+Ident 5319 5 54 5 "print"
+LParen 5324 1 54 10 "("
+Ident 5325 15 54 11 "nested_question"
+LParen 5340 1 54 26 "("
+RParen 5341 1 54 27 ")"
+RParen 5342 1 54 28 ")"
+Newline 5343 1 54 29 "\n"
+RBrace 5344 1 55 1 "}"
+Newline 5345 1 55 2 "\n"
+Eof 5346 0 56 1 ""
+== tree ==
+file "main.nl"
+Program 0..5346
+  Enum 0..20 name="Stop"
+    EnumCase 12..18 name="Failed"
+  Function 22..80 name="make_value" recursive=false generics=[]
+    ResultType 41..59 name="Result" range=none policy=checked
+      TypeArgument 48..52 name="long" range=none policy=checked
+      TypeArgument 54..58 name="Stop" range=none policy=checked
+    Block 60..80
+      Call 62..78 name="err"
+        Field 66..77 name="Failed"
+          Name 66..70 name="Stop"
+  Function 82..1287 name="temporary_loop" recursive=false generics=[]
+    ResultType 105..109 name="long" range=none policy=checked
+    Block 110..1287
+      Let 116..136 mutable=true name="total"
+        Annotation 127..131 name="long" range=none policy=checked
+        Integer 134..136 magnitude=0 negative=false long_suffix=true
+      For 141..1275 name="i" inclusive=false
+        Annotation 148..152 name="long" range=none policy=checked
+        Integer 156..158 magnitude=0 negative=false long_suffix=true
+        Integer 160..167 magnitude=100000 negative=false long_suffix=true
+        Block 168..1275
+          Let 178..1236 mutable=false name="temporary"
+            Annotation 193..207 name="Ascii" range=none policy=checked
+              Integer 203..207 magnitude=1024 negative=false long_suffix=false
+            ByteString 210..1236 value="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          Assign 1245..1269 op=+=
+            Name 1245..1250 name="total"
+            MethodCall 1254..1269 name="len"
+              Name 1254..1263 name="temporary"
+      Name 1280..1285 name="total"
+  Function 1289..2630 name="continue_and_break_loop" recursive=false generics=[]
+    ResultType 1321..1325 name="long" range=none policy=checked
+    Block 1326..2630
+      Let 1332..1352 mutable=true name="total"
+        Annotation 1343..1347 name="long" range=none policy=checked
+        Integer 1350..1352 magnitude=0 negative=false long_suffix=true
+      For 1357..2618 name="i" inclusive=false
+        Annotation 1364..1368 name="long" range=none policy=checked
+        Integer 1372..1374 magnitude=0 negative=false long_suffix=true
+        Integer 1376..1383 magnitude=100000 negative=false long_suffix=true
+        Block 1384..2618
+          Let 1394..2452 mutable=false name="temporary"
+            Annotation 1409..1423 name="Ascii" range=none policy=checked
+              Integer 1419..1423 magnitude=1024 negative=false long_suffix=false
+            ByteString 1426..2452 value="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          ExpressionStatement 2461..2546
+            If 2461..2546
+              Binary 2464..2476 op=eq
+                Binary 2464..2470 op=rem
+                  Name 2464..2465 name="i"
+                  Integer 2468..2470 magnitude=2 negative=false long_suffix=true
+                Integer 2474..2476 magnitude=0 negative=false long_suffix=true
+              Block 2477..2546
+                Assign 2491..2515 op=+=
+                  Name 2491..2496 name="total"
+                  MethodCall 2500..2515 name="len"
+                    Name 2500..2509 name="temporary"
+                ContinueStatement 2528..2536
+          ExpressionStatement 2555..2579
+            If 2555..2579
+              Binary 2558..2569 op=eq
+                Name 2558..2559 name="i"
+                Integer 2563..2569 magnitude=99999 negative=false long_suffix=true
+              Block 2570..2579
+                BreakStatement 2572..2577
+          Assign 2588..2612 op=+=
+            Name 2588..2593 name="total"
+            MethodCall 2597..2612 name="len"
+              Name 2597..2606 name="temporary"
+      Name 2623..2628 name="total"
+  Function 2632..3879 name="nested_return" recursive=false generics=[]
+    ResultType 2654..2658 name="long" range=none policy=checked
+    Block 2659..3879
+      For 2665..3870 name="i" inclusive=false
+        Annotation 2672..2676 name="long" range=none policy=checked
+        Integer 2680..2682 magnitude=0 negative=false long_suffix=true
+        Integer 2684..2687 magnitude=10 negative=false long_suffix=true
+        Block 2688..3870
+          For 2698..3864 name="j" inclusive=false
+            Annotation 2705..2709 name="long" range=none policy=checked
+            Integer 2713..2715 magnitude=0 negative=false long_suffix=true
+            Integer 2717..2720 magnitude=10 negative=false long_suffix=true
+            Block 2721..3864
+              Let 2735..3793 mutable=false name="temporary"
+                Annotation 2750..2764 name="Ascii" range=none policy=checked
+                  Integer 2760..2764 magnitude=1024 negative=false long_suffix=false
+                ByteString 2767..3793 value="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              ExpressionStatement 3806..3854
+                If 3806..3854
+                  Binary 3809..3827 op=and
+                    Binary 3809..3816 op=eq
+                      Name 3809..3810 name="i"
+                      Integer 3814..3816 magnitude=1 negative=false long_suffix=true
+                    Binary 3820..3827 op=eq
+                      Name 3820..3821 name="j"
+                      Integer 3825..3827 magnitude=2 negative=false long_suffix=true
+                  Block 3828..3854
+                    ReturnStatement 3830..3852
+                      MethodCall 3837..3852 name="len"
+                        Name 3837..3846 name="temporary"
+      Integer 3875..3877 magnitude=0 negative=false long_suffix=true
+  Function 3881..5209 name="nested_question" recursive=false generics=[]
+    ResultType 3905..3923 name="Result" range=none policy=checked
+      TypeArgument 3912..3916 name="long" range=none policy=checked
+      TypeArgument 3918..3922 name="Stop" range=none policy=checked
+    Block 3924..5209
+      For 3930..5196 name="i" inclusive=false
+        Annotation 3937..3941 name="long" range=none policy=checked
+        Integer 3945..3947 magnitude=0 negative=false long_suffix=true
+        Integer 3949..3952 magnitude=10 negative=false long_suffix=true
+        Block 3953..5196
+          For 3963..5190 name="j" inclusive=false
+            Annotation 3970..3974 name="long" range=none policy=checked
+            Integer 3978..3980 magnitude=0 negative=false long_suffix=true
+            Integer 3982..3985 magnitude=10 negative=false long_suffix=true
+            Block 3986..5190
+              Let 4000..5058 mutable=false name="temporary"
+                Annotation 4015..4029 name="Ascii" range=none policy=checked
+                  Integer 4025..4029 magnitude=1024 negative=false long_suffix=false
+                ByteString 4032..5058 value="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              Let 5071..5096 mutable=false name="value"
+                Try 5083..5096
+                  Call 5083..5095 name="make_value"
+              Let 5109..5142 mutable=false name="text_length"
+                MethodCall 5127..5142 name="len"
+                  Name 5127..5136 name="temporary"
+              Let 5155..5180 mutable=false name="checked_value"
+                Name 5175..5180 name="value"
+      Call 5201..5207 name="ok"
+        Integer 5204..5206 magnitude=1 negative=false long_suffix=true
+  Function 5211..5345 name="main" recursive=false generics=[]
+    Block 5221..5345
+      ExpressionStatement 5227..5250
+        Call 5227..5250 name="print"
+          Call 5233..5249 name="temporary_loop"
+      ExpressionStatement 5255..5287
+        Call 5255..5287 name="print"
+          Call 5261..5286 name="continue_and_break_loop"
+      ExpressionStatement 5292..5314
+        Call 5292..5314 name="print"
+          Call 5298..5313 name="nested_return"
+      Call 5319..5343 name="print"
+        Call 5325..5342 name="nested_question"

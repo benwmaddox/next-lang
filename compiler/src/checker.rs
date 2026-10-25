@@ -137,6 +137,10 @@ struct Checker {
     current_return: Ty,
     current_is_test: bool,
     loop_depth: usize,
+    loop_outer_depths: Vec<usize>,
+    conditional_depth: usize,
+    moved_locals: std::collections::HashSet<usize>,
+    ascii_lengths: HashMap<usize, (usize, usize)>,
     facts: HashMap<(usize, Vec<usize>), (i128, i128)>,
     loop_writes: Vec<std::collections::HashSet<usize>>,
     active_views: Vec<TPlace>,
@@ -242,6 +246,10 @@ impl Checker {
             current_return: Ty::Unit,
             current_is_test: false,
             loop_depth: 0,
+            loop_outer_depths: Vec::new(),
+            conditional_depth: 0,
+            moved_locals: std::collections::HashSet::new(),
+            ascii_lengths: HashMap::new(),
             facts: HashMap::new(),
             loop_writes: Vec::new(),
             active_views: Vec::new(),
@@ -602,6 +610,10 @@ impl Checker {
         self.current_is_test = false;
         self.checking_constant = true;
         self.loop_depth = 0;
+        self.loop_outer_depths.clear();
+        self.conditional_depth = 0;
+        self.moved_locals.clear();
+        self.ascii_lengths.clear();
         self.facts.clear();
         self.next_local = 0;
         self.locals.clear();
@@ -637,7 +649,7 @@ impl Checker {
             {
                 if matches!(
                     name.as_str(),
-                    "int" | "long" | "bool" | "Option" | "Result" | "Full"
+                    "int" | "long" | "bool" | "Ascii" | "Option" | "Result" | "Full"
                 ) || self.type_ids.contains_key(name)
                 {
                     return Err(CheckError {
@@ -768,7 +780,7 @@ impl Checker {
             for alias in pending {
                 if matches!(
                     alias.name.as_str(),
-                    "int" | "long" | "bool" | "Option" | "Result" | "Full"
+                    "int" | "long" | "bool" | "Ascii" | "Option" | "Result" | "Full"
                 ) || self.type_ids.contains_key(&alias.name)
                 {
                     return Err(CheckError {
@@ -826,6 +838,23 @@ impl Checker {
             self.parse_function_type(function)?
         } else {
             match ty.name.as_str() {
+                "Ascii" if ty.args.is_empty() && ty.const_args.len() == 1 && ty.range.is_none() => {
+                    let raw_max = self.capacity_value(&ty.const_args[0])?;
+                    if raw_max < 0 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message: "Ascii maximum cannot be negative; use zero or a positive byte count".to_owned(),
+                        });
+                    }
+                    if raw_max > i64::MAX as i128 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message: "Ascii maximum overflows long; reduce the byte count"
+                                .to_owned(),
+                        });
+                    }
+                    self.intern_ascii(raw_max as usize, ty.span)
+                }
                 "int" if ty.args.is_empty() && ty.const_args.is_empty() => {
                     if let Some(range) = ty.range {
                         self.intern_refinement(Ty::Int, range, ty.policy, ty.span)?
@@ -1018,7 +1047,7 @@ impl Checker {
                         return Err(CheckError {
                             span: ty.args[0].span,
                             message: format!(
-                                "map key type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
+                                "map key type '{}' is not hashable; use Ascii, integers, bool, enums, ids, or structs built from those types",
                                 self.type_name(key)
                             ),
                         });
@@ -1056,7 +1085,7 @@ impl Checker {
                         return Err(CheckError {
                             span: ty.args[0].span,
                             message: format!(
-                                "set element type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
+                                "set element type '{}' is not hashable; use Ascii, integers, bool, enums, ids, or structs built from those types",
                                 self.type_name(key)
                             ),
                         });
@@ -1258,8 +1287,15 @@ impl Checker {
             .params
             .iter()
             .map(|param| {
+                let ty = self.parse_type(&param.ty)?;
+                if param.mode == ParamMode::Grow && !self.is_ascii(ty) {
+                    return Err(CheckError {
+                        span: param.span,
+                        message: "grow parameters are for Ascii builders; use read or write for other types".to_owned(),
+                    });
+                }
                 Ok(TFunctionTypeParam {
-                    ty: self.parse_type(&param.ty)?,
+                    ty,
                     mode: param.mode,
                 })
             })
@@ -1327,10 +1363,10 @@ impl Checker {
             .map(|param| {
                 format!(
                     "{}{}",
-                    if param.mode == ParamMode::Write {
-                        "write "
-                    } else {
-                        ""
+                    match param.mode {
+                        ParamMode::Read => "",
+                        ParamMode::Write => "write ",
+                        ParamMode::Grow => "grow ",
                     },
                     self.type_name(param.ty)
                 )
@@ -1492,6 +1528,40 @@ impl Checker {
                 | TTypeKind::Queue { element, .. }
                 | TTypeKind::Ring { element, .. }
                 | TTypeKind::Grid { element, .. } => visit(checker, *element, seen),
+                TTypeKind::Map { key, value, .. } => {
+                    visit(checker, *key, seen) || visit(checker, *value, seen)
+                }
+                TTypeKind::Set { key, .. } => visit(checker, *key, seen),
+                _ => false,
+            }
+        }
+        visit(self, ty, &mut std::collections::HashSet::new())
+    }
+
+    fn type_contains_ascii(&self, ty: Ty) -> bool {
+        fn visit(checker: &Checker, ty: Ty, seen: &mut std::collections::HashSet<Ty>) -> bool {
+            if !seen.insert(ty) {
+                return false;
+            }
+            match &checker.types[ty.0].kind {
+                TTypeKind::Ascii { .. } => true,
+                TTypeKind::Struct(fields) => {
+                    fields.iter().any(|field| visit(checker, field.ty, seen))
+                }
+                TTypeKind::Enum(cases) => cases
+                    .iter()
+                    .flat_map(|case| case.payload.iter())
+                    .any(|ty| visit(checker, *ty, seen)),
+                TTypeKind::Option(inner) => visit(checker, *inner, seen),
+                TTypeKind::Result(ok, err) => {
+                    visit(checker, *ok, seen) || visit(checker, *err, seen)
+                }
+                TTypeKind::Array { element, .. }
+                | TTypeKind::List { element, .. }
+                | TTypeKind::Queue { element, .. }
+                | TTypeKind::Ring { element, .. }
+                | TTypeKind::Grid { element, .. }
+                | TTypeKind::Pool { element, .. } => visit(checker, *element, seen),
                 TTypeKind::Map { key, value, .. } => {
                     visit(checker, *key, seen) || visit(checker, *value, seen)
                 }
@@ -2104,14 +2174,18 @@ impl Checker {
         }
         let hashable = match &self.types[ty.0].kind {
             TTypeKind::Refinement { base, .. } => self.type_is_hashable(*base, active),
-            TTypeKind::Int | TTypeKind::Long | TTypeKind::Bool | TTypeKind::Id { .. } => true,
-            TTypeKind::Struct(fields) => fields
-                .iter()
-                .all(|field| self.type_is_hashable(field.ty, active)),
+            TTypeKind::Int
+            | TTypeKind::Long
+            | TTypeKind::Bool
+            | TTypeKind::Ascii { .. }
+            | TTypeKind::Id { .. } => true,
+            TTypeKind::Struct(fields) => fields.iter().all(|field| {
+                !self.type_contains_ascii(field.ty) && self.type_is_hashable(field.ty, active)
+            }),
             TTypeKind::Enum(cases) => cases.iter().all(|case| {
-                case.payload
-                    .iter()
-                    .all(|payload| self.type_is_hashable(*payload, active))
+                case.payload.iter().all(|payload| {
+                    !self.type_contains_ascii(*payload) && self.type_is_hashable(*payload, active)
+                })
             }),
             _ => false,
         };
@@ -2214,6 +2288,7 @@ impl Checker {
         };
         let size = match &self.types[ty.0].kind {
             TTypeKind::Refinement { base, .. } => self.type_size_checked(*base, cache, span)?,
+            TTypeKind::Ascii { .. } => 16,
             TTypeKind::Struct(fields) => {
                 let mut size = 0u128;
                 for field in fields {
@@ -2372,7 +2447,7 @@ impl Checker {
                         return Err(CheckError {
                             span: definition.span,
                             message: format!(
-                                "map key type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
+                                "map key type '{}' is not hashable; use Ascii, integers, bool, enums, ids, or structs built from those types",
                                 self.type_name(*key)
                             ),
                         });
@@ -2389,7 +2464,7 @@ impl Checker {
                         return Err(CheckError {
                             span: definition.span,
                             message: format!(
-                                "set element type '{}' is not hashable; use integers, bool, enums, ids, or structs built from those types",
+                                "set element type '{}' is not hashable; use Ascii, integers, bool, enums, ids, or structs built from those types",
                                 self.type_name(*key)
                             ),
                         });
@@ -2467,6 +2542,21 @@ impl Checker {
         Ok(ty)
     }
 
+    fn intern_ascii(&mut self, max_bytes: usize, span: Span) -> Ty {
+        let name = format!("Ascii max {max_bytes}");
+        if let Some(ty) = self.type_ids.get(&name) {
+            return *ty;
+        }
+        let ty = Ty(self.types.len());
+        self.types.push(TType {
+            name: name.clone(),
+            kind: TTypeKind::Ascii { max_bytes },
+            span,
+        });
+        self.type_ids.insert(name, ty);
+        ty
+    }
+
     fn intern_generic(
         &mut self,
         kind: u8,
@@ -2500,6 +2590,154 @@ impl Checker {
                     .map(|t| t.name.clone())
                     .unwrap_or_else(|| ty.name().to_owned())
             })
+    }
+
+    fn ascii_max(&self, ty: Ty) -> Option<usize> {
+        match self.types.get(ty.0).map(|definition| &definition.kind) {
+            Some(TTypeKind::Ascii { max_bytes }) => Some(*max_bytes),
+            _ => None,
+        }
+    }
+
+    fn ascii_option_pair(&self, left: Ty, right: Ty) -> bool {
+        match (
+            self.types.get(left.0).map(|ty| &ty.kind),
+            self.types.get(right.0).map(|ty| &ty.kind),
+        ) {
+            (Some(TTypeKind::Option(left)), Some(TTypeKind::Option(right))) => {
+                self.is_ascii(*left) && self.is_ascii(*right)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_ascii(&self, ty: Ty) -> bool {
+        self.ascii_max(ty).is_some()
+    }
+
+    fn expression_may_be_ascii(&mut self, expr: &Expr) -> bool {
+        if self
+            .natural_expr_type_inner(expr, None)
+            .is_some_and(|ty| self.is_ascii(ty))
+        {
+            return true;
+        }
+        match &expr.kind {
+            ExprKind::ByteString(_) => true,
+            ExprKind::Name(name) => self
+                .visible_value_type(name)
+                .is_some_and(|ty| self.is_ascii(ty)),
+            ExprKind::Call { name, .. } => {
+                if matches!(name.as_str(), "str" | "ascii_upper") {
+                    return true;
+                }
+                let direct = self
+                    .signatures
+                    .get(name)
+                    .is_some_and(|signature| self.is_ascii(signature.result));
+                let indirect = self
+                    .visible_value_type(name)
+                    .and_then(
+                        |ty| match self.types.get(ty.0).map(|definition| &definition.kind) {
+                            Some(TTypeKind::Function { result, .. }) => Some(*result),
+                            _ => None,
+                        },
+                    )
+                    .is_some_and(|ty| self.is_ascii(ty));
+                direct || indirect
+            }
+            ExprKind::MethodCall { receiver, name, .. } => {
+                (name == "empty"
+                    && matches!(&receiver.kind, ExprKind::Name(value) if value == "Ascii"))
+                    || self.expression_may_be_ascii(receiver)
+            }
+            ExprKind::Take(value) | ExprKind::Try(value) => self.expression_may_be_ascii(value),
+            ExprKind::Binary {
+                op: BinaryOp::Add,
+                left,
+                right,
+                ..
+            } => self.expression_may_be_ascii(left) || self.expression_may_be_ascii(right),
+            ExprKind::Fit { value, .. } | ExprKind::Cast { value, .. } => {
+                self.expression_may_be_ascii(value)
+            }
+            ExprKind::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                then_block
+                    .tail
+                    .as_deref()
+                    .is_some_and(|tail| self.expression_may_be_ascii(tail))
+                    || else_block.as_ref().is_some_and(|block| {
+                        block
+                            .tail
+                            .as_deref()
+                            .is_some_and(|tail| self.expression_may_be_ascii(tail))
+                    })
+            }
+            ExprKind::Match { arms, .. } => arms.iter().any(|arm| {
+                arm.body
+                    .tail
+                    .as_deref()
+                    .is_some_and(|tail| self.expression_may_be_ascii(tail))
+            }),
+            _ => false,
+        }
+    }
+
+    fn ascii_length_range(&self, expr: &TExpr) -> Option<(usize, usize)> {
+        let max_bytes = self.ascii_max(expr.ty)?;
+        let range = match &expr.kind {
+            TExprKind::ByteString(bytes) => (bytes.len(), bytes.len()),
+            TExprKind::AsciiEmpty => (0, 0),
+            TExprKind::Local(id) => self
+                .ascii_lengths
+                .get(id)
+                .copied()
+                .unwrap_or((0, max_bytes)),
+            TExprKind::AsciiUpper(value) | TExprKind::AsciiCast(value) | TExprKind::Take(value) => {
+                self.ascii_length_range(value).unwrap_or((0, max_bytes))
+            }
+            TExprKind::AsciiFit { value, .. } => {
+                self.ascii_length_range(value).unwrap_or((0, max_bytes))
+            }
+            TExprKind::Binary {
+                op: BinaryOp::Add,
+                left,
+                right,
+                ..
+            } if self.is_ascii(left.ty) && self.is_ascii(right.ty) => {
+                let left = self
+                    .ascii_length_range(left)
+                    .unwrap_or((0, self.ascii_max(left.ty).unwrap_or(0)));
+                let right = self
+                    .ascii_length_range(right)
+                    .unwrap_or((0, self.ascii_max(right.ty).unwrap_or(0)));
+                (
+                    left.0.saturating_add(right.0),
+                    left.1.saturating_add(right.1).min(max_bytes),
+                )
+            }
+            TExprKind::AsciiFormat(value) => {
+                let (lo, hi) = self.expr_range(value).unwrap_or_else(|| {
+                    self.refinement(value.ty)
+                        .map(|(_, lo, hi, _)| (lo, hi))
+                        .unwrap_or_else(|| integer_bounds(self.base_type(value.ty)).unwrap())
+                });
+                let max_abs = lo.unsigned_abs().max(hi.unsigned_abs());
+                let digits = if max_abs == 0 {
+                    1
+                } else {
+                    max_abs.ilog10() as usize + 1
+                };
+                let sign = usize::from(lo < 0);
+                (1, digits.saturating_add(sign).min(max_bytes))
+            }
+            _ => (0, max_bytes),
+        };
+        Some(range)
     }
 
     fn check_recursive_value_types(&self) -> Result<(), CheckError> {
@@ -2602,6 +2840,7 @@ impl Checker {
     fn is_printable_type(&self, ty: Ty) -> bool {
         let ty = self.base_type(ty);
         matches!(ty, Ty::Int | Ty::Long | Ty::Bool)
+            || self.is_ascii(ty)
             || self.types[ty.0].is_sum()
             || matches!(
                 self.types[ty.0].kind,
@@ -2709,6 +2948,10 @@ impl Checker {
         self.active_views.clear();
         self.view_bindings.clear();
         self.loop_depth = 0;
+        self.loop_outer_depths.clear();
+        self.conditional_depth = 0;
+        self.moved_locals.clear();
+        self.ascii_lengths.clear();
         self.next_local = 0;
         self.locals.clear();
         self.locals.push(HashMap::new());
@@ -2718,10 +2961,18 @@ impl Checker {
         let mut params = Vec::new();
         for (i, param) in function.params.iter().enumerate() {
             let ty = signature.params[i].ty;
+            if param.mode == ParamMode::Grow && !self.is_ascii(ty) {
+                return Err(CheckError {
+                    span: param.span,
+                    message:
+                        "grow parameters are for Ascii builders; use read or write for other types"
+                            .to_owned(),
+                });
+            }
             let binding = self.declare_mode(
                 &param.name,
                 ty,
-                param.mode == ParamMode::Write,
+                param.mode != ParamMode::Read,
                 param.mode,
                 param.span,
                 false,
@@ -2743,6 +2994,9 @@ impl Checker {
                 mode: param.mode,
                 span: param.span,
             });
+            if let Some(max_bytes) = self.ascii_max(ty) {
+                self.ascii_lengths.insert(binding.id, (0, max_bytes));
+            }
         }
         let body = self.check_block(&function.body, false, Some(signature.result))?;
         if signature.result != Ty::Unit && body.falls_through && body.tail.is_none() {
@@ -2882,6 +3136,10 @@ impl Checker {
         self.checking_constant = false;
         self.checking_global_initializer = true;
         self.loop_depth = 0;
+        self.loop_outer_depths.clear();
+        self.conditional_depth = 0;
+        self.moved_locals.clear();
+        self.ascii_lengths.clear();
         self.facts.clear();
         self.collection_counts.clear();
         self.loop_push_proofs.clear();
@@ -3275,6 +3533,10 @@ impl Checker {
         self.active_views.clear();
         self.view_bindings.clear();
         self.loop_depth = 0;
+        self.loop_outer_depths.clear();
+        self.conditional_depth = 0;
+        self.moved_locals.clear();
+        self.ascii_lengths.clear();
         self.next_local = 0;
         self.locals.clear();
         self.locals.push(HashMap::new());
@@ -3530,7 +3792,36 @@ impl Checker {
                         message: "a value containing a pool cannot be copied; initialize a fresh pool owner".to_owned(),
                     });
                 }
+                if let TExprKind::Take(source) = &typed_value.kind {
+                    if self
+                        .ascii_max(source.ty)
+                        .zip(self.ascii_max(ty))
+                        .is_some_and(|(reserved, declared)| declared > reserved)
+                    {
+                        return Err(CheckError {
+                            span: annotation.as_ref().map_or(value.span, |ty| ty.span),
+                            message: format!(
+                                "take cannot widen an Ascii builder from max {} to max {}; copy it into a newly reserved builder instead",
+                                self.ascii_max(source.ty).unwrap_or(0),
+                                self.ascii_max(ty).unwrap_or(0)
+                            ),
+                        });
+                    }
+                }
                 self.check_owner_lifetime(typed_value.ty, Some(scope_depth), value.span)?;
+                if let TExprKind::Take(source) = &typed_value.kind {
+                    if let TExprKind::Local(source_id) = source.kind {
+                        if self
+                            .binding_by_id(source_id)
+                            .is_some_and(|source| source.scope_depth > scope_depth)
+                        {
+                            return Err(CheckError {
+                                span: value.span,
+                                message: "cannot move a builder out of its enclosing scope; its reserved region ends before the new owner's scope".to_owned(),
+                            });
+                        }
+                    }
+                }
                 if let TTypeKind::Pool { owner, .. } = self.types[ty.0].kind {
                     if let Some(declared_owner) = declared_owner {
                         if owner != declared_owner {
@@ -3549,6 +3840,13 @@ impl Checker {
                     }
                 }
                 let binding = self.declare(name, ty, *mutable, stmt.span, false)?;
+                if self.is_ascii(ty) {
+                    let max_bytes = self.ascii_max(ty).unwrap_or(0);
+                    let range = self
+                        .ascii_length_range(&typed_value)
+                        .unwrap_or((0, max_bytes));
+                    self.ascii_lengths.insert(binding.id, range);
+                }
                 if let Some(range) = self.expr_range(&typed_value) {
                     self.facts.insert((binding.id, Vec::new()), range);
                 }
@@ -3651,10 +3949,79 @@ impl Checker {
                         message: "a value containing a pool cannot be replaced or assigned; pool copies and resets are not supported".to_owned(),
                     });
                 }
-                let (typed_value, assigned_range) = if *op == AssignOp::Set {
+                let (typed_value, assigned_range, assigned_ascii_range) = if *op == AssignOp::Set {
                     let stored = self.check_store(value, place.ty)?;
                     let range = self.expr_range(&stored);
-                    (stored, range)
+                    let ascii_range = self
+                        .is_ascii(place.ty)
+                        .then(|| self.ascii_length_range(&stored))
+                        .flatten();
+                    (stored, range, ascii_range)
+                } else if self.is_ascii(place.ty) {
+                    if *op != AssignOp::Add {
+                        return Err(CheckError {
+                            span: stmt.span,
+                            message: "Ascii supports '+=' for append; use an explicit value assignment for replacement".to_owned(),
+                        });
+                    }
+                    if place.root < self.function_param_count()
+                        && self
+                            .binding_by_id(place.root)
+                            .is_some_and(|binding| binding.mode != ParamMode::Grow)
+                    {
+                        return Err(CheckError {
+                            span: stmt.span,
+                            message: "appending through a parameter requires 'grow' mode; 'write' cannot increase its length".to_owned(),
+                        });
+                    }
+                    let outer_depth = *self.loop_outer_depths.last().unwrap_or(&0);
+                    if self.loop_depth > 0
+                        && self
+                            .binding_by_id(place.root)
+                            .is_none_or(|binding| binding.scope_depth <= outer_depth)
+                    {
+                        return Err(CheckError {
+                            span: stmt.span,
+                            message: "a loop body may grow only an Ascii value declared inside that loop; growing an outer value is T15".to_owned(),
+                        });
+                    }
+                    let typed_value = self.check_expr(value, None)?;
+                    if !self.is_ascii(typed_value.ty) {
+                        return Err(CheckError {
+                            span: value.span,
+                            message: format!(
+                                "Ascii '+=' needs an Ascii value; found {}",
+                                self.type_name(typed_value.ty)
+                            ),
+                        });
+                    }
+                    let max_bytes = self.ascii_max(place.ty).unwrap_or(0);
+                    let left_range = if place.path.is_empty() {
+                        self.ascii_lengths
+                            .get(&place.root)
+                            .copied()
+                            .unwrap_or((0, max_bytes))
+                    } else {
+                        (0, max_bytes)
+                    };
+                    let right_range = self
+                        .ascii_length_range(&typed_value)
+                        .unwrap_or((0, self.ascii_max(typed_value.ty).unwrap_or(0)));
+                    let new_range = (
+                        left_range.0.saturating_add(right_range.0),
+                        left_range.1.saturating_add(right_range.1),
+                    );
+                    if new_range.1 > max_bytes {
+                        return Err(CheckError {
+                            span: stmt.span,
+                            message: format!(
+                                "cannot prove this append fits Ascii max {}; use '{}.try_append(value)' and handle Full",
+                                max_bytes,
+                                target_name(target)
+                            ),
+                        });
+                    }
+                    (typed_value, None, Some(new_range))
                 } else {
                     let typed_value = self.check_expr(value, Some(self.base_type(place.ty)))?;
                     let bop = assign_binary(*op);
@@ -3677,25 +4044,70 @@ impl Checker {
                     };
                     let stored = self.coerce_store(result, place.ty)?;
                     let range = self.expr_range(&stored);
-                    (typed_value, range)
+                    (typed_value, range, None)
                 };
                 let destination_depth = self
                     .binding_by_id(place.root)
                     .map(|binding| binding.scope_depth)
                     .unwrap_or(0);
-                self.check_owner_lifetime(typed_value.ty, Some(destination_depth), value.span)?;
-                if *op != AssignOp::Set {
-                    let bop = assign_binary(*op);
-                    self.check_binary_types(bop, place.ty, typed_value.ty, *operator_span)?;
-                    if !self.is_numeric(place.ty) {
+                if *op == AssignOp::Set
+                    && self.is_ascii(place.ty)
+                    && self.binding_by_id(place.root).is_some_and(|binding| {
+                        binding.id < self.function_param_count() && binding.mode == ParamMode::Write
+                    })
+                {
+                    let maximum = self.ascii_max(place.ty).unwrap_or(0);
+                    let current = self
+                        .ascii_lengths
+                        .get(&place.root)
+                        .copied()
+                        .unwrap_or((0, maximum));
+                    let assigned = assigned_ascii_range.unwrap_or((0, maximum));
+                    if assigned.1 > current.0 {
                         return Err(CheckError {
                             span: stmt.span,
-                            message: format!(
-                                "'{}=' requires int or long; '{}' is {}",
-                                assign_spelling(*op),
-                                target_name(target),
-                                self.type_name(place.ty)
-                            ),
+                            message: "a write Ascii parameter may not increase its existing length; use 'grow' when appending or replacing with longer text".to_owned(),
+                        });
+                    }
+                }
+                self.check_owner_lifetime(typed_value.ty, Some(destination_depth), value.span)?;
+                if *op != AssignOp::Set {
+                    if self.is_ascii(place.ty) {
+                        // ASCII appends were proved above and are emitted as a direct append.
+                    } else {
+                        let bop = assign_binary(*op);
+                        self.check_binary_types(bop, place.ty, typed_value.ty, *operator_span)?;
+                        if !self.is_numeric(place.ty) {
+                            return Err(CheckError {
+                                span: stmt.span,
+                                message: format!(
+                                    "'{}=' requires int or long; '{}' is {}",
+                                    assign_spelling(*op),
+                                    target_name(target),
+                                    self.type_name(place.ty)
+                                ),
+                            });
+                        }
+                    }
+                }
+                if *op == AssignOp::Set
+                    && self.is_ascii(place.ty)
+                    && self.loop_depth > 0
+                    && self.binding_by_id(place.root).is_none_or(|binding| {
+                        binding.scope_depth <= *self.loop_outer_depths.last().unwrap_or(&0)
+                    })
+                {
+                    let max_bytes = self.ascii_max(place.ty).unwrap_or(0);
+                    let current = self
+                        .ascii_lengths
+                        .get(&place.root)
+                        .copied()
+                        .unwrap_or((0, max_bytes));
+                    let assigned = assigned_ascii_range.unwrap_or((0, max_bytes));
+                    if assigned.1 > current.1 {
+                        return Err(CheckError {
+                            span: stmt.span,
+                            message: "a loop body may grow only an Ascii value declared inside that loop; growing an outer value is T15".to_owned(),
                         });
                     }
                 }
@@ -3704,6 +4116,15 @@ impl Checker {
                     self.nested_facts_for_value(fields, &typed_value)
                 });
                 self.invalidate_place(&place);
+                if self.is_ascii(place.ty) && place.path.is_empty() {
+                    if *op == AssignOp::Set {
+                        let max_bytes = self.ascii_max(place.ty).unwrap_or(0);
+                        self.ascii_lengths
+                            .insert(place.root, assigned_ascii_range.unwrap_or((0, max_bytes)));
+                    } else if let Some(range) = assigned_ascii_range {
+                        self.ascii_lengths.insert(place.root, range);
+                    }
+                }
                 if let Some(key) = self.collection_count_key(&place) {
                     if *op == AssignOp::Set
                         && matches!(self.types[place.ty.0].kind, TTypeKind::List { .. })
@@ -3768,6 +4189,12 @@ impl Checker {
                             });
                         }
                         let value = self.check_store(expr, self.current_return)?;
+                        if typed_expr_contains_take(&value) {
+                            return Err(CheckError {
+                                span: expr.span,
+                                message: "cannot move a builder out of its enclosing scope; its reserved region ends before the returned value's scope".to_owned(),
+                            });
+                        }
                         self.check_owner_lifetime(value.ty, None, expr.span)?;
                         Some(value)
                     }
@@ -3889,6 +4316,8 @@ impl Checker {
                 self.facts
                     .insert((counter.id, Vec::new()), (start_range.0, last));
                 self.loop_writes.push(loop_writes.clone());
+                self.loop_outer_depths
+                    .push(self.scope_ids.len().saturating_sub(1));
                 self.loop_depth += 1;
                 let typed_body = self.check_block(body, true, None)?;
                 if let Some(tail) = typed_body.tail.as_deref() {
@@ -3896,6 +4325,7 @@ impl Checker {
                 }
                 let after_body_counts = self.collection_counts.clone();
                 self.loop_depth -= 1;
+                self.loop_outer_depths.pop();
                 self.loop_writes.pop();
                 self.finish_loop_push_proofs(
                     before_counts,
@@ -4089,6 +4519,8 @@ impl Checker {
                     self.view_bindings.insert(binding.id, element_place.clone());
                     self.active_views.push(element_place);
                 }
+                self.loop_outer_depths
+                    .push(self.scope_ids.len().saturating_sub(1));
                 self.loop_depth += 1;
                 let typed_body = self.check_block(body, true, None)?;
                 if let Some(tail) = typed_body.tail.as_deref() {
@@ -4096,6 +4528,7 @@ impl Checker {
                 }
                 let after_body_counts = self.collection_counts.clone();
                 self.loop_depth -= 1;
+                self.loop_outer_depths.pop();
                 self.active_views.pop();
                 if !is_set {
                     self.view_bindings.remove(&binding.id);
@@ -4323,6 +4756,7 @@ impl Checker {
                 UnaryOp::Not => Some(Ty::Bool),
                 UnaryOp::Neg => self.natural_expr_type_inner(value, shadowed_counter),
             },
+            ExprKind::Take(value) => self.natural_expr_type_inner(value, shadowed_counter),
             ExprKind::Binary {
                 op, left, right, ..
             } => {
@@ -4556,6 +4990,9 @@ impl Checker {
                 }
             }
             ExprKind::Name(_) | ExprKind::Integer { .. } | ExprKind::Bool(_) | ExprKind::Unit => {}
+            ExprKind::Take(value) => {
+                self.collect_loop_constraints_expr(value, counter, expected, constraints)
+            }
             ExprKind::ByteString(_) => {}
             ExprKind::Call { name, args, .. } => {
                 let parameters = self
@@ -4955,7 +5392,125 @@ impl Checker {
         expected: Option<Ty>,
         span: Span,
     ) -> Result<(TExprKind, Ty), CheckError> {
+        if matches!(&receiver.kind, ExprKind::Name(type_name) if type_name == "Ascii")
+            && name == "empty"
+        {
+            if !args.is_empty() {
+                return Err(CheckError {
+                    span: method_span,
+                    message: "Ascii.empty() takes no arguments".to_owned(),
+                });
+            }
+            let Some(ty) = expected.filter(|ty| self.is_ascii(*ty)) else {
+                return Err(CheckError {
+                    span: method_span,
+                    message: "Ascii.empty() needs a maximum from its destination; add an Ascii max N annotation".to_owned(),
+                });
+            };
+            return Ok((TExprKind::AsciiEmpty, ty));
+        }
         let typed_collection = self.check_expr(receiver, None)?;
+        if let Some(max_bytes) = self.ascii_max(typed_collection.ty) {
+            match name {
+                "len" if args.is_empty() => {
+                    let range = TypeRangeAst {
+                        lower: 0,
+                        upper: max_bytes as i128,
+                        inclusive: true,
+                        span: method_span,
+                    };
+                    let result = self.intern_refinement(
+                        Ty::Long,
+                        range,
+                        RefinePolicy::Checked,
+                        method_span,
+                    )?;
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::Method {
+                            kind: MethodKind::AsciiLen,
+                            receiver: Box::new(typed_collection),
+                        },
+                        result,
+                    ));
+                }
+                "try_append" => {
+                    if args.len() != 1 {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: "Ascii.try_append(value) takes one Ascii value".to_owned(),
+                        });
+                    }
+                    let place = self.resolve_place(receiver).map_err(|_| CheckError {
+                        span: receiver.span,
+                        message:
+                            "Ascii.try_append needs a mutable builder; use a var or grow parameter"
+                                .to_owned(),
+                    })?;
+                    if !self.place_is_mutable(&place) {
+                        return Err(CheckError {
+                            span: receiver.span,
+                            message:
+                                "Ascii.try_append needs a mutable builder; declare it with var"
+                                    .to_owned(),
+                        });
+                    }
+                    if place.root < self.function_param_count()
+                        && self
+                            .binding_by_id(place.root)
+                            .is_some_and(|binding| binding.mode != ParamMode::Grow)
+                    {
+                        return Err(CheckError {
+                            span: receiver.span,
+                            message: "Ascii.try_append through a parameter requires 'grow' mode; 'write' cannot increase its length".to_owned(),
+                        });
+                    }
+                    if self.loop_depth > 0
+                        && self.binding_by_id(place.root).is_none_or(|binding| {
+                            binding.scope_depth <= *self.loop_outer_depths.last().unwrap_or(&0)
+                        })
+                    {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: "a loop body may grow only an Ascii value declared inside that loop; growing an outer value is T15".to_owned(),
+                        });
+                    }
+                    self.ascii_lengths.remove(&place.root);
+                    let argument = self.check_expr(&args[0], None)?;
+                    if !self.is_ascii(argument.ty) {
+                        return Err(CheckError {
+                            span: args[0].span,
+                            message: format!(
+                                "try_append needs Ascii; found {}",
+                                self.type_name(argument.ty)
+                            ),
+                        });
+                    }
+                    let full = self.type_ids["Full"];
+                    let result = self.intern_generic(
+                        2,
+                        Ty::Unit,
+                        full,
+                        "Result<(), Full>".to_owned(),
+                        method_span,
+                        TTypeKind::Result(Ty::Unit, full),
+                    );
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::AsciiTryAppend {
+                            receiver: Box::new(typed_collection),
+                            argument: Box::new(argument),
+                        },
+                        result,
+                    ));
+                }
+                _ => {}
+            }
+        }
         if let TTypeKind::Capability(kind) = self.types[typed_collection.ty.0].kind {
             match kind {
                 CapabilityKind::Env if name == "args" => {
@@ -6704,7 +7259,7 @@ impl Checker {
         for (arg, param) in args.iter().zip(params) {
             let place = self.resolve_place(arg).ok();
             for (previous, previous_mode) in &places {
-                if (param.mode == ParamMode::Write || *previous_mode == ParamMode::Write)
+                if (param.mode != ParamMode::Read || *previous_mode != ParamMode::Read)
                     && previous.as_ref().zip(place.as_ref()).is_some_and(|(a, b)| {
                         places_overlap(&self.canonical_place(a), &self.canonical_place(b))
                     })
@@ -6715,7 +7270,7 @@ impl Checker {
                     });
                 }
             }
-            if param.mode == ParamMode::Write {
+            if param.mode != ParamMode::Read {
                 let Some(place) = place.clone() else {
                     return Err(CheckError {
                         span: arg.span,
@@ -6750,7 +7305,33 @@ impl Checker {
                             .to_owned(),
                     });
                 }
-                if place.ty != param.ty {
+                if param.mode == ParamMode::Grow {
+                    if self.loop_depth > 0
+                        && self.binding_by_id(place.root).is_none_or(|binding| {
+                            binding.scope_depth <= *self.loop_outer_depths.last().unwrap_or(&0)
+                        })
+                    {
+                        return Err(CheckError {
+                            span: arg.span,
+                            message: "a loop body may grow only an Ascii value declared inside that loop; growing an outer value is T15".to_owned(),
+                        });
+                    }
+                    let actual_max = self.ascii_max(place.ty);
+                    let expected_max = self.ascii_max(param.ty);
+                    if actual_max
+                        .zip(expected_max)
+                        .is_none_or(|(actual, expected)| actual < expected)
+                    {
+                        return Err(CheckError {
+                            span: arg.span,
+                            message: format!(
+                                "grow argument needs an Ascii builder with at least {} bytes reserved; found {}",
+                                expected_max.unwrap_or(0),
+                                self.type_name(place.ty)
+                            ),
+                        });
+                    }
+                } else if place.ty != param.ty {
                     return Err(CheckError {
                         span: arg.span,
                         message: format!(
@@ -6762,7 +7343,14 @@ impl Checker {
                 }
                 self.invalidate_place(&place);
                 self.invalidate_collection_counts(&place);
-                typed_args.push(self.check_expr(arg, Some(param.ty))?);
+                if param.mode == ParamMode::Grow {
+                    self.ascii_lengths.remove(&place.root);
+                }
+                typed_args.push(if param.mode == ParamMode::Grow {
+                    self.check_expr(arg, None)?
+                } else {
+                    self.check_expr(arg, Some(param.ty))?
+                });
             } else {
                 typed_args.push(self.check_store(arg, param.ty)?);
             }
@@ -7184,7 +7772,7 @@ impl Checker {
         for (arg, param) in args.iter().zip(signature.params.iter().copied()) {
             let place = self.resolve_place(arg).ok();
             for (previous, previous_param) in arg_places.iter().zip(signature.params.iter()) {
-                if (param.mode == ParamMode::Write || previous_param.mode == ParamMode::Write)
+                if (param.mode != ParamMode::Read || previous_param.mode != ParamMode::Read)
                     && previous.as_ref().zip(place.as_ref()).is_some_and(|(a, b)| {
                         places_overlap(&self.canonical_place(a), &self.canonical_place(b))
                     })
@@ -7192,13 +7780,24 @@ impl Checker {
                     return Err(CheckError { span: arg.span, message: "arguments overlap, and at least one is passed as write; pass separate fields or a copy".to_owned() });
                 }
             }
-            if param.mode == ParamMode::Write {
+            if param.mode != ParamMode::Read {
                 let place = place.clone().ok_or_else(|| CheckError {
                     span: arg.span,
                     message: "a write argument must be an assignable place".to_owned(),
                 })?;
                 if !self.place_is_mutable(&place) {
                     return Err(CheckError { span: arg.span, message: "a write argument must be a var, a field of a var, or another write parameter".to_owned() });
+                }
+                if param.mode == ParamMode::Grow
+                    && self.loop_depth > 0
+                    && self.binding_by_id(place.root).is_none_or(|binding| {
+                        binding.scope_depth <= *self.loop_outer_depths.last().unwrap_or(&0)
+                    })
+                {
+                    return Err(CheckError {
+                        span: arg.span,
+                        message: "a loop body may grow only an Ascii value declared inside that loop; growing an outer value is T15".to_owned(),
+                    });
                 }
                 let canonical = self.canonical_place(&place);
                 let write_collection = matches!(
@@ -7225,7 +7824,23 @@ impl Checker {
                 let same_embedded_pool_shape = self.type_contains_pool(param.ty)
                     && self.specialized_struct_base.get(&place.ty) == Some(&param.ty)
                     && !self.specialized_struct_owners.contains_key(&place.ty);
-                if place.ty != param.ty && !same_embedded_pool_shape {
+                if param.mode == ParamMode::Grow {
+                    let actual_max = self.ascii_max(place.ty);
+                    let expected_max = self.ascii_max(param.ty);
+                    if actual_max
+                        .zip(expected_max)
+                        .is_none_or(|(actual, expected)| actual < expected)
+                    {
+                        return Err(CheckError {
+                            span: arg.span,
+                            message: format!(
+                                "grow argument needs an Ascii builder with at least {} bytes reserved; found {}",
+                                expected_max.unwrap_or(0),
+                                self.type_name(place.ty)
+                            ),
+                        });
+                    }
+                } else if place.ty != param.ty && !same_embedded_pool_shape {
                     return Err(CheckError {
                         span: arg.span,
                         message: format!(
@@ -7237,7 +7852,12 @@ impl Checker {
                 }
                 self.invalidate_place(&place);
                 self.invalidate_collection_counts(&place);
-                if same_embedded_pool_shape {
+                if param.mode == ParamMode::Grow {
+                    self.ascii_lengths.remove(&place.root);
+                }
+                if param.mode == ParamMode::Grow {
+                    typed_args.push(self.check_expr(arg, None)?);
+                } else if same_embedded_pool_shape {
                     typed_args.push(self.check_expr(arg, None)?);
                 } else {
                     typed_args.push(self.check_expr(arg, Some(param.ty))?);
@@ -7315,6 +7935,69 @@ impl Checker {
                 };
                 let value = self.default_typed_value(target, *call_span)?;
                 return self.finish_expr(expr, (value.kind, target), expected);
+            } else if name == "str" {
+                if args.len() != 1 {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: "str takes one int or long value".to_owned(),
+                    });
+                }
+                let value = self.check_expr(&args[0], None)?;
+                if !self.is_numeric(value.ty) {
+                    return Err(CheckError {
+                        span: args[0].span,
+                        message: format!(
+                            "str needs int or long; found {}",
+                            self.type_name(value.ty)
+                        ),
+                    });
+                }
+                let (lo, hi) = self.expr_range(&value).unwrap_or_else(|| {
+                    self.refinement(value.ty)
+                        .map(|(_, lo, hi, _)| (lo, hi))
+                        .unwrap_or_else(|| integer_bounds(self.base_type(value.ty)).unwrap())
+                });
+                let max_abs = lo.unsigned_abs().max(hi.unsigned_abs());
+                let digits = if max_abs == 0 {
+                    1
+                } else {
+                    max_abs.ilog10() as usize + 1
+                };
+                let maximum = digits.saturating_add(usize::from(lo < 0));
+                let ty = self.intern_ascii(maximum, *call_span);
+                if let Some(want) = expected {
+                    self.type_mismatch(ty, want, expr.span)?;
+                }
+                return self.finish_expr(
+                    expr,
+                    (TExprKind::AsciiFormat(Box::new(value)), ty),
+                    expected,
+                );
+            } else if name == "ascii_upper" {
+                if args.len() != 1 {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: "ascii_upper takes one Ascii value".to_owned(),
+                    });
+                }
+                let value = self.check_expr(&args[0], None)?;
+                if !self.is_ascii(value.ty) {
+                    return Err(CheckError {
+                        span: args[0].span,
+                        message: format!(
+                            "ascii_upper needs Ascii; found {}",
+                            self.type_name(value.ty)
+                        ),
+                    });
+                }
+                if let Some(want) = expected {
+                    self.type_mismatch(value.ty, want, expr.span)?;
+                }
+                return self.finish_expr(
+                    expr,
+                    (TExprKind::AsciiUpper(Box::new(value.clone())), value.ty),
+                    expected,
+                );
             } else if matches!(name.as_str(), "sort" | "sort_by" | "binary_search") {
                 let checked = self.check_sort_builtin(name, args, *call_span)?;
                 return self.finish_expr(expr, checked, expected);
@@ -7424,6 +8107,7 @@ impl Checker {
                 self.suppress_function_value_effect_check = saved_suppression;
                 let arg = checked_arg?;
                 if !matches!(self.base_type(arg.ty), Ty::Int | Ty::Long | Ty::Bool)
+                    && !self.is_ascii(arg.ty)
                     && !self.types[arg.ty.0].is_sum()
                     && !matches!(self.types[arg.ty.0].kind, TTypeKind::Struct(_))
                     && !matches!(
@@ -7441,7 +8125,7 @@ impl Checker {
                 {
                     return Err(CheckError {
                             span: args[0].span,
-                            message: "print supports int, long, bool, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values"
+                            message: "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values"
                                 .to_owned(),
                         });
                 }
@@ -7661,27 +8345,72 @@ impl Checker {
                 (TExprKind::Bool(*value), Ty::Bool)
             }
             ExprKind::ByteString(bytes) => {
-                let Some(ty) = expected.filter(|ty| self.is_byte_list(*ty)) else {
+                if let Some(ty) = expected.filter(|ty| self.is_byte_list(*ty)) {
+                    let TTypeKind::List { capacity, .. } = self.types[ty.0].kind else {
+                        unreachable!()
+                    };
+                    if bytes.len() > capacity {
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: format!(
+                                "byte string has {} bytes, exceeding list capacity {}; increase the capacity",
+                                bytes.len(),
+                                capacity
+                            ),
+                        });
+                    }
+                    (TExprKind::ByteString(bytes.clone()), ty)
+                } else {
+                    if !bytes.is_ascii() {
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: "an Ascii literal may contain only bytes 0 through 127; encode non-ASCII text as Text".to_owned(),
+                        });
+                    }
+                    let ty = self.intern_ascii(bytes.len(), expr.span);
+                    if let Some(want) = expected {
+                        self.type_mismatch(ty, want, expr.span)?;
+                    }
+                    (TExprKind::ByteString(bytes.clone()), ty)
+                }
+            }
+            ExprKind::Take(value) => {
+                if self.conditional_depth > 0 {
                     return Err(CheckError {
                         span: expr.span,
-                        message: "a byte string needs a byte-list context such as list<byte, 4096>"
-                            .to_owned(),
-                    });
-                };
-                let TTypeKind::List { capacity, .. } = self.types[ty.0].kind else {
-                    unreachable!()
-                };
-                if bytes.len() > capacity {
-                    return Err(CheckError {
-                        span: expr.span,
-                        message: format!(
-                            "byte string has {} bytes, exceeding list capacity {}; increase the capacity",
-                            bytes.len(),
-                            capacity
-                        ),
+                        message: "a move inside a branch can have two different owners; move the value before the branch or copy it".to_owned(),
                     });
                 }
-                (TExprKind::ByteString(bytes.clone()), ty)
+                let place = self.resolve_place(value).map_err(|_| CheckError {
+                    span: value.span,
+                    message: "take needs a local Ascii value; use 'let copy = value' to copy it"
+                        .to_owned(),
+                })?;
+                if !place.path.is_empty() || !self.is_ascii(place.ty) {
+                    return Err(CheckError {
+                        span: value.span,
+                        message: "take currently moves a whole local Ascii value; use 'let copy = value' for other values".to_owned(),
+                    });
+                }
+                if place.root < self.function_param_count() {
+                    return Err(CheckError {
+                        span: value.span,
+                        message: "take cannot move a caller-owned parameter; copy it into a local builder first".to_owned(),
+                    });
+                }
+                if self.loop_depth > 0
+                    && self.binding_by_id(place.root).is_some_and(|binding| {
+                        binding.scope_depth <= *self.loop_outer_depths.last().unwrap_or(&0)
+                    })
+                {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "cannot move a value from outside a loop into its iteration; copy it inside the loop".to_owned(),
+                    });
+                }
+                let typed = self.check_expr(value, None)?;
+                self.moved_locals.insert(place.root);
+                (TExprKind::Take(Box::new(typed.clone())), typed.ty)
             }
             ExprKind::Name(name) => {
                 if let Some(value) = self.current_generic_capacities.get(name).copied() {
@@ -7701,6 +8430,15 @@ impl Checker {
                     }
                     (TExprKind::Integer(value as i128), ty)
                 } else if let Some(binding) = self.find_binding(name) {
+                    if self.moved_locals.contains(&binding.id) {
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: format!(
+                                "'{}' was moved by take and cannot be used again; use the new owner or copy it before moving",
+                                name
+                            ),
+                        });
+                    }
                     if let Some(want) = expected {
                         self.type_mismatch(binding.ty, want, expr.span)?;
                     }
@@ -8165,6 +8903,30 @@ impl Checker {
                 method_span,
             } => {
                 let target = self.parse_type(ty)?;
+                if self.is_ascii(target) {
+                    let value = self.check_expr(value, None)?;
+                    if !self.is_ascii(value.ty) {
+                        return Err(CheckError {
+                            span: *method_span,
+                            message: format!(
+                                "fit input must be Ascii; found {}",
+                                self.type_name(value.ty)
+                            ),
+                        });
+                    }
+                    let option_ty = self.option_type(target, expr.span);
+                    if let Some(want) = expected {
+                        self.type_mismatch(option_ty, want, expr.span)?;
+                    }
+                    return Ok(TExpr {
+                        kind: TExprKind::AsciiFit {
+                            value: Box::new(value),
+                            option_ty,
+                        },
+                        ty: option_ty,
+                        span: expr.span,
+                    });
+                }
                 let Some((base, min, max, _)) = self.refinement(target) else {
                     return Err(CheckError {
                         span: ty.span,
@@ -8449,33 +9211,51 @@ impl Checker {
                 value,
             } => {
                 let target = self.parse_type(ty)?;
-                if !self.is_numeric(target) {
-                    return Err(CheckError {
-                        span: ty.span,
-                        message: "casts in this task are between int and long".to_owned(),
-                    });
+                if self.is_ascii(target) {
+                    let source = self.check_expr(value, None)?;
+                    if !self.is_ascii(source.ty) {
+                        return Err(CheckError {
+                            span: value.span,
+                            message: format!(
+                                "cannot cast {} to Ascii; cast from an Ascii value with an explicit maximum",
+                                self.type_name(source.ty)
+                            ),
+                        });
+                    }
+                    if let Some(want) = expected {
+                        self.type_mismatch(target, want, expr.span)?;
+                    }
+                    let _ = cast_span;
+                    (TExprKind::AsciiCast(Box::new(source)), target)
+                } else {
+                    if !self.is_numeric(target) {
+                        return Err(CheckError {
+                            span: ty.span,
+                            message: "casts in this task are between int and long".to_owned(),
+                        });
+                    }
+                    let source = self.check_expr(value, None)?;
+                    if !self.is_numeric(source.ty) {
+                        return Err(CheckError {
+                            span: value.span,
+                            message: format!(
+                                "cannot cast {} to {}; casts are between int and long",
+                                self.type_name(source.ty),
+                                self.type_name(target)
+                            ),
+                        });
+                    }
+                    if let Some(want) = expected {
+                        self.type_mismatch(target, want, expr.span)?;
+                    }
+                    (
+                        TExprKind::Cast {
+                            cast_span: *cast_span,
+                            value: Box::new(source),
+                        },
+                        target,
+                    )
                 }
-                let source = self.check_expr(value, None)?;
-                if !self.is_numeric(source.ty) {
-                    return Err(CheckError {
-                        span: value.span,
-                        message: format!(
-                            "cannot cast {} to {}; casts are between int and long",
-                            self.type_name(source.ty),
-                            self.type_name(target)
-                        ),
-                    });
-                }
-                if let Some(want) = expected {
-                    self.type_mismatch(target, want, expr.span)?;
-                }
-                (
-                    TExprKind::Cast {
-                        cast_span: *cast_span,
-                        value: Box::new(source),
-                    },
-                    target,
-                )
             }
             ExprKind::Unary {
                 op,
@@ -8770,7 +9550,10 @@ impl Checker {
                     ids.push(None);
                 }
             }
-            let typed_body = self.check_block(&arm.body, false, expected)?;
+            self.conditional_depth += 1;
+            let checked_body = self.check_block(&arm.body, false, expected);
+            self.conditional_depth -= 1;
+            let typed_body = checked_body?;
             self.locals.pop();
             self.scope_ids.pop();
             let pattern = match typed_pattern {
@@ -8869,6 +9652,95 @@ impl Checker {
         expected: Option<Ty>,
         span: Span,
     ) -> Result<(TExprKind, Ty), CheckError> {
+        if op == BinaryOp::Add
+            && (self.expression_may_be_ascii(left) || self.expression_may_be_ascii(right))
+        {
+            let left_value = self.check_expr(left, None)?;
+            let right_value = self.check_expr(right, None)?;
+            if self.is_ascii(left_value.ty) || self.is_ascii(right_value.ty) {
+                if !self.is_ascii(left_value.ty) || !self.is_ascii(right_value.ty) {
+                    return Err(self.mixed_types_error(left_value.ty, right_value.ty, span));
+                }
+                let left_max = self.ascii_max(left_value.ty).unwrap();
+                let right_max = self.ascii_max(right_value.ty).unwrap();
+                let max_bytes = left_max.checked_add(right_max).ok_or_else(|| CheckError {
+                    span,
+                    message:
+                        "Ascii concatenation maximum overflows; reduce one of the declared maxima"
+                            .to_owned(),
+                })?;
+                if max_bytes > i64::MAX as usize {
+                    return Err(CheckError {
+                        span,
+                        message: "Ascii concatenation maximum overflows long; reduce one of the declared maxima".to_owned(),
+                    });
+                }
+                let result = self.intern_ascii(max_bytes, span);
+                let result = if let Some(want) = expected {
+                    if let (Some(want_max), Some(_)) =
+                        (self.ascii_max(want), self.ascii_max(result))
+                    {
+                        if max_bytes > want_max {
+                            let left_range = self
+                                .ascii_length_range(&left_value)
+                                .unwrap_or((0, left_max));
+                            let right_range = self
+                                .ascii_length_range(&right_value)
+                                .unwrap_or((0, right_max));
+                            if left_range.1.saturating_add(right_range.1) > want_max {
+                                return Err(CheckError {
+                                    span,
+                                    message: format!(
+                                        "cannot prove this concatenation fits {}; use a checked cast or fit<{}>()",
+                                        self.type_name(want),
+                                        self.type_name(want)
+                                    ),
+                                });
+                            }
+                            want
+                        } else {
+                            result
+                        }
+                    } else {
+                        self.type_mismatch(result, want, span)?;
+                        result
+                    }
+                } else {
+                    result
+                };
+                return Ok((
+                    TExprKind::Binary {
+                        op,
+                        operator_span: span,
+                        left: Box::new(left_value),
+                        right: Box::new(right_value),
+                    },
+                    result,
+                ));
+            }
+        }
+        if matches!(
+            op,
+            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+        ) && (self.expression_may_be_ascii(left) || self.expression_may_be_ascii(right))
+        {
+            let left_value = self.check_expr(left, None)?;
+            let right_value = self.check_expr(right, None)?;
+            if self.is_ascii(left_value.ty) || self.is_ascii(right_value.ty) {
+                if !self.is_ascii(left_value.ty) || !self.is_ascii(right_value.ty) {
+                    return Err(self.mixed_types_error(left_value.ty, right_value.ty, span));
+                }
+                return Ok((
+                    TExprKind::Binary {
+                        op,
+                        operator_span: span,
+                        left: Box::new(left_value),
+                        right: Box::new(right_value),
+                    },
+                    Ty::Bool,
+                ));
+            }
+        }
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
             let l = self.check_expr(left, Some(Ty::Bool))?;
             let r = self.check_expr(right, Some(Ty::Bool))?;
@@ -8921,6 +9793,23 @@ impl Checker {
             ));
         }
         let (l, r) = if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+            let left_natural = self.natural_expr_type(left);
+            let right_natural = self.natural_expr_type(right);
+            if let (Some(left_ty), Some(right_ty)) = (left_natural, right_natural) {
+                if self.ascii_option_pair(left_ty, right_ty) {
+                    let l = self.check_expr(left, None)?;
+                    let r = self.check_expr(right, None)?;
+                    return Ok((
+                        TExprKind::Binary {
+                            op,
+                            operator_span: span,
+                            left: Box::new(l),
+                            right: Box::new(r),
+                        },
+                        Ty::Bool,
+                    ));
+                }
+            }
             let (l, r) =
                 self.check_operand_pair(left, right, expected.filter(|t| self.is_numeric(*t)))?;
             if l.ty != r.ty
@@ -9037,6 +9926,13 @@ impl Checker {
             let r = self.check_expr(right, Some(l.ty))?;
             Ok((l, r))
         } else if !left_lit && !right_lit {
+            let right_natural = self.natural_expr_type(right);
+            if right_natural.is_some_and(|ty| self.types[ty.0].is_sum()) {
+                let right_ty = right_natural.unwrap();
+                let l = self.check_expr(left, Some(right_ty))?;
+                let r = self.check_expr(right, Some(l.ty))?;
+                return Ok((l, r));
+            }
             let l = self.check_expr(left, None)?;
             let right_expected = if self.types[l.ty.0].is_sum() {
                 Some(l.ty)
@@ -9094,9 +9990,13 @@ impl Checker {
         }
         let entry_facts = self.facts.clone();
         let entry_counts = self.collection_counts.clone();
+        let entry_ascii_lengths = self.ascii_lengths.clone();
         self.narrow_from_condition(&condition, true);
-        let then_block =
-            self.check_block(then_ast, true, if value_context { expected } else { None })?;
+        self.conditional_depth += 1;
+        let checked_then =
+            self.check_block(then_ast, true, if value_context { expected } else { None });
+        self.conditional_depth -= 1;
+        let then_block = checked_then?;
         if !value_context {
             if let Some(tail) = then_block.tail.as_deref() {
                 self.require_handled_result(tail, tail.span)?;
@@ -9104,12 +10004,20 @@ impl Checker {
         }
         let then_facts = self.facts.clone();
         let then_counts = self.collection_counts.clone();
+        let then_ascii_lengths = self.ascii_lengths.clone();
         self.facts = entry_facts.clone();
         self.collection_counts = entry_counts.clone();
+        self.ascii_lengths = entry_ascii_lengths.clone();
         self.narrow_from_condition(&condition, false);
-        let else_block = else_ast
-            .map(|b| self.check_block(b, true, if value_context { expected } else { None }))
-            .transpose()?;
+        let else_block = if let Some(block) = else_ast {
+            self.conditional_depth += 1;
+            let checked =
+                self.check_block(block, true, if value_context { expected } else { None });
+            self.conditional_depth -= 1;
+            Some(checked?)
+        } else {
+            None
+        };
         if !value_context {
             if let Some(tail) = else_block.as_ref().and_then(|block| block.tail.as_deref()) {
                 self.require_handled_result(tail, tail.span)?;
@@ -9117,6 +10025,7 @@ impl Checker {
         }
         let else_facts = self.facts.clone();
         let else_counts = self.collection_counts.clone();
+        let else_ascii_lengths = self.ascii_lengths.clone();
         self.facts = match (
             then_block.falls_through,
             else_block.as_ref().is_none_or(|b| b.falls_through),
@@ -9143,6 +10052,25 @@ impl Checker {
             (false, true) => else_counts,
             (false, false) => entry_counts,
         };
+        self.ascii_lengths.clear();
+        let all_ascii_ids = entry_ascii_lengths
+            .keys()
+            .chain(then_ascii_lengths.keys())
+            .chain(else_ascii_lengths.keys())
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        for id in all_ascii_ids {
+            let then_range = then_ascii_lengths.get(&id).copied();
+            let else_range = else_ascii_lengths.get(&id).copied();
+            if then_range == else_range {
+                if let Some(range) = then_range {
+                    self.ascii_lengths.insert(id, range);
+                }
+            } else if let (Some(left), Some(right)) = (then_range, else_range) {
+                self.ascii_lengths
+                    .insert(id, (left.0.min(right.0), left.1.max(right.1)));
+            }
+        }
         let ty = if !value_context {
             Ty::Unit
         } else {
@@ -9154,6 +10082,10 @@ impl Checker {
                 then_ty
             } else if then_ty == else_ty {
                 then_ty
+            } else if let (Some(left), Some(right)) =
+                (self.ascii_max(then_ty), self.ascii_max(else_ty))
+            {
+                self.intern_ascii(left.max(right), span)
             } else {
                 return Err(CheckError {
                     span,
@@ -9369,6 +10301,7 @@ impl Checker {
             | ExprKind::Unary {
                 value: receiver, ..
             } => self.collect_expr_writes(receiver, writes),
+            ExprKind::Take(value) => self.collect_expr_writes(value, writes),
             ExprKind::GridIndex { receiver, x, y, .. } => {
                 self.collect_expr_writes(receiver, writes);
                 self.collect_expr_writes(x, writes);
@@ -9786,6 +10719,7 @@ impl Checker {
                         && expr(checker, y, counts)
                 }
                 ExprKind::Field { receiver, .. }
+                | ExprKind::Take(receiver)
                 | ExprKind::Fit {
                     value: receiver, ..
                 }
@@ -10109,6 +11043,10 @@ impl Checker {
     fn type_mismatch(&self, actual: Ty, expected: Ty, span: Span) -> Result<(), CheckError> {
         if actual == expected
             || actual == Ty::Never
+            || self
+                .ascii_max(actual)
+                .zip(self.ascii_max(expected))
+                .is_some_and(|(actual, expected)| actual <= expected)
             || (self.is_numeric(actual) && self.base_type(actual) == self.base_type(expected))
             || self.function_type_assignable(actual, expected)
         {
@@ -10241,8 +11179,13 @@ impl Checker {
         else {
             return false;
         };
+        let result_fits = actual_result == expected_result
+            || self
+                .ascii_max(*actual_result)
+                .zip(self.ascii_max(*expected_result))
+                .is_some_and(|(actual, expected)| actual <= expected);
         actual_params == expected_params
-            && actual_result == expected_result
+            && result_fits
             && self.function_effects_subset(actual_effects, expected_effects)
     }
 
@@ -10526,6 +11469,16 @@ impl Checker {
     fn coerce_store_hint(&self, value: TExpr, target: Ty, hint: &str) -> Result<TExpr, CheckError> {
         if self.is_function_type(value.ty) || self.is_function_type(target) {
             self.type_mismatch(value.ty, target, value.span)?;
+            return Ok(TExpr {
+                ty: target,
+                ..value
+            });
+        }
+        if self
+            .ascii_max(value.ty)
+            .zip(self.ascii_max(target))
+            .is_some_and(|(actual, expected)| actual <= expected)
+        {
             return Ok(TExpr {
                 ty: target,
                 ..value
@@ -11211,6 +12164,34 @@ fn check_recursive_region_block(
     Ok(())
 }
 
+fn typed_expr_contains_take(expr: &TExpr) -> bool {
+    match &expr.kind {
+        TExprKind::Take(_) => true,
+        TExprKind::Construct { args, .. } => args.iter().any(typed_expr_contains_take),
+        TExprKind::AsciiUpper(value)
+        | TExprKind::AsciiFormat(value)
+        | TExprKind::AsciiCast(value)
+        | TExprKind::Convert { value, .. }
+        | TExprKind::Fit { value, .. }
+        | TExprKind::Try { value, .. }
+        | TExprKind::OptionalToLong(value)
+        | TExprKind::ToLong(value)
+        | TExprKind::Cast { value, .. }
+        | TExprKind::Unary { value, .. } => typed_expr_contains_take(value),
+        TExprKind::AsciiFit { value, .. } => typed_expr_contains_take(value),
+        TExprKind::AsciiTryAppend { receiver, argument } => {
+            typed_expr_contains_take(receiver) || typed_expr_contains_take(argument)
+        }
+        TExprKind::Coalesce { option, fallback } => {
+            typed_expr_contains_take(option) || typed_expr_contains_take(fallback)
+        }
+        TExprKind::Binary { left, right, .. } => {
+            typed_expr_contains_take(left) || typed_expr_contains_take(right)
+        }
+        _ => false,
+    }
+}
+
 fn check_recursive_region_expr(
     checker: &Checker,
     function: &TFunction,
@@ -11261,6 +12242,10 @@ fn check_recursive_region_expr(
         | TExprKind::Try {
             value: receiver, ..
         }
+        | TExprKind::AsciiUpper(receiver)
+        | TExprKind::AsciiFormat(receiver)
+        | TExprKind::AsciiCast(receiver)
+        | TExprKind::Take(receiver)
         | TExprKind::Cast {
             value: receiver, ..
         }
@@ -11365,7 +12350,13 @@ fn check_recursive_region_expr(
         | TExprKind::EmptySet
         | TExprKind::EmptyGrid
         | TExprKind::EmptyQueue
-        | TExprKind::EmptyRing => {}
+        | TExprKind::EmptyRing
+        | TExprKind::AsciiEmpty => {}
+        TExprKind::AsciiFit { value, .. } => recurse(value, active_regions)?,
+        TExprKind::AsciiTryAppend { receiver, argument } => {
+            recurse(receiver, active_regions)?;
+            recurse(argument, active_regions)?;
+        }
     }
 
     let component = component_of[function.id];
@@ -11596,6 +12587,7 @@ fn parameter_mode_name(mode: ParamMode) -> &'static str {
     match mode {
         ParamMode::Read => "read",
         ParamMode::Write => "write",
+        ParamMode::Grow => "grow",
     }
 }
 
@@ -11807,7 +12799,7 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
                     effects.add_call(*function);
                     if let Some(callee) = functions.get(*function) {
                         for (argument, parameter) in args.iter().zip(&callee.params) {
-                            if parameter.mode == ParamMode::Write {
+                            if parameter.mode != ParamMode::Read {
                                 if let Some(path) = global_path_from_expr(argument) {
                                     effects.add_write(path, false);
                                 }
@@ -11863,7 +12855,7 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
             ..
         } => {
             for (argument, parameter) in args.iter().zip(params) {
-                if parameter.mode == ParamMode::Write {
+                if parameter.mode != ParamMode::Read {
                     if let Some(path) = global_path_from_expr(argument) {
                         effects.add_write(path, false);
                     }
@@ -11948,6 +12940,13 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         TExprKind::Method { receiver, .. }
         | TExprKind::OptionalToLong(receiver)
         | TExprKind::ToLong(receiver) => collect_global_expr_effects(receiver, effects, functions),
+        TExprKind::AsciiTryAppend { receiver, argument } => {
+            collect_global_expr_effects(receiver, effects, functions);
+            if let Some(path) = global_path_from_expr(receiver) {
+                effects.add_write(path, false);
+            }
+            collect_global_expr_effects(argument, effects, functions);
+        }
         TExprKind::Fill { value, .. } => collect_global_expr_effects(value, effects, functions),
         TExprKind::StructConstruct { fields } => {
             for (_, value) in fields {
@@ -11957,8 +12956,13 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         TExprKind::Convert { value, .. }
         | TExprKind::Fit { value, .. }
         | TExprKind::Try { value, .. }
+        | TExprKind::AsciiUpper(value)
+        | TExprKind::AsciiFormat(value)
+        | TExprKind::AsciiCast(value)
+        | TExprKind::Take(value)
         | TExprKind::Cast { value, .. }
         | TExprKind::Unary { value, .. } => collect_global_expr_effects(value, effects, functions),
+        TExprKind::AsciiFit { value, .. } => collect_global_expr_effects(value, effects, functions),
         TExprKind::Coalesce { option, fallback } => {
             collect_global_expr_effects(option, effects, functions);
             collect_global_expr_effects(fallback, effects, functions);
@@ -12004,7 +13008,8 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         | TExprKind::EmptySet
         | TExprKind::EmptyGrid
         | TExprKind::EmptyQueue
-        | TExprKind::EmptyRing => {}
+        | TExprKind::EmptyRing
+        | TExprKind::AsciiEmpty => {}
     }
 }
 
@@ -12129,6 +13134,10 @@ fn visit_global_calls_expr(
         | TExprKind::Try {
             value: receiver, ..
         }
+        | TExprKind::AsciiUpper(receiver)
+        | TExprKind::AsciiFormat(receiver)
+        | TExprKind::AsciiCast(receiver)
+        | TExprKind::Take(receiver)
         | TExprKind::Cast {
             value: receiver, ..
         }
@@ -12152,6 +13161,11 @@ fn visit_global_calls_expr(
             }
         }
         TExprKind::Fill { value, .. } => visit_global_calls_expr(value, active_views, check)?,
+        TExprKind::AsciiFit { value, .. } => visit_global_calls_expr(value, active_views, check)?,
+        TExprKind::AsciiTryAppend { receiver, argument } => {
+            visit_global_calls_expr(receiver, active_views, check)?;
+            visit_global_calls_expr(argument, active_views, check)?;
+        }
         TExprKind::CollectionOp { receiver, args, .. }
         | TExprKind::PoolOp { receiver, args, .. }
         | TExprKind::MapOp { receiver, args, .. }
@@ -12212,7 +13226,8 @@ fn visit_global_calls_expr(
         | TExprKind::EmptyGrid
         | TExprKind::EmptyQueue
         | TExprKind::EmptyRing
-        | TExprKind::LoopExit(_) => {}
+        | TExprKind::LoopExit(_)
+        | TExprKind::AsciiEmpty => {}
     }
     Ok(())
 }

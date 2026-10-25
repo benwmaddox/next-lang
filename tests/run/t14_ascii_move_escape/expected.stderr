@@ -1,0 +1,1 @@
+main.nl:3:12: error: cannot move a builder out of its enclosing scope; its reserved region ends before the returned value's scope

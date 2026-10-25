@@ -171,6 +171,11 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare void @nl_print_long_raw(i64)\n");
     out.push_str("declare void @nl_print_bool_raw(i1)\n");
     out.push_str("declare void @nl_print_text(ptr)\n");
+    out.push_str("declare void @nl_print_ascii(ptr, i64)\n");
+    out.push_str("declare i32 @nl_ascii_compare(ptr, i64, ptr, i64)\n");
+    out.push_str("declare i64 @nl_hash_ascii(ptr, i64, i64)\n");
+    out.push_str("declare i64 @nl_ascii_format_i64(i64, ptr)\n");
+    out.push_str("declare void @nl_ascii_upper_copy(ptr, ptr, i64)\n");
     out.push_str("declare void @nl_print_newline()\n");
     out.push_str("declare void @nl_print_arg(ptr)\n");
     out.push_str("declare void @nl_print_set_fd(i32)\n");
@@ -187,12 +192,17 @@ pub fn emit(program: &TProgram) -> String {
     }
     out.push('\n');
     let mut size_cache = vec![None; program.types.len()];
+    out.push_str("%nl.ascii = type <{ ptr, i64 }>\n");
+    out.push_str("%nl.option.ascii = type { i32, [16 x i8] }\n");
     for (id, ty) in program.types.iter().enumerate().skip(5) {
         match &ty.kind {
             TTypeKind::Refinement { .. }
             | TTypeKind::Id { .. }
             | TTypeKind::Function { .. }
             | TTypeKind::Capability(_) => {}
+            TTypeKind::Ascii { .. } => {}
+            TTypeKind::Option(inner)
+                if matches!(program.types[inner.0].kind, TTypeKind::Ascii { .. }) => {}
             TTypeKind::Struct(fields) => {
                 let fields = fields
                     .iter()
@@ -263,8 +273,14 @@ pub fn emit(program: &TProgram) -> String {
                 value,
                 capacity,
             } => {
+                let ascii_key_storage = match program.types[key.0].kind {
+                    TTypeKind::Ascii { max_bytes } => {
+                        format!(", [{} x [{} x i8]]", capacity, max_bytes)
+                    }
+                    _ => String::new(),
+                };
                 out.push_str(&format!(
-                    "%nl.ty.{id} = type <{{ i64, i64, [{} x i1], [{} x i64], [{} x i64], [{} x {}], [{} x {}] }}> ; {}\n",
+                    "%nl.ty.{id} = type <{{ i64, i64, [{} x i1], [{} x i64], [{} x i64], [{} x {}], [{} x {}]{} }}> ; {}\n",
                     capacity,
                     capacity,
                     capacity,
@@ -272,17 +288,25 @@ pub fn emit(program: &TProgram) -> String {
                     llvm_type(*key, &program.types),
                     capacity,
                     llvm_type(*value, &program.types),
+                    ascii_key_storage,
                     ty.name
                 ));
             }
             TTypeKind::Set { key, capacity } => {
+                let ascii_key_storage = match program.types[key.0].kind {
+                    TTypeKind::Ascii { max_bytes } => {
+                        format!(", [{} x [{} x i8]]", capacity, max_bytes)
+                    }
+                    _ => String::new(),
+                };
                 out.push_str(&format!(
-                    "%nl.ty.{id} = type <{{ i64, i64, [{} x i1], [{} x i64], [{} x i64], [{} x {}] }}> ; {}\n",
+                    "%nl.ty.{id} = type <{{ i64, i64, [{} x i1], [{} x i64], [{} x i64], [{} x {}]{} }}> ; {}\n",
                     capacity,
                     capacity,
                     capacity,
                     capacity,
                     llvm_type(*key, &program.types),
+                    ascii_key_storage,
                     ty.name
                 ));
             }
@@ -600,27 +624,73 @@ fn expr_is_place_for_contract(expr: &TExpr) -> bool {
     }
 }
 
+fn static_ascii_length(expr: &TExpr, types: &[TType]) -> Option<usize> {
+    match &expr.kind {
+        TExprKind::ByteString(bytes) => Some(bytes.len()),
+        TExprKind::AsciiEmpty => Some(0),
+        TExprKind::Binary {
+            op: BinaryOp::Add,
+            left,
+            right,
+            ..
+        } if matches!(types[left.ty.0].kind, TTypeKind::Ascii { .. })
+            && matches!(types[right.ty.0].kind, TTypeKind::Ascii { .. }) =>
+        {
+            static_ascii_length(left, types)?.checked_add(static_ascii_length(right, types)?)
+        }
+        TExprKind::AsciiUpper(value) | TExprKind::AsciiCast(value) | TExprKind::Take(value) => {
+            static_ascii_length(value, types)
+        }
+        TExprKind::AsciiFormat(value) => match value.kind {
+            TExprKind::Integer(value) => {
+                let digits = if value == 0 {
+                    1
+                } else {
+                    value.unsigned_abs().ilog10() as usize + 1
+                };
+                Some(digits + usize::from(value < 0))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
-    fn large_local_bytes(block: &TBlock, types: &[TType]) -> u64 {
+    fn large_local_bytes(
+        block: &TBlock,
+        types: &[TType],
+        growing_ascii: &std::collections::HashSet<usize>,
+    ) -> u64 {
         let mut total = 0u64;
         for statement in &block.statements {
             match &statement.kind {
-                TStmtKind::Let { ty, .. } if is_large_type(*ty, types) => {
-                    total = total
-                        .saturating_add(type_size(*ty, types, &mut vec![None; types.len()]) as u64);
+                TStmtKind::Let { id, ty, value, .. } if is_large_type(*ty, types) => {
+                    let bytes = if matches!(types[ty.0].kind, TTypeKind::Ascii { .. })
+                        && !growing_ascii.contains(id)
+                    {
+                        static_ascii_length(value, types)
+                            .map(|length| 16usize.saturating_add(length))
+                            .unwrap_or_else(|| stack_storage_size(*ty, types))
+                    } else {
+                        stack_storage_size(*ty, types)
+                    };
+                    total = total.saturating_add(bytes as u64);
                 }
                 TStmtKind::If {
                     then_block,
                     else_block,
                     ..
                 } => {
-                    total = total.saturating_add(large_local_bytes(then_block, types));
+                    total =
+                        total.saturating_add(large_local_bytes(then_block, types, growing_ascii));
                     if let Some(other) = else_block {
-                        total = total.saturating_add(large_local_bytes(other, types));
+                        total =
+                            total.saturating_add(large_local_bytes(other, types, growing_ascii));
                     }
                 }
                 TStmtKind::For { body, .. } | TStmtKind::Block(body) => {
-                    total = total.saturating_add(large_local_bytes(body, types));
+                    total = total.saturating_add(large_local_bytes(body, types, growing_ascii));
                 }
                 TStmtKind::ForEach {
                     collection, body, ..
@@ -638,12 +708,9 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     };
                     if element_ty.is_some_and(|ty| is_large_type(ty, types)) {
                         let ty = element_ty.unwrap();
-                        total =
-                            total.saturating_add(
-                                type_size(ty, types, &mut vec![None; types.len()]) as u64,
-                            );
+                        total = total.saturating_add(stack_storage_size(ty, types) as u64);
                     }
-                    total = total.saturating_add(large_local_bytes(body, types));
+                    total = total.saturating_add(large_local_bytes(body, types, growing_ascii));
                 }
                 _ => {}
             }
@@ -652,7 +719,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
     }
 
     fn type_bytes(ty: Ty, types: &[TType]) -> u64 {
-        type_size(ty, types, &mut vec![None; types.len()]) as u64
+        stack_storage_size(ty, types) as u64
     }
 
     fn large_storage(ty: Ty, count: u64, types: &[TType]) -> u64 {
@@ -768,9 +835,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
         match &expr.kind {
             TExprKind::Call { target, args, .. } => {
                 if matches!(target, CallTarget::Function(_)) && is_large_type(expr.ty, types) {
-                    own = own.saturating_add(
-                        type_size(expr.ty, types, &mut vec![None; types.len()]) as u64,
-                    );
+                    own = own.saturating_add(stack_storage_size(expr.ty, types) as u64);
                 }
                 // A large struct collection element is stored in separate lanes. Calls
                 // that pass it by pointer gather those lanes into a temporary region.
@@ -782,16 +847,12 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                             is_large_type(arg.ty, types)
                                 && matches!(types[arg.ty.0].kind, TTypeKind::Struct(_))
                         })
-                        .map(|arg| type_size(arg.ty, types, &mut vec![None; types.len()]) as u64)
+                        .map(|arg| stack_storage_size(arg.ty, types) as u64)
                         .sum::<u64>(),
                 );
                 if matches!(target, CallTarget::Sort { .. } | CallTarget::SortBy { .. }) {
                     if let Some(collection) = args.first() {
-                        own = own.saturating_add(type_size(
-                            collection.ty,
-                            types,
-                            &mut vec![None; types.len()],
-                        ) as u64);
+                        own = own.saturating_add(stack_storage_size(collection.ty, types) as u64);
                     }
                 }
                 if matches!(target, CallTarget::Print) {
@@ -809,9 +870,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
             }
             TExprKind::IndirectCall { callee, args, .. } => {
                 if is_large_type(expr.ty, types) {
-                    own = own.saturating_add(
-                        type_size(expr.ty, types, &mut vec![None; types.len()]) as u64,
-                    );
+                    own = own.saturating_add(stack_storage_size(expr.ty, types) as u64);
                 }
                 own = own.saturating_add(
                     args.iter()
@@ -819,7 +878,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                             is_large_type(arg.ty, types)
                                 && matches!(types[arg.ty.0].kind, TTypeKind::Struct(_))
                         })
-                        .map(|arg| type_size(arg.ty, types, &mut vec![None; types.len()]) as u64)
+                        .map(|arg| stack_storage_size(arg.ty, types) as u64)
                         .sum::<u64>(),
                 );
                 own = own.saturating_add(expression_scratch(callee, types));
@@ -836,6 +895,19 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
             TExprKind::Method { receiver, .. } | TExprKind::OptionalToLong(receiver) => {
                 own = own.saturating_add(expression_scratch(receiver, types));
             }
+            TExprKind::AsciiUpper(value)
+            | TExprKind::AsciiFormat(value)
+            | TExprKind::AsciiCast(value)
+            | TExprKind::Take(value)
+            | TExprKind::AsciiFit { value, .. } => {
+                own = own.saturating_add(expression_scratch(value, types));
+            }
+            TExprKind::AsciiTryAppend { receiver, argument } => {
+                own = own.saturating_add(expression_scratch(receiver, types));
+                own = own.saturating_add(expression_scratch(argument, types));
+                own = own.saturating_add(large_storage(argument.ty, 1, types));
+            }
+            TExprKind::AsciiEmpty => {}
             TExprKind::Field { receiver, .. } => {
                 own = own.saturating_add(expression_scratch(receiver, types));
             }
@@ -846,11 +918,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 ..
             } => {
                 if is_large_type(receiver.ty, types) && !expr_is_place_for_contract(receiver) {
-                    own = own.saturating_add(type_size(
-                        receiver.ty,
-                        types,
-                        &mut vec![None; types.len()],
-                    ) as u64);
+                    own = own.saturating_add(stack_storage_size(receiver.ty, types) as u64);
                 }
                 own = own.saturating_add(expression_scratch(receiver, types));
                 own = own.saturating_add(expression_scratch(index, types));
@@ -902,13 +970,11 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                             is_large_type(arg.ty, types)
                                 && matches!(types[arg.ty.0].kind, TTypeKind::Struct(_))
                         })
-                        .map(|arg| type_size(arg.ty, types, &mut vec![None; types.len()]) as u64)
+                        .map(|arg| stack_storage_size(arg.ty, types) as u64)
                         .sum::<u64>(),
                 );
                 if is_large_type(expr.ty, types) {
-                    own = own.saturating_add(
-                        type_size(expr.ty, types, &mut vec![None; types.len()]) as u64,
-                    );
+                    own = own.saturating_add(stack_storage_size(expr.ty, types) as u64);
                 }
             }
             TExprKind::Coalesce { option, fallback } => {
@@ -1099,7 +1165,8 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
         .functions
         .iter()
         .map(|function| {
-            large_local_bytes(&function.body, &program.types)
+            let growing_ascii = growing_ascii_locals(function, program);
+            large_local_bytes(&function.body, &program.types, &growing_ascii)
                 .saturating_add(block_scratch(&function.body, &program.types))
         })
         .collect::<Vec<_>>();
@@ -1114,16 +1181,12 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 .params
                 .iter()
                 .map(|param| {
-                    let mode = if param.mode == ParamMode::Write {
-                        "write"
-                    } else {
-                        "read"
+                    let mode = match param.mode {
+                        ParamMode::Read => "read",
+                        ParamMode::Write => "write",
+                        ParamMode::Grow => "grow",
                     };
-                    let size = type_size(
-                        param.ty,
-                        &program.types,
-                        &mut vec![None; program.types.len()],
-                    );
+                    let size = stack_storage_size(param.ty, &program.types);
                     let placement = if is_large_type(param.ty, &program.types)
                         || matches!(program.types[param.ty.0].kind, TTypeKind::Pool { .. })
                     {
@@ -1146,11 +1209,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     )
                 })
                 .collect();
-            let result_bytes = type_size(
-                function.result,
-                &program.types,
-                &mut vec![None; program.types.len()],
-            );
+            let result_bytes = stack_storage_size(function.result, &program.types);
             let result_placement = if is_large_type(function.result, &program.types) {
                 format!("caller destination ({result_bytes} bytes)")
             } else if function.result == Ty::Unit {
@@ -1293,6 +1352,15 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
             }
         }
         TExprKind::Method { receiver, .. } => collect_expect_sources_expr(receiver, sources),
+        TExprKind::AsciiUpper(value)
+        | TExprKind::AsciiFormat(value)
+        | TExprKind::AsciiCast(value)
+        | TExprKind::Take(value)
+        | TExprKind::AsciiFit { value, .. } => collect_expect_sources_expr(value, sources),
+        TExprKind::AsciiTryAppend { receiver, argument } => {
+            collect_expect_sources_expr(receiver, sources);
+            collect_expect_sources_expr(argument, sources);
+        }
         TExprKind::Index {
             receiver,
             index,
@@ -1385,7 +1453,8 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         | TExprKind::EmptySet
         | TExprKind::EmptyGrid
         | TExprKind::EmptyQueue
-        | TExprKind::EmptyRing => {}
+        | TExprKind::EmptyRing
+        | TExprKind::AsciiEmpty => {}
     }
 }
 
@@ -1434,6 +1503,7 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
             }
             let size = match &types[id].kind {
                 TTypeKind::Refinement { base, .. } => type_size(*base, types, cache),
+                TTypeKind::Ascii { .. } => 16,
                 TTypeKind::Struct(fields) => fields
                     .iter()
                     .map(|field| type_size(field.ty, types, cache))
@@ -1466,16 +1536,34 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
                     key,
                     value,
                     capacity,
-                } => 16usize.saturating_add(
-                    capacity.saturating_mul(
-                        17usize
-                            .saturating_add(type_size(*key, types, cache))
-                            .saturating_add(type_size(*value, types, cache)),
-                    ),
-                ),
-                TTypeKind::Set { key, capacity } => 16usize.saturating_add(
-                    capacity.saturating_mul(17usize.saturating_add(type_size(*key, types, cache))),
-                ),
+                } => {
+                    let key_storage = match types[key.0].kind {
+                        TTypeKind::Ascii { max_bytes } => capacity.saturating_mul(max_bytes),
+                        _ => 0,
+                    };
+                    16usize
+                        .saturating_add(
+                            capacity.saturating_mul(
+                                17usize
+                                    .saturating_add(type_size(*key, types, cache))
+                                    .saturating_add(type_size(*value, types, cache)),
+                            ),
+                        )
+                        .saturating_add(key_storage)
+                }
+                TTypeKind::Set { key, capacity } => {
+                    let key_storage = match types[key.0].kind {
+                        TTypeKind::Ascii { max_bytes } => capacity.saturating_mul(max_bytes),
+                        _ => 0,
+                    };
+                    16usize
+                        .saturating_add(
+                            capacity.saturating_mul(
+                                17usize.saturating_add(type_size(*key, types, cache)),
+                            ),
+                        )
+                        .saturating_add(key_storage)
+                }
                 TTypeKind::Pool {
                     element, capacity, ..
                 } => 16usize
@@ -1500,7 +1588,352 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
 }
 
 fn is_large_type(ty: Ty, types: &[TType]) -> bool {
-    type_size(ty, types, &mut vec![None; types.len()]) > 4_096
+    contains_growing_value(ty, types, &mut vec![false; types.len()])
+        || type_size(ty, types, &mut vec![None; types.len()]) > 4_096
+}
+
+fn contains_growing_value(ty: Ty, types: &[TType], active: &mut [bool]) -> bool {
+    if ty.0 < 5 || active[ty.0] {
+        return false;
+    }
+    active[ty.0] = true;
+    let contains = match &types[ty.0].kind {
+        TTypeKind::Ascii { .. } => true,
+        TTypeKind::Struct(fields) => fields
+            .iter()
+            .any(|field| contains_growing_value(field.ty, types, active)),
+        TTypeKind::Option(inner) => contains_growing_value(*inner, types, active),
+        TTypeKind::Result(ok, err) => {
+            contains_growing_value(*ok, types, active)
+                || contains_growing_value(*err, types, active)
+        }
+        TTypeKind::Enum(cases) => cases.iter().any(|case| {
+            case.payload
+                .iter()
+                .any(|field| contains_growing_value(*field, types, active))
+        }),
+        TTypeKind::Map { key, .. } | TTypeKind::Set { key, .. } => {
+            matches!(types[key.0].kind, TTypeKind::Ascii { .. })
+        }
+        _ => false,
+    };
+    active[ty.0] = false;
+    contains
+}
+
+fn growing_value_extra(ty: Ty, types: &[TType], active: &mut [bool]) -> usize {
+    if ty.0 < 5 || active[ty.0] {
+        return 0;
+    }
+    active[ty.0] = true;
+    let extra = match &types[ty.0].kind {
+        TTypeKind::Ascii { max_bytes } => *max_bytes,
+        TTypeKind::Struct(fields) => fields.iter().fold(0usize, |total, field| {
+            total.saturating_add(growing_value_extra(field.ty, types, active))
+        }),
+        TTypeKind::Option(inner) => growing_value_extra(*inner, types, active),
+        TTypeKind::Result(ok, err) => {
+            growing_value_extra(*ok, types, active).max(growing_value_extra(*err, types, active))
+        }
+        TTypeKind::Enum(cases) => cases
+            .iter()
+            .map(|case| {
+                case.payload.iter().fold(0usize, |total, field| {
+                    total.saturating_add(growing_value_extra(*field, types, active))
+                })
+            })
+            .max()
+            .unwrap_or(0),
+        _ => 0,
+    };
+    active[ty.0] = false;
+    extra
+}
+
+fn stack_storage_size(ty: Ty, types: &[TType]) -> usize {
+    type_size(ty, types, &mut vec![None; types.len()]).saturating_add(growing_value_extra(
+        ty,
+        types,
+        &mut vec![false; types.len()],
+    ))
+}
+
+fn local_root(expr: &TExpr) -> Option<usize> {
+    match &expr.kind {
+        TExprKind::Local(id) => Some(*id),
+        TExprKind::Field { receiver, .. } | TExprKind::Index { receiver, .. } => {
+            local_root(receiver)
+        }
+        _ => None,
+    }
+}
+
+fn growing_ascii_locals(
+    function: &TFunction,
+    program: &TProgram,
+) -> std::collections::HashSet<usize> {
+    fn mark_args(
+        args: &[TExpr],
+        modes: impl Iterator<Item = ParamMode>,
+        types: &[TType],
+        growing: &mut std::collections::HashSet<usize>,
+    ) {
+        for (arg, mode) in args.iter().zip(modes) {
+            if mode == ParamMode::Grow && matches!(types[arg.ty.0].kind, TTypeKind::Ascii { .. }) {
+                if let Some(root) = local_root(arg) {
+                    growing.insert(root);
+                }
+            }
+        }
+    }
+
+    fn visit_expr(
+        expr: &TExpr,
+        program: &TProgram,
+        growing: &mut std::collections::HashSet<usize>,
+        moves: &mut Vec<(usize, usize)>,
+    ) {
+        match &expr.kind {
+            TExprKind::Call { target, args, .. } => {
+                if let CallTarget::Function(id) = target {
+                    mark_args(
+                        args,
+                        program.functions[*id].params.iter().map(|p| p.mode),
+                        &program.types,
+                        growing,
+                    );
+                }
+                for arg in args {
+                    visit_expr(arg, program, growing, moves);
+                }
+            }
+            TExprKind::IndirectCall {
+                callee,
+                args,
+                params,
+                ..
+            } => {
+                mark_args(args, params.iter().map(|p| p.mode), &program.types, growing);
+                visit_expr(callee, program, growing, moves);
+                for arg in args {
+                    visit_expr(arg, program, growing, moves);
+                }
+            }
+            TExprKind::OptionalCall {
+                receiver,
+                function_id,
+                args,
+                ..
+            } => {
+                mark_args(
+                    args,
+                    program.functions[*function_id]
+                        .params
+                        .iter()
+                        .skip(1)
+                        .map(|p| p.mode),
+                    &program.types,
+                    growing,
+                );
+                visit_expr(receiver, program, growing, moves);
+                for arg in args {
+                    visit_expr(arg, program, growing, moves);
+                }
+            }
+            TExprKind::AsciiTryAppend { receiver, argument } => {
+                if let Some(root) = local_root(receiver) {
+                    growing.insert(root);
+                }
+                visit_expr(receiver, program, growing, moves);
+                visit_expr(argument, program, growing, moves);
+            }
+            TExprKind::AsciiUpper(value)
+            | TExprKind::AsciiFormat(value)
+            | TExprKind::AsciiCast(value)
+            | TExprKind::Take(value)
+            | TExprKind::OptionalToLong(value)
+            | TExprKind::Fill { value, .. }
+            | TExprKind::Convert { value, .. }
+            | TExprKind::Fit { value, .. }
+            | TExprKind::Try { value, .. }
+            | TExprKind::ToLong(value)
+            | TExprKind::Cast { value, .. }
+            | TExprKind::Unary { value, .. } => visit_expr(value, program, growing, moves),
+            TExprKind::AsciiFit { value, .. } => visit_expr(value, program, growing, moves),
+            TExprKind::Method { receiver, .. } | TExprKind::Field { receiver, .. } => {
+                visit_expr(receiver, program, growing, moves)
+            }
+            TExprKind::Index {
+                receiver,
+                index,
+                grid,
+                ..
+            } => {
+                visit_expr(receiver, program, growing, moves);
+                visit_expr(index, program, growing, moves);
+                if let Some(grid) = grid {
+                    visit_expr(&grid.x, program, growing, moves);
+                    visit_expr(&grid.y, program, growing, moves);
+                }
+            }
+            TExprKind::Construct { args, .. }
+            | TExprKind::CollectionOp { args, .. }
+            | TExprKind::PoolOp { args, .. }
+            | TExprKind::MapOp { args, .. }
+            | TExprKind::SetOp { args, .. } => {
+                for arg in args {
+                    visit_expr(arg, program, growing, moves);
+                }
+            }
+            TExprKind::StructConstruct { fields } => {
+                for (_, value) in fields {
+                    visit_expr(value, program, growing, moves);
+                }
+            }
+            TExprKind::Coalesce { option, fallback } => {
+                visit_expr(option, program, growing, moves);
+                visit_expr(fallback, program, growing, moves);
+            }
+            TExprKind::Match { scrutinee, arms } => {
+                visit_expr(scrutinee, program, growing, moves);
+                for arm in arms {
+                    visit_block(&arm.body, program, growing, moves);
+                }
+            }
+            TExprKind::Return(value) => {
+                if let Some(value) = value {
+                    visit_expr(value, program, growing, moves);
+                }
+            }
+            TExprKind::Binary { left, right, .. } => {
+                visit_expr(left, program, growing, moves);
+                visit_expr(right, program, growing, moves);
+            }
+            TExprKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                visit_expr(condition, program, growing, moves);
+                visit_block(then_block, program, growing, moves);
+                if let Some(other) = else_block {
+                    visit_block(other, program, growing, moves);
+                }
+            }
+            TExprKind::AsciiEmpty
+            | TExprKind::Unit
+            | TExprKind::Integer(_)
+            | TExprKind::Bool(_)
+            | TExprKind::ByteString(_)
+            | TExprKind::Local(_)
+            | TExprKind::Global(_)
+            | TExprKind::Constant(_)
+            | TExprKind::FunctionValue(_)
+            | TExprKind::EmptyArray
+            | TExprKind::EmptyGrid
+            | TExprKind::EmptyList
+            | TExprKind::EmptyPool
+            | TExprKind::EmptyMap
+            | TExprKind::EmptySet
+            | TExprKind::EmptyQueue
+            | TExprKind::EmptyRing
+            | TExprKind::LoopExit(_) => {}
+        }
+    }
+
+    fn visit_block(
+        block: &TBlock,
+        program: &TProgram,
+        growing: &mut std::collections::HashSet<usize>,
+        moves: &mut Vec<(usize, usize)>,
+    ) {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                TStmtKind::Let { id, value, .. } => {
+                    if let TExprKind::Take(source) = &value.kind {
+                        if let Some(source) = local_root(source) {
+                            moves.push((*id, source));
+                        }
+                    }
+                    visit_expr(value, program, growing, moves);
+                }
+                TStmtKind::Assign {
+                    place, op, value, ..
+                } => {
+                    if matches!(program.types[place.ty.0].kind, TTypeKind::Ascii { .. }) {
+                        let _ = op;
+                        growing.insert(place.root);
+                    }
+                    if let TExprKind::Take(source) = &value.kind {
+                        if let Some(source) = local_root(source) {
+                            moves.push((place.root, source));
+                        }
+                    }
+                    visit_expr(value, program, growing, moves);
+                }
+                TStmtKind::Return(value) => {
+                    if let Some(value) = value {
+                        visit_expr(value, program, growing, moves);
+                    }
+                }
+                TStmtKind::Expr(value) | TStmtKind::Discard(value) => {
+                    visit_expr(value, program, growing, moves)
+                }
+                TStmtKind::If {
+                    condition,
+                    then_block,
+                    else_block,
+                } => {
+                    visit_expr(condition, program, growing, moves);
+                    visit_block(then_block, program, growing, moves);
+                    if let Some(other) = else_block {
+                        visit_block(other, program, growing, moves);
+                    }
+                }
+                TStmtKind::For {
+                    start, end, body, ..
+                } => {
+                    visit_expr(start, program, growing, moves);
+                    visit_expr(end, program, growing, moves);
+                    visit_block(body, program, growing, moves);
+                }
+                TStmtKind::ForEach {
+                    collection, body, ..
+                } => {
+                    visit_expr(collection, program, growing, moves);
+                    visit_block(body, program, growing, moves);
+                }
+                TStmtKind::Block(body) => visit_block(body, program, growing, moves),
+                TStmtKind::Expect { kind, .. } => match kind {
+                    TExpectKind::Bool(value) => visit_expr(value, program, growing, moves),
+                    TExpectKind::Compare { left, right, .. } => {
+                        visit_expr(left, program, growing, moves);
+                        visit_expr(right, program, growing, moves);
+                    }
+                },
+                TStmtKind::Break | TStmtKind::Continue => {}
+            }
+        }
+        if let Some(tail) = &block.tail {
+            visit_expr(tail, program, growing, moves);
+        }
+    }
+
+    let mut growing = std::collections::HashSet::new();
+    let mut moves = Vec::new();
+    visit_block(&function.body, program, &mut growing, &mut moves);
+    loop {
+        let mut changed = false;
+        for (destination, source) in &moves {
+            if growing.contains(destination) && growing.insert(*source) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    growing
 }
 
 fn raw_llvm_type_size(llvm_ty: &str) -> Option<usize> {
@@ -1543,6 +1976,7 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType], functions: &[TFunc
             _ => unreachable!("function value constant has a non-function value"),
         },
         TTypeKind::Capability(_) => unreachable!("capabilities cannot be constants"),
+        TTypeKind::Ascii { .. } => unreachable!("Ascii constants are not supported"),
         TTypeKind::Struct(fields) => {
             let ConstValue::Struct(values) = value else {
                 unreachable!("struct constant has a non-struct value")
@@ -1870,8 +2304,14 @@ fn map_constant(
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let ascii_key_storage = match types[key_ty.0].kind {
+        TTypeKind::Ascii { max_bytes } => {
+            format!(", [{} x [{} x i8]] zeroinitializer", capacity, max_bytes)
+        }
+        _ => String::new(),
+    };
     format!(
-        "<{{ i64 {}, i64 {}, [{} x i1] [{active}], [{} x i64] [{hashes_text}], [{} x i64] [{index_text}], [{} x {}] [{keys_text}], [{} x {}] [{values_text}] }}>",
+        "<{{ i64 {}, i64 {}, [{} x i1] [{active}], [{} x i64] [{hashes_text}], [{} x i64] [{index_text}], [{} x {}] [{keys_text}], [{} x {}] [{values_text}]{} }}>",
         entries.len(),
         entries.len(),
         capacity,
@@ -1880,7 +2320,8 @@ fn map_constant(
         capacity,
         llvm_type(key_ty, types),
         capacity,
-        llvm_type(value_ty, types)
+        llvm_type(value_ty, types),
+        ascii_key_storage
     )
 }
 
@@ -1919,15 +2360,22 @@ fn set_constant(
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let ascii_key_storage = match types[key_ty.0].kind {
+        TTypeKind::Ascii { max_bytes } => {
+            format!(", [{} x [{} x i8]] zeroinitializer", capacity, max_bytes)
+        }
+        _ => String::new(),
+    };
     format!(
-        "<{{ i64 {}, i64 {}, [{} x i1] [{active}], [{} x i64] [{hashes_text}], [{} x i64] [{index_text}], [{} x {}] [{keys_text}] }}>",
+        "<{{ i64 {}, i64 {}, [{} x i1] [{active}], [{} x i64] [{hashes_text}], [{} x i64] [{index_text}], [{} x {}] [{keys_text}]{} }}>",
         entries.len(),
         entries.len(),
         capacity,
         capacity,
         capacity,
         capacity,
-        llvm_type(key_ty, types)
+        llvm_type(key_ty, types),
+        ascii_key_storage
     )
 }
 
@@ -1976,6 +2424,7 @@ fn serialize_constant(
             bytes.push(u8::from(*value));
         }
         TTypeKind::Unit | TTypeKind::Never => {}
+        TTypeKind::Ascii { .. } => unreachable!("Ascii constants are not supported"),
         TTypeKind::Id { .. } => {
             let ConstValue::Integer(value) = value else {
                 unreachable!("id constant has a non-integer value")
@@ -2069,6 +2518,9 @@ fn serialize_constant(
                     bytes.resize(bytes.len() + type_size(*value_ty, types, cache), 0);
                 }
             }
+            if let TTypeKind::Ascii { max_bytes } = types[key.0].kind {
+                bytes.resize(bytes.len() + capacity.saturating_mul(max_bytes), 0);
+            }
         }
         TTypeKind::Set { key, capacity } => {
             let ConstValue::Set(entries) = value else {
@@ -2096,6 +2548,9 @@ fn serialize_constant(
                 } else {
                     bytes.resize(bytes.len() + type_size(*key, types, cache), 0);
                 }
+            }
+            if let TTypeKind::Ascii { max_bytes } = types[key.0].kind {
+                bytes.resize(bytes.len() + capacity.saturating_mul(max_bytes), 0);
             }
         }
         TTypeKind::Pool { .. } => unreachable!("pool-valued constants are rejected"),
@@ -2173,6 +2628,7 @@ struct FunctionEmitter<'a> {
     loops: Vec<LoopTargets>,
     views: HashMap<usize, ViewInfo>,
     sort_scratch: HashMap<Ty, String>,
+    reserved_ascii_locals: std::collections::HashSet<usize>,
     prologue_end: usize,
     stack_top: String,
     entry_stack_top: String,
@@ -2209,6 +2665,7 @@ impl<'a> FunctionEmitter<'a> {
         expect_ids: &'a HashMap<String, usize>,
         print_ids: &'a HashMap<String, usize>,
     ) -> Self {
+        let reserved_ascii_locals = growing_ascii_locals(function, program);
         let mut this = Self {
             program,
             function,
@@ -2223,6 +2680,7 @@ impl<'a> FunctionEmitter<'a> {
             loops: Vec::new(),
             views: HashMap::new(),
             sort_scratch: HashMap::new(),
+            reserved_ascii_locals,
             prologue_end: 0,
             stack_top: ENTRY_STACK_TOP.to_owned(),
             entry_stack_top: "%nl.entry.top".to_owned(),
@@ -2242,7 +2700,7 @@ impl<'a> FunctionEmitter<'a> {
         self.function
             .params
             .iter()
-            .any(|param| param.id == id && param.mode == ParamMode::Write)
+            .any(|param| param.id == id && param.mode != ParamMode::Read)
     }
 
     fn is_pool_param(&self, id: usize) -> bool {
@@ -2468,17 +2926,32 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_runtime_region_alloc(&mut self, ty: Ty, span: Span, name: Option<String>) -> String {
-        let bytes = type_size(
-            ty,
-            &self.program.types,
-            &mut vec![None; self.program.types.len()],
-        );
+        let bytes = stack_storage_size(ty, &self.program.types);
         let ptr = name.unwrap_or_else(|| self.temp());
         let after = self.temp();
         self.instruction(format!(
             "{ptr} = call ptr @nl_stack_alloc(ptr %nl.ctx, ptr {}, i64 {bytes}, i64 8, i32 {}, i32 {}, i32 {})",
             self.stack_top, span.file, span.line, span.col
         ));
+        self.instruction(format!(
+            "{after} = getelementptr i8, ptr {ptr}, i64 {bytes}"
+        ));
+        self.stack_top = after;
+        ptr
+    }
+
+    fn emit_runtime_region_alloc_dynamic(
+        &mut self,
+        bytes: &str,
+        span: Span,
+        name: Option<String>,
+    ) -> String {
+        let ptr = name.unwrap_or_else(|| self.temp());
+        self.instruction(format!(
+            "{ptr} = call ptr @nl_stack_alloc(ptr %nl.ctx, ptr {}, i64 {bytes}, i64 8, i32 {}, i32 {}, i32 {})",
+            self.stack_top, span.file, span.line, span.col
+        ));
+        let after = self.temp();
         self.instruction(format!(
             "{after} = getelementptr i8, ptr {ptr}, i64 {bytes}"
         ));
@@ -2498,11 +2971,7 @@ impl<'a> FunctionEmitter<'a> {
     fn entry_alloca(&mut self, ty: Ty) -> String {
         let ptr = self.temp();
         if is_large_type(ty, &self.program.types) {
-            let bytes = type_size(
-                ty,
-                &self.program.types,
-                &mut vec![None; self.program.types.len()],
-            );
+            let bytes = stack_storage_size(ty, &self.program.types);
             return self.emit_region_alloc_lines(ptr, bytes, self.function.span, true);
         }
         self.lines.insert(
@@ -2642,6 +3111,15 @@ impl<'a> FunctionEmitter<'a> {
                 }
             }
             TExprKind::Method { receiver, .. } => self.collect_expr(receiver),
+            TExprKind::AsciiUpper(value)
+            | TExprKind::AsciiFormat(value)
+            | TExprKind::AsciiCast(value)
+            | TExprKind::Take(value)
+            | TExprKind::AsciiFit { value, .. } => self.collect_expr(value),
+            TExprKind::AsciiTryAppend { receiver, argument } => {
+                self.collect_expr(receiver);
+                self.collect_expr(argument);
+            }
             TExprKind::Index {
                 receiver,
                 index,
@@ -2746,7 +3224,8 @@ impl<'a> FunctionEmitter<'a> {
             | TExprKind::EmptySet
             | TExprKind::EmptyGrid
             | TExprKind::EmptyQueue
-            | TExprKind::EmptyRing => {}
+            | TExprKind::EmptyRing
+            | TExprKind::AsciiEmpty => {}
         }
     }
 
@@ -3226,9 +3705,69 @@ impl<'a> FunctionEmitter<'a> {
         self.emit_map_array_ptr(map_ty, pointer, field, capacity, element, index)
     }
 
+    fn emit_map_store_key(
+        &mut self,
+        map_ty: Ty,
+        pointer: &str,
+        key_ty: Ty,
+        index: &str,
+        value: &str,
+    ) {
+        let Some(max_bytes) = self.ascii_max(key_ty) else {
+            let destination = self.emit_map_entry_ptr(map_ty, pointer, index, false);
+            self.instruction(format!(
+                "store {} {value}, ptr {destination}, align 1",
+                self.lltype(key_ty)
+            ));
+            return;
+        };
+        let capacity = match self.program.types[map_ty.0].kind {
+            TTypeKind::Map { capacity, .. } | TTypeKind::Set { capacity, .. } => capacity,
+            _ => unreachable!("ASCII map keys belong to a map or set"),
+        };
+        let backing_field = match self.program.types[map_ty.0].kind {
+            TTypeKind::Map { .. } => 7,
+            TTypeKind::Set { .. } => 6,
+            _ => unreachable!("ASCII map keys belong to a map or set"),
+        };
+        let backing = self.emit_map_meta_ptr(map_ty, pointer, backing_field);
+        let data = self.temp();
+        self.instruction(format!(
+            "{data} = getelementptr inbounds [{} x [{} x i8]], ptr {backing}, i32 0, i64 {index}, i64 0",
+            capacity, max_bytes
+        ));
+        let source_data = self.ascii_field(value, key_ty, 0);
+        let length = self.ascii_field(value, key_ty, 1);
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {data}, ptr {source_data}, i64 {length}, i1 false)"
+        ));
+        let destination = self.emit_map_entry_ptr(map_ty, pointer, index, false);
+        let data_field = self.temp();
+        self.instruction(format!(
+            "{data_field} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+            self.lltype(key_ty)
+        ));
+        self.instruction(format!("store ptr {data}, ptr {data_field}, align 1"));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(key_ty)
+        ));
+        self.instruction(format!("store i64 {length}, ptr {length_field}, align 1"));
+    }
+
     fn emit_hash_fold(&mut self, ty: Ty, value: &str, hash: &str) -> String {
         match &self.program.types[ty.0].kind {
             TTypeKind::Refinement { base, .. } => self.emit_hash_fold(*base, value, hash),
+            TTypeKind::Ascii { .. } => {
+                let data = self.ascii_field(value, ty, 0);
+                let length = self.ascii_field(value, ty, 1);
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = call i64 @nl_hash_ascii(ptr {data}, i64 {length}, i64 {hash})"
+                ));
+                result
+            }
             TTypeKind::Int => {
                 let widened = self.temp();
                 self.instruction(format!("{widened} = sext i32 {value} to i64"));
@@ -3526,11 +4065,7 @@ impl<'a> FunctionEmitter<'a> {
             "{key_value} = load {}, ptr {key_source}, align 1",
             self.lltype(key_ty)
         ));
-        let key_destination = self.emit_map_entry_ptr(map_ty, pointer, &destination, false);
-        self.instruction(format!(
-            "store {} {key_value}, ptr {key_destination}, align 1",
-            self.lltype(key_ty)
-        ));
+        self.emit_map_store_key(map_ty, pointer, key_ty, &destination, &key_value);
         let hash_source = self.emit_map_array_ptr(map_ty, pointer, 3, capacity, Ty::Long, &source);
         let hash_value = self.temp();
         self.instruction(format!(
@@ -3792,11 +4327,7 @@ impl<'a> FunctionEmitter<'a> {
         ));
         let entry = self.temp();
         self.instruction(format!("{entry} = load i64, ptr {end_ptr}, align 1"));
-        let key_ptr = self.emit_map_entry_ptr(map_ty, pointer, &entry, false);
-        self.instruction(format!(
-            "store {} {key}, ptr {key_ptr}, align 1",
-            self.lltype(key_ty)
-        ));
+        self.emit_map_store_key(map_ty, pointer, key_ty, &entry, key);
         let hash_ptr = self.emit_map_array_ptr(map_ty, pointer, 3, capacity, Ty::Long, &entry);
         self.instruction(format!("store i64 {hash}, ptr {hash_ptr}, align 1"));
         let active_ptr = self.emit_map_array_ptr(map_ty, pointer, 2, capacity, Ty::Bool, &entry);
@@ -5309,7 +5840,7 @@ impl<'a> FunctionEmitter<'a> {
         mode: ParamMode,
         regions: &mut Vec<CallArgumentRegion>,
     ) -> Option<String> {
-        if mode == ParamMode::Write || self.is_pool_type(param_ty) {
+        if mode != ParamMode::Read || self.is_pool_type(param_ty) {
             let place = Self::expr_place(arg).expect("checker validated writable place");
             if let Some((collection_ty, collection_ptr, index)) =
                 self.emit_struct_element_address(&place)
@@ -5330,7 +5861,7 @@ impl<'a> FunctionEmitter<'a> {
                     collection_ptr,
                     index,
                     temporary: temporary.clone(),
-                    copy_back: mode == ParamMode::Write,
+                    copy_back: mode != ParamMode::Read,
                 });
                 return Some(format!("ptr {temporary}"));
             }
@@ -5383,6 +5914,468 @@ impl<'a> FunctionEmitter<'a> {
             );
         }
         self.restore_stack_top(saved_top);
+    }
+
+    fn ascii_max(&self, ty: Ty) -> Option<usize> {
+        match self
+            .program
+            .types
+            .get(ty.0)
+            .map(|definition| &definition.kind)
+        {
+            Some(TTypeKind::Ascii { max_bytes }) => Some(*max_bytes),
+            _ => None,
+        }
+    }
+
+    fn ascii_static_length(&self, expr: &TExpr) -> Option<usize> {
+        static_ascii_length(expr, &self.program.types)
+    }
+
+    fn emit_ascii_descriptor_to_local(
+        &mut self,
+        id: usize,
+        descriptor: &str,
+        source_ty: Ty,
+        destination_ty: Ty,
+        span: Span,
+    ) {
+        let source = self.ascii_field(descriptor, source_ty, 0);
+        let length = self.ascii_field(descriptor, source_ty, 1);
+        let bytes = self.temp();
+        self.instruction(format!("{bytes} = add i64 {length}, 16"));
+        let destination = self.emit_runtime_region_alloc_dynamic(
+            bytes.as_str(),
+            span,
+            Some(format!("%local.{id}")),
+        );
+        let destination_data = self.temp();
+        self.instruction(format!(
+            "{destination_data} = getelementptr i8, ptr {destination}, i64 16"
+        ));
+        let data_field = self.temp();
+        self.instruction(format!(
+            "{data_field} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+            self.lltype(destination_ty)
+        ));
+        self.instruction(format!(
+            "store ptr {destination_data}, ptr {data_field}, align 1"
+        ));
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {destination_data}, ptr {source}, i64 {length}, i1 false)"
+        ));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(destination_ty)
+        ));
+        self.instruction(format!("store i64 {length}, ptr {length_field}, align 1"));
+    }
+
+    fn ascii_field(&mut self, descriptor: &str, ty: Ty, index: usize) -> String {
+        let value = self.temp();
+        self.instruction(format!(
+            "{value} = extractvalue {} {descriptor}, {index}",
+            self.lltype(ty)
+        ));
+        value
+    }
+
+    fn emit_ascii_descriptor(&mut self, expr: &TExpr) -> String {
+        if matches!(
+            expr.kind,
+            TExprKind::Binary {
+                op: BinaryOp::Add,
+                ..
+            }
+        ) {
+            let pointer = self.emit_runtime_region_alloc(expr.ty, expr.span, None);
+            self.emit_expr_to(&pointer, expr);
+            if self.terminated {
+                return String::new();
+            }
+            let descriptor = self.temp();
+            self.instruction(format!(
+                "{descriptor} = load {}, ptr {pointer}, align 1",
+                self.lltype(expr.ty)
+            ));
+            descriptor
+        } else {
+            self.emit_expr(expr)
+        }
+    }
+
+    fn emit_ascii_stream(&mut self, expr: &TExpr, destination: &str, offset_slot: &str) {
+        if self.terminated {
+            return;
+        }
+        match &expr.kind {
+            TExprKind::AsciiEmpty => {}
+            TExprKind::ByteString(bytes) if self.ascii_max(expr.ty).is_some() => {
+                let current = self.temp();
+                self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
+                let start = self.temp();
+                self.instruction(format!(
+                    "{start} = getelementptr i8, ptr {destination}, i64 {current}"
+                ));
+                for (index, byte) in bytes.iter().enumerate() {
+                    let ptr = self.temp();
+                    self.instruction(format!(
+                        "{ptr} = getelementptr i8, ptr {start}, i64 {index}"
+                    ));
+                    self.instruction(format!("store i8 {byte}, ptr {ptr}, align 1"));
+                }
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {current}, {}", bytes.len()));
+                self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
+            }
+            TExprKind::Binary {
+                op: BinaryOp::Add,
+                left,
+                right,
+                ..
+            } if self.ascii_max(expr.ty).is_some() => {
+                self.emit_ascii_stream(left, destination, offset_slot);
+                self.emit_ascii_stream(right, destination, offset_slot);
+            }
+            TExprKind::AsciiUpper(value) => {
+                let descriptor = self.emit_ascii_descriptor(value);
+                if self.terminated {
+                    return;
+                }
+                let source = self.ascii_field(&descriptor, value.ty, 0);
+                let length = self.ascii_field(&descriptor, value.ty, 1);
+                let current = self.temp();
+                self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
+                let target = self.temp();
+                self.instruction(format!(
+                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
+                ));
+                self.instruction(format!(
+                    "call void @nl_ascii_upper_copy(ptr {source}, ptr {target}, i64 {length})"
+                ));
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {current}, {length}"));
+                self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
+            }
+            TExprKind::AsciiFormat(value) => {
+                let raw = self.emit_expr(value);
+                if self.terminated {
+                    return;
+                }
+                let numeric = if base_type(value.ty, &self.program.types) == Ty::Int {
+                    let extended = self.temp();
+                    self.instruction(format!("{extended} = sext i32 {raw} to i64"));
+                    extended
+                } else {
+                    raw
+                };
+                let current = self.temp();
+                self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
+                let target = self.temp();
+                self.instruction(format!(
+                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
+                ));
+                let length = self.temp();
+                self.instruction(format!(
+                    "{length} = call i64 @nl_ascii_format_i64(i64 {numeric}, ptr {target})"
+                ));
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {current}, {length}"));
+                self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
+            }
+            TExprKind::AsciiCast(value) | TExprKind::Take(value) => {
+                let descriptor = self.emit_ascii_descriptor(value);
+                if self.terminated {
+                    return;
+                }
+                let source = self.ascii_field(&descriptor, value.ty, 0);
+                let length = self.ascii_field(&descriptor, value.ty, 1);
+                if matches!(expr.kind, TExprKind::AsciiCast(_)) {
+                    let fits = self.temp();
+                    self.instruction(format!(
+                        "{fits} = icmp ule i64 {length}, {}",
+                        self.ascii_max(expr.ty).unwrap_or(0)
+                    ));
+                    let bad = self.temp();
+                    self.instruction(format!("{bad} = xor i1 {fits}, true"));
+                    self.guard(bad, Failure::BadCast, expr.span);
+                    if self.terminated {
+                        return;
+                    }
+                }
+                let current = self.temp();
+                self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
+                let target = self.temp();
+                self.instruction(format!(
+                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
+                ));
+                self.instruction(format!(
+                    "call void @llvm.memmove.p0.p0.i64(ptr {target}, ptr {source}, i64 {length}, i1 false)"
+                ));
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {current}, {length}"));
+                self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
+            }
+            _ => {
+                let descriptor = self.emit_ascii_descriptor(expr);
+                if self.terminated {
+                    return;
+                }
+                let source = self.ascii_field(&descriptor, expr.ty, 0);
+                let length = self.ascii_field(&descriptor, expr.ty, 1);
+                let current = self.temp();
+                self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
+                let target = self.temp();
+                self.instruction(format!(
+                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
+                ));
+                self.instruction(format!(
+                    "call void @llvm.memmove.p0.p0.i64(ptr {target}, ptr {source}, i64 {length}, i1 false)"
+                ));
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {current}, {length}"));
+                self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
+            }
+        }
+    }
+
+    fn emit_ascii_to(&mut self, destination: &str, expr: &TExpr) {
+        let data = self.temp();
+        self.instruction(format!(
+            "{data} = getelementptr i8, ptr {destination}, i64 16"
+        ));
+        let data_field = self.temp();
+        self.instruction(format!(
+            "{data_field} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+            self.lltype(expr.ty)
+        ));
+        self.instruction(format!("store ptr {data}, ptr {data_field}, align 1"));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(expr.ty)
+        ));
+        let offset_slot = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {offset_slot}, align 1"));
+        self.emit_ascii_stream(expr, &data, &offset_slot);
+        if self.terminated {
+            return;
+        }
+        let length = self.temp();
+        self.instruction(format!("{length} = load i64, ptr {offset_slot}, align 1"));
+        self.instruction(format!("store i64 {length}, ptr {length_field}, align 1"));
+    }
+
+    fn emit_ascii_fit_to(&mut self, destination: &str, expr: &TExpr, value: &TExpr, option_ty: Ty) {
+        let descriptor = self.emit_ascii_descriptor(value);
+        if self.terminated {
+            return;
+        }
+        let source = self.ascii_field(&descriptor, value.ty, 0);
+        let length = self.ascii_field(&descriptor, value.ty, 1);
+        let payload_ty = match self.program.types[option_ty.0].kind {
+            TTypeKind::Option(inner) => inner,
+            _ => unreachable!("Ascii fit constructs an Option"),
+        };
+        let limit = self.ascii_max(payload_ty).unwrap_or(0);
+        let fits = self.temp();
+        self.instruction(format!("{fits} = icmp ule i64 {length}, {limit}"));
+        let some_label = self.new_label("ascii.fit.some");
+        let none_label = self.new_label("ascii.fit.none");
+        let merge = self.new_label("ascii.fit.end");
+        self.terminate(format!(
+            "br i1 {fits}, label %{some_label}, label %{none_label}"
+        ));
+        self.start_block(&some_label);
+        let some_tag = self.temp();
+        self.instruction(format!(
+            "{some_tag} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+            self.lltype(option_ty)
+        ));
+        self.instruction(format!("store i32 0, ptr {some_tag}, align 4"));
+        let payload = self.temp();
+        self.instruction(format!(
+            "{payload} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(option_ty)
+        ));
+        let result_data = self.temp();
+        self.instruction(format!(
+            "{result_data} = getelementptr i8, ptr {destination}, i64 {}",
+            type_size(
+                option_ty,
+                &self.program.types,
+                &mut vec![None; self.program.types.len()]
+            )
+        ));
+        let data_field = self.temp();
+        self.instruction(format!(
+            "{data_field} = getelementptr i8, ptr {payload}, i64 0"
+        ));
+        self.instruction(format!(
+            "store ptr {result_data}, ptr {data_field}, align 1"
+        ));
+        let len_field = self.temp();
+        self.instruction(format!(
+            "{len_field} = getelementptr i8, ptr {payload}, i64 8"
+        ));
+        self.instruction(format!("store i64 {length}, ptr {len_field}, align 1"));
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {result_data}, ptr {source}, i64 {length}, i1 false)"
+        ));
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&none_label);
+        let none_tag = self.temp();
+        self.instruction(format!(
+            "{none_tag} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+            self.lltype(option_ty)
+        ));
+        self.instruction(format!("store i32 1, ptr {none_tag}, align 4"));
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&merge);
+        let _ = expr;
+    }
+
+    fn emit_ascii_append_place(&mut self, place: &TPlace, value: &TExpr) {
+        let destination = self.emit_place_pointer(place);
+        let descriptor = self.temp();
+        self.instruction(format!(
+            "{descriptor} = load {}, ptr {destination}, align 1",
+            self.lltype(place.ty)
+        ));
+        let data = self.ascii_field(&descriptor, place.ty, 0);
+        let length = self.ascii_field(&descriptor, place.ty, 1);
+        let offset = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 {length}, ptr {offset}, align 1"));
+        self.emit_ascii_stream(value, &data, &offset);
+        if self.terminated {
+            return;
+        }
+        let new_length = self.temp();
+        self.instruction(format!("{new_length} = load i64, ptr {offset}, align 1"));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(place.ty)
+        ));
+        self.instruction(format!(
+            "store i64 {new_length}, ptr {length_field}, align 1"
+        ));
+    }
+
+    fn emit_ascii_assign_place(&mut self, place: &TPlace, value: &TExpr) {
+        let saved_top = self.stack_top.clone();
+        let temporary = self.emit_runtime_region_alloc(value.ty, value.span, None);
+        self.emit_expr_to(&temporary, value);
+        if self.terminated {
+            return;
+        }
+        let source_desc = self.temp();
+        self.instruction(format!(
+            "{source_desc} = load {}, ptr {temporary}, align 1",
+            self.lltype(value.ty)
+        ));
+        let source_data = self.ascii_field(&source_desc, value.ty, 0);
+        let source_length = self.ascii_field(&source_desc, value.ty, 1);
+        let destination = self.emit_place_pointer(place);
+        let destination_desc = self.temp();
+        self.instruction(format!(
+            "{destination_desc} = load {}, ptr {destination}, align 1",
+            self.lltype(place.ty)
+        ));
+        let destination_data = self.ascii_field(&destination_desc, place.ty, 0);
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {destination_data}, ptr {source_data}, i64 {source_length}, i1 false)"
+        ));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(place.ty)
+        ));
+        self.instruction(format!(
+            "store i64 {source_length}, ptr {length_field}, align 1"
+        ));
+        self.restore_stack_top(&saved_top);
+    }
+
+    fn emit_ascii_try_append(
+        &mut self,
+        expr: &TExpr,
+        receiver: &TExpr,
+        argument: &TExpr,
+    ) -> String {
+        let place = Self::expr_place(receiver).expect("checker validated Ascii builder place");
+        let destination = self.emit_place_pointer(&place);
+        let saved_top = self.stack_top.clone();
+        let argument_storage = self.emit_runtime_region_alloc(argument.ty, argument.span, None);
+        self.emit_expr_to(&argument_storage, argument);
+        if self.terminated {
+            return String::new();
+        }
+        let argument_descriptor = self.temp();
+        self.instruction(format!(
+            "{argument_descriptor} = load {}, ptr {argument_storage}, align 1",
+            self.lltype(argument.ty)
+        ));
+        let source = self.ascii_field(&argument_descriptor, argument.ty, 0);
+        let amount = self.ascii_field(&argument_descriptor, argument.ty, 1);
+        let builder_descriptor = self.temp();
+        self.instruction(format!(
+            "{builder_descriptor} = load {}, ptr {destination}, align 1",
+            self.lltype(receiver.ty)
+        ));
+        let target = self.ascii_field(&builder_descriptor, receiver.ty, 0);
+        let old_length = self.ascii_field(&builder_descriptor, receiver.ty, 1);
+        let new_length = self.temp();
+        self.instruction(format!("{new_length} = add i64 {old_length}, {amount}"));
+        let fits = self.temp();
+        self.instruction(format!(
+            "{fits} = icmp ule i64 {new_length}, {}",
+            self.ascii_max(receiver.ty).unwrap_or(0)
+        ));
+        let success_label = self.new_label("ascii.append.ok");
+        let full_label = self.new_label("ascii.append.full");
+        let merge = self.new_label("ascii.append.end");
+        self.terminate(format!(
+            "br i1 {fits}, label %{success_label}, label %{full_label}"
+        ));
+        self.start_block(&success_label);
+        let append_at = self.temp();
+        self.instruction(format!(
+            "{append_at} = getelementptr i8, ptr {target}, i64 {old_length}"
+        ));
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {append_at}, ptr {source}, i64 {amount}, i1 false)"
+        ));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(receiver.ty)
+        ));
+        self.instruction(format!(
+            "store i64 {new_length}, ptr {length_field}, align 1"
+        ));
+        let ok = self.emit_construct_values(expr.ty, 0, Vec::new());
+        let ok_block = self.current_label.clone();
+        self.instruction(format!(
+            "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved_top})"
+        ));
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&full_label);
+        let full = self.emit_construct_values(expr.ty, 1, Vec::new());
+        let full_block = self.current_label.clone();
+        self.instruction(format!(
+            "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved_top})"
+        ));
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&merge);
+        self.stack_top = saved_top;
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi {} [ {ok}, %{ok_block} ], [ {full}, %{full_block} ]",
+            self.lltype(expr.ty)
+        ));
+        result
     }
 
     fn is_pool_type(&self, ty: Ty) -> bool {
@@ -5535,7 +6528,267 @@ impl<'a> FunctionEmitter<'a> {
         }
     }
 
+    fn emit_copy_growing_value(&mut self, destination: &str, source: &str, ty: Ty) {
+        let bytes = type_size(
+            ty,
+            &self.program.types,
+            &mut vec![None; self.program.types.len()],
+        );
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {destination}, ptr {source}, i64 {bytes}, i1 false)"
+        ));
+        self.emit_rebase_growing_payload(destination, source, ty, destination, ty);
+    }
+
+    fn emit_copy_value_storage(&mut self, destination: &str, source: &str, ty: Ty) {
+        if self.ascii_max(ty).is_some() {
+            let source_data_field = self.temp();
+            self.instruction(format!(
+                "{source_data_field} = getelementptr {}, ptr {source}, i32 0, i32 0",
+                self.lltype(ty)
+            ));
+            let source_data = self.temp();
+            self.instruction(format!(
+                "{source_data} = load ptr, ptr {source_data_field}, align 1"
+            ));
+            let source_len_field = self.temp();
+            self.instruction(format!(
+                "{source_len_field} = getelementptr {}, ptr {source}, i32 0, i32 1",
+                self.lltype(ty)
+            ));
+            let source_len = self.temp();
+            self.instruction(format!(
+                "{source_len} = load i64, ptr {source_len_field}, align 1"
+            ));
+            let destination_data = self.temp();
+            self.instruction(format!(
+                "{destination_data} = getelementptr i8, ptr {destination}, i64 16"
+            ));
+            let destination_data_field = self.temp();
+            self.instruction(format!(
+                "{destination_data_field} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+                self.lltype(ty)
+            ));
+            self.instruction(format!(
+                "store ptr {destination_data}, ptr {destination_data_field}, align 1"
+            ));
+            self.instruction(format!(
+                "call void @llvm.memmove.p0.p0.i64(ptr {destination_data}, ptr {source_data}, i64 {source_len}, i1 false)"
+            ));
+            let destination_len_field = self.temp();
+            self.instruction(format!(
+                "{destination_len_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+                self.lltype(ty)
+            ));
+            self.instruction(format!(
+                "store i64 {source_len}, ptr {destination_len_field}, align 1"
+            ));
+            return;
+        }
+        if contains_growing_value(
+            ty,
+            &self.program.types,
+            &mut vec![false; self.program.types.len()],
+        ) {
+            self.emit_copy_growing_value(destination, source, ty);
+            return;
+        }
+        let bytes = type_size(
+            ty,
+            &self.program.types,
+            &mut vec![None; self.program.types.len()],
+        );
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {destination}, ptr {source}, i64 {bytes}, i1 false)"
+        ));
+    }
+
+    fn emit_rebase_growing_payload(
+        &mut self,
+        destination: &str,
+        source: &str,
+        ty: Ty,
+        root_destination: &str,
+        root_ty: Ty,
+    ) {
+        match self.program.types[ty.0].kind.clone() {
+            TTypeKind::Ascii { .. } => {
+                let source_data_field = self.temp();
+                self.instruction(format!(
+                    "{source_data_field} = getelementptr {}, ptr {source}, i32 0, i32 0",
+                    self.lltype(ty)
+                ));
+                let source_data = self.temp();
+                self.instruction(format!(
+                    "{source_data} = load ptr, ptr {source_data_field}, align 1"
+                ));
+                let source_len_field = self.temp();
+                self.instruction(format!(
+                    "{source_len_field} = getelementptr {}, ptr {source}, i32 0, i32 1",
+                    self.lltype(ty)
+                ));
+                let source_len = self.temp();
+                self.instruction(format!(
+                    "{source_len} = load i64, ptr {source_len_field}, align 1"
+                ));
+                let fixed_bytes = type_size(
+                    root_ty,
+                    &self.program.types,
+                    &mut vec![None; self.program.types.len()],
+                );
+                let destination_data = self.temp();
+                self.instruction(format!(
+                    "{destination_data} = getelementptr i8, ptr {root_destination}, i64 {fixed_bytes}"
+                ));
+                self.instruction(format!(
+                    "call void @llvm.memmove.p0.p0.i64(ptr {destination_data}, ptr {source_data}, i64 {source_len}, i1 false)"
+                ));
+                let destination_data_field = self.temp();
+                self.instruction(format!(
+                    "{destination_data_field} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+                    self.lltype(ty)
+                ));
+                self.instruction(format!(
+                    "store ptr {destination_data}, ptr {destination_data_field}, align 1"
+                ));
+            }
+            TTypeKind::Option(inner) => {
+                let tag_field = self.temp();
+                self.instruction(format!(
+                    "{tag_field} = getelementptr {}, ptr {source}, i32 0, i32 0",
+                    self.lltype(ty)
+                ));
+                let tag = self.temp();
+                self.instruction(format!("{tag} = load i32, ptr {tag_field}, align 4"));
+                let is_some = self.temp();
+                self.instruction(format!("{is_some} = icmp eq i32 {tag}, 0"));
+                let some_label = self.new_label("growing.copy.some");
+                let done_label = self.new_label("growing.copy.none");
+                let merge_label = self.new_label("growing.copy.option.end");
+                self.terminate(format!(
+                    "br i1 {is_some}, label %{some_label}, label %{done_label}"
+                ));
+                self.start_block(&some_label);
+                let source_payload = self.temp();
+                self.instruction(format!(
+                    "{source_payload} = getelementptr {}, ptr {source}, i32 0, i32 1",
+                    self.lltype(ty)
+                ));
+                let destination_payload = self.temp();
+                self.instruction(format!(
+                    "{destination_payload} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+                    self.lltype(ty)
+                ));
+                self.emit_rebase_growing_payload(
+                    &destination_payload,
+                    &source_payload,
+                    inner,
+                    root_destination,
+                    root_ty,
+                );
+                self.terminate(format!("br label %{merge_label}"));
+                self.start_block(&done_label);
+                self.terminate(format!("br label %{merge_label}"));
+                self.start_block(&merge_label);
+            }
+            TTypeKind::Result(ok, err) => {
+                let tag_field = self.temp();
+                self.instruction(format!(
+                    "{tag_field} = getelementptr {}, ptr {source}, i32 0, i32 0",
+                    self.lltype(ty)
+                ));
+                let tag = self.temp();
+                self.instruction(format!("{tag} = load i32, ptr {tag_field}, align 4"));
+                let is_ok = self.temp();
+                self.instruction(format!("{is_ok} = icmp eq i32 {tag}, 0"));
+                let ok_label = self.new_label("growing.copy.ok");
+                let err_label = self.new_label("growing.copy.err");
+                let merge_label = self.new_label("growing.copy.result.end");
+                self.terminate(format!(
+                    "br i1 {is_ok}, label %{ok_label}, label %{err_label}"
+                ));
+                self.start_block(&ok_label);
+                let source_payload = self.temp();
+                self.instruction(format!(
+                    "{source_payload} = getelementptr {}, ptr {source}, i32 0, i32 1",
+                    self.lltype(ty)
+                ));
+                let destination_payload = self.temp();
+                self.instruction(format!(
+                    "{destination_payload} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+                    self.lltype(ty)
+                ));
+                self.emit_rebase_growing_payload(
+                    &destination_payload,
+                    &source_payload,
+                    ok,
+                    root_destination,
+                    root_ty,
+                );
+                self.terminate(format!("br label %{merge_label}"));
+                self.start_block(&err_label);
+                let source_payload = self.temp();
+                self.instruction(format!(
+                    "{source_payload} = getelementptr {}, ptr {source}, i32 0, i32 1",
+                    self.lltype(ty)
+                ));
+                let destination_payload = self.temp();
+                self.instruction(format!(
+                    "{destination_payload} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+                    self.lltype(ty)
+                ));
+                self.emit_rebase_growing_payload(
+                    &destination_payload,
+                    &source_payload,
+                    err,
+                    root_destination,
+                    root_ty,
+                );
+                self.terminate(format!("br label %{merge_label}"));
+                self.start_block(&merge_label);
+            }
+            TTypeKind::Map { key, capacity, .. } | TTypeKind::Set { key, capacity }
+                if self.ascii_max(key).is_some() =>
+            {
+                let counter = self.entry_alloca(Ty::Long);
+                self.instruction(format!("store i64 0, ptr {counter}, align 1"));
+                let condition = self.new_label("growing.copy.map.cond");
+                let body = self.new_label("growing.copy.map.body");
+                let done = self.new_label("growing.copy.map.done");
+                self.terminate(format!("br label %{condition}"));
+                self.start_block(&condition);
+                let index = self.temp();
+                self.instruction(format!("{index} = load i64, ptr {counter}, align 1"));
+                let more = self.temp();
+                self.instruction(format!("{more} = icmp ult i64 {index}, {capacity}"));
+                self.terminate(format!("br i1 {more}, label %{body}, label %{done}"));
+                self.start_block(&body);
+                let source_key = self.emit_map_entry_ptr(ty, source, &index, false);
+                let key_value = self.temp();
+                self.instruction(format!(
+                    "{key_value} = load {}, ptr {source_key}, align 1",
+                    self.lltype(key)
+                ));
+                self.emit_map_store_key(ty, destination, key, &index, &key_value);
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {index}, 1"));
+                self.instruction(format!("store i64 {next}, ptr {counter}, align 1"));
+                self.terminate(format!("br label %{condition}"));
+                self.start_block(&done);
+            }
+            _ => {}
+        }
+    }
+
     fn emit_expr_to(&mut self, destination: &str, expr: &TExpr) {
+        if self.ascii_max(expr.ty).is_some() {
+            self.emit_ascii_to(destination, expr);
+            return;
+        }
+        if let TExprKind::AsciiFit { value, option_ty } = &expr.kind {
+            self.emit_ascii_fit_to(destination, expr, value, *option_ty);
+            return;
+        }
         let bytes = type_size(
             expr.ty,
             &self.program.types,
@@ -5559,6 +6812,20 @@ impl<'a> FunctionEmitter<'a> {
                 return;
             }
             let source = self.emit_place_pointer(&place);
+            if matches!(
+                self.program.types[expr.ty.0].kind,
+                TTypeKind::Option(_)
+                    | TTypeKind::Result(_, _)
+                    | TTypeKind::Map { .. }
+                    | TTypeKind::Set { .. }
+            ) && contains_growing_value(
+                expr.ty,
+                &self.program.types,
+                &mut vec![false; self.program.types.len()],
+            ) {
+                self.emit_copy_growing_value(destination, &source, expr.ty);
+                return;
+            }
             if source != destination {
                 self.instruction(format!(
                     "call void @llvm.memmove.p0.p0.i64(ptr {destination}, ptr {source}, i64 {bytes}, i1 false)"
@@ -5859,12 +7126,65 @@ impl<'a> FunctionEmitter<'a> {
         match &stmt.kind {
             TStmtKind::Let { id, ty, value, .. } => {
                 if is_large_type(*ty, &self.program.types) {
+                    if let TExprKind::Take(source) = &value.kind {
+                        if let TExprKind::Local(source_id) = source.kind {
+                            let source_pointer = self.local_pointer(source_id);
+                            self.instruction(format!(
+                                "%local.{id} = getelementptr i8, ptr {source_pointer}, i64 0"
+                            ));
+                            return;
+                        }
+                    }
+                    if self.ascii_max(*ty).is_some() && !self.reserved_ascii_locals.contains(id) {
+                        if let Some(length) = self.ascii_static_length(value) {
+                            let bytes = (16usize.saturating_add(length)).to_string();
+                            let pointer = self.emit_runtime_region_alloc_dynamic(
+                                &bytes,
+                                stmt.span,
+                                Some(format!("%local.{id}")),
+                            );
+                            self.emit_expr_to(&pointer, value);
+                            return;
+                        }
+                        if matches!(value.kind, TExprKind::Local(_)) {
+                            let descriptor = self.emit_expr(value);
+                            if self.terminated {
+                                return;
+                            }
+                            self.emit_ascii_descriptor_to_local(
+                                *id,
+                                &descriptor,
+                                value.ty,
+                                *ty,
+                                stmt.span,
+                            );
+                            return;
+                        }
+                    }
                     let pointer = self.emit_runtime_region_alloc(
                         *ty,
                         stmt.span,
                         Some(format!("%local.{id}")),
                     );
                     self.emit_expr_to(&pointer, value);
+                    if !self.terminated
+                        && self.ascii_max(*ty).is_some()
+                        && !self.reserved_ascii_locals.contains(id)
+                    {
+                        let descriptor = self.temp();
+                        self.instruction(format!(
+                            "{descriptor} = load {}, ptr {pointer}, align 1",
+                            self.lltype(*ty)
+                        ));
+                        let length = self.ascii_field(&descriptor, *ty, 1);
+                        let bytes = self.temp();
+                        self.instruction(format!("{bytes} = add i64 {length}, 16"));
+                        let packed_top = self.temp();
+                        self.instruction(format!(
+                            "{packed_top} = getelementptr i8, ptr {pointer}, i64 {bytes}"
+                        ));
+                        self.restore_stack_top(&packed_top);
+                    }
                 } else {
                     let val = self.emit_expr(value);
                     if !self.terminated {
@@ -5882,6 +7202,16 @@ impl<'a> FunctionEmitter<'a> {
                 operator_span,
                 value,
             } => {
+                if self.ascii_max(*ty).is_some() {
+                    if *op == AssignOp::Add {
+                        self.emit_ascii_append_place(place, value);
+                    } else if *op == AssignOp::Set {
+                        self.emit_ascii_assign_place(place, value);
+                    } else {
+                        unreachable!("checker rejects non-add Ascii assignment operators")
+                    }
+                    return;
+                }
                 let struct_address = self.emit_struct_element_address(place);
                 let pointer = if struct_address.is_some() {
                     None
@@ -6815,6 +8145,14 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_print_value(&mut self, ty: Ty, value: &str) {
         let ty = base_type(ty, &self.program.types);
+        if self.ascii_max(ty).is_some() {
+            let data = self.ascii_field(value, ty, 0);
+            let length = self.ascii_field(value, ty, 1);
+            self.instruction(format!(
+                "call void @nl_print_ascii(ptr {data}, i64 {length})"
+            ));
+            return;
+        }
         if matches!(self.program.types[ty.0].kind, TTypeKind::Function { .. }) {
             self.emit_print_function(value);
             return;
@@ -7257,8 +8595,12 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_method(&mut self, expr: &TExpr, kind: MethodKind, receiver: &TExpr) -> String {
         let value = self.emit_expr(receiver);
+        if kind == MethodKind::AsciiLen {
+            return self.ascii_field(&value, receiver.ty, 1);
+        }
         let tag = self.emit_tag(receiver.ty, &value);
         match kind {
+            MethodKind::AsciiLen => unreachable!("Ascii length was handled above"),
             MethodKind::IsNone | MethodKind::IsErr => {
                 let result = self.temp();
                 self.instruction(format!("{result} = icmp eq i32 {tag}, 1"));
@@ -7619,14 +8961,7 @@ impl<'a> FunctionEmitter<'a> {
                     self.lltype(self.function.result)
                 ));
                 if is_large_type(err_ty, &self.program.types) {
-                    let err_bytes = type_size(
-                        err_ty,
-                        &self.program.types,
-                        &mut vec![None; self.program.types.len()],
-                    );
-                    self.instruction(format!(
-                        "call void @llvm.memmove.p0.p0.i64(ptr {result_payload}, ptr {source_payload}, i64 {err_bytes}, i1 false)"
-                    ));
+                    self.emit_copy_value_storage(&result_payload, &source_payload, err_ty);
                 } else if err_ty != Ty::Unit {
                     let err = self.temp();
                     self.instruction(format!(
@@ -7739,14 +9074,7 @@ impl<'a> FunctionEmitter<'a> {
                     self.lltype(self.function.result)
                 ));
                 if is_large_type(err_ty, &self.program.types) {
-                    let err_bytes = type_size(
-                        err_ty,
-                        &self.program.types,
-                        &mut vec![None; self.program.types.len()],
-                    );
-                    self.instruction(format!(
-                        "call void @llvm.memmove.p0.p0.i64(ptr {result_payload}, ptr {source_payload}, i64 {err_bytes}, i1 false)"
-                    ));
+                    self.emit_copy_value_storage(&result_payload, &source_payload, err_ty);
                 } else if err_ty != Ty::Unit {
                     let err = self.temp();
                     self.instruction(format!(
@@ -7793,14 +9121,7 @@ impl<'a> FunctionEmitter<'a> {
             self.lltype(value.ty)
         ));
         if is_large_type(_success_ty, &self.program.types) {
-            let success_bytes = type_size(
-                _success_ty,
-                &self.program.types,
-                &mut vec![None; self.program.types.len()],
-            );
-            self.instruction(format!(
-                "call void @llvm.memmove.p0.p0.i64(ptr {destination}, ptr {source_payload}, i64 {success_bytes}, i1 false)"
-            ));
+            self.emit_copy_value_storage(destination, &source_payload, _success_ty);
         } else if _success_ty != Ty::Unit {
             let result = self.temp();
             self.instruction(format!(
@@ -7882,14 +9203,7 @@ impl<'a> FunctionEmitter<'a> {
             "{payload} = getelementptr {}, ptr {option_pointer}, i32 0, i32 1",
             self.lltype(option.ty)
         ));
-        let bytes = type_size(
-            expr.ty,
-            &self.program.types,
-            &mut vec![None; self.program.types.len()],
-        );
-        self.instruction(format!(
-            "call void @llvm.memmove.p0.p0.i64(ptr {destination}, ptr {payload}, i64 {bytes}, i1 false)"
-        ));
+        self.emit_copy_value_storage(destination, &payload, expr.ty);
         self.restore_stack_top(&saved_top);
         self.terminate(format!("br label %{merge}"));
         self.stack_top = saved_top.clone();
@@ -8025,14 +9339,7 @@ impl<'a> FunctionEmitter<'a> {
                                     arm.body.span,
                                     Some(format!("%local.{id}")),
                                 );
-                                let field_bytes = type_size(
-                                    field_ty,
-                                    &self.program.types,
-                                    &mut vec![None; self.program.types.len()],
-                                );
-                                self.instruction(format!(
-                                    "call void @llvm.memmove.p0.p0.i64(ptr {pointer}, ptr {field_pointer}, i64 {field_bytes}, i1 false)"
-                                ));
+                                self.emit_copy_value_storage(&pointer, &field_pointer, field_ty);
                             } else if field_ty != Ty::Unit {
                                 let field = self.temp();
                                 self.instruction(format!(
@@ -9200,6 +10507,19 @@ impl<'a> FunctionEmitter<'a> {
                 if matches!(op, BinaryOp::And | BinaryOp::Or) {
                     return self.emit_short_circuit(*op, left, right);
                 }
+                if *op == BinaryOp::Add && self.ascii_max(left.ty).is_some() {
+                    let pointer = self.entry_alloca(expr.ty);
+                    self.emit_expr_to(&pointer, expr);
+                    if self.terminated {
+                        return String::new();
+                    }
+                    let value = self.temp();
+                    self.instruction(format!(
+                        "{value} = load {}, ptr {pointer}, align 1",
+                        self.lltype(expr.ty)
+                    ));
+                    return value;
+                }
                 let lhs = self.emit_expr(left);
                 if self.terminated {
                     return String::new();
@@ -9630,6 +10950,16 @@ impl<'a> FunctionEmitter<'a> {
             TExprKind::Unit => String::new(),
             TExprKind::Integer(value) => value.to_string(),
             TExprKind::Bool(value) => if *value { "true" } else { "false" }.to_owned(),
+            TExprKind::ByteString(bytes) if self.ascii_max(expr.ty).is_some() => {
+                let pointer = self.entry_alloca(expr.ty);
+                self.emit_expr_to(&pointer, expr);
+                let value = self.temp();
+                self.instruction(format!(
+                    "{value} = load {}, ptr {pointer}, align 1",
+                    self.lltype(expr.ty)
+                ));
+                value
+            }
             TExprKind::ByteString(bytes) => {
                 let pointer = self.entry_alloca(expr.ty);
                 self.emit_byte_string_to(&pointer, expr.ty, bytes);
@@ -9698,6 +11028,24 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_construct(expr.ty, *case_index, args)
             }
             TExprKind::Method { kind, receiver } => self.emit_method(expr, *kind, receiver),
+            TExprKind::AsciiEmpty => "zeroinitializer".to_owned(),
+            TExprKind::AsciiUpper(_)
+            | TExprKind::AsciiFormat(_)
+            | TExprKind::AsciiCast(_)
+            | TExprKind::AsciiFit { .. } => {
+                let pointer = self.entry_alloca(expr.ty);
+                self.emit_expr_to(&pointer, expr);
+                let value = self.temp();
+                self.instruction(format!(
+                    "{value} = load {}, ptr {pointer}, align 1",
+                    self.lltype(expr.ty)
+                ));
+                value
+            }
+            TExprKind::AsciiTryAppend { receiver, argument } => {
+                self.emit_ascii_try_append(expr, receiver, argument)
+            }
+            TExprKind::Take(value) => self.emit_expr(value),
             TExprKind::Index {
                 receiver,
                 index,
@@ -9955,6 +11303,29 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_binary(&mut self, op: BinaryOp, ty: Ty, lhs: &str, rhs: &str, span: Span) -> String {
+        if self.ascii_max(ty).is_some() {
+            let left_data = self.ascii_field(lhs, ty, 0);
+            let left_length = self.ascii_field(lhs, ty, 1);
+            let right_data = self.ascii_field(rhs, ty, 0);
+            let right_length = self.ascii_field(rhs, ty, 1);
+            let order = self.temp();
+            self.instruction(format!(
+                "{order} = call i32 @nl_ascii_compare(ptr {left_data}, i64 {left_length}, ptr {right_data}, i64 {right_length})"
+            ));
+            let comparison = match op {
+                BinaryOp::Eq => "eq",
+                BinaryOp::Ne => "ne",
+                BinaryOp::Lt => "slt",
+                BinaryOp::Le => "sle",
+                BinaryOp::Gt => "sgt",
+                BinaryOp::Ge => "sge",
+                _ => unreachable!("checker permits only bytewise Ascii comparisons"),
+            };
+            let result = self.temp();
+            self.instruction(format!("{result} = icmp {comparison} i32 {order}, 0"));
+            let _ = span;
+            return result;
+        }
         let primitive = base_type(ty, &self.program.types);
         if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
             && matches!(self.program.types[ty.0].kind, TTypeKind::Function { .. })
@@ -10399,11 +11770,11 @@ fn lower_signature(function: &TFunction, types: &[TType]) -> LoweredSignature {
             .params
             .iter()
             .map(|param| {
-                if param.mode == ParamMode::Write
+                if param.mode != ParamMode::Read
                     || matches!(types[param.ty.0].kind, TTypeKind::Pool { .. })
                     || is_large_type(param.ty, types)
                 {
-                    if param.mode == ParamMode::Write && !result_destination {
+                    if param.mode != ParamMode::Read && !result_destination {
                         "ptr noalias".to_owned()
                     } else {
                         "ptr".to_owned()

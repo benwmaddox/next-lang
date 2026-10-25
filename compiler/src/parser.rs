@@ -274,6 +274,9 @@ impl Parser<'_> {
                     let mode = if self.word_is("write") {
                         self.next();
                         ParamMode::Write
+                    } else if self.word_is("grow") {
+                        self.next();
+                        ParamMode::Grow
                     } else {
                         ParamMode::Read
                     };
@@ -331,6 +334,9 @@ impl Parser<'_> {
                 let mode = if self.word_is("write") {
                     self.next();
                     ParamMode::Write
+                } else if self.word_is("grow") {
+                    self.next();
+                    ParamMode::Grow
                 } else {
                     ParamMode::Read
                 };
@@ -527,6 +533,10 @@ impl Parser<'_> {
                 message: "'wrap' and 'clamp' need an integer range type".to_owned(),
             });
         }
+        if name == "Ascii" && self.word_is("max") {
+            self.next();
+            const_args.push(self.expression(8)?);
+        }
         let mut array_caps = Vec::new();
         while self.take(&TokenKind::LBracket) {
             array_caps.push(self.expression(8)?);
@@ -571,6 +581,9 @@ impl Parser<'_> {
                 let mode = if self.word_is("write") {
                     self.next();
                     ParamMode::Write
+                } else if self.word_is("grow") {
+                    self.next();
+                    ParamMode::Grow
                 } else {
                     ParamMode::Read
                 };
@@ -1145,6 +1158,14 @@ impl Parser<'_> {
             TokenKind::Ident(name) if name == "if" => self.if_postfix(span),
             TokenKind::Ident(name) if name == "match" => self.match_postfix(span),
             TokenKind::Ident(name) if name == "return" => self.return_postfix(span),
+            TokenKind::Ident(name) if name == "take" => {
+                let value = self.expression(11)?;
+                let end_offset = value.span.end_offset;
+                self.postfix(Expr {
+                    kind: ExprKind::Take(Box::new(value)),
+                    span: Span { end_offset, ..span },
+                })
+            }
             TokenKind::Ident(name)
                 if name == "b"
                     && matches!(self.peek().kind, TokenKind::String(_))
@@ -1319,9 +1340,11 @@ impl Parser<'_> {
                 },
             });
         }
-        if matches!((&self.peek().kind, &self.peek_n(1).kind), (TokenKind::Ident(name), TokenKind::RParen)
-            if matches!(name.as_str(), "int" | "long" | "bool")
-                || name.chars().next().is_some_and(char::is_uppercase))
+        if matches!((&self.peek().kind, &self.peek_n(1).kind), (TokenKind::Ident(name), next)
+            if (matches!(name.as_str(), "int" | "long" | "bool") && matches!(next, TokenKind::RParen))
+                || (name.chars().next().is_some_and(char::is_uppercase)
+                    && (matches!(next, TokenKind::RParen)
+                        || (name == "Ascii" && matches!(next, TokenKind::Ident(value) if value == "max")))))
         {
             return self.cast_expression(span);
         }
@@ -1624,6 +1647,8 @@ impl Parser<'_> {
                     | "insert"
                     | "remove"
                     | "clear"
+                    | "empty"
+                    | "try_append"
             );
             if let Some(enum_name) = qualifier.filter(|_| !is_builtin_method && is_type_qualifier) {
                 Ok(Expr {
@@ -2125,6 +2150,7 @@ fn expression_nesting_exceeded(root: &Expr, limit: usize) -> Option<Span> {
                         | ExprKind::Match { .. }
                         | ExprKind::ToLong { .. }
                         | ExprKind::Cast { .. }
+                        | ExprKind::Take(_)
                         | ExprKind::Unary { .. }
                         | ExprKind::Binary { .. }
                         | ExprKind::If { .. }
@@ -2176,6 +2202,7 @@ fn expression_nesting_exceeded(root: &Expr, limit: usize) -> Option<Span> {
                         pending.push(NestingTask::Type(ty, child_depth));
                     }
                     ExprKind::Try(value)
+                    | ExprKind::Take(value)
                     | ExprKind::ToLong { value, .. }
                     | ExprKind::Unary { value, .. } => {
                         pending.push(NestingTask::Expr(value, child_depth));

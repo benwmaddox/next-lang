@@ -267,10 +267,10 @@ impl TreeWriter {
             &format!(
                 "name={} mode={}",
                 quote(&param.name),
-                if param.mode == ParamMode::Write {
-                    "write"
-                } else {
-                    "read"
+                match param.mode {
+                    ParamMode::Read => "read",
+                    ParamMode::Write => "write",
+                    ParamMode::Grow => "grow",
                 }
             ),
         )?;
@@ -454,10 +454,10 @@ impl TreeWriter {
                 "FunctionTypeParameter",
                 &format!(
                     "mode={}",
-                    if param.mode == ParamMode::Write {
-                        "write"
-                    } else {
-                        "read"
+                    match param.mode {
+                        ParamMode::Read => "read",
+                        ParamMode::Write => "write",
+                        ParamMode::Grow => "grow",
                     }
                 ),
             )?;
@@ -509,6 +509,10 @@ impl TreeWriter {
                     "ByteString",
                     &format!("value={}", quote(string)),
                 )
+            }
+            ExprKind::Take(value) => {
+                self.row(depth, expr.span, "Take", "")?;
+                self.expr(value, depth + 1)
             }
             ExprKind::Name(name) => {
                 self.row(depth, expr.span, "Name", &format!("name={}", quote(name)))

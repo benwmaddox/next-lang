@@ -185,11 +185,13 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
                             b'\\' => value.push('\\'),
                             b'n' => value.push('\n'),
                             b't' => value.push('\t'),
+                            b'0' => value.push('\0'),
                             _ => {
                                 return Err(LexError {
                                     span,
-                                    message: "unsupported string escape; use \", \\\\, \\n, or \\t"
-                                        .to_owned(),
+                                    message:
+                                        "unsupported string escape; use \", \\\\, \\n, \\t, or \\0"
+                                            .to_owned(),
                                 });
                             }
                         }
