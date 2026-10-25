@@ -752,8 +752,70 @@ uint64_t nl_hash_ascii(const unsigned char *bytes, uint64_t length,
     return hash;
 }
 
-uint64_t nl_ascii_format_i64_radix(int64_t value, int32_t radix,
-                                  unsigned char *destination) {
+static const unsigned char nl_ascii_decimal_pairs[] =
+    "0001020304050607080910111213141516171819202122232425262728293031323334"
+    "3536373839404142434445464748495051525354555657585960616263646566676869"
+    "707172737475767778798081828384858687888990919293949596979899";
+
+static uint64_t nl_ascii_decimal_digits(uint64_t magnitude) {
+    if (magnitude >= UINT64_C(10000000000000000000)) return 20;
+    if (magnitude >= UINT64_C(1000000000000000000)) return 19;
+    if (magnitude >= UINT64_C(100000000000000000)) return 18;
+    if (magnitude >= UINT64_C(10000000000000000)) return 17;
+    if (magnitude >= UINT64_C(1000000000000000)) return 16;
+    if (magnitude >= UINT64_C(100000000000000)) return 15;
+    if (magnitude >= UINT64_C(10000000000000)) return 14;
+    if (magnitude >= UINT64_C(1000000000000)) return 13;
+    if (magnitude >= UINT64_C(100000000000)) return 12;
+    if (magnitude >= UINT64_C(10000000000)) return 11;
+    if (magnitude >= UINT64_C(1000000000)) return 10;
+    if (magnitude >= UINT64_C(100000000)) return 9;
+    if (magnitude >= UINT64_C(10000000)) return 8;
+    if (magnitude >= UINT64_C(1000000)) return 7;
+    if (magnitude >= UINT64_C(100000)) return 6;
+    if (magnitude >= UINT64_C(10000)) return 5;
+    if (magnitude >= UINT64_C(1000)) return 4;
+    if (magnitude >= UINT64_C(100)) return 3;
+    if (magnitude >= UINT64_C(10)) return 2;
+    return 1;
+}
+
+static uint64_t nl_ascii_i64_magnitude(int64_t value) {
+    return value < 0 ? (uint64_t)(-(value + 1)) + 1 : (uint64_t)value;
+}
+
+uint64_t nl_ascii_decimal_length_i64(int64_t value) {
+    return nl_ascii_decimal_digits(nl_ascii_i64_magnitude(value)) +
+           (uint64_t)(value < 0);
+}
+
+static uint64_t nl_ascii_format_i64_decimal(int64_t value,
+                                            unsigned char *destination) {
+    uint64_t magnitude = nl_ascii_i64_magnitude(value);
+    uint64_t digits = nl_ascii_decimal_digits(magnitude);
+    uint64_t negative = (uint64_t)(value < 0);
+    if (negative) destination[0] = '-';
+    unsigned char *output = destination + negative;
+    uint64_t offset = digits;
+    while (magnitude >= 100) {
+        uint64_t pair = (magnitude % 100) * 2;
+        offset -= 2;
+        output[offset] = nl_ascii_decimal_pairs[pair];
+        output[offset + 1] = nl_ascii_decimal_pairs[pair + 1];
+        magnitude /= 100;
+    }
+    if (magnitude < 10) {
+        output[offset - 1] = (unsigned char)('0' + magnitude);
+    } else {
+        uint64_t pair = magnitude * 2;
+        output[offset - 2] = nl_ascii_decimal_pairs[pair];
+        output[offset - 1] = nl_ascii_decimal_pairs[pair + 1];
+    }
+    return digits + negative;
+}
+
+uint64_t nl_ascii_format_i64_radix_general(int64_t value, int32_t radix,
+                                           unsigned char *destination) {
     static const unsigned char digits[] = "0123456789abcdef";
     unsigned char reversed[64];
     uint64_t length = 0;
@@ -775,8 +837,14 @@ uint64_t nl_ascii_format_i64_radix(int64_t value, int32_t radix,
     return offset;
 }
 
+uint64_t nl_ascii_format_i64_radix(int64_t value, int32_t radix,
+                                  unsigned char *destination) {
+    if (radix == 10) return nl_ascii_format_i64_decimal(value, destination);
+    return nl_ascii_format_i64_radix_general(value, radix, destination);
+}
+
 uint64_t nl_ascii_format_i64(int64_t value, unsigned char *destination) {
-    return nl_ascii_format_i64_radix(value, 10, destination);
+    return nl_ascii_format_i64_decimal(value, destination);
 }
 
 uint64_t nl_ascii_format_pad_i64(int64_t value, int64_t width, int32_t radix,
@@ -1062,18 +1130,19 @@ void nl_print_error_prefix(void) {
     if (nl_write_all(STDERR_FILENO, prefix, sizeof(prefix) - 1) != 0) nl_fail(20, -1, 0, 0);
 }
 
+static void nl_print_decimal(int64_t value, int newline) {
+    unsigned char buffer[22];
+    uint64_t length = nl_ascii_format_i64(value, buffer);
+    if (newline) buffer[length++] = '\n';
+    nl_print_bytes(buffer, length);
+}
+
 void nl_print_int(int32_t value) {
-    char buffer[32];
-    int length = snprintf(buffer, sizeof(buffer), "%d\n", value);
-    if (length < 0 || (size_t)length >= sizeof(buffer)) nl_fail(20, -1, 0, 0);
-    nl_print_bytes((const unsigned char *)buffer, (uint64_t)length);
+    nl_print_decimal(value, 1);
 }
 
 void nl_print_long(int64_t value) {
-    char buffer[32];
-    int length = snprintf(buffer, sizeof(buffer), "%lld\n", (long long)value);
-    if (length < 0 || (size_t)length >= sizeof(buffer)) nl_fail(20, -1, 0, 0);
-    nl_print_bytes((const unsigned char *)buffer, (uint64_t)length);
+    nl_print_decimal(value, 1);
 }
 
 void nl_print_bool(_Bool value) {
@@ -1083,17 +1152,11 @@ void nl_print_bool(_Bool value) {
 }
 
 void nl_print_int_raw(int32_t value) {
-    char buffer[32];
-    int length = snprintf(buffer, sizeof(buffer), "%d", value);
-    if (length < 0 || (size_t)length >= sizeof(buffer)) nl_fail(20, -1, 0, 0);
-    nl_print_bytes((const unsigned char *)buffer, (uint64_t)length);
+    nl_print_decimal(value, 0);
 }
 
 void nl_print_long_raw(int64_t value) {
-    char buffer[32];
-    int length = snprintf(buffer, sizeof(buffer), "%lld", (long long)value);
-    if (length < 0 || (size_t)length >= sizeof(buffer)) nl_fail(20, -1, 0, 0);
-    nl_print_bytes((const unsigned char *)buffer, (uint64_t)length);
+    nl_print_decimal(value, 0);
 }
 
 void nl_print_bool_raw(_Bool value) {
@@ -1806,13 +1869,15 @@ void nl_out_arg(void *handle, void *argument, int line, void *result) {
 }
 
 void nl_out_int(void *handle, int32_t value, void *result) {
-    char buffer[32]; int length = snprintf(buffer, sizeof(buffer), "%d", value);
-    int error = length < 0 ? EIO : nl_write_all(((nl_out_handle *)handle)->fd, (unsigned char *)buffer, (uint64_t)length);
+    unsigned char buffer[21];
+    uint64_t length = nl_ascii_format_i64(value, buffer);
+    int error = nl_write_all(((nl_out_handle *)handle)->fd, buffer, length);
     nl_io_error(result, error ? nl_errno_error(error) : -1, error);
 }
 void nl_out_long(void *handle, int64_t value, void *result) {
-    char buffer[32]; int length = snprintf(buffer, sizeof(buffer), "%lld", (long long)value);
-    int error = length < 0 ? EIO : nl_write_all(((nl_out_handle *)handle)->fd, (unsigned char *)buffer, (uint64_t)length);
+    unsigned char buffer[21];
+    uint64_t length = nl_ascii_format_i64(value, buffer);
+    int error = nl_write_all(((nl_out_handle *)handle)->fd, buffer, length);
     nl_io_error(result, error ? nl_errno_error(error) : -1, error);
 }
 void nl_print_arg(void *argument) {

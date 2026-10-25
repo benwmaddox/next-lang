@@ -87,14 +87,6 @@ fn utf8_width(first: byte) -> long {
     else { 4L }
 }
 
-fn matches_ascii(source: Bytes max 67108864, start: long, remaining: long, expected: Ascii max 3) -> bool {
-    if remaining < expected.len() { return false }
-    for index in 0L..expected.len() {
-        if source[start + index] != expected.bytes()[index] { return false }
-    }
-    true
-}
-
 fn emit_token(
     tokens: write list<Token, TOKEN_STORAGE_CAPACITY>,
     file_token_count: write long,
@@ -270,101 +262,165 @@ fn lex_file(
         var kind = TokenKind.Eof
         var width = 0L
         let remaining = length - pos
-        if matches_ascii(source, absolute, remaining, "..=") {
-            kind = TokenKind.RangeInclusive
-            width = 3L
-        } else if matches_ascii(source, absolute, remaining, ">>=") {
-            kind = TokenKind.ShrEq
-            width = 3L
-        } else if matches_ascii(source, absolute, remaining, "=>") {
-            kind = TokenKind.FatArrow
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "->") {
-            kind = TokenKind.Arrow
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "?.") {
-            kind = TokenKind.QuestionDot
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "??") {
-            kind = TokenKind.QuestionQuestion
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "..") {
-            kind = TokenKind.Range
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "+%") {
-            kind = TokenKind.WrapPlus
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "-%") {
-            kind = TokenKind.WrapMinus
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "*%") {
-            kind = TokenKind.WrapStar
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "+=") {
-            kind = TokenKind.PlusEq
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "-=") {
-            kind = TokenKind.MinusEq
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "*=") {
-            kind = TokenKind.StarEq
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "/=") {
-            kind = TokenKind.SlashEq
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "%=") {
-            kind = TokenKind.PercentEq
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "==") {
-            kind = TokenKind.EqEq
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "!=") {
-            kind = TokenKind.BangEq
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "<=") {
-            kind = TokenKind.Le
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, ">=") {
-            kind = TokenKind.Ge
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "&&") {
-            kind = TokenKind.AndAnd
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "||") {
-            kind = TokenKind.OrOr
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, "<<") {
-            kind = TokenKind.Shl
-            width = 2L
-        } else if matches_ascii(source, absolute, remaining, ">>") {
-            kind = TokenKind.Shr
-            width = 2L
-        } else {
-            if value == 40 { kind = TokenKind.LParen }
-            else if value == 41 { kind = TokenKind.RParen }
-            else if value == 123 { kind = TokenKind.LBrace }
-            else if value == 125 { kind = TokenKind.RBrace }
-            else if value == 91 { kind = TokenKind.LBracket }
-            else if value == 93 { kind = TokenKind.RBracket }
-            else if value == 44 { kind = TokenKind.Comma }
-            else if value == 58 { kind = TokenKind.Colon }
-            else if value == 59 { kind = TokenKind.Semicolon }
-            else if value == 46 { kind = TokenKind.Dot }
-            else if value == 63 { kind = TokenKind.Question }
-            else if value == 43 { kind = TokenKind.Plus }
-            else if value == 45 { kind = TokenKind.Minus }
-            else if value == 42 { kind = TokenKind.Star }
-            else if value == 47 { kind = TokenKind.Slash }
-            else if value == 37 { kind = TokenKind.Percent }
-            else if value == 61 { kind = TokenKind.Eq }
-            else if value == 33 { kind = TokenKind.Bang }
-            else if value == 60 { kind = TokenKind.Lt }
-            else if value == 62 { kind = TokenKind.Gt }
-            else if value == 38 { kind = TokenKind.And }
-            else if value == 124 { kind = TokenKind.Or }
-            else if value == 94 { kind = TokenKind.Caret }
-            else { return err(token_error(LexProblemKind.UnexpectedCharacter, start, start_line, start_col, value)) }
-            width = 1L
+        match (int)(value) {
+            46 => {
+                if remaining >= 3L && source[absolute + 1L] == 46 && source[absolute + 2L] == 61 {
+                    kind = TokenKind.RangeInclusive
+                    width = 3L
+                } else if remaining >= 2L && source[absolute + 1L] == 46 {
+                    kind = TokenKind.Range
+                    width = 2L
+                } else {
+                    kind = TokenKind.Dot
+                    width = 1L
+                }
+            },
+            62 => {
+                if remaining >= 3L && source[absolute + 1L] == 62 && source[absolute + 2L] == 61 {
+                    kind = TokenKind.ShrEq
+                    width = 3L
+                } else if remaining >= 2L && source[absolute + 1L] == 62 {
+                    kind = TokenKind.Shr
+                    width = 2L
+                } else if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.Ge
+                    width = 2L
+                } else {
+                    kind = TokenKind.Gt
+                    width = 1L
+                }
+            },
+            60 => {
+                if remaining >= 2L && source[absolute + 1L] == 60 {
+                    kind = TokenKind.Shl
+                    width = 2L
+                } else if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.Le
+                    width = 2L
+                } else {
+                    kind = TokenKind.Lt
+                    width = 1L
+                }
+            },
+            63 => {
+                if remaining >= 2L && source[absolute + 1L] == 46 {
+                    kind = TokenKind.QuestionDot
+                    width = 2L
+                } else if remaining >= 2L && source[absolute + 1L] == 63 {
+                    kind = TokenKind.QuestionQuestion
+                    width = 2L
+                } else {
+                    kind = TokenKind.Question
+                    width = 1L
+                }
+            },
+            45 => {
+                if remaining >= 2L && source[absolute + 1L] == 62 {
+                    kind = TokenKind.Arrow
+                    width = 2L
+                } else if remaining >= 2L && source[absolute + 1L] == 37 {
+                    kind = TokenKind.WrapMinus
+                    width = 2L
+                } else if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.MinusEq
+                    width = 2L
+                } else {
+                    kind = TokenKind.Minus
+                    width = 1L
+                }
+            },
+            43 => {
+                if remaining >= 2L && source[absolute + 1L] == 37 {
+                    kind = TokenKind.WrapPlus
+                    width = 2L
+                } else if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.PlusEq
+                    width = 2L
+                } else {
+                    kind = TokenKind.Plus
+                    width = 1L
+                }
+            },
+            42 => {
+                if remaining >= 2L && source[absolute + 1L] == 37 {
+                    kind = TokenKind.WrapStar
+                    width = 2L
+                } else if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.StarEq
+                    width = 2L
+                } else {
+                    kind = TokenKind.Star
+                    width = 1L
+                }
+            },
+            47 => {
+                if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.SlashEq
+                    width = 2L
+                } else {
+                    kind = TokenKind.Slash
+                    width = 1L
+                }
+            },
+            37 => {
+                if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.PercentEq
+                    width = 2L
+                } else {
+                    kind = TokenKind.Percent
+                    width = 1L
+                }
+            },
+            61 => {
+                if remaining >= 2L && source[absolute + 1L] == 62 {
+                    kind = TokenKind.FatArrow
+                    width = 2L
+                } else if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.EqEq
+                    width = 2L
+                } else {
+                    kind = TokenKind.Eq
+                    width = 1L
+                }
+            },
+            33 => {
+                if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.BangEq
+                    width = 2L
+                } else {
+                    kind = TokenKind.Bang
+                    width = 1L
+                }
+            },
+            38 => {
+                if remaining >= 2L && source[absolute + 1L] == 38 {
+                    kind = TokenKind.AndAnd
+                    width = 2L
+                } else {
+                    kind = TokenKind.And
+                    width = 1L
+                }
+            },
+            124 => {
+                if remaining >= 2L && source[absolute + 1L] == 124 {
+                    kind = TokenKind.OrOr
+                    width = 2L
+                } else {
+                    kind = TokenKind.Or
+                    width = 1L
+                }
+            },
+            40 => { kind = TokenKind.LParen; width = 1L },
+            41 => { kind = TokenKind.RParen; width = 1L },
+            123 => { kind = TokenKind.LBrace; width = 1L },
+            125 => { kind = TokenKind.RBrace; width = 1L },
+            91 => { kind = TokenKind.LBracket; width = 1L },
+            93 => { kind = TokenKind.RBracket; width = 1L },
+            44 => { kind = TokenKind.Comma; width = 1L },
+            58 => { kind = TokenKind.Colon; width = 1L },
+            59 => { kind = TokenKind.Semicolon; width = 1L },
+            94 => { kind = TokenKind.Caret; width = 1L },
+            _ => return err(token_error(LexProblemKind.UnexpectedCharacter, start, start_line, start_col, value)),
         }
 
         if kind == TokenKind.LParen || kind == TokenKind.LBracket {

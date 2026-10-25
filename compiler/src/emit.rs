@@ -186,6 +186,7 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare i64 @nl_hash_ascii(ptr, i64, i64)\n");
     out.push_str("declare i64 @nl_ascii_format_i64(i64, ptr)\n");
     out.push_str("declare i64 @nl_ascii_format_i64_radix(i64, i32, ptr)\n");
+    out.push_str("declare i64 @nl_ascii_decimal_length_i64(i64)\n");
     out.push_str("declare i64 @nl_ascii_format_pad_i64(i64, i64, i32, i32, ptr)\n");
     out.push_str("declare i64 @nl_ascii_format_zero_padded_i64(i64, i64, ptr)\n");
     out.push_str("declare i64 @nl_pad_copy(ptr, i64, i64, i64, i32, ptr)\n");
@@ -10517,6 +10518,46 @@ impl<'a> FunctionEmitter<'a> {
         value
     }
 
+    fn emit_decimal_ascii_input(&mut self, expr: &TExpr) -> Option<String> {
+        let formatted = match &expr.kind {
+            TExprKind::BytesView(value) => value.as_ref(),
+            _ => expr,
+        };
+        let TExprKind::AsciiFormat { value, radix } = &formatted.kind else {
+            return None;
+        };
+        if *radix != 10 {
+            return None;
+        }
+        let raw = self.emit_expr(value);
+        if self.terminated {
+            return None;
+        }
+        if base_type(value.ty, &self.program.types) == Ty::Int {
+            let extended = self.temp();
+            self.instruction(format!("{extended} = sext i32 {raw} to i64"));
+            Some(extended)
+        } else {
+            Some(raw)
+        }
+    }
+
+    fn emit_decimal_ascii_length(&mut self, numeric: &str) -> String {
+        let length = self.temp();
+        self.instruction(format!(
+            "{length} = call i64 @nl_ascii_decimal_length_i64(i64 {numeric})"
+        ));
+        length
+    }
+
+    fn emit_decimal_ascii_write(&mut self, numeric: &str, target: &str) -> String {
+        let length = self.temp();
+        self.instruction(format!(
+            "{length} = call i64 @nl_ascii_format_i64(i64 {numeric}, ptr {target})"
+        ));
+        length
+    }
+
     fn emit_ascii_descriptor(&mut self, expr: &TExpr) -> String {
         if matches!(
             expr.kind,
@@ -10637,10 +10678,15 @@ impl<'a> FunctionEmitter<'a> {
                 self.instruction(format!(
                     "{target} = getelementptr i8, ptr {destination}, i64 {current}"
                 ));
-                let length = self.temp();
-                self.instruction(format!(
-                    "{length} = call i64 @nl_ascii_format_i64_radix(i64 {numeric}, i32 {radix}, ptr {target})"
-                ));
+                let length = if *radix == 10 {
+                    self.emit_decimal_ascii_write(&numeric, &target)
+                } else {
+                    let length = self.temp();
+                    self.instruction(format!(
+                        "{length} = call i64 @nl_ascii_format_i64_radix(i64 {numeric}, i32 {radix}, ptr {target})"
+                    ));
+                    length
+                };
                 let next = self.temp();
                 self.instruction(format!("{next} = add i64 {current}, {length}"));
                 self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
@@ -11845,6 +11891,52 @@ impl<'a> FunctionEmitter<'a> {
         let target = self.ascii_field(&builder_descriptor, receiver.ty, 0);
         let old_length = self.ascii_field(&builder_descriptor, receiver.ty, 1);
         let builder_max = self.ascii_max(receiver.ty).unwrap_or(0);
+        if let Some(numeric) = self.emit_decimal_ascii_input(argument) {
+            let amount = self.emit_decimal_ascii_length(&numeric);
+            let remaining = self.temp();
+            self.instruction(format!("{remaining} = sub i64 {builder_max}, {old_length}"));
+            let fits = self.temp();
+            self.instruction(format!("{fits} = icmp ule i64 {amount}, {remaining}"));
+            let success_label = self.new_label("ascii.decimal.append.ok");
+            let full_label = self.new_label("ascii.decimal.append.full");
+            let merge = self.new_label("ascii.decimal.append.end");
+            self.terminate(format!(
+                "br i1 {fits}, label %{success_label}, label %{full_label}"
+            ));
+
+            self.start_block(&success_label);
+            let append_at = self.temp();
+            self.instruction(format!(
+                "{append_at} = getelementptr i8, ptr {target}, i64 {old_length}"
+            ));
+            let written = self.emit_decimal_ascii_write(&numeric, &append_at);
+            let new_length = self.temp();
+            self.instruction(format!("{new_length} = add i64 {old_length}, {written}"));
+            let length_pointer = self.string_place_length_pointer(&place, &destination);
+            self.instruction(format!(
+                "store i64 {new_length}, ptr {length_pointer}, align 1"
+            ));
+            let ok = self.emit_construct_values(expr.ty, 0, Vec::new());
+            let ok_block = self.current_label.clone();
+            self.restore_stack_top(&saved_top);
+            self.terminate(format!("br label %{merge}"));
+
+            self.stack_top = saved_top.clone();
+            self.start_block(&full_label);
+            let full = self.emit_construct_values(expr.ty, 1, Vec::new());
+            let full_block = self.current_label.clone();
+            self.restore_stack_top(&saved_top);
+            self.terminate(format!("br label %{merge}"));
+
+            self.stack_top = saved_top;
+            self.start_block(&merge);
+            let result = self.temp();
+            self.instruction(format!(
+                "{result} = phi {} [ {ok}, %{ok_block} ], [ {full}, %{full_block} ]",
+                self.lltype(expr.ty)
+            ));
+            return result;
+        }
         let argument_max = self.ascii_max(argument.ty).unwrap_or(0);
         let remaining = self.temp();
         self.instruction(format!("{remaining} = sub i64 {builder_max}, {old_length}"));
@@ -12016,6 +12108,55 @@ impl<'a> FunctionEmitter<'a> {
         let target = self.ascii_field(&builder_descriptor, receiver.ty, 0);
         let old_length = self.ascii_field(&builder_descriptor, receiver.ty, 1);
 
+        if let Some(numeric) = self.emit_decimal_ascii_input(argument) {
+            let amount = self.emit_decimal_ascii_length(&numeric);
+            let remaining = self.temp();
+            self.instruction(format!(
+                "{remaining} = sub i64 {}, {old_length}",
+                self.ascii_max(receiver.ty).unwrap_or(0)
+            ));
+            let fits = self.temp();
+            self.instruction(format!("{fits} = icmp ule i64 {amount}, {remaining}"));
+            let success_label = self.new_label("bytes.decimal.append.ok");
+            let full_label = self.new_label("bytes.decimal.append.full");
+            let merge = self.new_label("bytes.decimal.append.end");
+            self.terminate(format!(
+                "br i1 {fits}, label %{success_label}, label %{full_label}"
+            ));
+
+            self.start_block(&success_label);
+            let append_at = self.temp();
+            self.instruction(format!(
+                "{append_at} = getelementptr i8, ptr {target}, i64 {old_length}"
+            ));
+            let written = self.emit_decimal_ascii_write(&numeric, &append_at);
+            let new_length = self.temp();
+            self.instruction(format!("{new_length} = add i64 {old_length}, {written}"));
+            self.instruction(format!(
+                "store i64 {new_length}, ptr {destination}, align 1"
+            ));
+            let ok = self.emit_construct_values(expr.ty, 0, Vec::new());
+            let ok_pred = self.current_label.clone();
+            self.restore_stack_top(&saved_top);
+            self.terminate(format!("br label %{merge}"));
+
+            self.stack_top = saved_top.clone();
+            self.start_block(&full_label);
+            let full = self.emit_construct_values(expr.ty, 1, Vec::new());
+            let full_pred = self.current_label.clone();
+            self.restore_stack_top(&saved_top);
+            self.terminate(format!("br label %{merge}"));
+
+            self.stack_top = saved_top;
+            self.start_block(&merge);
+            let result = self.temp();
+            self.instruction(format!(
+                "{result} = phi {} [ {ok}, %{ok_pred} ], [ {full}, %{full_pred} ]",
+                self.lltype(expr.ty)
+            ));
+            return result;
+        }
+
         // Materializing the argument before publishing the new length makes
         // self-append and appending a slice of the same builder safe. The
         // memmove below also handles any actual overlap.
@@ -12082,6 +12223,84 @@ impl<'a> FunctionEmitter<'a> {
         let target = self.ascii_field(&builder_descriptor, receiver.ty, 0);
         let old_length = self.ascii_field(&builder_descriptor, receiver.ty, 1);
         let old_codepoints = self.ascii_field(&builder_descriptor, receiver.ty, 2);
+        let (max_codepoints, max_bytes) = match self.program.types[receiver.ty.0].kind {
+            TTypeKind::Text {
+                max_codepoints,
+                max_bytes,
+            } => (max_codepoints, max_bytes),
+            _ => unreachable!("checker validated Text builder type"),
+        };
+
+        if let Some(numeric) = self.emit_decimal_ascii_input(argument) {
+            let amount = self.emit_decimal_ascii_length(&numeric);
+            let remaining_bytes = self.temp();
+            self.instruction(format!(
+                "{remaining_bytes} = sub i64 {max_bytes}, {old_length}"
+            ));
+            let bytes_fit = self.temp();
+            self.instruction(format!(
+                "{bytes_fit} = icmp ule i64 {amount}, {remaining_bytes}"
+            ));
+            let remaining_codepoints = self.temp();
+            self.instruction(format!(
+                "{remaining_codepoints} = sub i64 {max_codepoints}, {old_codepoints}"
+            ));
+            let codepoints_fit = self.temp();
+            self.instruction(format!(
+                "{codepoints_fit} = icmp ule i64 {amount}, {remaining_codepoints}"
+            ));
+            let fits = self.temp();
+            self.instruction(format!("{fits} = and i1 {bytes_fit}, {codepoints_fit}"));
+            let success_label = self.new_label("text.decimal.append.ok");
+            let full_label = self.new_label("text.decimal.append.full");
+            let merge = self.new_label("text.decimal.append.end");
+            self.terminate(format!(
+                "br i1 {fits}, label %{success_label}, label %{full_label}"
+            ));
+
+            self.start_block(&success_label);
+            let append_at = self.temp();
+            self.instruction(format!(
+                "{append_at} = getelementptr i8, ptr {target}, i64 {old_length}"
+            ));
+            let written = self.emit_decimal_ascii_write(&numeric, &append_at);
+            let new_length = self.temp();
+            self.instruction(format!("{new_length} = add i64 {old_length}, {written}"));
+            self.instruction(format!(
+                "store i64 {new_length}, ptr {destination}, align 1"
+            ));
+            let new_codepoints = self.temp();
+            self.instruction(format!(
+                "{new_codepoints} = add i64 {old_codepoints}, {written}"
+            ));
+            let codepoints_field = self.temp();
+            self.instruction(format!(
+                "{codepoints_field} = getelementptr i8, ptr {destination}, i64 8"
+            ));
+            self.instruction(format!(
+                "store i64 {new_codepoints}, ptr {codepoints_field}, align 1"
+            ));
+            let ok = self.emit_construct_values(expr.ty, 0, Vec::new());
+            let ok_pred = self.current_label.clone();
+            self.restore_stack_top(&saved_top);
+            self.terminate(format!("br label %{merge}"));
+
+            self.stack_top = saved_top.clone();
+            self.start_block(&full_label);
+            let full = self.emit_construct_values(expr.ty, 1, Vec::new());
+            let full_pred = self.current_label.clone();
+            self.restore_stack_top(&saved_top);
+            self.terminate(format!("br label %{merge}"));
+
+            self.stack_top = saved_top;
+            self.start_block(&merge);
+            let result = self.temp();
+            self.instruction(format!(
+                "{result} = phi {} [ {ok}, %{ok_pred} ], [ {full}, %{full_pred} ]",
+                self.lltype(expr.ty)
+            ));
+            return result;
+        }
 
         // Stage the argument before publishing either length. This also keeps
         // self-append safe when the source aliases the Text builder.
@@ -12095,13 +12314,6 @@ impl<'a> FunctionEmitter<'a> {
             self.ascii_field(&argument_descriptor, argument.ty, 2)
         } else {
             amount.clone()
-        };
-        let (max_codepoints, max_bytes) = match self.program.types[receiver.ty.0].kind {
-            TTypeKind::Text {
-                max_codepoints,
-                max_bytes,
-            } => (max_codepoints, max_bytes),
-            _ => unreachable!("checker validated Text builder type"),
         };
         let remaining_bytes = self.temp();
         self.instruction(format!(
