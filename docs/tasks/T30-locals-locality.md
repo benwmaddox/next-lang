@@ -1,0 +1,8 @@
+# T30: locals that work against the memory theory
+
+Same rules (docs/PLAN.md). From DESIGN.md "The theory being tested" (locality, modest bookkeeping, compactness, easy cleanup) and the 2026-10-25 review of locals. Independent of the offset milestone.
+
+1. **Reassignment that copies the whole value:** `buffer = f(buffer)` (and `s = s + x`-style forms the checker can't stream) builds the new value in a temporary region and copies it back: twice the space and a full copy per call (selfhost/dump.nl has five 1 MiB copy-down temporaries for its output buffer). When the compiler can prove `f` only appends to or rewrites its argument in place (its body treats the parameter as a `grow`/`write` builder and returns it), compile the call as an in-place update with no temporary. Otherwise keep the copy, but emit a build note naming the site, its size and the suggested rewrite (pass `buffer` as a `grow` or `write` parameter). Then rewrite selfhost/dump.nl's five sites and show `inspect stacks` without the copy-down temporaries, with the selfhost comparison still passing.
+2. **Reserve-ahead regions push small locals away:** a builder or large collection reserves its whole declared maximum, so locals placed after it sit that far away in memory. Where scope order allows, place a function's small and fixed-size data-stack values before its reserve-ahead regions (lowest addresses first), so values used together stay together; keep last-in, first-out freeing intact. Report the before/after distance between a function's small locals in a fixture with a 1 MB builder, and show `inspect stacks` listing the order.
+3. Tests for both; timing on the bench program and the selfhost benchmark before and after.
+- Report: docs/tasks/T30-report.md.
