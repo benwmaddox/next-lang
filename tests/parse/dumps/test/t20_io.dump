@@ -1179,408 +1179,604 @@ RBrace 4179 1 144 29 "}"
 Newline 4180 1 144 30 "\n"
 RBrace 4185 1 145 5 "}"
 Newline 4186 1 145 6 "\n"
-RBrace 4187 1 146 1 "}"
-Newline 4188 1 146 2 "\n"
-Ident 4190 4 148 1 "test"
-String 4195 42 148 6 "\"directory listing over capacity is empty\""
-LParen 4238 1 148 49 "("
-Ident 4239 3 148 50 "env"
-Colon 4242 1 148 53 ":"
-Ident 4244 3 148 55 "Env"
-RParen 4247 1 148 58 ")"
-LBrace 4249 1 148 60 "{"
-Newline 4250 1 148 61 "\n"
-Ident 4255 3 149 5 "let"
-Ident 4259 2 149 9 "fs"
-Eq 4262 1 149 12 "="
-Ident 4264 3 149 14 "env"
-Dot 4267 1 149 17 "."
-Ident 4268 2 149 18 "fs"
-Newline 4270 1 149 20 "\n"
-Ident 4275 3 150 5 "var"
-Ident 4279 7 150 9 "entries"
-Colon 4286 1 150 16 ":"
-Ident 4288 4 150 18 "list"
-Lt 4292 1 150 22 "<"
-Ident 4293 8 150 23 "DirEntry"
-Comma 4301 1 150 31 ","
-Number 4303 1 150 33 "1"
-Gt 4304 1 150 34 ">"
-Eq 4306 1 150 36 "="
-Ident 4308 4 150 38 "list"
-LBrace 4313 1 150 43 "{"
-RBrace 4314 1 150 44 "}"
-Newline 4315 1 150 45 "\n"
-Ident 4320 5 151 5 "match"
-Ident 4326 2 151 11 "fs"
-Dot 4328 1 151 13 "."
-Ident 4329 5 151 14 "write"
-LParen 4334 1 151 19 "("
-String 4335 3 151 20 "\"a\""
-Comma 4338 1 151 23 ","
-Ident 4340 1 151 25 "b"
-String 4341 2 151 26 "\"\""
-RParen 4343 1 151 28 ")"
-LBrace 4345 1 151 30 "{"
-Ident 4347 2 151 32 "ok"
-LParen 4349 1 151 34 "("
-Ident 4350 1 151 35 "_"
-RParen 4351 1 151 36 ")"
-FatArrow 4353 2 151 38 "=>"
-LBrace 4356 1 151 41 "{"
-RBrace 4357 1 151 42 "}"
-Comma 4358 1 151 43 ","
-Ident 4360 1 151 45 "_"
-FatArrow 4362 2 151 47 "=>"
-LBrace 4365 1 151 50 "{"
-Ident 4367 6 151 52 "expect"
-Ident 4374 5 151 59 "false"
-RBrace 4380 1 151 65 "}"
-RBrace 4382 1 151 67 "}"
-Newline 4383 1 151 68 "\n"
-Ident 4388 5 152 5 "match"
-Ident 4394 2 152 11 "fs"
-Dot 4396 1 152 13 "."
-Ident 4397 5 152 14 "write"
-LParen 4402 1 152 19 "("
-String 4403 3 152 20 "\"b\""
-Comma 4406 1 152 23 ","
-Ident 4408 1 152 25 "b"
-String 4409 2 152 26 "\"\""
-RParen 4411 1 152 28 ")"
-LBrace 4413 1 152 30 "{"
-Ident 4415 2 152 32 "ok"
-LParen 4417 1 152 34 "("
-Ident 4418 1 152 35 "_"
-RParen 4419 1 152 36 ")"
-FatArrow 4421 2 152 38 "=>"
-LBrace 4424 1 152 41 "{"
-RBrace 4425 1 152 42 "}"
-Comma 4426 1 152 43 ","
-Ident 4428 1 152 45 "_"
-FatArrow 4430 2 152 47 "=>"
-LBrace 4433 1 152 50 "{"
-Ident 4435 6 152 52 "expect"
-Ident 4442 5 152 59 "false"
-RBrace 4448 1 152 65 "}"
-RBrace 4450 1 152 67 "}"
-Newline 4451 1 152 68 "\n"
-Ident 4456 5 153 5 "match"
-Ident 4462 2 153 11 "fs"
-Dot 4464 1 153 13 "."
-Ident 4465 4 153 14 "list"
-LParen 4469 1 153 18 "("
-String 4470 3 153 19 "\".\""
-Comma 4473 1 153 22 ","
-Ident 4475 7 153 24 "entries"
-RParen 4482 1 153 31 ")"
-LBrace 4484 1 153 33 "{"
-Newline 4485 1 153 34 "\n"
-Ident 4494 3 154 9 "err"
-LParen 4497 1 154 12 "("
-Ident 4498 7 154 13 "TooMany"
-RParen 4505 1 154 20 ")"
-FatArrow 4507 2 154 22 "=>"
-LBrace 4510 1 154 25 "{"
-Ident 4512 6 154 27 "expect"
-Ident 4519 7 154 34 "entries"
-Dot 4526 1 154 41 "."
-Ident 4527 5 154 42 "count"
-LParen 4532 1 154 47 "("
-RParen 4533 1 154 48 ")"
-EqEq 4535 2 154 50 "=="
-Number 4538 2 154 53 "0L"
-RBrace 4541 1 154 56 "}"
-Comma 4542 1 154 57 ","
-Newline 4543 1 154 58 "\n"
-Ident 4552 1 155 9 "_"
-FatArrow 4554 2 155 11 "=>"
-LBrace 4557 1 155 14 "{"
-Ident 4559 6 155 16 "expect"
-Ident 4566 5 155 23 "false"
-RBrace 4572 1 155 29 "}"
-Newline 4573 1 155 30 "\n"
-RBrace 4578 1 156 5 "}"
-Newline 4579 1 156 6 "\n"
-RBrace 4580 1 157 1 "}"
-Newline 4581 1 157 2 "\n"
-Ident 4583 4 159 1 "test"
-String 4588 48 159 6 "\"directory listing exactly at capacity succeeds\""
-LParen 4637 1 159 55 "("
-Ident 4638 3 159 56 "env"
-Colon 4641 1 159 59 ":"
-Ident 4643 3 159 61 "Env"
-RParen 4646 1 159 64 ")"
-LBrace 4648 1 159 66 "{"
-Newline 4649 1 159 67 "\n"
-Ident 4654 3 160 5 "let"
-Ident 4658 2 160 9 "fs"
-Eq 4661 1 160 12 "="
-Ident 4663 3 160 14 "env"
-Dot 4666 1 160 17 "."
-Ident 4667 2 160 18 "fs"
-Newline 4669 1 160 20 "\n"
-Ident 4674 3 161 5 "var"
-Ident 4678 7 161 9 "entries"
-Colon 4685 1 161 16 ":"
-Ident 4687 4 161 18 "list"
-Lt 4691 1 161 22 "<"
-Ident 4692 8 161 23 "DirEntry"
-Comma 4700 1 161 31 ","
-Number 4702 1 161 33 "1"
-Gt 4703 1 161 34 ">"
-Eq 4705 1 161 36 "="
-Ident 4707 4 161 38 "list"
-LBrace 4712 1 161 43 "{"
-RBrace 4713 1 161 44 "}"
-Newline 4714 1 161 45 "\n"
-Ident 4719 5 162 5 "match"
-Ident 4725 2 162 11 "fs"
-Dot 4727 1 162 13 "."
-Ident 4728 5 162 14 "write"
-LParen 4733 1 162 19 "("
-String 4734 6 162 20 "\"only\""
-Comma 4740 1 162 26 ","
-Ident 4742 1 162 28 "b"
-String 4743 2 162 29 "\"\""
-RParen 4745 1 162 31 ")"
-LBrace 4747 1 162 33 "{"
-Ident 4749 2 162 35 "ok"
-LParen 4751 1 162 37 "("
-Ident 4752 1 162 38 "_"
-RParen 4753 1 162 39 ")"
-FatArrow 4755 2 162 41 "=>"
-LBrace 4758 1 162 44 "{"
-RBrace 4759 1 162 45 "}"
-Comma 4760 1 162 46 ","
-Ident 4762 1 162 48 "_"
-FatArrow 4764 2 162 50 "=>"
-LBrace 4767 1 162 53 "{"
-Ident 4769 6 162 55 "expect"
-Ident 4776 5 162 62 "false"
-RBrace 4782 1 162 68 "}"
-RBrace 4784 1 162 70 "}"
-Newline 4785 1 162 71 "\n"
-Ident 4790 5 163 5 "match"
-Ident 4796 2 163 11 "fs"
-Dot 4798 1 163 13 "."
-Ident 4799 4 163 14 "list"
-LParen 4803 1 163 18 "("
-String 4804 3 163 19 "\".\""
-Comma 4807 1 163 22 ","
-Ident 4809 7 163 24 "entries"
-RParen 4816 1 163 31 ")"
-LBrace 4818 1 163 33 "{"
-Newline 4819 1 163 34 "\n"
-Ident 4828 2 164 9 "ok"
-LParen 4830 1 164 11 "("
-Ident 4831 1 164 12 "_"
-RParen 4832 1 164 13 ")"
-FatArrow 4834 2 164 15 "=>"
-LBrace 4837 1 164 18 "{"
-Ident 4839 6 164 20 "expect"
-Ident 4846 7 164 27 "entries"
-Dot 4853 1 164 34 "."
-Ident 4854 5 164 35 "count"
-LParen 4859 1 164 40 "("
-RParen 4860 1 164 41 ")"
-EqEq 4862 2 164 43 "=="
-Number 4865 2 164 46 "1L"
-RBrace 4868 1 164 49 "}"
-Comma 4869 1 164 50 ","
-Newline 4870 1 164 51 "\n"
-Ident 4879 1 165 9 "_"
-FatArrow 4881 2 165 11 "=>"
-LBrace 4884 1 165 14 "{"
-Ident 4886 6 165 16 "expect"
-Ident 4893 5 165 23 "false"
-RBrace 4899 1 165 29 "}"
-Newline 4900 1 165 30 "\n"
-RBrace 4905 1 166 5 "}"
-Newline 4906 1 166 6 "\n"
-RBrace 4907 1 167 1 "}"
-Newline 4908 1 167 2 "\n"
-Ident 4910 4 169 1 "test"
-String 4915 54 169 6 "\"join stays inside the root and checks its byte bound\""
-LParen 4970 1 169 61 "("
-Ident 4971 3 169 62 "env"
-Colon 4974 1 169 65 ":"
-Ident 4976 3 169 67 "Env"
-RParen 4979 1 169 70 ")"
-LBrace 4981 1 169 72 "{"
-Newline 4982 1 169 73 "\n"
-Ident 4987 3 170 5 "let"
-Ident 4991 2 170 9 "fs"
-Eq 4994 1 170 12 "="
-Ident 4996 3 170 14 "env"
-Dot 4999 1 170 17 "."
-Ident 5000 2 170 18 "fs"
-Newline 5002 1 170 20 "\n"
-Ident 5007 3 171 5 "let"
-Ident 5011 8 171 9 "expected"
-Colon 5019 1 171 17 ":"
-Ident 5021 4 171 19 "Path"
-Eq 5026 1 171 24 "="
-Ident 5028 1 171 26 "b"
-String 5029 14 171 27 "\"folder/child\""
-Newline 5043 1 171 41 "\n"
-Ident 5048 3 172 5 "var"
-Ident 5052 9 172 9 "long_path"
-Colon 5061 1 172 18 ":"
-Ident 5063 4 172 20 "Path"
-Eq 5068 1 172 25 "="
-Ident 5070 4 172 27 "list"
-LBrace 5075 1 172 32 "{"
-RBrace 5076 1 172 33 "}"
-Newline 5077 1 172 34 "\n"
-Ident 5082 3 173 5 "for"
-Ident 5086 1 173 9 "i"
-Ident 5088 2 173 11 "in"
-Number 5091 1 173 14 "0"
-Range 5092 2 173 15 ".."
-Number 5094 4 173 17 "4096"
-LBrace 5099 1 173 22 "{"
-Ident 5101 7 173 24 "discard"
-Ident 5109 9 173 32 "long_path"
-Dot 5118 1 173 41 "."
-Ident 5119 4 173 42 "push"
-LParen 5123 1 173 46 "("
-Number 5124 2 173 47 "97"
-RParen 5126 1 173 49 ")"
-RBrace 5128 1 173 51 "}"
-Newline 5129 1 173 52 "\n"
-Ident 5134 5 174 5 "match"
-Ident 5140 2 174 11 "fs"
-Dot 5142 1 174 13 "."
-Ident 5143 4 174 14 "join"
-LParen 5147 1 174 18 "("
-String 5148 8 174 19 "\"folder\""
-Comma 5156 1 174 27 ","
-String 5158 7 174 29 "\"child\""
-RParen 5165 1 174 36 ")"
-LBrace 5167 1 174 38 "{"
-Newline 5168 1 174 39 "\n"
-Ident 5177 2 175 9 "ok"
-LParen 5179 1 175 11 "("
-Ident 5180 4 175 12 "path"
-RParen 5184 1 175 16 ")"
-FatArrow 5186 2 175 18 "=>"
-LBrace 5189 1 175 21 "{"
-Ident 5191 6 175 23 "expect"
-Ident 5198 4 175 30 "path"
-EqEq 5203 2 175 35 "=="
-Ident 5206 8 175 38 "expected"
-RBrace 5215 1 175 47 "}"
-Comma 5216 1 175 48 ","
-Newline 5217 1 175 49 "\n"
-Ident 5226 1 176 9 "_"
-FatArrow 5228 2 176 11 "=>"
-LBrace 5231 1 176 14 "{"
-Ident 5233 6 176 16 "expect"
-Ident 5240 5 176 23 "false"
-RBrace 5246 1 176 29 "}"
-Newline 5247 1 176 30 "\n"
-RBrace 5252 1 177 5 "}"
-Newline 5253 1 177 6 "\n"
-Ident 5258 5 178 5 "match"
-Ident 5264 2 178 11 "fs"
-Dot 5266 1 178 13 "."
-Ident 5267 4 178 14 "join"
-LParen 5271 1 178 18 "("
-String 5272 8 178 19 "\"folder\""
-Comma 5280 1 178 27 ","
-String 5282 14 178 29 "\"../../escape\""
-RParen 5296 1 178 43 ")"
-LBrace 5298 1 178 45 "{"
-Newline 5299 1 178 46 "\n"
-Ident 5308 3 179 9 "err"
-LParen 5311 1 179 12 "("
-Ident 5312 7 179 13 "Outside"
-RParen 5319 1 179 20 ")"
-FatArrow 5321 2 179 22 "=>"
-LBrace 5324 1 179 25 "{"
-Ident 5326 6 179 27 "expect"
-Ident 5333 4 179 34 "true"
-RBrace 5338 1 179 39 "}"
-Comma 5339 1 179 40 ","
-Newline 5340 1 179 41 "\n"
-Ident 5349 1 180 9 "_"
-FatArrow 5351 2 180 11 "=>"
-LBrace 5354 1 180 14 "{"
-Ident 5356 6 180 16 "expect"
-Ident 5363 5 180 23 "false"
-RBrace 5369 1 180 29 "}"
-Newline 5370 1 180 30 "\n"
-RBrace 5375 1 181 5 "}"
-Newline 5376 1 181 6 "\n"
-Ident 5381 5 182 5 "match"
-Ident 5387 2 182 11 "fs"
-Dot 5389 1 182 13 "."
-Ident 5390 4 182 14 "join"
-LParen 5394 1 182 18 "("
-String 5395 11 182 19 "\"/absolute\""
-Comma 5406 1 182 30 ","
-String 5408 7 182 32 "\"child\""
-RParen 5415 1 182 39 ")"
-LBrace 5417 1 182 41 "{"
-Newline 5418 1 182 42 "\n"
-Ident 5427 3 183 9 "err"
-LParen 5430 1 183 12 "("
-Ident 5431 7 183 13 "Outside"
-RParen 5438 1 183 20 ")"
-FatArrow 5440 2 183 22 "=>"
-LBrace 5443 1 183 25 "{"
-Ident 5445 6 183 27 "expect"
-Ident 5452 4 183 34 "true"
-RBrace 5457 1 183 39 "}"
-Comma 5458 1 183 40 ","
-Newline 5459 1 183 41 "\n"
-Ident 5468 1 184 9 "_"
-FatArrow 5470 2 184 11 "=>"
-LBrace 5473 1 184 14 "{"
-Ident 5475 6 184 16 "expect"
-Ident 5482 5 184 23 "false"
-RBrace 5488 1 184 29 "}"
-Newline 5489 1 184 30 "\n"
-RBrace 5494 1 185 5 "}"
-Newline 5495 1 185 6 "\n"
-Ident 5500 5 186 5 "match"
-Ident 5506 2 186 11 "fs"
-Dot 5508 1 186 13 "."
-Ident 5509 4 186 14 "join"
-LParen 5513 1 186 18 "("
-Ident 5514 9 186 19 "long_path"
-Comma 5523 1 186 28 ","
-String 5525 7 186 30 "\"child\""
-RParen 5532 1 186 37 ")"
-LBrace 5534 1 186 39 "{"
-Newline 5535 1 186 40 "\n"
-Ident 5544 3 187 9 "err"
-LParen 5547 1 187 12 "("
-Ident 5548 8 187 13 "TooLarge"
-RParen 5556 1 187 21 ")"
-FatArrow 5558 2 187 23 "=>"
-LBrace 5561 1 187 26 "{"
-Ident 5563 6 187 28 "expect"
-Ident 5570 4 187 35 "true"
-RBrace 5575 1 187 40 "}"
-Comma 5576 1 187 41 ","
-Newline 5577 1 187 42 "\n"
-Ident 5586 1 188 9 "_"
-FatArrow 5588 2 188 11 "=>"
-LBrace 5591 1 188 14 "{"
-Ident 5593 6 188 16 "expect"
-Ident 5600 5 188 23 "false"
-RBrace 5606 1 188 29 "}"
-Newline 5607 1 188 30 "\n"
-RBrace 5612 1 189 5 "}"
-Newline 5613 1 189 6 "\n"
-RBrace 5614 1 190 1 "}"
-Newline 5615 1 190 2 "\n"
-Eof 5616 0 191 1 ""
+Ident 4191 5 146 5 "match"
+Ident 4197 2 146 11 "fs"
+Dot 4199 1 146 13 "."
+Ident 4200 4 146 14 "list"
+LParen 4204 1 146 18 "("
+String 4205 12 146 19 "\"../outside\""
+Comma 4217 1 146 31 ","
+Ident 4219 7 146 33 "entries"
+RParen 4226 1 146 40 ")"
+LBrace 4228 1 146 42 "{"
+Newline 4229 1 146 43 "\n"
+Ident 4238 3 147 9 "err"
+LParen 4241 1 147 12 "("
+Ident 4242 7 147 13 "Outside"
+RParen 4249 1 147 20 ")"
+FatArrow 4251 2 147 22 "=>"
+LBrace 4254 1 147 25 "{"
+Ident 4256 6 147 27 "expect"
+Ident 4263 7 147 34 "entries"
+Dot 4270 1 147 41 "."
+Ident 4271 5 147 42 "count"
+LParen 4276 1 147 47 "("
+RParen 4277 1 147 48 ")"
+EqEq 4279 2 147 50 "=="
+Number 4282 2 147 53 "0L"
+RBrace 4285 1 147 56 "}"
+Comma 4286 1 147 57 ","
+Newline 4287 1 147 58 "\n"
+Ident 4296 1 148 9 "_"
+FatArrow 4298 2 148 11 "=>"
+LBrace 4301 1 148 14 "{"
+Ident 4303 6 148 16 "expect"
+Ident 4310 5 148 23 "false"
+RBrace 4316 1 148 29 "}"
+Newline 4317 1 148 30 "\n"
+RBrace 4322 1 149 5 "}"
+Newline 4323 1 149 6 "\n"
+RBrace 4324 1 150 1 "}"
+Newline 4325 1 150 2 "\n"
+Ident 4327 4 152 1 "test"
+String 4332 42 152 6 "\"directory listing over capacity is empty\""
+LParen 4375 1 152 49 "("
+Ident 4376 3 152 50 "env"
+Colon 4379 1 152 53 ":"
+Ident 4381 3 152 55 "Env"
+RParen 4384 1 152 58 ")"
+LBrace 4386 1 152 60 "{"
+Newline 4387 1 152 61 "\n"
+Ident 4392 3 153 5 "let"
+Ident 4396 2 153 9 "fs"
+Eq 4399 1 153 12 "="
+Ident 4401 3 153 14 "env"
+Dot 4404 1 153 17 "."
+Ident 4405 2 153 18 "fs"
+Newline 4407 1 153 20 "\n"
+Ident 4412 3 154 5 "var"
+Ident 4416 7 154 9 "entries"
+Colon 4423 1 154 16 ":"
+Ident 4425 4 154 18 "list"
+Lt 4429 1 154 22 "<"
+Ident 4430 8 154 23 "DirEntry"
+Comma 4438 1 154 31 ","
+Number 4440 1 154 33 "1"
+Gt 4441 1 154 34 ">"
+Eq 4443 1 154 36 "="
+Ident 4445 4 154 38 "list"
+LBrace 4450 1 154 43 "{"
+RBrace 4451 1 154 44 "}"
+Newline 4452 1 154 45 "\n"
+Ident 4457 5 155 5 "match"
+Ident 4463 2 155 11 "fs"
+Dot 4465 1 155 13 "."
+Ident 4466 5 155 14 "write"
+LParen 4471 1 155 19 "("
+String 4472 3 155 20 "\"a\""
+Comma 4475 1 155 23 ","
+Ident 4477 1 155 25 "b"
+String 4478 2 155 26 "\"\""
+RParen 4480 1 155 28 ")"
+LBrace 4482 1 155 30 "{"
+Ident 4484 2 155 32 "ok"
+LParen 4486 1 155 34 "("
+Ident 4487 1 155 35 "_"
+RParen 4488 1 155 36 ")"
+FatArrow 4490 2 155 38 "=>"
+LBrace 4493 1 155 41 "{"
+RBrace 4494 1 155 42 "}"
+Comma 4495 1 155 43 ","
+Ident 4497 1 155 45 "_"
+FatArrow 4499 2 155 47 "=>"
+LBrace 4502 1 155 50 "{"
+Ident 4504 6 155 52 "expect"
+Ident 4511 5 155 59 "false"
+RBrace 4517 1 155 65 "}"
+RBrace 4519 1 155 67 "}"
+Newline 4520 1 155 68 "\n"
+Ident 4525 5 156 5 "match"
+Ident 4531 2 156 11 "fs"
+Dot 4533 1 156 13 "."
+Ident 4534 5 156 14 "write"
+LParen 4539 1 156 19 "("
+String 4540 3 156 20 "\"b\""
+Comma 4543 1 156 23 ","
+Ident 4545 1 156 25 "b"
+String 4546 2 156 26 "\"\""
+RParen 4548 1 156 28 ")"
+LBrace 4550 1 156 30 "{"
+Ident 4552 2 156 32 "ok"
+LParen 4554 1 156 34 "("
+Ident 4555 1 156 35 "_"
+RParen 4556 1 156 36 ")"
+FatArrow 4558 2 156 38 "=>"
+LBrace 4561 1 156 41 "{"
+RBrace 4562 1 156 42 "}"
+Comma 4563 1 156 43 ","
+Ident 4565 1 156 45 "_"
+FatArrow 4567 2 156 47 "=>"
+LBrace 4570 1 156 50 "{"
+Ident 4572 6 156 52 "expect"
+Ident 4579 5 156 59 "false"
+RBrace 4585 1 156 65 "}"
+RBrace 4587 1 156 67 "}"
+Newline 4588 1 156 68 "\n"
+Ident 4593 5 157 5 "match"
+Ident 4599 2 157 11 "fs"
+Dot 4601 1 157 13 "."
+Ident 4602 4 157 14 "list"
+LParen 4606 1 157 18 "("
+String 4607 3 157 19 "\".\""
+Comma 4610 1 157 22 ","
+Ident 4612 7 157 24 "entries"
+RParen 4619 1 157 31 ")"
+LBrace 4621 1 157 33 "{"
+Newline 4622 1 157 34 "\n"
+Ident 4631 3 158 9 "err"
+LParen 4634 1 158 12 "("
+Ident 4635 7 158 13 "TooMany"
+RParen 4642 1 158 20 ")"
+FatArrow 4644 2 158 22 "=>"
+LBrace 4647 1 158 25 "{"
+Ident 4649 6 158 27 "expect"
+Ident 4656 7 158 34 "entries"
+Dot 4663 1 158 41 "."
+Ident 4664 5 158 42 "count"
+LParen 4669 1 158 47 "("
+RParen 4670 1 158 48 ")"
+EqEq 4672 2 158 50 "=="
+Number 4675 2 158 53 "0L"
+RBrace 4678 1 158 56 "}"
+Comma 4679 1 158 57 ","
+Newline 4680 1 158 58 "\n"
+Ident 4689 1 159 9 "_"
+FatArrow 4691 2 159 11 "=>"
+LBrace 4694 1 159 14 "{"
+Ident 4696 6 159 16 "expect"
+Ident 4703 5 159 23 "false"
+RBrace 4709 1 159 29 "}"
+Newline 4710 1 159 30 "\n"
+RBrace 4715 1 160 5 "}"
+Newline 4716 1 160 6 "\n"
+RBrace 4717 1 161 1 "}"
+Newline 4718 1 161 2 "\n"
+Ident 4720 4 163 1 "test"
+String 4725 48 163 6 "\"directory listing exactly at capacity succeeds\""
+LParen 4774 1 163 55 "("
+Ident 4775 3 163 56 "env"
+Colon 4778 1 163 59 ":"
+Ident 4780 3 163 61 "Env"
+RParen 4783 1 163 64 ")"
+LBrace 4785 1 163 66 "{"
+Newline 4786 1 163 67 "\n"
+Ident 4791 3 164 5 "let"
+Ident 4795 2 164 9 "fs"
+Eq 4798 1 164 12 "="
+Ident 4800 3 164 14 "env"
+Dot 4803 1 164 17 "."
+Ident 4804 2 164 18 "fs"
+Newline 4806 1 164 20 "\n"
+Ident 4811 3 165 5 "var"
+Ident 4815 7 165 9 "entries"
+Colon 4822 1 165 16 ":"
+Ident 4824 4 165 18 "list"
+Lt 4828 1 165 22 "<"
+Ident 4829 8 165 23 "DirEntry"
+Comma 4837 1 165 31 ","
+Number 4839 1 165 33 "1"
+Gt 4840 1 165 34 ">"
+Eq 4842 1 165 36 "="
+Ident 4844 4 165 38 "list"
+LBrace 4849 1 165 43 "{"
+RBrace 4850 1 165 44 "}"
+Newline 4851 1 165 45 "\n"
+Ident 4856 5 166 5 "match"
+Ident 4862 2 166 11 "fs"
+Dot 4864 1 166 13 "."
+Ident 4865 5 166 14 "write"
+LParen 4870 1 166 19 "("
+String 4871 6 166 20 "\"only\""
+Comma 4877 1 166 26 ","
+Ident 4879 1 166 28 "b"
+String 4880 2 166 29 "\"\""
+RParen 4882 1 166 31 ")"
+LBrace 4884 1 166 33 "{"
+Ident 4886 2 166 35 "ok"
+LParen 4888 1 166 37 "("
+Ident 4889 1 166 38 "_"
+RParen 4890 1 166 39 ")"
+FatArrow 4892 2 166 41 "=>"
+LBrace 4895 1 166 44 "{"
+RBrace 4896 1 166 45 "}"
+Comma 4897 1 166 46 ","
+Ident 4899 1 166 48 "_"
+FatArrow 4901 2 166 50 "=>"
+LBrace 4904 1 166 53 "{"
+Ident 4906 6 166 55 "expect"
+Ident 4913 5 166 62 "false"
+RBrace 4919 1 166 68 "}"
+RBrace 4921 1 166 70 "}"
+Newline 4922 1 166 71 "\n"
+Ident 4927 5 167 5 "match"
+Ident 4933 2 167 11 "fs"
+Dot 4935 1 167 13 "."
+Ident 4936 4 167 14 "list"
+LParen 4940 1 167 18 "("
+String 4941 3 167 19 "\".\""
+Comma 4944 1 167 22 ","
+Ident 4946 7 167 24 "entries"
+RParen 4953 1 167 31 ")"
+LBrace 4955 1 167 33 "{"
+Newline 4956 1 167 34 "\n"
+Ident 4965 2 168 9 "ok"
+LParen 4967 1 168 11 "("
+Ident 4968 1 168 12 "_"
+RParen 4969 1 168 13 ")"
+FatArrow 4971 2 168 15 "=>"
+LBrace 4974 1 168 18 "{"
+Ident 4976 6 168 20 "expect"
+Ident 4983 7 168 27 "entries"
+Dot 4990 1 168 34 "."
+Ident 4991 5 168 35 "count"
+LParen 4996 1 168 40 "("
+RParen 4997 1 168 41 ")"
+EqEq 4999 2 168 43 "=="
+Number 5002 2 168 46 "1L"
+RBrace 5005 1 168 49 "}"
+Comma 5006 1 168 50 ","
+Newline 5007 1 168 51 "\n"
+Ident 5016 1 169 9 "_"
+FatArrow 5018 2 169 11 "=>"
+LBrace 5021 1 169 14 "{"
+Ident 5023 6 169 16 "expect"
+Ident 5030 5 169 23 "false"
+RBrace 5036 1 169 29 "}"
+Newline 5037 1 169 30 "\n"
+RBrace 5042 1 170 5 "}"
+Newline 5043 1 170 6 "\n"
+RBrace 5044 1 171 1 "}"
+Newline 5045 1 171 2 "\n"
+Ident 5047 4 173 1 "test"
+String 5052 67 173 6 "\"read publishes only written bytes and clears the count on failure\""
+LParen 5120 1 173 74 "("
+Ident 5121 3 173 75 "env"
+Colon 5124 1 173 78 ":"
+Ident 5126 3 173 80 "Env"
+RParen 5129 1 173 83 ")"
+LBrace 5131 1 173 85 "{"
+Newline 5132 1 173 86 "\n"
+Ident 5137 3 174 5 "let"
+Ident 5141 2 174 9 "fs"
+Eq 5144 1 174 12 "="
+Ident 5146 3 174 14 "env"
+Dot 5149 1 174 17 "."
+Ident 5150 2 174 18 "fs"
+Newline 5152 1 174 20 "\n"
+Ident 5157 3 175 5 "var"
+Ident 5161 6 175 9 "buffer"
+Colon 5167 1 175 15 ":"
+Ident 5169 4 175 17 "list"
+Lt 5173 1 175 21 "<"
+Ident 5174 4 175 22 "byte"
+Comma 5178 1 175 26 ","
+Number 5180 1 175 28 "3"
+Gt 5181 1 175 29 ">"
+Eq 5183 1 175 31 "="
+Ident 5185 4 175 33 "list"
+LBrace 5190 1 175 38 "{"
+RBrace 5191 1 175 39 "}"
+Newline 5192 1 175 40 "\n"
+Ident 5197 7 176 5 "discard"
+Ident 5205 6 176 13 "buffer"
+Dot 5211 1 176 19 "."
+Ident 5212 4 176 20 "push"
+LParen 5216 1 176 24 "("
+Number 5217 2 176 25 "81"
+RParen 5219 1 176 27 ")"
+Newline 5220 1 176 28 "\n"
+Ident 5225 7 177 5 "discard"
+Ident 5233 6 177 13 "buffer"
+Dot 5239 1 177 19 "."
+Ident 5240 4 177 20 "push"
+LParen 5244 1 177 24 "("
+Number 5245 2 177 25 "82"
+RParen 5247 1 177 27 ")"
+Newline 5248 1 177 28 "\n"
+Ident 5253 5 178 5 "match"
+Ident 5259 2 178 11 "fs"
+Dot 5261 1 178 13 "."
+Ident 5262 5 178 14 "write"
+LParen 5267 1 178 19 "("
+String 5268 7 178 20 "\"short\""
+Comma 5275 1 178 27 ","
+Ident 5277 1 178 29 "b"
+String 5278 3 178 30 "\"a\""
+RParen 5281 1 178 33 ")"
+LBrace 5283 1 178 35 "{"
+Ident 5285 2 178 37 "ok"
+LParen 5287 1 178 39 "("
+Ident 5288 1 178 40 "_"
+RParen 5289 1 178 41 ")"
+FatArrow 5291 2 178 43 "=>"
+LBrace 5294 1 178 46 "{"
+RBrace 5295 1 178 47 "}"
+Comma 5296 1 178 48 ","
+Ident 5298 1 178 50 "_"
+FatArrow 5300 2 178 52 "=>"
+LBrace 5303 1 178 55 "{"
+Ident 5305 6 178 57 "expect"
+Ident 5312 5 178 64 "false"
+RBrace 5318 1 178 70 "}"
+RBrace 5320 1 178 72 "}"
+Newline 5321 1 178 73 "\n"
+Ident 5326 5 179 5 "match"
+Ident 5332 2 179 11 "fs"
+Dot 5334 1 179 13 "."
+Ident 5335 4 179 14 "read"
+LParen 5339 1 179 18 "("
+String 5340 7 179 19 "\"short\""
+Comma 5347 1 179 26 ","
+Ident 5349 6 179 28 "buffer"
+RParen 5355 1 179 34 ")"
+LBrace 5357 1 179 36 "{"
+Newline 5358 1 179 37 "\n"
+Ident 5367 2 180 9 "ok"
+LParen 5369 1 180 11 "("
+Ident 5370 1 180 12 "_"
+RParen 5371 1 180 13 ")"
+FatArrow 5373 2 180 15 "=>"
+LBrace 5376 1 180 18 "{"
+Newline 5377 1 180 19 "\n"
+Ident 5390 6 181 13 "expect"
+Ident 5397 6 181 20 "buffer"
+Dot 5403 1 181 26 "."
+Ident 5404 5 181 27 "count"
+LParen 5409 1 181 32 "("
+RParen 5410 1 181 33 ")"
+EqEq 5412 2 181 35 "=="
+Number 5415 2 181 38 "1L"
+Newline 5417 1 181 40 "\n"
+Ident 5430 6 182 13 "expect"
+Ident 5437 6 182 20 "buffer"
+LBracket 5443 1 182 26 "["
+Number 5444 2 182 27 "0L"
+RBracket 5446 1 182 29 "]"
+EqEq 5448 2 182 31 "=="
+Number 5451 2 182 34 "97"
+Newline 5453 1 182 36 "\n"
+RBrace 5462 1 183 9 "}"
+Comma 5463 1 183 10 ","
+Newline 5464 1 183 11 "\n"
+Ident 5473 1 184 9 "_"
+FatArrow 5475 2 184 11 "=>"
+LBrace 5478 1 184 14 "{"
+Ident 5480 6 184 16 "expect"
+Ident 5487 5 184 23 "false"
+RBrace 5493 1 184 29 "}"
+Newline 5494 1 184 30 "\n"
+RBrace 5499 1 185 5 "}"
+Newline 5500 1 185 6 "\n"
+Ident 5505 5 186 5 "match"
+Ident 5511 2 186 11 "fs"
+Dot 5513 1 186 13 "."
+Ident 5514 4 186 14 "read"
+LParen 5518 1 186 18 "("
+String 5519 9 186 19 "\"missing\""
+Comma 5528 1 186 28 ","
+Ident 5530 6 186 30 "buffer"
+RParen 5536 1 186 36 ")"
+LBrace 5538 1 186 38 "{"
+Newline 5539 1 186 39 "\n"
+Ident 5548 3 187 9 "err"
+LParen 5551 1 187 12 "("
+Ident 5552 8 187 13 "NotFound"
+RParen 5560 1 187 21 ")"
+FatArrow 5562 2 187 23 "=>"
+LBrace 5565 1 187 26 "{"
+Ident 5567 6 187 28 "expect"
+Ident 5574 6 187 35 "buffer"
+Dot 5580 1 187 41 "."
+Ident 5581 5 187 42 "count"
+LParen 5586 1 187 47 "("
+RParen 5587 1 187 48 ")"
+EqEq 5589 2 187 50 "=="
+Number 5592 2 187 53 "0L"
+RBrace 5595 1 187 56 "}"
+Comma 5596 1 187 57 ","
+Newline 5597 1 187 58 "\n"
+Ident 5606 1 188 9 "_"
+FatArrow 5608 2 188 11 "=>"
+LBrace 5611 1 188 14 "{"
+Ident 5613 6 188 16 "expect"
+Ident 5620 5 188 23 "false"
+RBrace 5626 1 188 29 "}"
+Newline 5627 1 188 30 "\n"
+RBrace 5632 1 189 5 "}"
+Newline 5633 1 189 6 "\n"
+RBrace 5634 1 190 1 "}"
+Newline 5635 1 190 2 "\n"
+Ident 5637 4 192 1 "test"
+String 5642 54 192 6 "\"join stays inside the root and checks its byte bound\""
+LParen 5697 1 192 61 "("
+Ident 5698 3 192 62 "env"
+Colon 5701 1 192 65 ":"
+Ident 5703 3 192 67 "Env"
+RParen 5706 1 192 70 ")"
+LBrace 5708 1 192 72 "{"
+Newline 5709 1 192 73 "\n"
+Ident 5714 3 193 5 "let"
+Ident 5718 2 193 9 "fs"
+Eq 5721 1 193 12 "="
+Ident 5723 3 193 14 "env"
+Dot 5726 1 193 17 "."
+Ident 5727 2 193 18 "fs"
+Newline 5729 1 193 20 "\n"
+Ident 5734 3 194 5 "let"
+Ident 5738 8 194 9 "expected"
+Colon 5746 1 194 17 ":"
+Ident 5748 4 194 19 "Path"
+Eq 5753 1 194 24 "="
+Ident 5755 1 194 26 "b"
+String 5756 14 194 27 "\"folder/child\""
+Newline 5770 1 194 41 "\n"
+Ident 5775 3 195 5 "var"
+Ident 5779 9 195 9 "long_path"
+Colon 5788 1 195 18 ":"
+Ident 5790 4 195 20 "Path"
+Eq 5795 1 195 25 "="
+Ident 5797 4 195 27 "list"
+LBrace 5802 1 195 32 "{"
+RBrace 5803 1 195 33 "}"
+Newline 5804 1 195 34 "\n"
+Ident 5809 3 196 5 "for"
+Ident 5813 1 196 9 "i"
+Ident 5815 2 196 11 "in"
+Number 5818 1 196 14 "0"
+Range 5819 2 196 15 ".."
+Number 5821 4 196 17 "4096"
+LBrace 5826 1 196 22 "{"
+Ident 5828 7 196 24 "discard"
+Ident 5836 9 196 32 "long_path"
+Dot 5845 1 196 41 "."
+Ident 5846 4 196 42 "push"
+LParen 5850 1 196 46 "("
+Number 5851 2 196 47 "97"
+RParen 5853 1 196 49 ")"
+RBrace 5855 1 196 51 "}"
+Newline 5856 1 196 52 "\n"
+Ident 5861 5 197 5 "match"
+Ident 5867 2 197 11 "fs"
+Dot 5869 1 197 13 "."
+Ident 5870 4 197 14 "join"
+LParen 5874 1 197 18 "("
+String 5875 8 197 19 "\"folder\""
+Comma 5883 1 197 27 ","
+String 5885 7 197 29 "\"child\""
+RParen 5892 1 197 36 ")"
+LBrace 5894 1 197 38 "{"
+Newline 5895 1 197 39 "\n"
+Ident 5904 2 198 9 "ok"
+LParen 5906 1 198 11 "("
+Ident 5907 4 198 12 "path"
+RParen 5911 1 198 16 ")"
+FatArrow 5913 2 198 18 "=>"
+LBrace 5916 1 198 21 "{"
+Ident 5918 6 198 23 "expect"
+Ident 5925 4 198 30 "path"
+EqEq 5930 2 198 35 "=="
+Ident 5933 8 198 38 "expected"
+RBrace 5942 1 198 47 "}"
+Comma 5943 1 198 48 ","
+Newline 5944 1 198 49 "\n"
+Ident 5953 1 199 9 "_"
+FatArrow 5955 2 199 11 "=>"
+LBrace 5958 1 199 14 "{"
+Ident 5960 6 199 16 "expect"
+Ident 5967 5 199 23 "false"
+RBrace 5973 1 199 29 "}"
+Newline 5974 1 199 30 "\n"
+RBrace 5979 1 200 5 "}"
+Newline 5980 1 200 6 "\n"
+Ident 5985 5 201 5 "match"
+Ident 5991 2 201 11 "fs"
+Dot 5993 1 201 13 "."
+Ident 5994 4 201 14 "join"
+LParen 5998 1 201 18 "("
+String 5999 8 201 19 "\"folder\""
+Comma 6007 1 201 27 ","
+String 6009 14 201 29 "\"../../escape\""
+RParen 6023 1 201 43 ")"
+LBrace 6025 1 201 45 "{"
+Newline 6026 1 201 46 "\n"
+Ident 6035 3 202 9 "err"
+LParen 6038 1 202 12 "("
+Ident 6039 7 202 13 "Outside"
+RParen 6046 1 202 20 ")"
+FatArrow 6048 2 202 22 "=>"
+LBrace 6051 1 202 25 "{"
+Ident 6053 6 202 27 "expect"
+Ident 6060 4 202 34 "true"
+RBrace 6065 1 202 39 "}"
+Comma 6066 1 202 40 ","
+Newline 6067 1 202 41 "\n"
+Ident 6076 1 203 9 "_"
+FatArrow 6078 2 203 11 "=>"
+LBrace 6081 1 203 14 "{"
+Ident 6083 6 203 16 "expect"
+Ident 6090 5 203 23 "false"
+RBrace 6096 1 203 29 "}"
+Newline 6097 1 203 30 "\n"
+RBrace 6102 1 204 5 "}"
+Newline 6103 1 204 6 "\n"
+Ident 6108 5 205 5 "match"
+Ident 6114 2 205 11 "fs"
+Dot 6116 1 205 13 "."
+Ident 6117 4 205 14 "join"
+LParen 6121 1 205 18 "("
+String 6122 11 205 19 "\"/absolute\""
+Comma 6133 1 205 30 ","
+String 6135 7 205 32 "\"child\""
+RParen 6142 1 205 39 ")"
+LBrace 6144 1 205 41 "{"
+Newline 6145 1 205 42 "\n"
+Ident 6154 3 206 9 "err"
+LParen 6157 1 206 12 "("
+Ident 6158 7 206 13 "Outside"
+RParen 6165 1 206 20 ")"
+FatArrow 6167 2 206 22 "=>"
+LBrace 6170 1 206 25 "{"
+Ident 6172 6 206 27 "expect"
+Ident 6179 4 206 34 "true"
+RBrace 6184 1 206 39 "}"
+Comma 6185 1 206 40 ","
+Newline 6186 1 206 41 "\n"
+Ident 6195 1 207 9 "_"
+FatArrow 6197 2 207 11 "=>"
+LBrace 6200 1 207 14 "{"
+Ident 6202 6 207 16 "expect"
+Ident 6209 5 207 23 "false"
+RBrace 6215 1 207 29 "}"
+Newline 6216 1 207 30 "\n"
+RBrace 6221 1 208 5 "}"
+Newline 6222 1 208 6 "\n"
+Ident 6227 5 209 5 "match"
+Ident 6233 2 209 11 "fs"
+Dot 6235 1 209 13 "."
+Ident 6236 4 209 14 "join"
+LParen 6240 1 209 18 "("
+Ident 6241 9 209 19 "long_path"
+Comma 6250 1 209 28 ","
+String 6252 7 209 30 "\"child\""
+RParen 6259 1 209 37 ")"
+LBrace 6261 1 209 39 "{"
+Newline 6262 1 209 40 "\n"
+Ident 6271 3 210 9 "err"
+LParen 6274 1 210 12 "("
+Ident 6275 8 210 13 "TooLarge"
+RParen 6283 1 210 21 ")"
+FatArrow 6285 2 210 23 "=>"
+LBrace 6288 1 210 26 "{"
+Ident 6290 6 210 28 "expect"
+Ident 6297 4 210 35 "true"
+RBrace 6302 1 210 40 "}"
+Comma 6303 1 210 41 ","
+Newline 6304 1 210 42 "\n"
+Ident 6313 1 211 9 "_"
+FatArrow 6315 2 211 11 "=>"
+LBrace 6318 1 211 14 "{"
+Ident 6320 6 211 16 "expect"
+Ident 6327 5 211 23 "false"
+RBrace 6333 1 211 29 "}"
+Newline 6334 1 211 30 "\n"
+RBrace 6339 1 212 5 "}"
+Newline 6340 1 212 6 "\n"
+RBrace 6341 1 213 1 "}"
+Newline 6342 1 213 2 "\n"
+Eof 6343 0 214 1 ""
 == tree ==
 file "main.nl"
-Program 0..5616
+Program 0..6343
   Function 0..106 name="read_data" recursive=false generics=[]
     Parameter 13..19 name="fs" mode=read
       ParameterType 17..19 name="Fs" range=none policy=checked
@@ -2051,10 +2247,10 @@ Program 0..5616
           Block 3561..3577
             Expect 3563..3575 source="expect false"
               Bool 3570..3575 value=false
-  Test 3587..4188 name="directory entries are sorted and include their kind"
+  Test 3587..4325 name="directory entries are sorted and include their kind"
     Parameter 3647..3655 name="env" mode=read
       ParameterType 3652..3655 name="Env" range=none policy=checked
-    Block 3657..4188
+    Block 3657..4325
       Let 3663..3678 mutable=false name="fs"
         Field 3672..3678 name="fs"
           Name 3672..3675 name="env"
@@ -2093,245 +2289,345 @@ Program 0..5616
             Block 3877..3893
               Expect 3879..3891 source="expect false"
                 Bool 3886..3891 value=false
-      Match 3904..4186
-        MethodCall 3910..3931 name="list"
-          Name 3910..3912 name="fs"
-          ByteString 3918..3921 value="."
-          Name 3923..3930 name="entries"
-        MatchArm 3942..4149
-          CasePattern 3942..3947 name="ok"
-            IgnoredPatternBinding 3945..3946
-          Block 3951..4149
-            Expect 3965..3993 source="expect entries.count() == 2L"
-              Binary 3972..3993 op=eq
-                MethodCall 3972..3987 name="count"
-                  Name 3972..3979 name="entries"
-                Integer 3991..3993 magnitude=2 negative=false long_suffix=true
-            Expect 4006..4039 source="expect entries[0L].name[0L] == 97"
-              Binary 4013..4039 op=eq
-                Index 4013..4033
-                  Field 4013..4029 name="name"
-                    Index 4013..4024
-                      Name 4013..4020 name="entries"
-                      Integer 4021..4023 magnitude=0 negative=false long_suffix=true
-                  Integer 4030..4032 magnitude=0 negative=false long_suffix=true
-                Integer 4037..4039 magnitude=97 negative=false long_suffix=false
-            Expect 4052..4092 source="expect entries[0L].kind == FileKind.File"
-              Binary 4059..4092 op=eq
-                Field 4059..4075 name="kind"
-                  Index 4059..4070
-                    Name 4059..4066 name="entries"
-                    Integer 4067..4069 magnitude=0 negative=false long_suffix=true
-                Field 4079..4092 name="File"
-                  Name 4079..4087 name="FileKind"
-            Expect 4105..4139 source="expect entries[1L].name[0L] == 122"
-              Binary 4112..4139 op=eq
-                Index 4112..4132
-                  Field 4112..4128 name="name"
-                    Index 4112..4123
-                      Name 4112..4119 name="entries"
-                      Integer 4120..4122 magnitude=1 negative=false long_suffix=true
-                  Integer 4129..4131 magnitude=0 negative=false long_suffix=true
-                Integer 4136..4139 magnitude=122 negative=false long_suffix=false
-        MatchArm 4159..4180
-          WildcardPattern 4159..4160
-          Block 4164..4180
-            Expect 4166..4178 source="expect false"
-              Bool 4173..4178 value=false
-  Test 4190..4581 name="directory listing over capacity is empty"
-    Parameter 4239..4247 name="env" mode=read
-      ParameterType 4244..4247 name="Env" range=none policy=checked
-    Block 4249..4581
-      Let 4255..4270 mutable=false name="fs"
-        Field 4264..4270 name="fs"
-          Name 4264..4267 name="env"
-      Let 4275..4315 mutable=true name="entries"
-        Annotation 4288..4305 name="list" range=none policy=checked
-          TypeArgument 4293..4301 name="DirEntry" range=none policy=checked
-          Integer 4303..4304 magnitude=1 negative=false long_suffix=false
-        ListLiteral 4308..4315
-      ExpressionStatement 4320..4383
-        Match 4320..4383
-          MethodCall 4326..4344 name="write"
-            Name 4326..4328 name="fs"
-            ByteString 4335..4338 value="a"
-            ByteString 4340..4343 value=""
-          MatchArm 4347..4358
-            CasePattern 4347..4352 name="ok"
-              IgnoredPatternBinding 4350..4351
-            Block 4356..4358
-          MatchArm 4360..4381
-            WildcardPattern 4360..4361
-            Block 4365..4381
-              Expect 4367..4379 source="expect false"
-                Bool 4374..4379 value=false
-      ExpressionStatement 4388..4451
-        Match 4388..4451
-          MethodCall 4394..4412 name="write"
-            Name 4394..4396 name="fs"
-            ByteString 4403..4406 value="b"
-            ByteString 4408..4411 value=""
-          MatchArm 4415..4426
-            CasePattern 4415..4420 name="ok"
-              IgnoredPatternBinding 4418..4419
-            Block 4424..4426
-          MatchArm 4428..4449
-            WildcardPattern 4428..4429
-            Block 4433..4449
-              Expect 4435..4447 source="expect false"
-                Bool 4442..4447 value=false
-      Match 4456..4579
-        MethodCall 4462..4483 name="list"
-          Name 4462..4464 name="fs"
-          ByteString 4470..4473 value="."
-          Name 4475..4482 name="entries"
-        MatchArm 4494..4542
-          CasePattern 4494..4506 name="err"
-            PatternBinding 4498..4505 name="TooMany"
-          Block 4510..4542
-            Expect 4512..4540 source="expect entries.count() == 0L"
-              Binary 4519..4540 op=eq
-                MethodCall 4519..4534 name="count"
-                  Name 4519..4526 name="entries"
-                Integer 4538..4540 magnitude=0 negative=false long_suffix=true
-        MatchArm 4552..4573
-          WildcardPattern 4552..4553
-          Block 4557..4573
-            Expect 4559..4571 source="expect false"
-              Bool 4566..4571 value=false
-  Test 4583..4908 name="directory listing exactly at capacity succeeds"
-    Parameter 4638..4646 name="env" mode=read
-      ParameterType 4643..4646 name="Env" range=none policy=checked
-    Block 4648..4908
-      Let 4654..4669 mutable=false name="fs"
-        Field 4663..4669 name="fs"
-          Name 4663..4666 name="env"
-      Let 4674..4714 mutable=true name="entries"
-        Annotation 4687..4704 name="list" range=none policy=checked
-          TypeArgument 4692..4700 name="DirEntry" range=none policy=checked
-          Integer 4702..4703 magnitude=1 negative=false long_suffix=false
-        ListLiteral 4707..4714
-      ExpressionStatement 4719..4785
-        Match 4719..4785
-          MethodCall 4725..4746 name="write"
-            Name 4725..4727 name="fs"
-            ByteString 4734..4740 value="only"
-            ByteString 4742..4745 value=""
-          MatchArm 4749..4760
-            CasePattern 4749..4754 name="ok"
-              IgnoredPatternBinding 4752..4753
-            Block 4758..4760
-          MatchArm 4762..4783
-            WildcardPattern 4762..4763
-            Block 4767..4783
-              Expect 4769..4781 source="expect false"
-                Bool 4776..4781 value=false
-      Match 4790..4906
-        MethodCall 4796..4817 name="list"
-          Name 4796..4798 name="fs"
-          ByteString 4804..4807 value="."
-          Name 4809..4816 name="entries"
-        MatchArm 4828..4869
-          CasePattern 4828..4833 name="ok"
-            IgnoredPatternBinding 4831..4832
-          Block 4837..4869
-            Expect 4839..4867 source="expect entries.count() == 1L"
-              Binary 4846..4867 op=eq
-                MethodCall 4846..4861 name="count"
-                  Name 4846..4853 name="entries"
-                Integer 4865..4867 magnitude=1 negative=false long_suffix=true
-        MatchArm 4879..4900
-          WildcardPattern 4879..4880
-          Block 4884..4900
-            Expect 4886..4898 source="expect false"
-              Bool 4893..4898 value=false
-  Test 4910..5615 name="join stays inside the root and checks its byte bound"
-    Parameter 4971..4979 name="env" mode=read
-      ParameterType 4976..4979 name="Env" range=none policy=checked
-    Block 4981..5615
-      Let 4987..5002 mutable=false name="fs"
-        Field 4996..5002 name="fs"
-          Name 4996..4999 name="env"
-      Let 5007..5043 mutable=false name="expected"
-        Annotation 5021..5025 name="Path" range=none policy=checked
-        ByteString 5028..5043 value="folder/child"
-      Let 5048..5077 mutable=true name="long_path"
-        Annotation 5063..5067 name="Path" range=none policy=checked
-        ListLiteral 5070..5077
-      For 5082..5129 name="i" inclusive=false
-        Integer 5091..5092 magnitude=0 negative=false long_suffix=false
-        Integer 5094..5098 magnitude=4096 negative=false long_suffix=false
-        Block 5099..5129
-          Discard 5101..5127
-            MethodCall 5109..5127 name="push"
-              Name 5109..5118 name="long_path"
-              Integer 5124..5126 magnitude=97 negative=false long_suffix=false
-      ExpressionStatement 5134..5253
-        Match 5134..5253
-          MethodCall 5140..5166 name="join"
-            Name 5140..5142 name="fs"
-            ByteString 5148..5156 value="folder"
-            ByteString 5158..5165 value="child"
-          MatchArm 5177..5216
-            CasePattern 5177..5185 name="ok"
-              PatternBinding 5180..5184 name="path"
-            Block 5189..5216
-              Expect 5191..5214 source="expect path == expected"
-                Binary 5198..5214 op=eq
-                  Name 5198..5202 name="path"
-                  Name 5206..5214 name="expected"
-          MatchArm 5226..5247
-            WildcardPattern 5226..5227
-            Block 5231..5247
-              Expect 5233..5245 source="expect false"
-                Bool 5240..5245 value=false
-      ExpressionStatement 5258..5376
-        Match 5258..5376
-          MethodCall 5264..5297 name="join"
-            Name 5264..5266 name="fs"
-            ByteString 5272..5280 value="folder"
-            ByteString 5282..5296 value="../../escape"
-          MatchArm 5308..5339
-            CasePattern 5308..5320 name="err"
-              PatternBinding 5312..5319 name="Outside"
-            Block 5324..5339
-              Expect 5326..5337 source="expect true"
-                Bool 5333..5337 value=true
-          MatchArm 5349..5370
-            WildcardPattern 5349..5350
-            Block 5354..5370
-              Expect 5356..5368 source="expect false"
-                Bool 5363..5368 value=false
-      ExpressionStatement 5381..5495
-        Match 5381..5495
-          MethodCall 5387..5416 name="join"
-            Name 5387..5389 name="fs"
-            ByteString 5395..5406 value="/absolute"
-            ByteString 5408..5415 value="child"
-          MatchArm 5427..5458
-            CasePattern 5427..5439 name="err"
-              PatternBinding 5431..5438 name="Outside"
-            Block 5443..5458
-              Expect 5445..5456 source="expect true"
-                Bool 5452..5456 value=true
-          MatchArm 5468..5489
-            WildcardPattern 5468..5469
-            Block 5473..5489
-              Expect 5475..5487 source="expect false"
-                Bool 5482..5487 value=false
-      Match 5500..5613
-        MethodCall 5506..5533 name="join"
-          Name 5506..5508 name="fs"
-          Name 5514..5523 name="long_path"
-          ByteString 5525..5532 value="child"
-        MatchArm 5544..5576
-          CasePattern 5544..5557 name="err"
-            PatternBinding 5548..5556 name="TooLarge"
-          Block 5561..5576
-            Expect 5563..5574 source="expect true"
-              Bool 5570..5574 value=true
-        MatchArm 5586..5607
-          WildcardPattern 5586..5587
-          Block 5591..5607
-            Expect 5593..5605 source="expect false"
-              Bool 5600..5605 value=false
+      ExpressionStatement 3904..4186
+        Match 3904..4186
+          MethodCall 3910..3931 name="list"
+            Name 3910..3912 name="fs"
+            ByteString 3918..3921 value="."
+            Name 3923..3930 name="entries"
+          MatchArm 3942..4149
+            CasePattern 3942..3947 name="ok"
+              IgnoredPatternBinding 3945..3946
+            Block 3951..4149
+              Expect 3965..3993 source="expect entries.count() == 2L"
+                Binary 3972..3993 op=eq
+                  MethodCall 3972..3987 name="count"
+                    Name 3972..3979 name="entries"
+                  Integer 3991..3993 magnitude=2 negative=false long_suffix=true
+              Expect 4006..4039 source="expect entries[0L].name[0L] == 97"
+                Binary 4013..4039 op=eq
+                  Index 4013..4033
+                    Field 4013..4029 name="name"
+                      Index 4013..4024
+                        Name 4013..4020 name="entries"
+                        Integer 4021..4023 magnitude=0 negative=false long_suffix=true
+                    Integer 4030..4032 magnitude=0 negative=false long_suffix=true
+                  Integer 4037..4039 magnitude=97 negative=false long_suffix=false
+              Expect 4052..4092 source="expect entries[0L].kind == FileKind.File"
+                Binary 4059..4092 op=eq
+                  Field 4059..4075 name="kind"
+                    Index 4059..4070
+                      Name 4059..4066 name="entries"
+                      Integer 4067..4069 magnitude=0 negative=false long_suffix=true
+                  Field 4079..4092 name="File"
+                    Name 4079..4087 name="FileKind"
+              Expect 4105..4139 source="expect entries[1L].name[0L] == 122"
+                Binary 4112..4139 op=eq
+                  Index 4112..4132
+                    Field 4112..4128 name="name"
+                      Index 4112..4123
+                        Name 4112..4119 name="entries"
+                        Integer 4120..4122 magnitude=1 negative=false long_suffix=true
+                    Integer 4129..4131 magnitude=0 negative=false long_suffix=true
+                  Integer 4136..4139 magnitude=122 negative=false long_suffix=false
+          MatchArm 4159..4180
+            WildcardPattern 4159..4160
+            Block 4164..4180
+              Expect 4166..4178 source="expect false"
+                Bool 4173..4178 value=false
+      Match 4191..4323
+        MethodCall 4197..4227 name="list"
+          Name 4197..4199 name="fs"
+          ByteString 4205..4217 value="../outside"
+          Name 4219..4226 name="entries"
+        MatchArm 4238..4286
+          CasePattern 4238..4250 name="err"
+            PatternBinding 4242..4249 name="Outside"
+          Block 4254..4286
+            Expect 4256..4284 source="expect entries.count() == 0L"
+              Binary 4263..4284 op=eq
+                MethodCall 4263..4278 name="count"
+                  Name 4263..4270 name="entries"
+                Integer 4282..4284 magnitude=0 negative=false long_suffix=true
+        MatchArm 4296..4317
+          WildcardPattern 4296..4297
+          Block 4301..4317
+            Expect 4303..4315 source="expect false"
+              Bool 4310..4315 value=false
+  Test 4327..4718 name="directory listing over capacity is empty"
+    Parameter 4376..4384 name="env" mode=read
+      ParameterType 4381..4384 name="Env" range=none policy=checked
+    Block 4386..4718
+      Let 4392..4407 mutable=false name="fs"
+        Field 4401..4407 name="fs"
+          Name 4401..4404 name="env"
+      Let 4412..4452 mutable=true name="entries"
+        Annotation 4425..4442 name="list" range=none policy=checked
+          TypeArgument 4430..4438 name="DirEntry" range=none policy=checked
+          Integer 4440..4441 magnitude=1 negative=false long_suffix=false
+        ListLiteral 4445..4452
+      ExpressionStatement 4457..4520
+        Match 4457..4520
+          MethodCall 4463..4481 name="write"
+            Name 4463..4465 name="fs"
+            ByteString 4472..4475 value="a"
+            ByteString 4477..4480 value=""
+          MatchArm 4484..4495
+            CasePattern 4484..4489 name="ok"
+              IgnoredPatternBinding 4487..4488
+            Block 4493..4495
+          MatchArm 4497..4518
+            WildcardPattern 4497..4498
+            Block 4502..4518
+              Expect 4504..4516 source="expect false"
+                Bool 4511..4516 value=false
+      ExpressionStatement 4525..4588
+        Match 4525..4588
+          MethodCall 4531..4549 name="write"
+            Name 4531..4533 name="fs"
+            ByteString 4540..4543 value="b"
+            ByteString 4545..4548 value=""
+          MatchArm 4552..4563
+            CasePattern 4552..4557 name="ok"
+              IgnoredPatternBinding 4555..4556
+            Block 4561..4563
+          MatchArm 4565..4586
+            WildcardPattern 4565..4566
+            Block 4570..4586
+              Expect 4572..4584 source="expect false"
+                Bool 4579..4584 value=false
+      Match 4593..4716
+        MethodCall 4599..4620 name="list"
+          Name 4599..4601 name="fs"
+          ByteString 4607..4610 value="."
+          Name 4612..4619 name="entries"
+        MatchArm 4631..4679
+          CasePattern 4631..4643 name="err"
+            PatternBinding 4635..4642 name="TooMany"
+          Block 4647..4679
+            Expect 4649..4677 source="expect entries.count() == 0L"
+              Binary 4656..4677 op=eq
+                MethodCall 4656..4671 name="count"
+                  Name 4656..4663 name="entries"
+                Integer 4675..4677 magnitude=0 negative=false long_suffix=true
+        MatchArm 4689..4710
+          WildcardPattern 4689..4690
+          Block 4694..4710
+            Expect 4696..4708 source="expect false"
+              Bool 4703..4708 value=false
+  Test 4720..5045 name="directory listing exactly at capacity succeeds"
+    Parameter 4775..4783 name="env" mode=read
+      ParameterType 4780..4783 name="Env" range=none policy=checked
+    Block 4785..5045
+      Let 4791..4806 mutable=false name="fs"
+        Field 4800..4806 name="fs"
+          Name 4800..4803 name="env"
+      Let 4811..4851 mutable=true name="entries"
+        Annotation 4824..4841 name="list" range=none policy=checked
+          TypeArgument 4829..4837 name="DirEntry" range=none policy=checked
+          Integer 4839..4840 magnitude=1 negative=false long_suffix=false
+        ListLiteral 4844..4851
+      ExpressionStatement 4856..4922
+        Match 4856..4922
+          MethodCall 4862..4883 name="write"
+            Name 4862..4864 name="fs"
+            ByteString 4871..4877 value="only"
+            ByteString 4879..4882 value=""
+          MatchArm 4886..4897
+            CasePattern 4886..4891 name="ok"
+              IgnoredPatternBinding 4889..4890
+            Block 4895..4897
+          MatchArm 4899..4920
+            WildcardPattern 4899..4900
+            Block 4904..4920
+              Expect 4906..4918 source="expect false"
+                Bool 4913..4918 value=false
+      Match 4927..5043
+        MethodCall 4933..4954 name="list"
+          Name 4933..4935 name="fs"
+          ByteString 4941..4944 value="."
+          Name 4946..4953 name="entries"
+        MatchArm 4965..5006
+          CasePattern 4965..4970 name="ok"
+            IgnoredPatternBinding 4968..4969
+          Block 4974..5006
+            Expect 4976..5004 source="expect entries.count() == 1L"
+              Binary 4983..5004 op=eq
+                MethodCall 4983..4998 name="count"
+                  Name 4983..4990 name="entries"
+                Integer 5002..5004 magnitude=1 negative=false long_suffix=true
+        MatchArm 5016..5037
+          WildcardPattern 5016..5017
+          Block 5021..5037
+            Expect 5023..5035 source="expect false"
+              Bool 5030..5035 value=false
+  Test 5047..5635 name="read publishes only written bytes and clears the count on failure"
+    Parameter 5121..5129 name="env" mode=read
+      ParameterType 5126..5129 name="Env" range=none policy=checked
+    Block 5131..5635
+      Let 5137..5152 mutable=false name="fs"
+        Field 5146..5152 name="fs"
+          Name 5146..5149 name="env"
+      Let 5157..5192 mutable=true name="buffer"
+        Annotation 5169..5182 name="list" range=none policy=checked
+          TypeArgument 5174..5178 name="byte" range=none policy=checked
+          Integer 5180..5181 magnitude=3 negative=false long_suffix=false
+        ListLiteral 5185..5192
+      Discard 5197..5220
+        MethodCall 5205..5220 name="push"
+          Name 5205..5211 name="buffer"
+          Integer 5217..5219 magnitude=81 negative=false long_suffix=false
+      Discard 5225..5248
+        MethodCall 5233..5248 name="push"
+          Name 5233..5239 name="buffer"
+          Integer 5245..5247 magnitude=82 negative=false long_suffix=false
+      ExpressionStatement 5253..5321
+        Match 5253..5321
+          MethodCall 5259..5282 name="write"
+            Name 5259..5261 name="fs"
+            ByteString 5268..5275 value="short"
+            ByteString 5277..5281 value="a"
+          MatchArm 5285..5296
+            CasePattern 5285..5290 name="ok"
+              IgnoredPatternBinding 5288..5289
+            Block 5294..5296
+          MatchArm 5298..5319
+            WildcardPattern 5298..5299
+            Block 5303..5319
+              Expect 5305..5317 source="expect false"
+                Bool 5312..5317 value=false
+      ExpressionStatement 5326..5500
+        Match 5326..5500
+          MethodCall 5332..5356 name="read"
+            Name 5332..5334 name="fs"
+            ByteString 5340..5347 value="short"
+            Name 5349..5355 name="buffer"
+          MatchArm 5367..5463
+            CasePattern 5367..5372 name="ok"
+              IgnoredPatternBinding 5370..5371
+            Block 5376..5463
+              Expect 5390..5417 source="expect buffer.count() == 1L"
+                Binary 5397..5417 op=eq
+                  MethodCall 5397..5411 name="count"
+                    Name 5397..5403 name="buffer"
+                  Integer 5415..5417 magnitude=1 negative=false long_suffix=true
+              Expect 5430..5453 source="expect buffer[0L] == 97"
+                Binary 5437..5453 op=eq
+                  Index 5437..5447
+                    Name 5437..5443 name="buffer"
+                    Integer 5444..5446 magnitude=0 negative=false long_suffix=true
+                  Integer 5451..5453 magnitude=97 negative=false long_suffix=false
+          MatchArm 5473..5494
+            WildcardPattern 5473..5474
+            Block 5478..5494
+              Expect 5480..5492 source="expect false"
+                Bool 5487..5492 value=false
+      Match 5505..5633
+        MethodCall 5511..5537 name="read"
+          Name 5511..5513 name="fs"
+          ByteString 5519..5528 value="missing"
+          Name 5530..5536 name="buffer"
+        MatchArm 5548..5596
+          CasePattern 5548..5561 name="err"
+            PatternBinding 5552..5560 name="NotFound"
+          Block 5565..5596
+            Expect 5567..5594 source="expect buffer.count() == 0L"
+              Binary 5574..5594 op=eq
+                MethodCall 5574..5588 name="count"
+                  Name 5574..5580 name="buffer"
+                Integer 5592..5594 magnitude=0 negative=false long_suffix=true
+        MatchArm 5606..5627
+          WildcardPattern 5606..5607
+          Block 5611..5627
+            Expect 5613..5625 source="expect false"
+              Bool 5620..5625 value=false
+  Test 5637..6342 name="join stays inside the root and checks its byte bound"
+    Parameter 5698..5706 name="env" mode=read
+      ParameterType 5703..5706 name="Env" range=none policy=checked
+    Block 5708..6342
+      Let 5714..5729 mutable=false name="fs"
+        Field 5723..5729 name="fs"
+          Name 5723..5726 name="env"
+      Let 5734..5770 mutable=false name="expected"
+        Annotation 5748..5752 name="Path" range=none policy=checked
+        ByteString 5755..5770 value="folder/child"
+      Let 5775..5804 mutable=true name="long_path"
+        Annotation 5790..5794 name="Path" range=none policy=checked
+        ListLiteral 5797..5804
+      For 5809..5856 name="i" inclusive=false
+        Integer 5818..5819 magnitude=0 negative=false long_suffix=false
+        Integer 5821..5825 magnitude=4096 negative=false long_suffix=false
+        Block 5826..5856
+          Discard 5828..5854
+            MethodCall 5836..5854 name="push"
+              Name 5836..5845 name="long_path"
+              Integer 5851..5853 magnitude=97 negative=false long_suffix=false
+      ExpressionStatement 5861..5980
+        Match 5861..5980
+          MethodCall 5867..5893 name="join"
+            Name 5867..5869 name="fs"
+            ByteString 5875..5883 value="folder"
+            ByteString 5885..5892 value="child"
+          MatchArm 5904..5943
+            CasePattern 5904..5912 name="ok"
+              PatternBinding 5907..5911 name="path"
+            Block 5916..5943
+              Expect 5918..5941 source="expect path == expected"
+                Binary 5925..5941 op=eq
+                  Name 5925..5929 name="path"
+                  Name 5933..5941 name="expected"
+          MatchArm 5953..5974
+            WildcardPattern 5953..5954
+            Block 5958..5974
+              Expect 5960..5972 source="expect false"
+                Bool 5967..5972 value=false
+      ExpressionStatement 5985..6103
+        Match 5985..6103
+          MethodCall 5991..6024 name="join"
+            Name 5991..5993 name="fs"
+            ByteString 5999..6007 value="folder"
+            ByteString 6009..6023 value="../../escape"
+          MatchArm 6035..6066
+            CasePattern 6035..6047 name="err"
+              PatternBinding 6039..6046 name="Outside"
+            Block 6051..6066
+              Expect 6053..6064 source="expect true"
+                Bool 6060..6064 value=true
+          MatchArm 6076..6097
+            WildcardPattern 6076..6077
+            Block 6081..6097
+              Expect 6083..6095 source="expect false"
+                Bool 6090..6095 value=false
+      ExpressionStatement 6108..6222
+        Match 6108..6222
+          MethodCall 6114..6143 name="join"
+            Name 6114..6116 name="fs"
+            ByteString 6122..6133 value="/absolute"
+            ByteString 6135..6142 value="child"
+          MatchArm 6154..6185
+            CasePattern 6154..6166 name="err"
+              PatternBinding 6158..6165 name="Outside"
+            Block 6170..6185
+              Expect 6172..6183 source="expect true"
+                Bool 6179..6183 value=true
+          MatchArm 6195..6216
+            WildcardPattern 6195..6196
+            Block 6200..6216
+              Expect 6202..6214 source="expect false"
+                Bool 6209..6214 value=false
+      Match 6227..6340
+        MethodCall 6233..6260 name="join"
+          Name 6233..6235 name="fs"
+          Name 6241..6250 name="long_path"
+          ByteString 6252..6259 value="child"
+        MatchArm 6271..6303
+          CasePattern 6271..6284 name="err"
+            PatternBinding 6275..6283 name="TooLarge"
+          Block 6288..6303
+            Expect 6290..6301 source="expect true"
+              Bool 6297..6301 value=true
+        MatchArm 6313..6334
+          WildcardPattern 6313..6314
+          Block 6318..6334
+            Expect 6320..6332 source="expect false"
+              Bool 6327..6332 value=false

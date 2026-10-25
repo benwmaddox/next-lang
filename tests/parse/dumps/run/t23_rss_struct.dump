@@ -1,0 +1,81 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 6 1 8 "Holder"
+LBrace 14 1 1 15 "{"
+Ident 16 6 1 17 "values"
+Colon 22 1 1 23 ":"
+Ident 24 4 1 25 "list"
+Lt 28 1 1 29 "<"
+Ident 29 4 1 30 "long"
+Comma 33 1 1 34 ","
+Number 35 7 1 36 "6000000"
+Gt 42 1 1 43 ">"
+Eq 44 1 1 45 "="
+Ident 46 4 1 47 "list"
+LBrace 51 1 1 52 "{"
+RBrace 52 1 1 53 "}"
+RBrace 54 1 1 55 "}"
+Newline 55 1 1 56 "\n"
+Ident 57 2 3 1 "fn"
+Ident 60 4 3 4 "main"
+LParen 64 1 3 8 "("
+RParen 65 1 3 9 ")"
+LBrace 67 1 3 11 "{"
+Newline 68 1 3 12 "\n"
+Ident 73 3 4 5 "var"
+Ident 77 6 4 9 "holder"
+Colon 83 1 4 15 ":"
+Ident 85 6 4 17 "Holder"
+Eq 92 1 4 24 "="
+Ident 94 6 4 26 "Holder"
+LBrace 101 1 4 33 "{"
+RBrace 102 1 4 34 "}"
+Newline 103 1 4 35 "\n"
+Ident 108 7 5 5 "discard"
+Ident 116 6 5 13 "holder"
+Dot 122 1 5 19 "."
+Ident 123 6 5 20 "values"
+Dot 129 1 5 26 "."
+Ident 130 4 5 27 "push"
+LParen 134 1 5 31 "("
+Number 135 3 5 32 "24L"
+RParen 138 1 5 35 ")"
+Newline 139 1 5 36 "\n"
+Ident 144 5 6 5 "print"
+LParen 149 1 6 10 "("
+Ident 150 6 6 11 "holder"
+Dot 156 1 6 17 "."
+Ident 157 6 6 18 "values"
+LBracket 163 1 6 24 "["
+Number 164 2 6 25 "0L"
+RBracket 166 1 6 27 "]"
+RParen 167 1 6 28 ")"
+Newline 168 1 6 29 "\n"
+RBrace 169 1 7 1 "}"
+Newline 170 1 7 2 "\n"
+Eof 171 0 8 1 ""
+== tree ==
+file "main.nl"
+Program 0..171
+  Struct 0..55 name="Holder" generics=[]
+    StructField 16..53 name="values"
+      FieldType 24..43 name="list" range=none policy=checked
+        TypeArgument 29..33 name="long" range=none policy=checked
+        Integer 35..42 magnitude=6000000 negative=false long_suffix=false
+      ListLiteral 46..53
+  Function 57..170 name="main" recursive=false generics=[]
+    Block 67..170
+      Let 73..103 mutable=true name="holder"
+        Annotation 85..91 name="Holder" range=none policy=checked
+        StructInit 94..103 name="Holder"
+      Discard 108..139
+        MethodCall 116..139 name="push"
+          Field 116..129 name="values"
+            Name 116..122 name="holder"
+          Integer 135..138 magnitude=24 negative=false long_suffix=true
+      Call 144..168 name="print"
+        Index 150..167
+          Field 150..163 name="values"
+            Name 150..156 name="holder"
+          Integer 164..166 magnitude=0 negative=false long_suffix=true

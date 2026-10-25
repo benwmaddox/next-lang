@@ -1364,6 +1364,7 @@ impl Evaluator<'_> {
             slots,
             generations,
             free,
+            high_water,
         } = pool
         else {
             return Err(self.failure(span, "pool operation receiver had the wrong value"));
@@ -1384,13 +1385,24 @@ impl Evaluator<'_> {
                 slots.iter().filter(|slot| slot.is_some()).count() as i128,
             )),
             PoolOp::Add => {
-                if slots.len() != capacity || generations.len() != capacity || free.is_empty() {
+                if slots.len() != capacity || generations.len() != capacity {
                     return Ok(result_full());
                 }
-                let slot = free.pop().expect("nonempty free list");
+                let slot = if let Some(slot) = free.pop() {
+                    slot
+                } else if *high_water < capacity {
+                    let slot = *high_water as u32;
+                    *high_water += 1;
+                    slot
+                } else {
+                    return Ok(result_full());
+                };
                 let index = slot as usize;
                 if index >= capacity || slots[index].is_some() {
                     return Err(self.failure(span, "constant pool free list was inconsistent"));
+                }
+                if generations[index] == 0 {
+                    generations[index] = 1;
                 }
                 slots[index] = Some(args[0].clone());
                 let id = ((generations[index] as u64) << 32) | slot as u64;
@@ -1411,6 +1423,7 @@ impl Evaluator<'_> {
                 let slot = (id & u32::MAX as u64) as usize;
                 let generation = (id >> 32) as u32;
                 let valid = slot < capacity
+                    && slot < *high_water
                     && slots.get(slot).is_some_and(Option::is_some)
                     && generations
                         .get(slot)
@@ -1859,9 +1872,13 @@ impl Evaluator<'_> {
                     };
                     let snapshot = if *is_pool {
                         match &collection {
-                            ConstValue::Pool { slots, .. } => {
-                                slots.iter().map(Option::is_some).collect::<Vec<_>>()
-                            }
+                            ConstValue::Pool {
+                                slots, high_water, ..
+                            } => slots
+                                .iter()
+                                .take(*high_water)
+                                .map(Option::is_some)
+                                .collect::<Vec<_>>(),
                             _ => {
                                 return Err(
                                     self.failure(stmt.span, "pool loop source had the wrong value")
@@ -2230,7 +2247,8 @@ impl Evaluator<'_> {
                 ConstValue::Pool {
                     slots: vec![None; capacity],
                     generations: vec![1; capacity],
-                    free: (0..capacity as u32).rev().collect(),
+                    free: Vec::new(),
+                    high_water: 0,
                 }
             }
             TExprKind::EmptyMap => ConstValue::Map(Vec::new()),
@@ -3435,6 +3453,7 @@ mod pool_tests {
             slots: vec![Some(ConstValue::Integer(7))],
             generations: vec![1],
             free: Vec::new(),
+            high_water: 1,
         };
         let out_of_range = evaluator
             .eval_pool_op(
@@ -3458,6 +3477,7 @@ mod pool_tests {
                 slots: vec![Some(ConstValue::Integer(7))],
                 generations: vec![1],
                 free: Vec::new(),
+                high_water: 1,
             }
         );
 
@@ -3467,6 +3487,7 @@ mod pool_tests {
             slots: vec![Some(ConstValue::Integer(9))],
             generations: vec![generation],
             free: Vec::new(),
+            high_water: 1,
         };
         let removed = evaluator
             .eval_pool_op(
@@ -3490,6 +3511,7 @@ mod pool_tests {
                 slots: vec![None],
                 generations: vec![u32::MAX],
                 free: Vec::new(),
+                high_water: 1,
             }
         );
         let full = evaluator
@@ -3517,6 +3539,7 @@ mod pool_tests {
                 slots: vec![None],
                 generations: vec![u32::MAX],
                 free: Vec::new(),
+                high_water: 1,
             }
         );
     }
@@ -3564,18 +3587,138 @@ mod pool_tests {
             slots: vec![Some(ConstValue::Integer(7)), None],
             generations: vec![3, 10],
             free: vec![1],
+            high_water: 1,
         };
         let right = ConstValue::Pool {
             slots: vec![Some(ConstValue::Integer(7)), None],
             generations: vec![3, 99],
-            free: vec![0],
+            free: Vec::new(),
+            high_water: 2,
         };
         assert!(evaluator.values_equal(Ty(5), &left, &right));
         let different_live_generation = ConstValue::Pool {
             slots: vec![Some(ConstValue::Integer(7)), None],
             generations: vec![4, 99],
-            free: vec![0],
+            free: Vec::new(),
+            high_water: 2,
         };
         assert!(!evaluator.values_equal(Ty(5), &left, &different_live_generation));
+    }
+
+    #[test]
+    fn pool_reuses_freed_slots_before_growing_the_high_water_mark() {
+        let evaluator = evaluator(&[]);
+        let mut pool = ConstValue::Pool {
+            slots: vec![None, None, None],
+            generations: vec![7, 1, 1],
+            free: vec![0],
+            high_water: 1,
+        };
+        let reused = evaluator
+            .eval_pool_op(
+                PoolOp::Add,
+                &mut pool,
+                vec![ConstValue::Integer(42)],
+                3,
+                Span::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            reused,
+            ConstValue::Enum {
+                case_index: 0,
+                payload: vec![ConstValue::Integer((7u64 << 32) as i128)],
+            }
+        );
+        assert_eq!(
+            pool,
+            ConstValue::Pool {
+                slots: vec![Some(ConstValue::Integer(42)), None, None],
+                generations: vec![7, 1, 1],
+                free: Vec::new(),
+                high_water: 1,
+            }
+        );
+
+        let fresh = evaluator
+            .eval_pool_op(
+                PoolOp::Add,
+                &mut pool,
+                vec![ConstValue::Integer(43)],
+                3,
+                Span::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            fresh,
+            ConstValue::Enum {
+                case_index: 0,
+                payload: vec![ConstValue::Integer(((1u64 << 32) | 1) as i128)],
+            }
+        );
+        assert!(matches!(pool, ConstValue::Pool { high_water: 2, .. }));
+    }
+
+    #[test]
+    fn retired_slots_are_skipped_and_ids_past_high_water_are_stale() {
+        let evaluator = evaluator(&[]);
+        let mut pool = ConstValue::Pool {
+            slots: vec![None, None],
+            generations: vec![u32::MAX, 1],
+            free: Vec::new(),
+            high_water: 1,
+        };
+        let retired_id = ((u32::MAX as u64) << 32) as i128;
+        let stale = evaluator
+            .eval_pool_op(
+                PoolOp::Get,
+                &mut pool,
+                vec![ConstValue::Integer(retired_id)],
+                2,
+                Span::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            stale,
+            ConstValue::Enum {
+                case_index: 1,
+                payload: Vec::new()
+            }
+        );
+
+        let past_mark = evaluator
+            .eval_pool_op(
+                PoolOp::Get,
+                &mut pool,
+                vec![ConstValue::Integer(((1u64 << 32) | 1) as i128)],
+                2,
+                Span::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            past_mark,
+            ConstValue::Enum {
+                case_index: 1,
+                payload: Vec::new()
+            }
+        );
+
+        let added = evaluator
+            .eval_pool_op(
+                PoolOp::Add,
+                &mut pool,
+                vec![ConstValue::Integer(9)],
+                2,
+                Span::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            added,
+            ConstValue::Enum {
+                case_index: 0,
+                payload: vec![ConstValue::Integer(((1u64 << 32) | 1) as i128)],
+            }
+        );
+        assert!(matches!(pool, ConstValue::Pool { high_water: 2, .. }));
     }
 }

@@ -1,0 +1,91 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "make"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+Arrow 10 2 1 11 "->"
+Ident 13 4 1 14 "list"
+Lt 17 1 1 18 "<"
+Ident 18 4 1 19 "long"
+Comma 22 1 1 23 ","
+Number 24 7 1 25 "2000000"
+Gt 31 1 1 32 ">"
+LBrace 33 1 1 34 "{"
+Newline 34 1 1 35 "\n"
+Ident 39 3 2 5 "var"
+Ident 43 6 2 9 "values"
+Colon 49 1 2 15 ":"
+Ident 51 4 2 17 "list"
+Lt 55 1 2 21 "<"
+Ident 56 4 2 22 "long"
+Comma 60 1 2 26 ","
+Number 62 7 2 28 "2000000"
+Gt 69 1 2 35 ">"
+Eq 71 1 2 37 "="
+Ident 73 4 2 39 "list"
+LBrace 78 1 2 44 "{"
+RBrace 79 1 2 45 "}"
+Newline 80 1 2 46 "\n"
+Ident 85 7 3 5 "discard"
+Ident 93 6 3 13 "values"
+Dot 99 1 3 19 "."
+Ident 100 4 3 20 "push"
+LParen 104 1 3 24 "("
+Number 105 3 3 25 "25L"
+RParen 108 1 3 28 ")"
+Newline 109 1 3 29 "\n"
+Ident 114 6 4 5 "values"
+Newline 120 1 4 11 "\n"
+RBrace 121 1 5 1 "}"
+Newline 122 1 5 2 "\n"
+Ident 124 2 7 1 "fn"
+Ident 127 4 7 4 "main"
+LParen 131 1 7 8 "("
+RParen 132 1 7 9 ")"
+LBrace 134 1 7 11 "{"
+Newline 135 1 7 12 "\n"
+Ident 140 3 8 5 "let"
+Ident 144 6 8 9 "values"
+Eq 151 1 8 16 "="
+Ident 153 4 8 18 "make"
+LParen 157 1 8 22 "("
+RParen 158 1 8 23 ")"
+Newline 159 1 8 24 "\n"
+Ident 164 5 9 5 "print"
+LParen 169 1 9 10 "("
+Ident 170 6 9 11 "values"
+LBracket 176 1 9 17 "["
+Number 177 2 9 18 "0L"
+RBracket 179 1 9 20 "]"
+RParen 180 1 9 21 ")"
+Newline 181 1 9 22 "\n"
+RBrace 182 1 10 1 "}"
+Newline 183 1 10 2 "\n"
+Eof 184 0 11 1 ""
+== tree ==
+file "main.nl"
+Program 0..184
+  Function 0..122 name="make" recursive=false generics=[]
+    ResultType 13..32 name="list" range=none policy=checked
+      TypeArgument 18..22 name="long" range=none policy=checked
+      Integer 24..31 magnitude=2000000 negative=false long_suffix=false
+    Block 33..122
+      Let 39..80 mutable=true name="values"
+        Annotation 51..70 name="list" range=none policy=checked
+          TypeArgument 56..60 name="long" range=none policy=checked
+          Integer 62..69 magnitude=2000000 negative=false long_suffix=false
+        ListLiteral 73..80
+      Discard 85..109
+        MethodCall 93..109 name="push"
+          Name 93..99 name="values"
+          Integer 105..108 magnitude=25 negative=false long_suffix=true
+      Name 114..120 name="values"
+  Function 124..183 name="main" recursive=false generics=[]
+    Block 134..183
+      Let 140..159 mutable=false name="values"
+        Call 153..159 name="make"
+      Call 164..181 name="print"
+        Index 170..180
+          Name 170..176 name="values"
+          Integer 177..179 magnitude=0 negative=false long_suffix=true

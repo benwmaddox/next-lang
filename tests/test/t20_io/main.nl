@@ -143,6 +143,10 @@ test "directory entries are sorted and include their kind" (env: Env) {
         },
         _ => { expect false }
     }
+    match fs.list("../outside", entries) {
+        err(Outside) => { expect entries.count() == 0L },
+        _ => { expect false }
+    }
 }
 
 test "directory listing over capacity is empty" (env: Env) {
@@ -162,6 +166,25 @@ test "directory listing exactly at capacity succeeds" (env: Env) {
     match fs.write("only", b"") { ok(_) => {}, _ => { expect false } }
     match fs.list(".", entries) {
         ok(_) => { expect entries.count() == 1L },
+        _ => { expect false }
+    }
+}
+
+test "read publishes only written bytes and clears the count on failure" (env: Env) {
+    let fs = env.fs
+    var buffer: list<byte, 3> = list {}
+    discard buffer.push(81)
+    discard buffer.push(82)
+    match fs.write("short", b"a") { ok(_) => {}, _ => { expect false } }
+    match fs.read("short", buffer) {
+        ok(_) => {
+            expect buffer.count() == 1L
+            expect buffer[0L] == 97
+        },
+        _ => { expect false }
+    }
+    match fs.read("missing", buffer) {
+        err(NotFound) => { expect buffer.count() == 0L },
         _ => { expect false }
     }
 }

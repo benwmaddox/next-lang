@@ -2400,8 +2400,9 @@ impl Checker {
                         )?,
                     )?;
                 }
-                // occupied flags, generations, reusable-slot stack, active and free counts.
-                checked_add(16 + (*capacity as u128) * 9, payload)?
+                // occupied flags, generations, reusable-slot stack, active/free counts,
+                // plus the initialized-slot high-water mark.
+                checked_add(24 + (*capacity as u128) * 9, payload)?
             }
             TTypeKind::Id { .. } | TTypeKind::Capability(_) => 8,
             TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {

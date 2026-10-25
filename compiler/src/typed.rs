@@ -288,6 +288,7 @@ pub enum ConstValue {
         slots: Vec<Option<ConstValue>>,
         generations: Vec<u32>,
         free: Vec<u32>,
+        high_water: usize,
     },
     Function(usize),
     Enum {

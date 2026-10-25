@@ -699,7 +699,10 @@ void nl_print_bool_raw(_Bool value) {
 }
 
 void nl_print_text(const char *value) {
-    if (value) nl_print_bytes((const unsigned char *)value, (uint64_t)strlen(value));
+    if (value) {
+        uint64_t length = (uint64_t)strlen(value);
+        nl_print_bytes((const unsigned char *)value, length);
+    }
 }
 
 void nl_print_newline(void) {
@@ -942,14 +945,13 @@ void nl_fs_read(void *handle, void *path_value, int path_is_argument, uint64_t p
                 void *buffer, uint64_t capacity, void *result) {
     int error_tag = -1, error_code = 0;
     char path[4097];
-    if (!nl_extract_path(path_value, path_is_argument, path_capacity, path, &error_tag, &error_code)) {
-        if (buffer && capacity <= (SIZE_MAX - 8) / 4) memset(buffer, 0, 8 + (size_t)capacity * 4);
-        nl_io_error(result, error_tag, error_code); return;
-    }
+    if (buffer) *(int64_t *)buffer = 0;
     if (capacity > (SIZE_MAX - 8) / 4 || !buffer) {
         nl_io_error(result, 2, 0); return;
     }
-    memset(buffer, 0, 8 + (size_t)capacity * 4);
+    if (!nl_extract_path(path_value, path_is_argument, path_capacity, path, &error_tag, &error_code)) {
+        nl_io_error(result, error_tag, error_code); return;
+    }
     int fd = nl_open_beneath(((nl_fs_handle *)handle)->root_fd, path, O_RDONLY | O_CLOEXEC, 0);
     if (fd < 0) { int error = errno; nl_io_error(result, nl_errno_error(error), error); return; }
     int32_t *items = (int32_t *)((unsigned char *)buffer + 8);
@@ -977,7 +979,7 @@ void nl_fs_read(void *handle, void *path_value, int path_is_argument, uint64_t p
     }
     close(fd);
     if (failure || error_tag == 2) {
-        memset(buffer, 0, 8 + (size_t)capacity * 4);
+        *(int64_t *)buffer = 0;
         nl_io_error(result, error_tag == 2 ? 2 : nl_errno_error(failure), failure);
         return;
     }
@@ -999,8 +1001,8 @@ void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t p
                 void *output, uint64_t capacity, void *result) {
     int error_tag = -1, error_code = 0;
     char path[4097];
+    if (output) *(int64_t *)output = 0;
     if (capacity > (SIZE_MAX - 8) / 16396 || !output) { nl_io_error(result, 3, 0); return; }
-    memset(output, 0, 8 + (size_t)capacity * 16396);
     if (!nl_extract_path(path_value, path_is_argument, path_capacity, path, &error_tag, &error_code)) {
         nl_io_error(result, error_tag, error_code); return;
     }
@@ -1045,7 +1047,6 @@ void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t p
         free(items);
         nl_io_error(result, failure_tag, failure_code); return;
     }
-    *(int64_t *)output = (int64_t)count;
     unsigned char *base = (unsigned char *)output;
     for (size_t i = 0; i < count; ++i) {
         unsigned char *name = base + 8 + i * 16392;
@@ -1056,6 +1057,7 @@ void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t p
         *kind = items[i].kind;
         free(items[i].name);
     }
+    *(int64_t *)output = (int64_t)count;
     free(items);
     nl_io_error(result, -1, 0);
 }

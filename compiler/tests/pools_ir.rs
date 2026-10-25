@@ -40,6 +40,10 @@ fn owners_are_erased_and_pool_lanes_include_metadata() {
             && pool_layout.contains("[2 x %nl.ty."),
         "pool slots need occupied/generation/free-list metadata and per-field lanes: {pool_layout}"
     );
+    assert!(
+        pool_layout.contains("[2 x i32], i64, [2 x %nl.ty."),
+        "pool storage must include a high-water mark before its live-value lanes: {pool_layout}"
+    );
     let list_layout = nested
         .llvm_ir
         .lines()

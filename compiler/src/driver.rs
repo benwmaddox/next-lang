@@ -519,6 +519,7 @@ pub fn inspect_memory(package: &Path, allow_overcommit: bool) -> Result<(), Pack
         if allow_overcommit { "yes" } else { "no" }
     );
     println!("local storage: excluded from startup claim");
+    println!("map/set initialization: 9 bytes per slot (8-byte bucket plus 1-byte occupancy flag)");
     if compiled.memory.startup_claim_bytes > compiled.memory.globals_budget_bytes {
         println!(
             "warning: globals use {} bytes, above globals_budget of {} bytes",

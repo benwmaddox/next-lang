@@ -106,6 +106,37 @@ fn fixed_large_values_use_regions_and_large_results_use_destinations() {
 }
 
 #[test]
+fn returned_collection_local_is_built_in_the_caller_destination() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler crate has a workspace root");
+    let package = root.join("tests/run/t23_rss_return");
+    let compiled = compile_package(&package).expect("returned-list probe compiles");
+    let make = compiled
+        .contracts
+        .iter()
+        .find(|contract| contract.function == "make")
+        .expect("make has a stack contract");
+
+    assert_eq!(make.byte_requirement, 0);
+    assert!(
+        make.result_placement
+            .contains("caller destination (16000008 bytes)")
+    );
+
+    let make_ir = compiled
+        .llvm_ir
+        .split("; function make\n")
+        .nth(1)
+        .expect("make is emitted")
+        .split("}\n")
+        .next()
+        .expect("make has a body");
+    assert!(make_ir.contains("ptr %nl.result, i64 0"));
+    assert!(!make_ir.contains("@nl_stack_alloc"));
+}
+
+#[test]
 fn gathered_large_struct_arguments_count_in_the_caller_contract() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

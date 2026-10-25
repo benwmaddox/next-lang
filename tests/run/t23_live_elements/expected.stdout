@@ -1,0 +1,57 @@
+[1, 2]
+[1, 2]
+[1, 2]
+2
+SmallNode { values: [2, 3, 3] }
+true
+10
+Node { id: 3, values: [10, 11, 90], spare: [] }
+none
+Node { id: 3, values: [10, 11, 90, 91], spare: [] }
+false
+[Node { id: 3, values: [10, 11, 90, 91], spare: [] }]
+[Node { id: 0, values: [], spare: [] }, Node { id: 0, values: [], spare: [] }]
+[[Node { id: 0, values: [], spare: [] }, Node { id: 0, values: [20], spare: [] }]]
+[[21, 22]]
+true
+some([30, 31])
+none
+some([30, 31])
+none
+[30, 31]
+[30, 31]
+[50, 51]
+[30, 31]
+some(60)
+some([70, 71])
+some(some([71, 72]))
+ok(Node { id: 7, values: [40, 41], spare: [] })
+err(Bad)
+ok(Node { id: 7, values: [40, 41], spare: [] })
+err(Bad)
+Node { id: 7, values: [40, 41], spare: [] }
+some([80, 81])
+{keep: [80, 81]}
+{1: [1, 2], 13: [13, 14]}
+{1: [1, 2], 13: [13, 14], 17: [17, 18], 21: [21, 22]}
+{1: [1, 2], 13: [13, 14], 17: [17, 18], 21: [21, 22]}
+some([21, 22])
+some(Stored { values: [100, 101] })
+none
+false
+pool{0:2 => Stored { values: [110, 111] }}
+true
+queue[3, 4, 5]
+queue[2, 3, 4]
+ring[3, 4, 5]
+ring[2, 3, 4]
+1
+0
+0
+0
+16
+16
+4096
+[]
+true
+0

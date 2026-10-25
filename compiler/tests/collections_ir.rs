@@ -97,3 +97,25 @@ fn queue_ring_and_grid_fields_keep_inline_soa_layout() {
         "nested queue, ring and grid values must be inline lanes in Board[2]: {board_array}"
     );
 }
+
+#[test]
+fn empty_large_lists_do_not_clear_their_element_lanes() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler directory has a workspace root");
+    let package = root.join("tests/run/t23_rss_list");
+    let compiled = compile_package(&package).expect("T23 large-list package should compile");
+    let main = compiled
+        .llvm_ir
+        .split("; function main\n")
+        .nth(1)
+        .expect("main function is emitted")
+        .split("}\n")
+        .next()
+        .expect("main function has a closing brace");
+    assert!(main.contains("[6000000 x i64]"));
+    assert!(
+        !main.contains("llvm.memset"),
+        "an empty list and its first push must not clear unused element lanes"
+    );
+}

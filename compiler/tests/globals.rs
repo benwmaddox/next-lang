@@ -62,6 +62,17 @@ fn memory_inspection_reports_alignment_headroom_budget_and_waiver() {
     assert!(report.contains("local storage: excluded"));
     assert!(report.contains("above globals_budget of 0 bytes"));
 
+    let map_package = root.join("tests/run/t23_rss_map");
+    let map_report = Command::new(env!("CARGO_BIN_EXE_nlc"))
+        .args(["inspect", "memory"])
+        .arg(map_package)
+        .output()
+        .expect("inspect map initialization memory");
+    assert!(map_report.status.success());
+    assert!(String::from_utf8_lossy(&map_report.stdout).contains(
+        "map/set initialization: 9 bytes per slot (8-byte bucket plus 1-byte occupancy flag)"
+    ));
+
     let waived = inspect(true);
     assert!(waived.status.success());
     assert!(String::from_utf8_lossy(&waived.stdout).contains("guarantee waived: yes"));
