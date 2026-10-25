@@ -919,20 +919,34 @@ static int nl_utf8_decode(const unsigned char *bytes, uint64_t length,
     return 1;
 }
 
-int32_t nl_utf8_count(const unsigned char *bytes, uint64_t length,
-                      int64_t *codepoint_count) {
-    if (!codepoint_count || (length && !bytes)) return 0;
+int32_t nl_utf8_validate(const unsigned char *bytes, uint64_t length,
+                         int64_t *valid_up_to, int64_t *codepoint_count) {
+    if ((length && !bytes) || length > INT64_MAX) return 0;
     uint64_t offset = 0;
     uint64_t count = 0;
     while (offset < length) {
+        uint64_t sequence_start = offset;
         uint32_t codepoint;
-        if (!nl_utf8_decode(bytes, length, &offset, &codepoint)) return 0;
+        if (!nl_utf8_decode(bytes, length, &offset, &codepoint)) {
+            if (valid_up_to) *valid_up_to = (int64_t)sequence_start;
+            return 0;
+        }
         (void)codepoint;
-        if (count == INT64_MAX) return 0;
+        if (count == INT64_MAX) {
+            if (valid_up_to) *valid_up_to = (int64_t)sequence_start;
+            return 0;
+        }
         ++count;
     }
-    *codepoint_count = (int64_t)count;
+    if (valid_up_to) *valid_up_to = (int64_t)length;
+    if (codepoint_count) *codepoint_count = (int64_t)count;
     return 1;
+}
+
+int32_t nl_utf8_count(const unsigned char *bytes, uint64_t length,
+                      int64_t *codepoint_count) {
+    if (!codepoint_count) return 0;
+    return nl_utf8_validate(bytes, length, NULL, codepoint_count);
 }
 
 int64_t nl_utf8_offset(const unsigned char *bytes, uint64_t length,
@@ -1315,6 +1329,28 @@ static int nl_open_beneath(int root_fd, const char *path, int flags, mode_t mode
 #endif
 }
 
+static int nl_entry_kind_beneath(int root_fd, const char *directory_path,
+                                 const char *name, size_t name_length) {
+    size_t directory_length = strlen(directory_path);
+    size_t separator = directory_length && directory_path[directory_length - 1] != '/';
+    if (directory_length + separator + name_length > 4096) return 2;
+    char path[4097];
+    memcpy(path, directory_path, directory_length);
+    size_t offset = directory_length;
+    if (separator) path[offset++] = '/';
+    memcpy(path + offset, name, name_length);
+    path[offset + name_length] = 0;
+    int target = nl_open_beneath(root_fd, path, O_PATH | O_CLOEXEC, 0);
+    if (target < 0) return 2;
+    struct stat status;
+    int kind = 2;
+    if (fstat(target, &status) == 0) {
+        kind = S_ISREG(status.st_mode) ? 0 : S_ISDIR(status.st_mode) ? 1 : 2;
+    }
+    close(target);
+    return kind;
+}
+
 static int nl_write_all(int fd, const unsigned char *bytes, uint64_t length) {
     uint64_t written = 0;
     while (written < length) {
@@ -1533,6 +1569,122 @@ void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t p
         *(int64_t *)name = (int64_t)items[i].length;
         int32_t *bytes = (int32_t *)(name + 8);
         for (size_t j = 0; j < items[i].length; ++j) bytes[j] = (unsigned char)items[i].name[j];
+        int32_t *kind = (int32_t *)(base + 8 + (size_t)capacity * 16392 + i * 4);
+        *kind = items[i].kind;
+        free(items[i].name);
+    }
+    *(int64_t *)output = (int64_t)count;
+    free(items);
+    nl_io_error(result, -1, 0);
+}
+
+static int nl_has_extension(const char *name, size_t name_length,
+                            const unsigned char *extension, uint64_t extension_length) {
+    size_t dot = name_length;
+    while (dot > 0 && name[dot - 1] != '.') --dot;
+    if (dot == 0) return 0;
+    size_t separator = dot - 1;
+    if (separator == 0) return 0;
+    size_t actual_length = name_length - dot;
+    return (uint64_t)actual_length == extension_length &&
+           (!actual_length || memcmp(name + dot, extension, actual_length) == 0);
+}
+
+void nl_fs_list_with_extension(void *handle, void *path_value, int path_is_argument,
+                               uint64_t path_capacity, const unsigned char *extension,
+                               uint64_t extension_length, void *output,
+                               uint64_t capacity, void *result) {
+    int error_tag = -1, error_code = 0;
+    char path[4097];
+    if (output) *(int64_t *)output = 0;
+    if (capacity > (SIZE_MAX - 8) / 16396 || !output ||
+        (extension_length && !extension)) {
+        nl_io_error(result, 3, 0);
+        return;
+    }
+    if (!nl_extract_path(path_value, path_is_argument, path_capacity,
+                         path, &error_tag, &error_code)) {
+        nl_io_error(result, error_tag, error_code);
+        return;
+    }
+    int fd = nl_open_beneath(((nl_fs_handle *)handle)->root_fd,
+                             path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
+    if (fd < 0) {
+        int error = errno;
+        nl_io_error(result, nl_errno_error(error), error);
+        return;
+    }
+    DIR *directory = fdopendir(fd);
+    if (!directory) {
+        int error = errno;
+        close(fd);
+        nl_io_error(result, nl_errno_error(error), error);
+        return;
+    }
+    size_t allocated = capacity < 64 ? (size_t)capacity + 1 : 65;
+    if (allocated == 0) allocated = 1;
+    nl_dir_item *items = (nl_dir_item *)calloc(allocated, sizeof(nl_dir_item));
+    if (!items) {
+        closedir(directory);
+        nl_io_error(result, 7, ENOMEM);
+        return;
+    }
+    size_t count = 0;
+    int failure_tag = -1, failure_code = 0;
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        size_t length = strlen(entry->d_name);
+        if (!nl_has_extension(entry->d_name, length, extension, extension_length)) continue;
+        if (length > 4096) {
+            failure_tag = 4;
+            break;
+        }
+        int kind = nl_entry_kind_beneath(((nl_fs_handle *)handle)->root_fd,
+                                         path, entry->d_name, length);
+        if ((uint64_t)count >= capacity) {
+            failure_tag = 3;
+            break;
+        }
+        if (count >= allocated) {
+            size_t next = allocated * 2;
+            if (next > (size_t)capacity + 1) next = (size_t)capacity + 1;
+            nl_dir_item *grown = (nl_dir_item *)realloc(items, next * sizeof(nl_dir_item));
+            if (!grown) {
+                failure_tag = 7;
+                failure_code = ENOMEM;
+                break;
+            }
+            memset(grown + allocated, 0, (next - allocated) * sizeof(nl_dir_item));
+            items = grown;
+            allocated = next;
+        }
+        items[count].name = strdup(entry->d_name);
+        if (!items[count].name) {
+            failure_tag = 7;
+            failure_code = ENOMEM;
+            break;
+        }
+        items[count].length = length;
+        items[count].kind = kind;
+        ++count;
+    }
+    closedir(directory);
+    if (failure_tag < 0) qsort(items, count, sizeof(nl_dir_item), nl_dir_compare);
+    if (failure_tag >= 0) {
+        for (size_t i = 0; i < count; ++i) free(items[i].name);
+        free(items);
+        nl_io_error(result, failure_tag, failure_code);
+        return;
+    }
+    unsigned char *base = (unsigned char *)output;
+    for (size_t i = 0; i < count; ++i) {
+        unsigned char *name = base + 8 + i * 16392;
+        *(int64_t *)name = (int64_t)items[i].length;
+        int32_t *bytes = (int32_t *)(name + 8);
+        for (size_t j = 0; j < items[i].length; ++j) {
+            bytes[j] = (unsigned char)items[i].name[j];
+        }
         int32_t *kind = (int32_t *)(base + 8 + (size_t)capacity * 16392 + i * 4);
         *kind = items[i].kind;
         free(items[i].name);

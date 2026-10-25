@@ -1,0 +1,7 @@
+ok   Bytes count, checked indexing, and proven pushes
+ok   Bytes push proofs account for bounded loop growth
+ok   Bytes append accepts a slice of its own live contents
+ok   Bytes append and push report Full without changing live contents
+ok   Bytes grow parameters retain the builder contents
+ok   UTF-8 validation reports Rust valid_up_to offsets
+6 passed, 0 failed

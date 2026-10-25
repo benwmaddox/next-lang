@@ -3,8 +3,8 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use next_lang::{
-    PackageError, build_package, inspect_contracts, inspect_memory, inspect_stacks, parse_package,
-    run_package_args, test_package,
+    PackageError, build_package, inspect_contracts, inspect_memory, inspect_stacks, lex_package,
+    parse_package, run_package_args, test_package,
 };
 
 fn main() -> ExitCode {
@@ -29,6 +29,13 @@ fn main() -> ExitCode {
         }
         "test" if rest.len() == 1 => match test_package(Path::new(&rest[0])) {
             Ok(code) => ExitCode::from(code),
+            Err(error) => report_error(error),
+        },
+        "lex" if rest.len() == 1 => match lex_package(Path::new(&rest[0])) {
+            Ok(tokens) => {
+                write_stdout(format_args!("{tokens}"));
+                ExitCode::SUCCESS
+            }
             Err(error) => report_error(error),
         },
         "parse" if (1..=3).contains(&rest.len()) => {
@@ -115,6 +122,6 @@ fn write_stdout(args: std::fmt::Arguments<'_>) {
 
 fn usage() {
     eprintln!(
-        "usage: nlc run <package-dir> [--allow-overcommit] | nlc build <package-dir> -o <file> | nlc test <package-dir> | nlc parse <package-dir> [--tree] [--tokens] | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir> | nlc inspect stacks <package-dir>"
+        "usage: nlc run <package-dir> [--allow-overcommit] | nlc build <package-dir> -o <file> | nlc test <package-dir> | nlc lex <package-dir> | nlc parse <package-dir> [--tree] [--tokens] | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir> | nlc inspect stacks <package-dir>"
     );
 }

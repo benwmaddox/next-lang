@@ -156,6 +156,9 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare i32 @nl_arg_byte(ptr, i64)\n");
     out.push_str("declare void @nl_fs_read(ptr, ptr, i32, i64, ptr, i64, ptr)\n");
     out.push_str("declare void @nl_fs_list(ptr, ptr, i32, i64, ptr, i64, ptr)\n");
+    out.push_str(
+        "declare void @nl_fs_list_with_extension(ptr, ptr, i32, i64, ptr, i64, ptr, i64, ptr)\n",
+    );
     out.push_str("declare void @nl_fs_write(ptr, ptr, i32, i64, ptr, i32, i64, ptr)\n");
     out.push_str("declare void @nl_fs_join(ptr, ptr, i32, i64, ptr, i32, i64, ptr)\n");
     out.push_str("declare void @nl_out_write(ptr, ptr, i32, i64, i32, ptr)\n");
@@ -188,6 +191,7 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare i32 @nl_parse_integer(ptr, i64, i32, i32, i32, ptr)\n");
     out.push_str("declare void @nl_ascii_upper_copy(ptr, ptr, i64)\n");
     out.push_str("declare i32 @nl_utf8_count(ptr, i64, ptr)\n");
+    out.push_str("declare i32 @nl_utf8_validate(ptr, i64, ptr, ptr)\n");
     out.push_str("declare i64 @nl_utf8_offset(ptr, i64, i64)\n");
     out.push_str("declare i64 @nl_text_upper_copy(ptr, i64, ptr, ptr)\n");
     out.push_str("declare i32 @nl_bytes_are_ascii(ptr, i64)\n");
@@ -1103,6 +1107,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
             | TExprKind::TextUpper(value)
             | TExprKind::AsciiCast(value)
             | TExprKind::BytesView(value)
+            | TExprKind::BytesValidateUtf8(value)
             | TExprKind::TextConvert { value, .. }
             | TExprKind::Take(value)
             | TExprKind::AsciiFit { value, .. } => {
@@ -1116,10 +1121,16 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 own = own.saturating_add(expression_scratch(value, types));
                 own = own.saturating_add(expression_scratch(width, types));
             }
-            TExprKind::AsciiTryAppend { receiver, argument } => {
+            TExprKind::AsciiTryAppend { receiver, argument }
+            | TExprKind::TextTryAppend { receiver, argument }
+            | TExprKind::BytesTryAppend { receiver, argument } => {
                 own = own.saturating_add(expression_scratch(receiver, types));
                 own = own.saturating_add(expression_scratch(argument, types));
                 own = own.saturating_add(large_storage(argument.ty, 1, types));
+            }
+            TExprKind::BytesPush { receiver, byte, .. } => {
+                own = own.saturating_add(expression_scratch(receiver, types));
+                own = own.saturating_add(expression_scratch(byte, types));
             }
             TExprKind::AsciiEmpty | TExprKind::TextEmpty | TExprKind::BytesEmpty => {}
             TExprKind::Field { receiver, .. } => {
@@ -1147,6 +1158,15 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     own = own.saturating_add(expression_scratch(&grid.x, types));
                     own = own.saturating_add(expression_scratch(&grid.y, types));
                 }
+            }
+            TExprKind::BytesIndex {
+                receiver, index, ..
+            } => {
+                if is_large_type(receiver.ty, types) && !expr_is_place_for_contract(receiver) {
+                    own = own.saturating_add(stack_storage_size(receiver.ty, types) as u64);
+                }
+                own = own.saturating_add(expression_scratch(receiver, types));
+                own = own.saturating_add(expression_scratch(index, types));
             }
             TExprKind::Fill { value, .. } => {
                 own = own
@@ -1694,7 +1714,9 @@ fn block_growth_per_iteration(block: &TBlock, types: &[TType]) -> u64 {
 
 fn expr_growth(expr: &TExpr, types: &[TType]) -> u64 {
     match &expr.kind {
-        TExprKind::AsciiTryAppend { argument, .. } => growing_payload_bytes(argument.ty, types),
+        TExprKind::AsciiTryAppend { argument, .. } | TExprKind::TextTryAppend { argument, .. } => {
+            growing_payload_bytes(argument.ty, types)
+        }
         _ => 0,
     }
 }
@@ -2078,6 +2100,7 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         | TExprKind::TextUpper(value)
         | TExprKind::AsciiCast(value)
         | TExprKind::BytesView(value)
+        | TExprKind::BytesValidateUtf8(value)
         | TExprKind::TextConvert { value, .. }
         | TExprKind::Take(value)
         | TExprKind::AsciiFit { value, .. } => collect_expect_sources_expr(value, sources),
@@ -2089,9 +2112,15 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
             collect_expect_sources_expr(value, sources);
             collect_expect_sources_expr(width, sources);
         }
-        TExprKind::AsciiTryAppend { receiver, argument } => {
+        TExprKind::AsciiTryAppend { receiver, argument }
+        | TExprKind::TextTryAppend { receiver, argument }
+        | TExprKind::BytesTryAppend { receiver, argument } => {
             collect_expect_sources_expr(receiver, sources);
             collect_expect_sources_expr(argument, sources);
+        }
+        TExprKind::BytesPush { receiver, byte, .. } => {
+            collect_expect_sources_expr(receiver, sources);
+            collect_expect_sources_expr(byte, sources);
         }
         TExprKind::Index {
             receiver,
@@ -2106,6 +2135,12 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
             } else {
                 collect_expect_sources_expr(index, sources);
             }
+        }
+        TExprKind::BytesIndex {
+            receiver, index, ..
+        } => {
+            collect_expect_sources_expr(receiver, sources);
+            collect_expect_sources_expr(index, sources);
         }
         TExprKind::Fill { value, .. } => collect_expect_sources_expr(value, sources),
         TExprKind::CollectionLiteral(values) => {
@@ -2920,7 +2955,8 @@ fn expression_uses_local_root(expr: &TExpr, root: usize) -> bool {
         TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
             expression_uses_local_root(value, root) || expression_uses_local_root(width, root)
         }
-        TExprKind::AsciiTryAppend { receiver, argument } => {
+        TExprKind::AsciiTryAppend { receiver, argument }
+        | TExprKind::TextTryAppend { receiver, argument } => {
             expression_uses_local_root(receiver, root) || expression_uses_local_root(argument, root)
         }
         TExprKind::Index {
@@ -3002,7 +3038,12 @@ fn growing_ascii_locals(
         growing: &mut std::collections::HashSet<usize>,
     ) {
         for (arg, mode) in args.iter().zip(modes) {
-            if mode == ParamMode::Grow && matches!(types[arg.ty.0].kind, TTypeKind::Ascii { .. }) {
+            if mode == ParamMode::Grow
+                && matches!(
+                    types[arg.ty.0].kind,
+                    TTypeKind::Ascii { .. } | TTypeKind::Bytes { .. }
+                )
+            {
                 if let Some(root) = local_root(arg) {
                     growing.insert(root);
                 }
@@ -3063,17 +3104,27 @@ fn growing_ascii_locals(
                     visit_expr(arg, program, growing, moves);
                 }
             }
-            TExprKind::AsciiTryAppend { receiver, argument } => {
+            TExprKind::AsciiTryAppend { receiver, argument }
+            | TExprKind::TextTryAppend { receiver, argument }
+            | TExprKind::BytesTryAppend { receiver, argument } => {
                 if let Some(root) = local_root(receiver) {
                     growing.insert(root);
                 }
                 visit_expr(receiver, program, growing, moves);
                 visit_expr(argument, program, growing, moves);
             }
+            TExprKind::BytesPush { receiver, byte, .. } => {
+                if let Some(root) = local_root(receiver) {
+                    growing.insert(root);
+                }
+                visit_expr(receiver, program, growing, moves);
+                visit_expr(byte, program, growing, moves);
+            }
             TExprKind::AsciiUpper(value)
             | TExprKind::TextUpper(value)
             | TExprKind::AsciiCast(value)
             | TExprKind::BytesView(value)
+            | TExprKind::BytesValidateUtf8(value)
             | TExprKind::TextConvert { value, .. }
             | TExprKind::Take(value)
             | TExprKind::OptionalToLong(value)
@@ -3127,6 +3178,12 @@ fn growing_ascii_locals(
                     visit_expr(&grid.x, program, growing, moves);
                     visit_expr(&grid.y, program, growing, moves);
                 }
+            }
+            TExprKind::BytesIndex {
+                receiver, index, ..
+            } => {
+                visit_expr(receiver, program, growing, moves);
+                visit_expr(index, program, growing, moves);
             }
             TExprKind::CollectionLiteral(values) => {
                 for value in values {
@@ -4626,6 +4683,7 @@ impl<'a> FunctionEmitter<'a> {
             | TExprKind::AsciiCast(value)
             | TExprKind::Take(value)
             | TExprKind::BytesView(value)
+            | TExprKind::BytesValidateUtf8(value)
             | TExprKind::TextConvert { value, .. }
             | TExprKind::AsciiFit { value, .. } => self.collect_expr(value),
             TExprKind::AsciiFormat { value, .. }
@@ -4659,9 +4717,15 @@ impl<'a> FunctionEmitter<'a> {
                 self.collect_expr(start);
                 self.collect_expr(end);
             }
-            TExprKind::AsciiTryAppend { receiver, argument } => {
+            TExprKind::AsciiTryAppend { receiver, argument }
+            | TExprKind::TextTryAppend { receiver, argument }
+            | TExprKind::BytesTryAppend { receiver, argument } => {
                 self.collect_expr(receiver);
                 self.collect_expr(argument);
+            }
+            TExprKind::BytesPush { receiver, byte, .. } => {
+                self.collect_expr(receiver);
+                self.collect_expr(byte);
             }
             TExprKind::Index {
                 receiver,
@@ -4676,6 +4740,12 @@ impl<'a> FunctionEmitter<'a> {
                 } else {
                     self.collect_expr(index);
                 }
+            }
+            TExprKind::BytesIndex {
+                receiver, index, ..
+            } => {
+                self.collect_expr(receiver);
+                self.collect_expr(index);
             }
             TExprKind::Fill { value, .. } => self.collect_expr(value),
             TExprKind::CollectionLiteral(values) => {
@@ -9701,6 +9771,7 @@ impl<'a> FunctionEmitter<'a> {
         let source = self.ascii_field(&source_descriptor, value.ty, 0);
         let length = self.ascii_field(&source_descriptor, value.ty, 1);
         let codepoints = self.entry_alloca(Ty::Long);
+        let valid_up_to = self.entry_alloca(Ty::Long);
         let valid = match conversion {
             StringConversion::BytesToText => self.temp(),
             StringConversion::BytesToAscii | StringConversion::TextToAscii => self.temp(),
@@ -9708,7 +9779,7 @@ impl<'a> FunctionEmitter<'a> {
         };
         match conversion {
             StringConversion::BytesToText => self.instruction(format!(
-                "{valid} = call i32 @nl_utf8_count(ptr {source}, i64 {length}, ptr {codepoints})"
+                "{valid} = call i32 @nl_utf8_validate(ptr {source}, i64 {length}, ptr {valid_up_to}, ptr {codepoints})"
             )),
             StringConversion::BytesToAscii | StringConversion::TextToAscii => self.instruction(
                 format!("{valid} = call i32 @nl_bytes_are_ascii(ptr {source}, i64 {length})"),
@@ -9772,17 +9843,23 @@ impl<'a> FunctionEmitter<'a> {
             TTypeKind::Result(_, error) => error,
             _ => unreachable!("checked string conversion returns Result"),
         };
-        let error_name = if *conversion == StringConversion::BytesToText {
-            "InvalidUtf8"
+        let error_value = if *conversion == StringConversion::BytesToText {
+            let offset = self.temp();
+            self.instruction(format!("{offset} = load i64, ptr {valid_up_to}, align 1"));
+            let error = self.temp();
+            self.instruction(format!(
+                "{error} = insertvalue {} zeroinitializer, i64 {offset}, 0",
+                self.lltype(error_ty)
+            ));
+            error
         } else {
-            "NonAscii"
+            let error_index = self.program.types[error_ty.0]
+                .cases()
+                .iter()
+                .position(|case| case.name == "NonAscii")
+                .expect("TextError contains NonAscii");
+            self.emit_construct_values(error_ty, error_index, Vec::new())
         };
-        let error_index = self.program.types[error_ty.0]
-            .cases()
-            .iter()
-            .position(|case| case.name == error_name)
-            .expect("TextError contains conversion errors");
-        let error_value = self.emit_construct_values(error_ty, error_index, Vec::new());
         let failure_value = self.emit_construct_values(expr.ty, 1, vec![(error_ty, error_value)]);
         let failure_pred = self.current_label.clone();
         let failure_stack_top = self.stack_top.clone();
@@ -10159,6 +10236,364 @@ impl<'a> FunctionEmitter<'a> {
             self.lltype(expr.ty)
         ));
         result
+    }
+
+    fn emit_bytes_try_append(
+        &mut self,
+        expr: &TExpr,
+        receiver: &TExpr,
+        argument: &TExpr,
+    ) -> String {
+        let place = Self::expr_place(receiver).expect("checker validated Bytes builder place");
+        let destination = self.emit_place_pointer(&place);
+        let saved_top = self.stack_top.clone();
+        let builder_descriptor = self.temp();
+        self.instruction(format!(
+            "{builder_descriptor} = load {}, ptr {destination}, align 1",
+            self.lltype(receiver.ty)
+        ));
+        let target = self.ascii_field(&builder_descriptor, receiver.ty, 0);
+        let old_length = self.ascii_field(&builder_descriptor, receiver.ty, 1);
+
+        // Materializing the argument before publishing the new length makes
+        // self-append and appending a slice of the same builder safe. The
+        // memmove below also handles any actual overlap.
+        let argument_storage = self.emit_expr_storage(argument);
+        if self.terminated {
+            return String::new();
+        }
+        let argument_descriptor = self.temp();
+        self.instruction(format!(
+            "{argument_descriptor} = load {}, ptr {argument_storage}, align 1",
+            self.lltype(argument.ty)
+        ));
+        let source = self.ascii_field(&argument_descriptor, argument.ty, 0);
+        let amount = self.ascii_field(&argument_descriptor, argument.ty, 1);
+        let remaining = self.temp();
+        self.instruction(format!(
+            "{remaining} = sub i64 {}, {old_length}",
+            self.ascii_max(receiver.ty).unwrap_or(0)
+        ));
+        let fits = self.temp();
+        self.instruction(format!("{fits} = icmp ule i64 {amount}, {remaining}"));
+        let success_label = self.new_label("bytes.append.ok");
+        let full_label = self.new_label("bytes.append.full");
+        let merge = self.new_label("bytes.append.end");
+        self.terminate(format!(
+            "br i1 {fits}, label %{success_label}, label %{full_label}"
+        ));
+
+        self.start_block(&success_label);
+        let append_at = self.temp();
+        self.instruction(format!(
+            "{append_at} = getelementptr i8, ptr {target}, i64 {old_length}"
+        ));
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {append_at}, ptr {source}, i64 {amount}, i1 false)"
+        ));
+        let new_length = self.temp();
+        self.instruction(format!("{new_length} = add i64 {old_length}, {amount}"));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(receiver.ty)
+        ));
+        self.instruction(format!(
+            "store i64 {new_length}, ptr {length_field}, align 1"
+        ));
+        let ok = self.emit_construct_values(expr.ty, 0, Vec::new());
+        let ok_pred = self.current_label.clone();
+        self.restore_stack_top(&saved_top);
+        self.terminate(format!("br label %{merge}"));
+
+        self.stack_top = saved_top.clone();
+        self.start_block(&full_label);
+        let full = self.emit_construct_values(expr.ty, 1, Vec::new());
+        let full_pred = self.current_label.clone();
+        self.restore_stack_top(&saved_top);
+        self.terminate(format!("br label %{merge}"));
+
+        self.stack_top = saved_top;
+        self.start_block(&merge);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi {} [ {ok}, %{ok_pred} ], [ {full}, %{full_pred} ]",
+            self.lltype(expr.ty)
+        ));
+        result
+    }
+
+    fn emit_text_try_append(&mut self, expr: &TExpr, receiver: &TExpr, argument: &TExpr) -> String {
+        let place = Self::expr_place(receiver).expect("checker validated Text builder place");
+        let destination = self.emit_place_pointer(&place);
+        let saved_top = self.stack_top.clone();
+        let builder_descriptor = self.temp();
+        self.instruction(format!(
+            "{builder_descriptor} = load {}, ptr {destination}, align 1",
+            self.lltype(receiver.ty)
+        ));
+        let target = self.ascii_field(&builder_descriptor, receiver.ty, 0);
+        let old_length = self.ascii_field(&builder_descriptor, receiver.ty, 1);
+        let old_codepoints = self.ascii_field(&builder_descriptor, receiver.ty, 2);
+
+        // Stage the argument before publishing either length. This also keeps
+        // self-append safe when the source aliases the Text builder.
+        let argument_storage = self.emit_expr_storage(argument);
+        if self.terminated {
+            return String::new();
+        }
+        let argument_descriptor = self.temp();
+        self.instruction(format!(
+            "{argument_descriptor} = load {}, ptr {argument_storage}, align 1",
+            self.lltype(argument.ty)
+        ));
+        let source = self.ascii_field(&argument_descriptor, argument.ty, 0);
+        let amount = self.ascii_field(&argument_descriptor, argument.ty, 1);
+        let added_codepoints = if self.is_text_type(argument.ty) {
+            self.ascii_field(&argument_descriptor, argument.ty, 2)
+        } else {
+            amount.clone()
+        };
+        let (max_codepoints, max_bytes) = match self.program.types[receiver.ty.0].kind {
+            TTypeKind::Text {
+                max_codepoints,
+                max_bytes,
+            } => (max_codepoints, max_bytes),
+            _ => unreachable!("checker validated Text builder type"),
+        };
+        let remaining_bytes = self.temp();
+        self.instruction(format!(
+            "{remaining_bytes} = sub i64 {max_bytes}, {old_length}"
+        ));
+        let bytes_fit = self.temp();
+        self.instruction(format!(
+            "{bytes_fit} = icmp ule i64 {amount}, {remaining_bytes}"
+        ));
+        let remaining_codepoints = self.temp();
+        self.instruction(format!(
+            "{remaining_codepoints} = sub i64 {max_codepoints}, {old_codepoints}"
+        ));
+        let codepoints_fit = self.temp();
+        self.instruction(format!(
+            "{codepoints_fit} = icmp ule i64 {added_codepoints}, {remaining_codepoints}"
+        ));
+        let fits = self.temp();
+        self.instruction(format!("{fits} = and i1 {bytes_fit}, {codepoints_fit}"));
+        let success_label = self.new_label("text.append.ok");
+        let full_label = self.new_label("text.append.full");
+        let merge = self.new_label("text.append.end");
+        self.terminate(format!(
+            "br i1 {fits}, label %{success_label}, label %{full_label}"
+        ));
+
+        self.start_block(&success_label);
+        let append_at = self.temp();
+        self.instruction(format!(
+            "{append_at} = getelementptr i8, ptr {target}, i64 {old_length}"
+        ));
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {append_at}, ptr {source}, i64 {amount}, i1 false)"
+        ));
+        let new_length = self.temp();
+        self.instruction(format!("{new_length} = add i64 {old_length}, {amount}"));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(receiver.ty)
+        ));
+        self.instruction(format!(
+            "store i64 {new_length}, ptr {length_field}, align 1"
+        ));
+        let new_codepoints = self.temp();
+        self.instruction(format!(
+            "{new_codepoints} = add i64 {old_codepoints}, {added_codepoints}"
+        ));
+        let codepoints_field = self.temp();
+        self.instruction(format!(
+            "{codepoints_field} = getelementptr {}, ptr {destination}, i32 0, i32 2",
+            self.lltype(receiver.ty)
+        ));
+        self.instruction(format!(
+            "store i64 {new_codepoints}, ptr {codepoints_field}, align 1"
+        ));
+        let ok = self.emit_construct_values(expr.ty, 0, Vec::new());
+        let ok_pred = self.current_label.clone();
+        self.restore_stack_top(&saved_top);
+        self.terminate(format!("br label %{merge}"));
+
+        self.stack_top = saved_top.clone();
+        self.start_block(&full_label);
+        let full = self.emit_construct_values(expr.ty, 1, Vec::new());
+        let full_pred = self.current_label.clone();
+        self.restore_stack_top(&saved_top);
+        self.terminate(format!("br label %{merge}"));
+
+        self.stack_top = saved_top;
+        self.start_block(&merge);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi {} [ {ok}, %{ok_pred} ], [ {full}, %{full_pred} ]",
+            self.lltype(expr.ty)
+        ));
+        result
+    }
+
+    fn emit_bytes_push(&mut self, expr: &TExpr, receiver: &TExpr, byte: &TExpr) -> String {
+        let place = Self::expr_place(receiver).expect("checker validated Bytes builder place");
+        let destination = self.emit_place_pointer(&place);
+        let saved_top = self.stack_top.clone();
+        let builder_descriptor = self.temp();
+        self.instruction(format!(
+            "{builder_descriptor} = load {}, ptr {destination}, align 1",
+            self.lltype(receiver.ty)
+        ));
+        let target = self.ascii_field(&builder_descriptor, receiver.ty, 0);
+        let old_length = self.ascii_field(&builder_descriptor, receiver.ty, 1);
+        let byte_value = self.emit_expr(byte);
+        if self.terminated {
+            return String::new();
+        }
+        let fits = self.temp();
+        self.instruction(format!(
+            "{fits} = icmp ult i64 {old_length}, {}",
+            self.ascii_max(receiver.ty).unwrap_or(0)
+        ));
+        let success_label = self.new_label("bytes.push.ok");
+        let full_label = self.new_label("bytes.push.full");
+        let merge = self.new_label("bytes.push.end");
+        self.terminate(format!(
+            "br i1 {fits}, label %{success_label}, label %{full_label}"
+        ));
+
+        self.start_block(&success_label);
+        let append_at = self.temp();
+        self.instruction(format!(
+            "{append_at} = getelementptr i8, ptr {target}, i64 {old_length}"
+        ));
+        let narrowed = self.temp();
+        self.instruction(format!("{narrowed} = trunc i32 {byte_value} to i8"));
+        self.instruction(format!("store i8 {narrowed}, ptr {append_at}, align 1"));
+        let new_length = self.temp();
+        self.instruction(format!("{new_length} = add i64 {old_length}, 1"));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(receiver.ty)
+        ));
+        self.instruction(format!(
+            "store i64 {new_length}, ptr {length_field}, align 1"
+        ));
+        let ok = self.emit_construct_values(expr.ty, 0, Vec::new());
+        let ok_pred = self.current_label.clone();
+        self.restore_stack_top(&saved_top);
+        self.terminate(format!("br label %{merge}"));
+
+        self.stack_top = saved_top.clone();
+        self.start_block(&full_label);
+        let full = self.emit_construct_values(expr.ty, 1, Vec::new());
+        let full_pred = self.current_label.clone();
+        self.restore_stack_top(&saved_top);
+        self.terminate(format!("br label %{merge}"));
+
+        self.stack_top = saved_top;
+        self.start_block(&merge);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi {} [ {ok}, %{ok_pred} ], [ {full}, %{full_pred} ]",
+            self.lltype(expr.ty)
+        ));
+        result
+    }
+
+    fn emit_bytes_validate_utf8(&mut self, expr: &TExpr, receiver: &TExpr) -> String {
+        let descriptor = self.emit_expr(receiver);
+        if self.terminated {
+            return String::new();
+        }
+        let data = self.ascii_field(&descriptor, receiver.ty, 0);
+        let length = self.ascii_field(&descriptor, receiver.ty, 1);
+        let valid_up_to_slot = self.entry_alloca(Ty::Long);
+        let valid_raw = self.temp();
+        self.instruction(format!(
+            "{valid_raw} = call i32 @nl_utf8_validate(ptr {data}, i64 {length}, ptr {valid_up_to_slot}, ptr null)"
+        ));
+        let valid = self.temp();
+        self.instruction(format!("{valid} = icmp ne i32 {valid_raw}, 0"));
+        let success_label = self.new_label("bytes.utf8.ok");
+        let invalid_label = self.new_label("bytes.utf8.invalid");
+        let merge = self.new_label("bytes.utf8.end");
+        self.terminate(format!(
+            "br i1 {valid}, label %{success_label}, label %{invalid_label}"
+        ));
+
+        self.start_block(&success_label);
+        let success = self.emit_construct_values(expr.ty, 0, Vec::new());
+        let success_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+
+        self.start_block(&invalid_label);
+        let offset = self.temp();
+        self.instruction(format!(
+            "{offset} = load i64, ptr {valid_up_to_slot}, align 1"
+        ));
+        let error_ty = match self.program.types[expr.ty.0].kind {
+            TTypeKind::Result(_, error) => error,
+            _ => unreachable!("UTF-8 validation returns Result"),
+        };
+        let error = self.temp();
+        self.instruction(format!(
+            "{error} = insertvalue {} zeroinitializer, i64 {offset}, 0",
+            self.lltype(error_ty)
+        ));
+        let failure = self.emit_construct_values(expr.ty, 1, vec![(error_ty, error)]);
+        let invalid_pred = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+
+        self.start_block(&merge);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi {} [ {success}, %{success_pred} ], [ {failure}, %{invalid_pred} ]",
+            self.lltype(expr.ty)
+        ));
+        result
+    }
+
+    fn emit_bytes_index(&mut self, receiver: &TExpr, index: &TExpr, proven: bool) -> String {
+        let pointer = self.emit_expr_storage(receiver);
+        if self.terminated {
+            return String::new();
+        }
+        let descriptor = self.temp();
+        self.instruction(format!(
+            "{descriptor} = load {}, ptr {pointer}, align 1",
+            self.lltype(receiver.ty)
+        ));
+        let data = self.ascii_field(&descriptor, receiver.ty, 0);
+        let length = self.ascii_field(&descriptor, receiver.ty, 1);
+        let index_value = self.emit_expr(index);
+        if self.terminated {
+            return String::new();
+        }
+        if !proven {
+            let negative = self.temp();
+            self.instruction(format!("{negative} = icmp slt i64 {index_value}, 0"));
+            let too_large = self.temp();
+            self.instruction(format!(
+                "{too_large} = icmp uge i64 {index_value}, {length}"
+            ));
+            let bad = self.temp();
+            self.instruction(format!("{bad} = or i1 {negative}, {too_large}"));
+            self.guard(bad, Failure::IndexOutOfRange, index.span);
+        }
+        let address = self.temp();
+        self.instruction(format!(
+            "{address} = getelementptr i8, ptr {data}, i64 {index_value}"
+        ));
+        let raw = self.temp();
+        self.instruction(format!("{raw} = load i8, ptr {address}, align 1"));
+        let value = self.temp();
+        self.instruction(format!("{value} = zext i8 {raw} to i32"));
+        value
     }
 
     fn is_pool_type(&self, ty: Ty) -> bool {
@@ -17171,6 +17606,7 @@ impl<'a> FunctionEmitter<'a> {
             | CallTarget::ArgByte
             | CallTarget::FsRead
             | CallTarget::FsList
+            | CallTarget::FsListWithExtension
             | CallTarget::FsWrite
             | CallTarget::FsJoin
             | CallTarget::OutWrite
@@ -17322,7 +17758,10 @@ impl<'a> FunctionEmitter<'a> {
                 self.instruction(format!("{result} = phi {} [ {some_value}, %{some_pred} ], [ {none_value}, %{none_pred} ]", self.lltype(expr.ty)));
                 result
             }
-            CallTarget::FsRead | CallTarget::FsList | CallTarget::FsWrite => {
+            CallTarget::FsRead
+            | CallTarget::FsList
+            | CallTarget::FsListWithExtension
+            | CallTarget::FsWrite => {
                 let fs = self.emit_expr(&args[0]);
                 if self.terminated {
                     return String::new();
@@ -17392,6 +17831,24 @@ impl<'a> FunctionEmitter<'a> {
                             unreachable!()
                         };
                         self.instruction(format!("call void @nl_fs_list(ptr {fs}, ptr {path}, i32 {path_is_arg}, i64 {path_capacity}, ptr {output}, i64 {capacity}, ptr {result_storage})"));
+                    }
+                    CallTarget::FsListWithExtension => {
+                        let extension = self.emit_expr(&args[2]);
+                        if self.terminated {
+                            return String::new();
+                        }
+                        let extension_data = self.ascii_field(&extension, args[2].ty, 0);
+                        let extension_length = self.ascii_field(&extension, args[2].ty, 1);
+                        let output = self.emit_expr_storage(&args[3]);
+                        if self.terminated {
+                            return String::new();
+                        }
+                        let TTypeKind::List { capacity, .. } =
+                            self.program.types[args[3].ty.0].kind
+                        else {
+                            unreachable!()
+                        };
+                        self.instruction(format!("call void @nl_fs_list_with_extension(ptr {fs}, ptr {path}, i32 {path_is_arg}, i64 {path_capacity}, ptr {extension_data}, i64 {extension_length}, ptr {output}, i64 {capacity}, ptr {result_storage})"));
                     }
                     CallTarget::FsWrite => {
                         let (data, data_is_arg, data_capacity) =
@@ -17663,6 +18120,16 @@ impl<'a> FunctionEmitter<'a> {
             TExprKind::AsciiTryAppend { receiver, argument } => {
                 self.emit_ascii_try_append(expr, receiver, argument)
             }
+            TExprKind::TextTryAppend { receiver, argument } => {
+                self.emit_text_try_append(expr, receiver, argument)
+            }
+            TExprKind::BytesTryAppend { receiver, argument } => {
+                self.emit_bytes_try_append(expr, receiver, argument)
+            }
+            TExprKind::BytesPush { receiver, byte, .. } => {
+                self.emit_bytes_push(expr, receiver, byte)
+            }
+            TExprKind::BytesValidateUtf8(receiver) => self.emit_bytes_validate_utf8(expr, receiver),
             TExprKind::Take(value) => self.emit_expr(value),
             TExprKind::Index {
                 receiver,
@@ -17700,6 +18167,11 @@ impl<'a> FunctionEmitter<'a> {
                     self.emit_collection_element(receiver.ty, &pointer, &index_value)
                 }
             }
+            TExprKind::BytesIndex {
+                receiver,
+                index,
+                proven,
+            } => self.emit_bytes_index(receiver, index, *proven),
             TExprKind::CollectionLiteral(_) => {
                 let pointer = self.entry_alloca(expr.ty);
                 self.emit_expr_to(&pointer, expr);

@@ -305,6 +305,18 @@ impl Checker {
             span: Span::default(),
         });
         checker.type_ids.insert("byte".to_owned(), byte_ty);
+        let utf8_error_ty = Ty(checker.types.len());
+        checker.types.push(TType {
+            name: "Utf8Error".to_owned(),
+            kind: TTypeKind::Struct(vec![TField {
+                name: "valid_up_to".to_owned(),
+                ty: Ty::Long,
+            }]),
+            span: Span::default(),
+        });
+        checker
+            .type_ids
+            .insert("Utf8Error".to_owned(), utf8_error_ty);
         let io_error_ty = Ty(checker.types.len());
         checker.types.push(TType {
             name: "IoError".to_owned(),
@@ -716,6 +728,7 @@ impl Checker {
                         | "Result"
                         | "Full"
                         | "TextError"
+                        | "Utf8Error"
                 ) || self.type_ids.contains_key(name)
                 {
                     return Err(CheckError {
@@ -856,6 +869,7 @@ impl Checker {
                         | "Result"
                         | "Full"
                         | "TextError"
+                        | "Utf8Error"
                 ) || self.type_ids.contains_key(&alias.name)
                 {
                     return Err(CheckError {
@@ -1419,10 +1433,10 @@ impl Checker {
             .iter()
             .map(|param| {
                 let ty = self.parse_type(&param.ty)?;
-                if param.mode == ParamMode::Grow && !self.is_ascii(ty) {
+                if param.mode == ParamMode::Grow && !self.is_string_type(ty) {
                     return Err(CheckError {
                         span: param.span,
-                        message: "grow parameters are for Ascii builders; use read or write for other types".to_owned(),
+                        message: "grow parameters are for Ascii, Text, and Bytes builders; use read or write for other types".to_owned(),
                     });
                 }
                 Ok(TFunctionTypeParam {
@@ -2941,6 +2955,12 @@ impl Checker {
         }
     }
 
+    fn growable_string_max(&self, ty: Ty) -> Option<usize> {
+        self.ascii_max(ty)
+            .or_else(|| self.text_max(ty).map(|(_, max_bytes)| max_bytes))
+            .or_else(|| self.bytes_max(ty))
+    }
+
     fn string_byte_max(&self, ty: Ty) -> Option<usize> {
         self.ascii_max(ty)
             .or_else(|| self.text_max(ty).map(|(_, bytes)| bytes))
@@ -3485,6 +3505,42 @@ impl Checker {
         Some(range)
     }
 
+    fn bytes_length_range(&self, expr: &TExpr) -> Option<(usize, usize)> {
+        let max_bytes = self.bytes_max(expr.ty)?;
+        let range = match &expr.kind {
+            TExprKind::ByteString(bytes) => (bytes.len(), bytes.len()),
+            TExprKind::BytesEmpty => (0, 0),
+            TExprKind::Local(id) => self
+                .ascii_lengths
+                .get(id)
+                .copied()
+                .unwrap_or((0, max_bytes)),
+            TExprKind::Take(value) => self.bytes_length_range(value).unwrap_or((0, max_bytes)),
+            TExprKind::BytesView(value) if self.is_ascii(value.ty) => {
+                self.ascii_length_range(value).unwrap_or((0, max_bytes))
+            }
+            TExprKind::Binary {
+                op: BinaryOp::Add,
+                left,
+                right,
+                ..
+            } if self.is_bytes_type(left.ty) && self.is_bytes_type(right.ty) => {
+                let left = self
+                    .bytes_length_range(left)
+                    .unwrap_or((0, self.bytes_max(left.ty).unwrap_or(0)));
+                let right = self
+                    .bytes_length_range(right)
+                    .unwrap_or((0, self.bytes_max(right.ty).unwrap_or(0)));
+                (
+                    left.0.saturating_add(right.0),
+                    left.1.saturating_add(right.1).min(max_bytes),
+                )
+            }
+            _ => (0, max_bytes),
+        };
+        Some(range)
+    }
+
     fn check_recursive_value_types(&self) -> Result<(), CheckError> {
         fn visit(
             id: usize,
@@ -3632,6 +3688,9 @@ impl Checker {
                 op: SetOp::Add,
                 proven_success: true,
                 ..
+            } | TExprKind::BytesPush {
+                proven_success: true,
+                ..
             }
         ) {
             return Ok(());
@@ -3646,6 +3705,7 @@ impl Checker {
                 ..
             } | TExprKind::MapOp { op: MapOp::Set, .. }
                 | TExprKind::SetOp { op: SetOp::Add, .. }
+                | TExprKind::BytesPush { .. }
         );
         let full_ty = self.type_ids["Full"];
         let message = if is_collection_result && *error_ty == full_ty {
@@ -3709,12 +3769,10 @@ impl Checker {
         let mut params = Vec::new();
         for (i, param) in function.params.iter().enumerate() {
             let ty = signature.params[i].ty;
-            if param.mode == ParamMode::Grow && !self.is_ascii(ty) {
+            if param.mode == ParamMode::Grow && !self.is_string_type(ty) {
                 return Err(CheckError {
                     span: param.span,
-                    message:
-                        "grow parameters are for Ascii builders; use read or write for other types"
-                            .to_owned(),
+                    message: "grow parameters are for Ascii, Text, and Bytes builders; use read or write for other types".to_owned(),
                 });
             }
             let binding = self.declare_mode(
@@ -3742,7 +3800,7 @@ impl Checker {
                 mode: param.mode,
                 span: param.span,
             });
-            if let Some(max_bytes) = self.ascii_max(ty) {
+            if let Some(max_bytes) = self.growable_string_max(ty) {
                 self.ascii_lengths.insert(binding.id, (0, max_bytes));
             }
         }
@@ -4419,7 +4477,8 @@ impl Checker {
                         op: SetOp::Add,
                         proven_success,
                         ..
-                    } => Some(*proven_success),
+                    }
+                    | TExprKind::BytesPush { proven_success, .. } => Some(*proven_success),
                     _ => None,
                 };
                 if let Some(proven_success) = unhandled_collection {
@@ -4467,7 +4526,8 @@ impl Checker {
                         op: SetOp::Add,
                         proven_success,
                         ..
-                    } => Some(*proven_success),
+                    }
+                    | TExprKind::BytesPush { proven_success, .. } => Some(*proven_success),
                     _ => None,
                 };
                 if unhandled == Some(false) {
@@ -4622,11 +4682,17 @@ impl Checker {
                     }
                 }
                 let binding = self.declare(name, ty, *mutable, stmt.span, false)?;
-                if self.is_ascii(ty) {
-                    let max_bytes = self.ascii_max(ty).unwrap_or(0);
-                    let range = self
-                        .ascii_length_range(&typed_value)
-                        .unwrap_or((0, max_bytes));
+                if self.is_ascii(ty) || self.is_bytes_type(ty) {
+                    let max_bytes = self
+                        .ascii_max(ty)
+                        .or_else(|| self.bytes_max(ty))
+                        .unwrap_or(0);
+                    let range = if self.is_ascii(ty) {
+                        self.ascii_length_range(&typed_value)
+                    } else {
+                        self.bytes_length_range(&typed_value)
+                    }
+                    .unwrap_or((0, max_bytes));
                     self.ascii_lengths.insert(binding.id, range);
                 }
                 if let Some(range) = self.expr_range(&typed_value) {
@@ -5087,6 +5153,14 @@ impl Checker {
                     iteration_bound,
                     stmt.span,
                 )?;
+                for root in &loop_writes {
+                    if self
+                        .binding_by_id(*root)
+                        .is_some_and(|binding| self.is_bytes_type(binding.ty))
+                    {
+                        self.ascii_lengths.remove(root);
+                    }
+                }
                 self.loop_depth -= 1;
                 self.loop_names.pop();
                 self.loop_outer_depths.pop();
@@ -5301,6 +5375,14 @@ impl Checker {
                     Some(iterations),
                     stmt.span,
                 )?;
+                for root in &loop_writes {
+                    if self
+                        .binding_by_id(*root)
+                        .is_some_and(|binding| self.is_bytes_type(binding.ty))
+                    {
+                        self.ascii_lengths.remove(root);
+                    }
+                }
                 self.loop_depth -= 1;
                 self.loop_names.pop();
                 self.loop_outer_depths.pop();
@@ -5337,7 +5419,12 @@ impl Checker {
             }
             StmtKind::Discard(value) => {
                 let typed = self.check_expr(value, None)?;
-                if !matches!(
+                let base_ty = self.base_type(typed.ty);
+                let has_capacity_full_error = matches!(
+                    self.types[base_ty.0].kind,
+                    TTypeKind::Result(_, error_ty) if error_ty == self.type_ids["Full"]
+                );
+                let is_capacity_operation = matches!(
                     typed.kind,
                     TExprKind::CollectionOp {
                         op: CollectionOp::Push | CollectionOp::Insert,
@@ -5347,8 +5434,16 @@ impl Checker {
                         ..
                     } | TExprKind::MapOp { op: MapOp::Set, .. }
                         | TExprKind::SetOp { op: SetOp::Add, .. }
-                ) {
-                    return Err(CheckError { span: value.span, message: "discard accepts only a collection push or insert result with error type Full".to_owned() });
+                        | TExprKind::AsciiTryAppend { .. }
+                        | TExprKind::TextTryAppend { .. }
+                        | TExprKind::BytesTryAppend { .. }
+                        | TExprKind::BytesPush { .. }
+                );
+                if !has_capacity_full_error || !is_capacity_operation {
+                    return Err(CheckError {
+                        span: value.span,
+                        message: "discard accepts only built-in operations whose Result error is capacity Full".to_owned(),
+                    });
                 }
                 TStmtKind::Discard(typed)
             }
@@ -6350,7 +6445,7 @@ impl Checker {
             let is_text = self.text_max(typed_collection.ty).is_some();
             let is_bytes = self.bytes_max(typed_collection.ty).is_some();
             match name {
-                "len" if args.is_empty() => {
+                "len" | "count" if args.is_empty() && (name == "len" || is_bytes) => {
                     let maximum = self
                         .text_max(typed_collection.ty)
                         .map_or(max_bytes, |(codepoints, _)| codepoints);
@@ -6476,14 +6571,32 @@ impl Checker {
                     }
                     return Ok((TExprKind::BytesView(Box::new(typed_collection)), result));
                 }
+                "validate_utf8" if is_bytes && args.is_empty() => {
+                    let error = self.type_ids["Utf8Error"];
+                    let result = self.intern_generic(
+                        2,
+                        Ty::Unit,
+                        error,
+                        "Result<(), Utf8Error>".to_owned(),
+                        span,
+                        TTypeKind::Result(Ty::Unit, error),
+                    );
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::BytesValidateUtf8(Box::new(typed_collection)),
+                        result,
+                    ));
+                }
                 "to_text" if is_bytes && args.is_empty() => {
                     let result = self.intern_text(max_bytes, max_bytes, method_span);
-                    let error = self.type_ids["TextError"];
+                    let error = self.type_ids["Utf8Error"];
                     let wrapped = self.intern_generic(
                         2,
                         result,
                         error,
-                        format!("Result<{}, TextError>", self.type_name(result)),
+                        format!("Result<{}, Utf8Error>", self.type_name(result)),
                         span,
                         TTypeKind::Result(result, error),
                     );
@@ -6524,6 +6637,203 @@ impl Checker {
                             },
                         },
                         wrapped,
+                    ));
+                }
+                "try_append" if is_text => {
+                    if args.len() != 1 {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: "Text.try_append(value) takes one Text or Ascii value"
+                                .to_owned(),
+                        });
+                    }
+                    let place = self.resolve_place(receiver).map_err(|_| CheckError {
+                        span: receiver.span,
+                        message:
+                            "Text.try_append needs a mutable builder; use a var or grow parameter"
+                                .to_owned(),
+                    })?;
+                    if !self.place_is_mutable(&place) {
+                        return Err(CheckError {
+                            span: receiver.span,
+                            message: "Text.try_append needs a mutable builder; declare it with var"
+                                .to_owned(),
+                        });
+                    }
+                    if place.root < self.function_param_count()
+                        && self
+                            .binding_by_id(place.root)
+                            .is_some_and(|binding| binding.mode != ParamMode::Grow)
+                    {
+                        return Err(CheckError {
+                            span: receiver.span,
+                            message: "Text.try_append through a parameter requires 'grow' mode; 'write' cannot increase its length".to_owned(),
+                        });
+                    }
+                    let argument = self.check_expr(&args[0], None)?;
+                    if !self.is_text_type(argument.ty) && !self.is_ascii(argument.ty) {
+                        return Err(CheckError {
+                            span: args[0].span,
+                            message: format!(
+                                "Text.try_append needs Text or Ascii; found {}",
+                                self.type_name(argument.ty)
+                            ),
+                        });
+                    }
+                    let full = self.type_ids["Full"];
+                    let result = self.intern_generic(
+                        2,
+                        Ty::Unit,
+                        full,
+                        "Result<(), Full>".to_owned(),
+                        method_span,
+                        TTypeKind::Result(Ty::Unit, full),
+                    );
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    self.ascii_lengths.remove(&place.root);
+                    self.invalidate_place(&place);
+                    return Ok((
+                        TExprKind::TextTryAppend {
+                            receiver: Box::new(typed_collection),
+                            argument: Box::new(argument),
+                        },
+                        result,
+                    ));
+                }
+                "try_append" if is_bytes => {
+                    if args.len() != 1 {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: "Bytes.try_append(value) takes one Bytes value".to_owned(),
+                        });
+                    }
+                    let place = self.resolve_place(receiver).map_err(|_| CheckError {
+                        span: receiver.span,
+                        message:
+                            "Bytes.try_append needs a mutable builder; use a var or grow parameter"
+                                .to_owned(),
+                    })?;
+                    if !self.place_is_mutable(&place) {
+                        return Err(CheckError {
+                            span: receiver.span,
+                            message:
+                                "Bytes.try_append needs a mutable builder; declare it with var"
+                                    .to_owned(),
+                        });
+                    }
+                    if place.root < self.function_param_count()
+                        && self
+                            .binding_by_id(place.root)
+                            .is_some_and(|binding| binding.mode != ParamMode::Grow)
+                    {
+                        return Err(CheckError {
+                            span: receiver.span,
+                            message: "Bytes.try_append through a parameter requires 'grow' mode; 'write' cannot increase its length".to_owned(),
+                        });
+                    }
+                    let argument = self.check_expr(&args[0], None)?;
+                    if !self.is_bytes_type(argument.ty) {
+                        return Err(CheckError {
+                            span: args[0].span,
+                            message: format!(
+                                "try_append needs Bytes; found {}",
+                                self.type_name(argument.ty)
+                            ),
+                        });
+                    }
+                    let full = self.type_ids["Full"];
+                    let result = self.intern_generic(
+                        2,
+                        Ty::Unit,
+                        full,
+                        "Result<(), Full>".to_owned(),
+                        method_span,
+                        TTypeKind::Result(Ty::Unit, full),
+                    );
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    let maximum = self.bytes_max(place.ty).unwrap_or(0);
+                    if place.path.is_empty() {
+                        self.ascii_lengths.insert(place.root, (0, maximum));
+                    }
+                    self.invalidate_place(&place);
+                    return Ok((
+                        TExprKind::BytesTryAppend {
+                            receiver: Box::new(typed_collection),
+                            argument: Box::new(argument),
+                        },
+                        result,
+                    ));
+                }
+                "push" if is_bytes => {
+                    if args.len() != 1 {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: "Bytes.push(byte) takes one byte".to_owned(),
+                        });
+                    }
+                    let place = self.resolve_place(receiver).map_err(|_| CheckError {
+                        span: receiver.span,
+                        message: "Bytes.push needs a mutable builder; use a var or grow parameter"
+                            .to_owned(),
+                    })?;
+                    if !self.place_is_mutable(&place) {
+                        return Err(CheckError {
+                            span: receiver.span,
+                            message: "Bytes.push needs a mutable builder; declare it with var"
+                                .to_owned(),
+                        });
+                    }
+                    if place.root < self.function_param_count()
+                        && self
+                            .binding_by_id(place.root)
+                            .is_some_and(|binding| binding.mode != ParamMode::Grow)
+                    {
+                        return Err(CheckError {
+                            span: receiver.span,
+                            message: "Bytes.push through a parameter requires 'grow' mode; 'write' cannot increase its length".to_owned(),
+                        });
+                    }
+                    let byte = self.check_expr(&args[0], Some(self.type_ids["byte"]))?;
+                    let full = self.type_ids["Full"];
+                    let result = self.intern_generic(
+                        2,
+                        Ty::Unit,
+                        full,
+                        "Result<(), Full>".to_owned(),
+                        method_span,
+                        TTypeKind::Result(Ty::Unit, full),
+                    );
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    let maximum = self.bytes_max(place.ty).unwrap_or(0);
+                    let known = place
+                        .path
+                        .is_empty()
+                        .then(|| self.ascii_lengths.get(&place.root).copied())
+                        .flatten();
+                    let proven_success = known.is_some_and(|(_, upper)| upper < maximum);
+                    if place.path.is_empty() {
+                        let next = known
+                            .filter(|_| proven_success)
+                            .map(|(lower, upper)| {
+                                (lower.saturating_add(1), upper.saturating_add(1))
+                            })
+                            .unwrap_or((0, maximum));
+                        self.ascii_lengths.insert(place.root, next);
+                    }
+                    self.invalidate_place(&place);
+                    return Ok((
+                        TExprKind::BytesPush {
+                            receiver: Box::new(typed_collection),
+                            byte: Box::new(byte),
+                            proven_success,
+                        },
+                        result,
                     ));
                 }
                 _ => {}
@@ -6875,6 +7185,72 @@ impl Checker {
                                 TExprKind::Call {
                                     target: CallTarget::FsList,
                                     args: vec![typed_collection, typed_dir, typed_entries],
+                                    effect: Effect::None,
+                                },
+                                result,
+                            ));
+                        }
+                        "list_with_extension" => {
+                            if args.len() != 3 {
+                                return Err(CheckError {
+                                    span: method_span,
+                                    message: "fs.list_with_extension(dir, ext, entries) takes a directory, an Ascii extension, and a write list of DirEntry".to_owned(),
+                                });
+                            }
+                            let typed_dir = path(self, &args[0])?;
+                            let typed_extension = self.check_expr(&args[1], None)?;
+                            if !self.is_ascii(typed_extension.ty) {
+                                return Err(CheckError {
+                                    span: args[1].span,
+                                    message: "fs.list_with_extension extension must be Ascii"
+                                        .to_owned(),
+                                });
+                            }
+                            let typed_entries = self.check_expr(&args[2], None)?;
+                            let TTypeKind::List { element, .. } =
+                                self.types[typed_entries.ty.0].kind
+                            else {
+                                return Err(CheckError {
+                                    span: args[2].span,
+                                    message: "fs.list_with_extension output must be a bounded list<DirEntry, N>".to_owned(),
+                                });
+                            };
+                            if element != self.type_ids["DirEntry"] {
+                                return Err(CheckError {
+                                    span: args[2].span,
+                                    message: "fs.list_with_extension output must be a bounded list<DirEntry, N>".to_owned(),
+                                });
+                            }
+                            let place = self.resolve_place(&args[2]).map_err(|_| CheckError {
+                                span: args[2].span,
+                                message: "fs.list_with_extension output must be mutable; use var or a write parameter".to_owned(),
+                            })?;
+                            if !self.place_is_mutable(&place) {
+                                return Err(CheckError {
+                                    span: args[2].span,
+                                    message: "fs.list_with_extension output must be mutable; use var or a write parameter".to_owned(),
+                                });
+                            }
+                            let result = self.intern_generic(
+                                2,
+                                Ty::Unit,
+                                io_error,
+                                "Result<(), IoError>".to_owned(),
+                                span,
+                                TTypeKind::Result(Ty::Unit, io_error),
+                            );
+                            if let Some(want) = expected {
+                                self.type_mismatch(result, want, span)?;
+                            }
+                            return Ok((
+                                TExprKind::Call {
+                                    target: CallTarget::FsListWithExtension,
+                                    args: vec![
+                                        typed_collection,
+                                        typed_dir,
+                                        typed_extension,
+                                        typed_entries,
+                                    ],
                                     effect: Effect::None,
                                 },
                                 result,
@@ -8498,16 +8874,19 @@ impl Checker {
                     });
                 }
                 if param.mode == ParamMode::Grow {
-                    let actual_max = self.ascii_max(place.ty);
-                    let expected_max = self.ascii_max(param.ty);
-                    if actual_max
-                        .zip(expected_max)
-                        .is_none_or(|(actual, expected)| actual < expected)
-                    {
+                    let expected_max = self.growable_string_max(param.ty);
+                    if !self.string_width_fits(place.ty, param.ty) {
+                        let builder_kind = if self.is_ascii(param.ty) {
+                            "Ascii"
+                        } else if self.is_text_type(param.ty) {
+                            "Text"
+                        } else {
+                            "Bytes"
+                        };
                         return Err(CheckError {
                             span: arg.span,
                             message: format!(
-                                "grow argument needs an Ascii builder with at least {} bytes reserved; found {}",
+                                "grow argument needs an {builder_kind} builder with at least {} bytes reserved; found {}",
                                 expected_max.unwrap_or(0),
                                 self.type_name(place.ty)
                             ),
@@ -9015,16 +9394,19 @@ impl Checker {
                     && self.specialized_struct_base.get(&place.ty) == Some(&param.ty)
                     && !self.specialized_struct_owners.contains_key(&place.ty);
                 if param.mode == ParamMode::Grow {
-                    let actual_max = self.ascii_max(place.ty);
-                    let expected_max = self.ascii_max(param.ty);
-                    if actual_max
-                        .zip(expected_max)
-                        .is_none_or(|(actual, expected)| actual < expected)
-                    {
+                    let expected_max = self.growable_string_max(param.ty);
+                    if !self.string_width_fits(place.ty, param.ty) {
+                        let builder_kind = if self.is_ascii(param.ty) {
+                            "Ascii"
+                        } else if self.is_text_type(param.ty) {
+                            "Text"
+                        } else {
+                            "Bytes"
+                        };
                         return Err(CheckError {
                             span: arg.span,
                             message: format!(
-                                "grow argument needs an Ascii builder with at least {} bytes reserved; found {}",
+                                "grow argument needs an {builder_kind} builder with at least {} bytes reserved; found {}",
                                 expected_max.unwrap_or(0),
                                 self.type_name(place.ty)
                             ),
@@ -10104,6 +10486,28 @@ impl Checker {
                 index_span,
             } => {
                 let typed_receiver = self.check_expr(receiver, None)?;
+                if self.is_bytes_type(typed_receiver.ty) {
+                    let typed_index = self.check_collection_index(index)?;
+                    let proven =
+                        self.bytes_length_range(&typed_receiver)
+                            .is_some_and(|(minimum, _)| {
+                                self.expr_range(&typed_index)
+                                    .is_some_and(|(lo, hi)| lo >= 0 && hi < minimum as i128)
+                            });
+                    let element = self.type_ids["byte"];
+                    return self.finish_expr(
+                        expr,
+                        (
+                            TExprKind::BytesIndex {
+                                receiver: Box::new(typed_receiver),
+                                index: Box::new(typed_index),
+                                proven,
+                            },
+                            element,
+                        ),
+                        expected,
+                    );
+                }
                 let (element, capacity, is_list) =
                     match self.types[typed_receiver.ty.0].kind.clone() {
                         TTypeKind::Array { element, capacity } => (element, capacity, false),
@@ -12338,13 +12742,30 @@ impl Checker {
         }
 
         match &expr.kind {
-            TExprKind::AsciiTryAppend { receiver, argument } => {
+            TExprKind::AsciiTryAppend { receiver, argument }
+            | TExprKind::TextTryAppend { receiver, argument }
+            | TExprKind::BytesTryAppend { receiver, argument } => {
                 if let Some(root) = local_root(receiver) {
                     roots.0.insert(root);
                 }
                 Self::loop_ascii_growth_roots_expr(argument, roots, cache);
             }
-            TExprKind::Try { value, .. } => Self::loop_ascii_growth_roots_expr(value, roots, cache),
+            TExprKind::BytesPush { receiver, byte, .. } => {
+                if let Some(root) = local_root(receiver) {
+                    roots.1.insert(root);
+                }
+                Self::loop_ascii_growth_roots_expr(byte, roots, cache);
+            }
+            TExprKind::Try { value, .. } => {
+                if let TExprKind::BytesPush { receiver, byte, .. } = &value.kind {
+                    if let Some(root) = local_root(receiver) {
+                        roots.0.insert(root);
+                    }
+                    Self::loop_ascii_growth_roots_expr(byte, roots, cache);
+                } else {
+                    Self::loop_ascii_growth_roots_expr(value, roots, cache);
+                }
+            }
             TExprKind::Call { args, .. }
             | TExprKind::Construct { args, .. }
             | TExprKind::CollectionOp { args, .. }
@@ -12355,6 +12776,24 @@ impl Checker {
             | TExprKind::OptionalCall { args, .. } => {
                 for arg in args {
                     Self::loop_ascii_growth_roots_expr(arg, roots, cache);
+                }
+            }
+            TExprKind::Method {
+                kind: MethodKind::IsOk | MethodKind::IsErr | MethodKind::UnwrapResult,
+                receiver,
+            } => {
+                if let TExprKind::BytesPush {
+                    receiver: place,
+                    byte,
+                    ..
+                } = &receiver.kind
+                {
+                    if let Some(root) = local_root(place) {
+                        roots.0.insert(root);
+                    }
+                    Self::loop_ascii_growth_roots_expr(byte, roots, cache);
+                } else {
+                    Self::loop_ascii_growth_roots_expr(receiver, roots, cache);
                 }
             }
             TExprKind::AsciiUpper(value)
@@ -12407,7 +12846,14 @@ impl Checker {
                 }
             }
             TExprKind::Match { scrutinee, arms } => {
-                Self::loop_ascii_growth_roots_expr(scrutinee, roots, cache);
+                if let TExprKind::BytesPush { receiver, byte, .. } = &scrutinee.kind {
+                    if let Some(root) = local_root(receiver) {
+                        roots.0.insert(root);
+                    }
+                    Self::loop_ascii_growth_roots_expr(byte, roots, cache);
+                } else {
+                    Self::loop_ascii_growth_roots_expr(scrutinee, roots, cache);
+                }
                 for arm in arms {
                     let arm_roots = Self::loop_ascii_growth_roots_block(&arm.body, cache);
                     roots.0.extend(arm_roots.0);
@@ -12427,6 +12873,16 @@ impl Checker {
         block: &TBlock,
         cache: &mut HashMap<(usize, usize, usize, usize), AsciiGrowthRoots>,
     ) -> AsciiGrowthRoots {
+        fn local_root(expr: &TExpr) -> Option<usize> {
+            match &expr.kind {
+                TExprKind::Local(id) => Some(*id),
+                TExprKind::Field { receiver, .. } | TExprKind::Index { receiver, .. } => {
+                    local_root(receiver)
+                }
+                _ => None,
+            }
+        }
+
         let key = (
             block.span.file,
             block.span.start_offset,
@@ -12451,9 +12907,18 @@ impl Checker {
                 }
                 TStmtKind::Let { value, .. }
                 | TStmtKind::Assign { value, .. }
-                | TStmtKind::Expr(value)
-                | TStmtKind::Discard(value) => {
+                | TStmtKind::Expr(value) => {
                     Self::loop_ascii_growth_roots_expr(value, &mut roots, cache)
+                }
+                TStmtKind::Discard(value) => {
+                    if let TExprKind::BytesPush { receiver, byte, .. } = &value.kind {
+                        if let Some(root) = local_root(receiver) {
+                            roots.0.insert(root);
+                        }
+                        Self::loop_ascii_growth_roots_expr(byte, &mut roots, cache);
+                    } else {
+                        Self::loop_ascii_growth_roots_expr(value, &mut roots, cache);
+                    }
                 }
                 TStmtKind::Return(value) => {
                     if let Some(value) = value {
@@ -12535,10 +13000,10 @@ impl Checker {
             let Some(before_range) = before.get(&id).copied() else {
                 continue;
             };
-            let Some(max_bytes) = self
-                .binding_by_id(id)
-                .and_then(|binding| self.ascii_max(binding.ty))
-            else {
+            let Some(max_bytes) = self.binding_by_id(id).and_then(|binding| {
+                self.ascii_max(binding.ty)
+                    .or_else(|| self.bytes_max(binding.ty))
+            }) else {
                 continue;
             };
             let name = self
@@ -12565,10 +13030,25 @@ impl Checker {
                 .1
                 .saturating_add(per_iteration.saturating_mul(iterations));
             if maximum > max_bytes {
+                let is_bytes = self
+                    .binding_by_id(id)
+                    .is_some_and(|binding| self.is_bytes_type(binding.ty));
+                let type_name = if is_bytes { "Bytes" } else { "Ascii" };
+                let guidance = if is_bytes {
+                    format!(
+                        "handle '{}.push(byte)' returning Full or reduce the loop bound",
+                        name
+                    )
+                } else {
+                    format!(
+                        "use '{}.try_append(piece)' and handle Full, or reduce the loop bound or bytes appended each iteration",
+                        name
+                    )
+                };
                 return Err(CheckError {
                     span: loop_span,
                     message: format!(
-                        "loop can grow '{name}' to {maximum} bytes, above its Ascii max {max_bytes}; use '{name}.try_append(piece)' and handle Full, or reduce the loop bound or bytes appended each iteration"
+                        "loop can grow '{name}' to {maximum} bytes, above its {type_name} max {max_bytes}; {guidance}"
                     ),
                 });
             }
@@ -14139,6 +14619,7 @@ fn typed_expr_contains_take(expr: &TExpr) -> bool {
         | TExprKind::Convert { value, .. }
         | TExprKind::Fit { value, .. }
         | TExprKind::Try { value, .. }
+        | TExprKind::BytesValidateUtf8(value)
         | TExprKind::OptionalToLong(value)
         | TExprKind::ToLong(value)
         | TExprKind::Cast { value, .. }
@@ -14151,9 +14632,17 @@ fn typed_expr_contains_take(expr: &TExpr) -> bool {
             typed_expr_contains_take(value) || typed_expr_contains_take(width)
         }
         TExprKind::AsciiFit { value, .. } => typed_expr_contains_take(value),
-        TExprKind::AsciiTryAppend { receiver, argument } => {
+        TExprKind::AsciiTryAppend { receiver, argument }
+        | TExprKind::TextTryAppend { receiver, argument }
+        | TExprKind::BytesTryAppend { receiver, argument } => {
             typed_expr_contains_take(receiver) || typed_expr_contains_take(argument)
         }
+        TExprKind::BytesPush { receiver, byte, .. } => {
+            typed_expr_contains_take(receiver) || typed_expr_contains_take(byte)
+        }
+        TExprKind::BytesIndex {
+            receiver, index, ..
+        } => typed_expr_contains_take(receiver) || typed_expr_contains_take(index),
         TExprKind::Coalesce { option, fallback } => {
             typed_expr_contains_take(option) || typed_expr_contains_take(fallback)
         }
@@ -14219,6 +14708,7 @@ fn check_recursive_region_expr(
         | TExprKind::TextUpper(receiver)
         | TExprKind::AsciiCast(receiver)
         | TExprKind::BytesView(receiver)
+        | TExprKind::BytesValidateUtf8(receiver)
         | TExprKind::TextConvert {
             value: receiver, ..
         }
@@ -14249,6 +14739,12 @@ fn check_recursive_region_expr(
                 recurse(&grid.x, active_regions)?;
                 recurse(&grid.y, active_regions)?;
             }
+        }
+        TExprKind::BytesIndex {
+            receiver, index, ..
+        } => {
+            recurse(receiver, active_regions)?;
+            recurse(index, active_regions)?;
         }
         TExprKind::Fill { value, .. } => recurse(value, active_regions)?,
         TExprKind::CollectionLiteral(values) => {
@@ -14364,9 +14860,15 @@ fn check_recursive_region_expr(
         | TExprKind::TextEmpty
         | TExprKind::BytesEmpty => {}
         TExprKind::AsciiFit { value, .. } => recurse(value, active_regions)?,
-        TExprKind::AsciiTryAppend { receiver, argument } => {
+        TExprKind::AsciiTryAppend { receiver, argument }
+        | TExprKind::TextTryAppend { receiver, argument }
+        | TExprKind::BytesTryAppend { receiver, argument } => {
             recurse(receiver, active_regions)?;
             recurse(argument, active_regions)?;
+        }
+        TExprKind::BytesPush { receiver, byte, .. } => {
+            recurse(receiver, active_regions)?;
+            recurse(byte, active_regions)?;
         }
     }
 
@@ -14555,7 +15057,9 @@ fn global_path_from_expr(expr: &TExpr) -> Option<GlobalPath> {
             path.fields.push(*field_index);
             Some(path)
         }
-        TExprKind::Index { receiver, .. } => global_path_from_expr(receiver),
+        TExprKind::Index { receiver, .. } | TExprKind::BytesIndex { receiver, .. } => {
+            global_path_from_expr(receiver)
+        }
         _ => None,
     }
 }
@@ -14805,6 +15309,16 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
                 collect_global_expr_effects(index, effects, functions);
             }
         }
+        TExprKind::BytesIndex {
+            receiver, index, ..
+        } => {
+            if let Some(path) = global_path_from_expr(expr) {
+                effects.add_read(path);
+            } else {
+                collect_global_expr_effects(receiver, effects, functions);
+            }
+            collect_global_expr_effects(index, effects, functions);
+        }
         TExprKind::Call { target, args, .. } => {
             match target {
                 CallTarget::Function(function) => {
@@ -14832,7 +15346,7 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
                 | CallTarget::EnvExit => effects.env = true,
                 CallTarget::FsRead => effects.fs_read = true,
                 CallTarget::FsWrite => effects.fs_write = true,
-                CallTarget::FsList => effects.fs_read = true,
+                CallTarget::FsList | CallTarget::FsListWithExtension => effects.fs_read = true,
                 CallTarget::FsJoin
                 | CallTarget::EnvFs
                 | CallTarget::EnvOut
@@ -14953,12 +15467,21 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         TExprKind::Method { receiver, .. }
         | TExprKind::OptionalToLong(receiver)
         | TExprKind::ToLong(receiver) => collect_global_expr_effects(receiver, effects, functions),
-        TExprKind::AsciiTryAppend { receiver, argument } => {
+        TExprKind::AsciiTryAppend { receiver, argument }
+        | TExprKind::TextTryAppend { receiver, argument }
+        | TExprKind::BytesTryAppend { receiver, argument } => {
             collect_global_expr_effects(receiver, effects, functions);
             if let Some(path) = global_path_from_expr(receiver) {
                 effects.add_write(path, false);
             }
             collect_global_expr_effects(argument, effects, functions);
+        }
+        TExprKind::BytesPush { receiver, byte, .. } => {
+            collect_global_expr_effects(receiver, effects, functions);
+            if let Some(path) = global_path_from_expr(receiver) {
+                effects.add_write(path, false);
+            }
+            collect_global_expr_effects(byte, effects, functions);
         }
         TExprKind::Fill { value, .. } => collect_global_expr_effects(value, effects, functions),
         TExprKind::CollectionLiteral(values) => {
@@ -14978,6 +15501,7 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         | TExprKind::TextUpper(value)
         | TExprKind::AsciiCast(value)
         | TExprKind::BytesView(value)
+        | TExprKind::BytesValidateUtf8(value)
         | TExprKind::TextConvert { value, .. }
         | TExprKind::Take(value)
         | TExprKind::Cast { value, .. }
@@ -15188,6 +15712,7 @@ fn visit_global_calls_expr(
         | TExprKind::TextUpper(receiver)
         | TExprKind::AsciiCast(receiver)
         | TExprKind::BytesView(receiver)
+        | TExprKind::BytesValidateUtf8(receiver)
         | TExprKind::TextConvert {
             value: receiver, ..
         }
@@ -15222,6 +15747,12 @@ fn visit_global_calls_expr(
                 visit_global_calls_expr(index, active_views, check)?;
             }
         }
+        TExprKind::BytesIndex {
+            receiver, index, ..
+        } => {
+            visit_global_calls_expr(receiver, active_views, check)?;
+            visit_global_calls_expr(index, active_views, check)?;
+        }
         TExprKind::Fill { value, .. } => visit_global_calls_expr(value, active_views, check)?,
         TExprKind::CollectionLiteral(values) => {
             for value in values {
@@ -15248,9 +15779,15 @@ fn visit_global_calls_expr(
             visit_global_calls_expr(start, active_views, check)?;
             visit_global_calls_expr(end, active_views, check)?;
         }
-        TExprKind::AsciiTryAppend { receiver, argument } => {
+        TExprKind::AsciiTryAppend { receiver, argument }
+        | TExprKind::TextTryAppend { receiver, argument }
+        | TExprKind::BytesTryAppend { receiver, argument } => {
             visit_global_calls_expr(receiver, active_views, check)?;
             visit_global_calls_expr(argument, active_views, check)?;
+        }
+        TExprKind::BytesPush { receiver, byte, .. } => {
+            visit_global_calls_expr(receiver, active_views, check)?;
+            visit_global_calls_expr(byte, active_views, check)?;
         }
         TExprKind::CollectionOp { receiver, args, .. }
         | TExprKind::PoolOp { receiver, args, .. }

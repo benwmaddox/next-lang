@@ -157,14 +157,29 @@ pub fn parse_package(package: &Path) -> Result<ParseDump, PackageError> {
         std::thread::Builder::new()
             .name("nlc-parse".to_owned())
             .stack_size(COMPILER_STACK_SIZE)
-            .spawn_scoped(scope, move || parse_package_on_worker(package))
+            .spawn_scoped(scope, move || package_dump_on_worker(package, true))
             .map_err(|error| PackageError::Tool(format!("could not start parser thread: {error}")))?
             .join()
             .map_err(|_| PackageError::Tool("parser thread panicked".to_owned()))?
     })
 }
 
-fn parse_package_on_worker(package: &Path) -> Result<ParseDump, PackageError> {
+/// Lex a package with the same source selection, byte checks, UTF-8 validation,
+/// lexer and token limits as `parse_package`, without invoking the parser.
+pub fn lex_package(package: &Path) -> Result<String, PackageError> {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("nlc-lex".to_owned())
+            .stack_size(COMPILER_STACK_SIZE)
+            .spawn_scoped(scope, move || package_dump_on_worker(package, false))
+            .map_err(|error| PackageError::Tool(format!("could not start lexer thread: {error}")))?
+            .join()
+            .map_err(|_| PackageError::Tool("lexer thread panicked".to_owned()))?
+            .map(|dump| dump.tokens)
+    })
+}
+
+fn package_dump_on_worker(package: &Path, parse_tree: bool) -> Result<ParseDump, PackageError> {
     let entries = fs::read_dir(package)
         .map_err(|e| PackageError::Tool(format!("cannot read package directory: {e}")))?;
     let mut paths = Vec::new();
@@ -243,6 +258,11 @@ fn parse_package_on_worker(package: &Path) -> Result<ParseDump, PackageError> {
                 format!("token limit of {MAX_PARSE_PACKAGE_TOKENS} per package exceeded"),
             ));
         }
+        dump.tokens
+            .push_str(&syntax_dump::token_dump(&file, &source, &tokens));
+        if !parse_tree {
+            continue;
+        }
         let program = parser::parse(tokens.clone(), &source).map_err(|error| {
             PackageError::Compile(CompileError {
                 file: file.clone(),
@@ -285,8 +305,6 @@ fn parse_package_on_worker(package: &Path) -> Result<ParseDump, PackageError> {
                 format!("parse work limit of {MAX_PARSE_WORK_UNITS} units per package exceeded"),
             ));
         }
-        dump.tokens
-            .push_str(&syntax_dump::token_dump(&file, &source, &tokens));
         dump.tree.push_str(&tree);
     }
     Ok(dump)

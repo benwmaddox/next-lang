@@ -443,7 +443,7 @@ Lt 1760 1 61 78 "<"
 LParen 1761 1 61 79 "("
 RParen 1762 1 61 80 ")"
 Comma 1763 1 61 81 ","
-Ident 1765 9 61 83 "TextError"
+Ident 1765 9 61 83 "Utf8Error"
 Gt 1774 1 61 92 ">"
 LBrace 1776 1 61 94 "{"
 Newline 1777 1 61 95 "\n"
@@ -1772,7 +1772,7 @@ Program 0..7190
         Integer 1748..1749 magnitude=8 negative=false long_suffix=false
     ResultType 1754..1775 name="Result" range=none policy=checked
       TypeArgument 1761..1763 name="()" range=none policy=checked
-      TypeArgument 1765..1774 name="TextError" range=none policy=checked
+      TypeArgument 1765..1774 name="Utf8Error" range=none policy=checked
     Block 1776..1869
       Assign 1782..1856 op==
         Index 1782..1793

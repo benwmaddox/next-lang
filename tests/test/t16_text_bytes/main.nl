@@ -58,7 +58,7 @@ struct Record {
     count: int
 }
 
-fn replace_record(records: write list<Record, 1>, raw: Bytes max 8) -> Result<(), TextError> {
+fn replace_record(records: write list<Record, 1>, raw: Bytes max 8) -> Result<(), Utf8Error> {
     records[0L] = Record { short: "changed", note: raw.to_text()?, count: 99 }
     ok(())
 }

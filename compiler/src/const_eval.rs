@@ -328,6 +328,7 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::TextUpper(receiver)
         | TExprKind::AsciiCast(receiver)
         | TExprKind::BytesView(receiver)
+        | TExprKind::BytesValidateUtf8(receiver)
         | TExprKind::TextConvert {
             value: receiver, ..
         }
@@ -364,6 +365,12 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
                 collect_constant_references_expr(&grid.x, references);
                 collect_constant_references_expr(&grid.y, references);
             }
+        }
+        TExprKind::BytesIndex {
+            receiver, index, ..
+        } => {
+            collect_constant_references_expr(receiver, references);
+            collect_constant_references_expr(index, references);
         }
         TExprKind::Fill { value, .. } => collect_constant_references_expr(value, references),
         TExprKind::CollectionLiteral(values) => {
@@ -459,9 +466,15 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::TextEmpty
         | TExprKind::BytesEmpty => {}
         TExprKind::AsciiFit { value, .. } => collect_constant_references_expr(value, references),
-        TExprKind::AsciiTryAppend { receiver, argument } => {
+        TExprKind::AsciiTryAppend { receiver, argument }
+        | TExprKind::TextTryAppend { receiver, argument }
+        | TExprKind::BytesTryAppend { receiver, argument } => {
             collect_constant_references_expr(receiver, references);
             collect_constant_references_expr(argument, references);
+        }
+        TExprKind::BytesPush { receiver, byte, .. } => {
+            collect_constant_references_expr(receiver, references);
+            collect_constant_references_expr(byte, references);
         }
     }
 }
@@ -577,6 +590,7 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         | TExprKind::TextUpper(receiver)
         | TExprKind::AsciiCast(receiver)
         | TExprKind::BytesView(receiver)
+        | TExprKind::BytesValidateUtf8(receiver)
         | TExprKind::TextConvert {
             value: receiver, ..
         }
@@ -609,6 +623,9 @@ fn expression_reads_global(expr: &TExpr) -> bool {
                     expression_reads_global(&grid.x) || expression_reads_global(&grid.y)
                 })
         }
+        TExprKind::BytesIndex {
+            receiver, index, ..
+        } => expression_reads_global(receiver) || expression_reads_global(index),
         TExprKind::Fill { value, .. } => expression_reads_global(value),
         TExprKind::CollectionLiteral(values) => values.iter().any(expression_reads_global),
         TExprKind::AsciiSlice {
@@ -631,8 +648,13 @@ fn expression_reads_global(expr: &TExpr) -> bool {
                 || expression_reads_global(end)
         }
         TExprKind::AsciiFit { value, .. } => expression_reads_global(value),
-        TExprKind::AsciiTryAppend { receiver, argument } => {
+        TExprKind::AsciiTryAppend { receiver, argument }
+        | TExprKind::TextTryAppend { receiver, argument }
+        | TExprKind::BytesTryAppend { receiver, argument } => {
             expression_reads_global(receiver) || expression_reads_global(argument)
+        }
+        TExprKind::BytesPush { receiver, byte, .. } => {
+            expression_reads_global(receiver) || expression_reads_global(byte)
         }
         TExprKind::CollectionOp { receiver, args, .. }
         | TExprKind::PoolOp { receiver, args, .. }
@@ -879,7 +901,9 @@ fn collect_calls_expr(
                 | CallTarget::ArgsGet
                 | CallTarget::ArgLength
                 | CallTarget::ArgByte => effects.push((expr.span, "env")),
-                CallTarget::FsRead | CallTarget::FsList => effects.push((expr.span, "fs.read")),
+                CallTarget::FsRead | CallTarget::FsList | CallTarget::FsListWithExtension => {
+                    effects.push((expr.span, "fs.read"))
+                }
                 CallTarget::FsWrite => effects.push((expr.span, "fs.write")),
                 CallTarget::EnvFs
                 | CallTarget::EnvOut
@@ -934,6 +958,22 @@ fn collect_calls_expr(
                 collect_calls_expr(&grid.x, calls, effects);
                 collect_calls_expr(&grid.y, calls, effects);
             }
+        }
+        TExprKind::BytesIndex {
+            receiver, index, ..
+        } => {
+            collect_calls_expr(receiver, calls, effects);
+            collect_calls_expr(index, calls, effects);
+        }
+        TExprKind::BytesValidateUtf8(value) => collect_calls_expr(value, calls, effects),
+        TExprKind::TextTryAppend { receiver, argument }
+        | TExprKind::BytesTryAppend { receiver, argument } => {
+            collect_calls_expr(receiver, calls, effects);
+            collect_calls_expr(argument, calls, effects);
+        }
+        TExprKind::BytesPush { receiver, byte, .. } => {
+            collect_calls_expr(receiver, calls, effects);
+            collect_calls_expr(byte, calls, effects);
         }
         TExprKind::Fill { value, .. } => collect_calls_expr(value, calls, effects),
         TExprKind::CollectionLiteral(values) => {
@@ -2228,6 +2268,7 @@ impl Evaluator<'_> {
                 | CallTarget::ArgByte
                 | CallTarget::FsRead
                 | CallTarget::FsList
+                | CallTarget::FsListWithExtension
                 | CallTarget::FsWrite
                 | CallTarget::EnvFs
                 | CallTarget::EnvOut
@@ -2784,6 +2825,22 @@ impl Evaluator<'_> {
                     _ => return Err(self.failure(expr.span, "index receiver was not a collection")),
                 }
             }
+            TExprKind::BytesIndex {
+                receiver, index, ..
+            } => {
+                let bytes = value_or_flow!(self.eval_expr(receiver, locals));
+                let index_value = as_integer(&value_or_flow!(self.eval_expr(index, locals)));
+                let index_value = usize::try_from(index_value)
+                    .map_err(|_| self.failure(index.span, "index out of range"))?;
+                match bytes {
+                    ConstValue::String(bytes) => ConstValue::Integer(i128::from(
+                        *bytes
+                            .get(index_value)
+                            .ok_or_else(|| self.failure(index.span, "index out of range"))?,
+                    )),
+                    _ => return Err(self.failure(expr.span, "index receiver was not Bytes")),
+                }
+            }
             TExprKind::Fill { value, capacity } => {
                 let item = value_or_flow!(self.eval_expr(value, locals));
                 let items = vec![item; *capacity];
@@ -3027,6 +3084,7 @@ impl Evaluator<'_> {
             | TExprKind::OptionalToLong(_)
             | TExprKind::Field { .. }
             | TExprKind::Index { .. }
+            | TExprKind::BytesIndex { .. }
             | TExprKind::Fill { .. } => return self.eval_access_expr(expr, locals),
             TExprKind::EmptyArray
             | TExprKind::EmptyGrid
@@ -3062,6 +3120,10 @@ impl Evaluator<'_> {
             | TExprKind::AsciiZeroPad { .. }
             | TExprKind::ParseInteger { .. }
             | TExprKind::AsciiTryAppend { .. }
+            | TExprKind::TextTryAppend { .. }
+            | TExprKind::BytesTryAppend { .. }
+            | TExprKind::BytesPush { .. }
+            | TExprKind::BytesValidateUtf8(_)
             | TExprKind::AsciiCast(_)
             | TExprKind::AsciiFit { .. }
             | TExprKind::TextSlice { .. }

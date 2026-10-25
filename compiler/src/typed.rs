@@ -569,6 +569,7 @@ pub enum CallTarget {
     ArgByte,
     FsRead,
     FsList,
+    FsListWithExtension,
     FsWrite,
     FsJoin,
     OutWrite,
@@ -742,6 +743,20 @@ pub enum TExprKind {
         receiver: Box<TExpr>,
         argument: Box<TExpr>,
     },
+    TextTryAppend {
+        receiver: Box<TExpr>,
+        argument: Box<TExpr>,
+    },
+    BytesTryAppend {
+        receiver: Box<TExpr>,
+        argument: Box<TExpr>,
+    },
+    BytesPush {
+        receiver: Box<TExpr>,
+        byte: Box<TExpr>,
+        proven_success: bool,
+    },
+    BytesValidateUtf8(Box<TExpr>),
     AsciiCast(Box<TExpr>),
     AsciiFit {
         value: Box<TExpr>,
@@ -787,6 +802,11 @@ pub enum TExprKind {
         is_list: bool,
         proven: bool,
         grid: Option<Box<GridIndexInfo>>,
+    },
+    BytesIndex {
+        receiver: Box<TExpr>,
+        index: Box<TExpr>,
+        proven: bool,
     },
     Fill {
         value: Box<TExpr>,
