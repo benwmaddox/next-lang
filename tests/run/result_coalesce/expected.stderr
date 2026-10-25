@@ -1,1 +1,1 @@
-main.nl:4:24: error: '??' works on Option only; use match or convert the Result with .ok()
+main.nl:3:11: error: '??' works on Option only; use 'match' to handle a Result or '?' to pass its error up

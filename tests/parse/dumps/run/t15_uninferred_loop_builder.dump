@@ -1,0 +1,49 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "for"
+Ident 20 1 2 9 "i"
+Ident 22 2 2 11 "in"
+Number 25 1 2 14 "0"
+Range 26 2 2 15 ".."
+Number 28 1 2 17 "2"
+LBrace 30 1 2 19 "{"
+Newline 31 1 2 20 "\n"
+Ident 40 3 3 9 "var"
+Ident 44 7 3 13 "scratch"
+Eq 52 1 3 21 "="
+Ident 54 5 3 23 "Ascii"
+Dot 59 1 3 28 "."
+Ident 60 5 3 29 "empty"
+LParen 65 1 3 34 "("
+RParen 66 1 3 35 ")"
+Newline 67 1 3 36 "\n"
+Ident 76 7 4 9 "scratch"
+PlusEq 84 2 4 17 "+="
+String 87 3 4 20 "\"x\""
+Newline 90 1 4 23 "\n"
+RBrace 95 1 5 5 "}"
+Newline 96 1 5 6 "\n"
+RBrace 97 1 6 1 "}"
+Newline 98 1 6 2 "\n"
+Eof 99 0 7 1 ""
+== tree ==
+file "main.nl"
+Program 0..99
+  Function 0..98 name="main" recursive=false generics=[]
+    Block 10..98
+      For 16..96 name="i" inclusive=false
+        Integer 25..26 magnitude=0 negative=false long_suffix=false
+        Integer 28..29 magnitude=2 negative=false long_suffix=false
+        Block 30..96
+          Let 40..67 mutable=true name="scratch"
+            MethodCall 54..67 name="empty"
+              Name 54..59 name="Ascii"
+          Assign 76..90 op=+=
+            Name 76..83 name="scratch"
+            ByteString 87..90 value="x"

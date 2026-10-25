@@ -1,0 +1,91 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "var"
+Ident 20 3 2 9 "out"
+Colon 23 1 2 12 ":"
+Ident 25 5 2 14 "Ascii"
+Ident 31 3 2 20 "max"
+Number 35 3 2 24 "100"
+Eq 39 1 2 28 "="
+Ident 41 5 2 30 "Ascii"
+Dot 46 1 2 35 "."
+Ident 47 5 2 36 "empty"
+LParen 52 1 2 41 "("
+RParen 53 1 2 42 ")"
+Newline 54 1 2 43 "\n"
+Ident 59 3 3 5 "for"
+Ident 63 1 3 9 "i"
+Ident 65 2 3 11 "in"
+Number 68 1 3 14 "0"
+RangeInclusive 69 3 3 15 "..="
+Number 72 3 3 18 "100"
+LBrace 76 1 3 22 "{"
+Newline 77 1 3 23 "\n"
+Ident 86 3 4 9 "let"
+Ident 90 5 4 13 "piece"
+Eq 96 1 4 19 "="
+Ident 98 2 4 21 "if"
+Ident 101 1 4 24 "i"
+Ge 103 2 4 26 ">="
+Number 106 1 4 29 "0"
+LBrace 108 1 4 31 "{"
+Ident 110 3 4 33 "out"
+PlusEq 114 2 4 37 "+="
+String 117 3 4 40 "\"x\""
+Semicolon 120 1 4 43 ";"
+String 122 3 4 45 "\"x\""
+RBrace 126 1 4 49 "}"
+Ident 128 4 4 51 "else"
+LBrace 133 1 4 56 "{"
+String 135 2 4 58 "\"\""
+RBrace 138 1 4 61 "}"
+Newline 139 1 4 62 "\n"
+RBrace 144 1 5 5 "}"
+Newline 145 1 5 6 "\n"
+Ident 150 5 6 5 "print"
+LParen 155 1 6 10 "("
+Ident 156 3 6 11 "out"
+Dot 159 1 6 14 "."
+Ident 160 3 6 15 "len"
+LParen 163 1 6 18 "("
+RParen 164 1 6 19 ")"
+RParen 165 1 6 20 ")"
+Newline 166 1 6 21 "\n"
+RBrace 167 1 7 1 "}"
+Newline 168 1 7 2 "\n"
+Eof 169 0 8 1 ""
+== tree ==
+file "main.nl"
+Program 0..169
+  Function 0..168 name="main" recursive=false generics=[]
+    Block 10..168
+      Let 16..54 mutable=true name="out"
+        Annotation 25..38 name="Ascii" range=none policy=checked
+          Integer 35..38 magnitude=100 negative=false long_suffix=false
+        MethodCall 41..54 name="empty"
+          Name 41..46 name="Ascii"
+      For 59..145 name="i" inclusive=true
+        Integer 68..69 magnitude=0 negative=false long_suffix=false
+        Integer 72..75 magnitude=100 negative=false long_suffix=false
+        Block 76..145
+          Let 86..139 mutable=false name="piece"
+            If 98..139
+              Binary 101..107 op=ge
+                Name 101..102 name="i"
+                Integer 106..107 magnitude=0 negative=false long_suffix=false
+              Block 108..127
+                Assign 110..120 op=+=
+                  Name 110..113 name="out"
+                  ByteString 117..120 value="x"
+                ByteString 122..125 value="x"
+              Block 133..139
+                ByteString 135..137 value=""
+      Call 150..166 name="print"
+        MethodCall 156..165 name="len"
+          Name 156..159 name="out"

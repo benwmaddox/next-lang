@@ -81,6 +81,9 @@ pub enum TTypeKind {
     Function {
         params: Vec<TFunctionTypeParam>,
         result: Ty,
+        /// Whether every callable value with this type can write an Ascii
+        /// result directly into an existing builder.
+        supports_append: bool,
         effects: TFunctionEffects,
         data_stack_requirement: u64,
     },

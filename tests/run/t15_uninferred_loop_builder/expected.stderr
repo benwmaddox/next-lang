@@ -1,0 +1,1 @@
+main.nl:3:9: error: builder 'scratch' in loop 'i' has no inferred Ascii maximum; declare it as 'Ascii max N' and use try_append while handling Full, or prove the loop bound and bytes added per iteration against its declared maximum

@@ -1,0 +1,1 @@
+main.nl:3:5: error: loop can grow 'out' to 101 bytes, above its Ascii max 100; use 'out.try_append(piece)' and handle Full, or reduce the loop bound or bytes appended each iteration

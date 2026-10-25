@@ -137,6 +137,7 @@ struct Checker {
     current_return: Ty,
     current_is_test: bool,
     loop_depth: usize,
+    loop_names: Vec<String>,
     loop_outer_depths: Vec<usize>,
     conditional_depth: usize,
     moved_locals: std::collections::HashSet<usize>,
@@ -246,6 +247,7 @@ impl Checker {
             current_return: Ty::Unit,
             current_is_test: false,
             loop_depth: 0,
+            loop_names: Vec::new(),
             loop_outer_depths: Vec::new(),
             conditional_depth: 0,
             moved_locals: std::collections::HashSet::new(),
@@ -610,6 +612,7 @@ impl Checker {
         self.current_is_test = false;
         self.checking_constant = true;
         self.loop_depth = 0;
+        self.loop_names.clear();
         self.loop_outer_depths.clear();
         self.conditional_depth = 0;
         self.moved_locals.clear();
@@ -1394,11 +1397,17 @@ impl Checker {
             format!(" effects {}", effect_text.join(", "))
         };
         let id = Ty(self.types.len());
+        let supports_append = self.is_ascii(result)
+            || matches!(
+                self.types.get(result.0).map(|definition| &definition.kind),
+                Some(TTypeKind::Result(ok, _)) if self.is_ascii(*ok)
+            );
         self.types.push(TType {
             name: format!("fn({params_text}) -> {}{suffix}", self.type_name(result)),
             kind: TTypeKind::Function {
                 params,
                 result,
+                supports_append,
                 effects,
                 data_stack_requirement: 0,
             },
@@ -2948,6 +2957,7 @@ impl Checker {
         self.active_views.clear();
         self.view_bindings.clear();
         self.loop_depth = 0;
+        self.loop_names.clear();
         self.loop_outer_depths.clear();
         self.conditional_depth = 0;
         self.moved_locals.clear();
@@ -3136,6 +3146,7 @@ impl Checker {
         self.checking_constant = false;
         self.checking_global_initializer = true;
         self.loop_depth = 0;
+        self.loop_names.clear();
         self.loop_outer_depths.clear();
         self.conditional_depth = 0;
         self.moved_locals.clear();
@@ -3533,6 +3544,7 @@ impl Checker {
         self.active_views.clear();
         self.view_bindings.clear();
         self.loop_depth = 0;
+        self.loop_names.clear();
         self.loop_outer_depths.clear();
         self.conditional_depth = 0;
         self.moved_locals.clear();
@@ -3753,6 +3765,24 @@ impl Checker {
                 annotation,
                 value,
             } => {
+                if annotation.is_none()
+                    && self.loop_depth > 0
+                    && matches!(
+                        &value.kind,
+                        ExprKind::MethodCall { receiver, name, args, .. }
+                            if name == "empty"
+                                && args.is_empty()
+                                && matches!(&receiver.kind, ExprKind::Name(type_name) if type_name == "Ascii")
+                    )
+                {
+                    let loop_name = self.loop_names.last().map(String::as_str).unwrap_or("loop");
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message: format!(
+                            "builder '{name}' in loop '{loop_name}' has no inferred Ascii maximum; declare it as 'Ascii max N' and use try_append while handling Full, or prove the loop bound and bytes added per iteration against its declared maximum"
+                        ),
+                    });
+                }
                 let old_pending = self.pending_owner.take();
                 let pending = annotation.as_ref().is_some_and(|ty| ty.name == "pool");
                 if pending {
@@ -3974,17 +4004,6 @@ impl Checker {
                             message: "appending through a parameter requires 'grow' mode; 'write' cannot increase its length".to_owned(),
                         });
                     }
-                    let outer_depth = *self.loop_outer_depths.last().unwrap_or(&0);
-                    if self.loop_depth > 0
-                        && self
-                            .binding_by_id(place.root)
-                            .is_none_or(|binding| binding.scope_depth <= outer_depth)
-                    {
-                        return Err(CheckError {
-                            span: stmt.span,
-                            message: "a loop body may grow only an Ascii value declared inside that loop; growing an outer value is T15".to_owned(),
-                        });
-                    }
                     let typed_value = self.check_expr(value, None)?;
                     if !self.is_ascii(typed_value.ty) {
                         return Err(CheckError {
@@ -4088,27 +4107,6 @@ impl Checker {
                                 ),
                             });
                         }
-                    }
-                }
-                if *op == AssignOp::Set
-                    && self.is_ascii(place.ty)
-                    && self.loop_depth > 0
-                    && self.binding_by_id(place.root).is_none_or(|binding| {
-                        binding.scope_depth <= *self.loop_outer_depths.last().unwrap_or(&0)
-                    })
-                {
-                    let max_bytes = self.ascii_max(place.ty).unwrap_or(0);
-                    let current = self
-                        .ascii_lengths
-                        .get(&place.root)
-                        .copied()
-                        .unwrap_or((0, max_bytes));
-                    let assigned = assigned_ascii_range.unwrap_or((0, max_bytes));
-                    if assigned.1 > current.1 {
-                        return Err(CheckError {
-                            span: stmt.span,
-                            message: "a loop body may grow only an Ascii value declared inside that loop; growing an outer value is T15".to_owned(),
-                        });
                     }
                 }
                 let place_fields = place_field_path(&place);
@@ -4290,6 +4288,7 @@ impl Checker {
                 let typed_start = self.check_expr(start, Some(ty))?;
                 let typed_end = self.check_expr(end, Some(ty))?;
                 let before_counts = self.collection_counts.clone();
+                let before_ascii_lengths = self.ascii_lengths.clone();
                 let iteration_bound =
                     self.max_loop_iterations(&typed_start, &typed_end, *inclusive);
                 let loop_pushes = self.prepare_loop_push_proofs(body, iteration_bound);
@@ -4319,12 +4318,22 @@ impl Checker {
                 self.loop_outer_depths
                     .push(self.scope_ids.len().saturating_sub(1));
                 self.loop_depth += 1;
+                self.loop_names.push(name.clone());
                 let typed_body = self.check_block(body, true, None)?;
                 if let Some(tail) = typed_body.tail.as_deref() {
                     self.require_handled_result(tail, tail.span)?;
                 }
                 let after_body_counts = self.collection_counts.clone();
+                let after_body_ascii_lengths = self.ascii_lengths.clone();
+                self.check_loop_ascii_growth(
+                    &before_ascii_lengths,
+                    &after_body_ascii_lengths,
+                    &typed_body,
+                    iteration_bound,
+                    stmt.span,
+                )?;
                 self.loop_depth -= 1;
+                self.loop_names.pop();
                 self.loop_outer_depths.pop();
                 self.loop_writes.pop();
                 self.finish_loop_push_proofs(
@@ -4454,6 +4463,7 @@ impl Checker {
                 })?;
                 let writable = self.place_is_mutable(&source) && !is_set;
                 let before_counts = self.collection_counts.clone();
+                let before_ascii_lengths = self.ascii_lengths.clone();
                 let iterations = if is_list {
                     self.collection_count_key(&source)
                         .and_then(|key| self.collection_counts.get(&key).copied())
@@ -4522,12 +4532,22 @@ impl Checker {
                 self.loop_outer_depths
                     .push(self.scope_ids.len().saturating_sub(1));
                 self.loop_depth += 1;
+                self.loop_names.push(name.clone());
                 let typed_body = self.check_block(body, true, None)?;
                 if let Some(tail) = typed_body.tail.as_deref() {
                     self.require_handled_result(tail, tail.span)?;
                 }
                 let after_body_counts = self.collection_counts.clone();
+                let after_body_ascii_lengths = self.ascii_lengths.clone();
+                self.check_loop_ascii_growth(
+                    &before_ascii_lengths,
+                    &after_body_ascii_lengths,
+                    &typed_body,
+                    Some(iterations),
+                    stmt.span,
+                )?;
                 self.loop_depth -= 1;
+                self.loop_names.pop();
                 self.loop_outer_depths.pop();
                 self.active_views.pop();
                 if !is_set {
@@ -5465,16 +5485,6 @@ impl Checker {
                         return Err(CheckError {
                             span: receiver.span,
                             message: "Ascii.try_append through a parameter requires 'grow' mode; 'write' cannot increase its length".to_owned(),
-                        });
-                    }
-                    if self.loop_depth > 0
-                        && self.binding_by_id(place.root).is_none_or(|binding| {
-                            binding.scope_depth <= *self.loop_outer_depths.last().unwrap_or(&0)
-                        })
-                    {
-                        return Err(CheckError {
-                            span: method_span,
-                            message: "a loop body may grow only an Ascii value declared inside that loop; growing an outer value is T15".to_owned(),
                         });
                     }
                     self.ascii_lengths.remove(&place.root);
@@ -7306,16 +7316,6 @@ impl Checker {
                     });
                 }
                 if param.mode == ParamMode::Grow {
-                    if self.loop_depth > 0
-                        && self.binding_by_id(place.root).is_none_or(|binding| {
-                            binding.scope_depth <= *self.loop_outer_depths.last().unwrap_or(&0)
-                        })
-                    {
-                        return Err(CheckError {
-                            span: arg.span,
-                            message: "a loop body may grow only an Ascii value declared inside that loop; growing an outer value is T15".to_owned(),
-                        });
-                    }
                     let actual_max = self.ascii_max(place.ty);
                     let expected_max = self.ascii_max(param.ty);
                     if actual_max
@@ -7787,17 +7787,6 @@ impl Checker {
                 })?;
                 if !self.place_is_mutable(&place) {
                     return Err(CheckError { span: arg.span, message: "a write argument must be a var, a field of a var, or another write parameter".to_owned() });
-                }
-                if param.mode == ParamMode::Grow
-                    && self.loop_depth > 0
-                    && self.binding_by_id(place.root).is_none_or(|binding| {
-                        binding.scope_depth <= *self.loop_outer_depths.last().unwrap_or(&0)
-                    })
-                {
-                    return Err(CheckError {
-                        span: arg.span,
-                        message: "a loop body may grow only an Ascii value declared inside that loop; growing an outer value is T15".to_owned(),
-                    });
                 }
                 let canonical = self.canonical_place(&place);
                 let write_collection = matches!(
@@ -9756,30 +9745,36 @@ impl Checker {
         }
         if op == BinaryOp::Coalesce {
             let left_expected = if let Some(want) = expected {
-                Some(self.option_type(want, span))
+                let result_input = self
+                    .natural_expr_type(left)
+                    .is_some_and(|ty| matches!(self.types[ty.0].kind, TTypeKind::Result(_, _)));
+                if result_input {
+                    None
+                } else {
+                    Some(self.option_type(want, span))
+                }
             } else {
                 None
             };
             let left = self.check_expr(left, left_expected)?;
-            let value_ty =
-                match self.types[left.ty.0].kind.clone() {
-                    TTypeKind::Option(value) => value,
-                    TTypeKind::Result(_, _) => return Err(CheckError {
+            let value_ty = match self.types[left.ty.0].kind.clone() {
+                TTypeKind::Option(value) => value,
+                TTypeKind::Result(_, _) => {
+                    return Err(CheckError {
                         span,
-                        message:
-                            "'??' works on Option only; use match or convert the Result with .ok()"
-                                .to_owned(),
-                    }),
-                    _ => {
-                        return Err(CheckError {
-                            span,
-                            message: format!(
-                                "'??' requires Option<T>, found {}",
-                                self.type_name(left.ty)
-                            ),
-                        });
-                    }
-                };
+                        message: "'??' works on Option only; use 'match' to handle a Result or '?' to pass its error up".to_owned(),
+                    });
+                }
+                _ => {
+                    return Err(CheckError {
+                        span,
+                        message: format!(
+                            "'??' requires Option<T>, found {}",
+                            self.type_name(left.ty)
+                        ),
+                    });
+                }
+            };
             let fallback = self.check_expr(right, Some(value_ty))?;
             if fallback.ty != Ty::Never {
                 self.type_mismatch(fallback.ty, value_ty, right.span)?;
@@ -10671,6 +10666,214 @@ impl Checker {
         usize::try_from(count).ok()
     }
 
+    fn check_loop_ascii_growth(
+        &mut self,
+        before: &HashMap<usize, (usize, usize)>,
+        after: &HashMap<usize, (usize, usize)>,
+        body: &TBlock,
+        iterations: Option<usize>,
+        loop_span: Span,
+    ) -> Result<(), CheckError> {
+        fn local_root(expr: &TExpr) -> Option<usize> {
+            match &expr.kind {
+                TExprKind::Local(id) => Some(*id),
+                TExprKind::Field { receiver, .. } | TExprKind::Index { receiver, .. } => {
+                    local_root(receiver)
+                }
+                _ => None,
+            }
+        }
+
+        fn append_roots_expr(
+            expr: &TExpr,
+            checked: &mut std::collections::HashSet<usize>,
+            plain: &mut std::collections::HashSet<usize>,
+        ) {
+            match &expr.kind {
+                TExprKind::AsciiTryAppend { receiver, argument } => {
+                    if let Some(root) = local_root(receiver) {
+                        checked.insert(root);
+                    }
+                    append_roots_expr(argument, checked, plain);
+                }
+                TExprKind::Try { value, .. } => append_roots_expr(value, checked, plain),
+                TExprKind::Call { args, .. }
+                | TExprKind::Construct { args, .. }
+                | TExprKind::CollectionOp { args, .. }
+                | TExprKind::PoolOp { args, .. }
+                | TExprKind::MapOp { args, .. }
+                | TExprKind::SetOp { args, .. }
+                | TExprKind::IndirectCall { args, .. }
+                | TExprKind::OptionalCall { args, .. } => {
+                    for arg in args {
+                        append_roots_expr(arg, checked, plain);
+                    }
+                }
+                TExprKind::AsciiUpper(value)
+                | TExprKind::AsciiFormat(value)
+                | TExprKind::AsciiCast(value)
+                | TExprKind::Take(value)
+                | TExprKind::OptionalToLong(value)
+                | TExprKind::Field {
+                    receiver: value, ..
+                }
+                | TExprKind::Method {
+                    receiver: value, ..
+                }
+                | TExprKind::ToLong(value)
+                | TExprKind::Cast { value, .. }
+                | TExprKind::Unary { value, .. }
+                | TExprKind::Convert { value, .. }
+                | TExprKind::Fit { value, .. }
+                | TExprKind::AsciiFit { value, .. } => append_roots_expr(value, checked, plain),
+                TExprKind::Binary { left, right, .. } => {
+                    append_roots_expr(left, checked, plain);
+                    append_roots_expr(right, checked, plain);
+                }
+                TExprKind::Coalesce { option, fallback } => {
+                    append_roots_expr(option, checked, plain);
+                    append_roots_expr(fallback, checked, plain);
+                }
+                TExprKind::If {
+                    condition,
+                    then_block,
+                    else_block,
+                } => {
+                    append_roots_expr(condition, checked, plain);
+                    append_roots_block(then_block, checked, plain);
+                    if let Some(other) = else_block {
+                        append_roots_block(other, checked, plain);
+                    }
+                }
+                TExprKind::Match { scrutinee, arms } => {
+                    append_roots_expr(scrutinee, checked, plain);
+                    for arm in arms {
+                        append_roots_block(&arm.body, checked, plain);
+                    }
+                }
+                TExprKind::StructConstruct { fields } => {
+                    for (_, value) in fields {
+                        append_roots_expr(value, checked, plain);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn append_roots_block(
+            block: &TBlock,
+            checked: &mut std::collections::HashSet<usize>,
+            plain: &mut std::collections::HashSet<usize>,
+        ) {
+            for statement in &block.statements {
+                match &statement.kind {
+                    TStmtKind::Assign {
+                        place,
+                        op: AssignOp::Add,
+                        value,
+                        ..
+                    } => {
+                        plain.insert(place.root);
+                        append_roots_expr(value, checked, plain);
+                    }
+                    TStmtKind::Let { value, .. }
+                    | TStmtKind::Assign { value, .. }
+                    | TStmtKind::Expr(value)
+                    | TStmtKind::Discard(value) => append_roots_expr(value, checked, plain),
+                    TStmtKind::Return(value) => {
+                        if let Some(value) = value {
+                            append_roots_expr(value, checked, plain);
+                        }
+                    }
+                    TStmtKind::If {
+                        condition,
+                        then_block,
+                        else_block,
+                    } => {
+                        append_roots_expr(condition, checked, plain);
+                        append_roots_block(then_block, checked, plain);
+                        if let Some(other) = else_block {
+                            append_roots_block(other, checked, plain);
+                        }
+                    }
+                    TStmtKind::For {
+                        start, end, body, ..
+                    } => {
+                        append_roots_expr(start, checked, plain);
+                        append_roots_expr(end, checked, plain);
+                        append_roots_block(body, checked, plain);
+                    }
+                    TStmtKind::ForEach {
+                        collection, body, ..
+                    } => {
+                        append_roots_expr(collection, checked, plain);
+                        append_roots_block(body, checked, plain);
+                    }
+                    TStmtKind::Block(body) => append_roots_block(body, checked, plain),
+                    TStmtKind::Expect { kind, .. } => match kind {
+                        TExpectKind::Bool(value) => append_roots_expr(value, checked, plain),
+                        TExpectKind::Compare { left, right, .. } => {
+                            append_roots_expr(left, checked, plain);
+                            append_roots_expr(right, checked, plain);
+                        }
+                    },
+                    TStmtKind::Break | TStmtKind::Continue => {}
+                }
+            }
+            if let Some(tail) = &block.tail {
+                append_roots_expr(tail, checked, plain);
+            }
+        }
+
+        let mut checked = std::collections::HashSet::new();
+        let mut plain = std::collections::HashSet::new();
+        append_roots_block(body, &mut checked, &mut plain);
+        for id in checked.union(&plain).copied().collect::<Vec<_>>() {
+            let Some(before_range) = before.get(&id).copied() else {
+                continue;
+            };
+            let Some(max_bytes) = self
+                .binding_by_id(id)
+                .and_then(|binding| self.ascii_max(binding.ty))
+            else {
+                continue;
+            };
+            let name = self
+                .binding_by_id(id)
+                .map(|binding| binding.name.clone())
+                .unwrap_or_else(|| format!("value {id}"));
+            if checked.contains(&id) && !plain.contains(&id) {
+                self.ascii_lengths.insert(id, (before_range.0, max_bytes));
+                continue;
+            }
+            let Some(iterations) = iterations else {
+                return Err(CheckError {
+                    span: loop_span,
+                    message: format!(
+                        "loop growth for '{name}' has no finite bound; use '{name}.try_append(piece)' and handle Full, or bound the loop and the bytes added each iteration"
+                    ),
+                });
+            };
+            let per_iteration = after
+                .get(&id)
+                .map(|range| range.1.saturating_sub(before_range.1))
+                .unwrap_or(max_bytes);
+            let maximum = before_range
+                .1
+                .saturating_add(per_iteration.saturating_mul(iterations));
+            if maximum > max_bytes {
+                return Err(CheckError {
+                    span: loop_span,
+                    message: format!(
+                        "loop can grow '{name}' to {maximum} bytes, above its Ascii max {max_bytes}; use '{name}.try_append(piece)' and handle Full, or reduce the loop bound or bytes appended each iteration"
+                    ),
+                });
+            }
+            self.ascii_lengths.insert(id, (before_range.0, maximum));
+        }
+        Ok(())
+    }
+
     fn collect_loop_pushes(&mut self, body: &Block) -> Option<HashMap<CollectionCountKey, usize>> {
         fn expr(
             checker: &mut Checker,
@@ -11163,12 +11366,14 @@ impl Checker {
             Some(TTypeKind::Function {
                 params: actual_params,
                 result: actual_result,
+                supports_append: actual_append,
                 effects: actual_effects,
                 ..
             }),
             Some(TTypeKind::Function {
                 params: expected_params,
                 result: expected_result,
+                supports_append: expected_append,
                 effects: expected_effects,
                 ..
             }),
@@ -11179,13 +11384,28 @@ impl Checker {
         else {
             return false;
         };
-        let result_fits = actual_result == expected_result
-            || self
-                .ascii_max(*actual_result)
-                .zip(self.ascii_max(*expected_result))
-                .is_some_and(|(actual, expected)| actual <= expected);
+        let result_width_fits = |actual: Ty, expected: Ty| {
+            actual == expected
+                || self
+                    .ascii_max(actual)
+                    .zip(self.ascii_max(expected))
+                    .is_some_and(|(actual, expected)| actual <= expected)
+                || matches!(
+                    (&self.types[actual.0].kind, &self.types[expected.0].kind),
+                    (
+                        TTypeKind::Result(actual_ok, actual_error),
+                        TTypeKind::Result(expected_ok, expected_error)
+                    ) if actual_error == expected_error
+                        && self.ascii_max(*actual_ok)
+                            .zip(self.ascii_max(*expected_ok))
+                            .is_some_and(|(actual, expected)| actual <= expected)
+                )
+        };
+        let result_fits =
+            actual_result == expected_result || result_width_fits(*actual_result, *expected_result);
         actual_params == expected_params
             && result_fits
+            && (!expected_append || *actual_append)
             && self.function_effects_subset(actual_effects, expected_effects)
     }
 

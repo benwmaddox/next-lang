@@ -487,6 +487,12 @@ pub fn emit(program: &TProgram) -> String {
         let mut emitter = FunctionEmitter::new(program, function, &expect_ids, &print_ids);
         out.push_str(&emitter.emit_function());
         out.push('\n');
+        if appendable_ascii_result(function.result, &program.types) && !function.is_test {
+            let mut append =
+                FunctionEmitter::new_append_variant(program, function, &expect_ids, &print_ids);
+            out.push_str(&append.emit_function());
+            out.push('\n');
+        }
     }
     for global in &program.globals {
         if let TGlobalInitializer::Runtime(value) = &global.initializer {
@@ -1059,10 +1065,54 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
         own
     }
 
+    fn append_expression_scratch(expr: &TExpr, types: &[TType]) -> u64 {
+        match &expr.kind {
+            TExprKind::Call {
+                target: CallTarget::Function(_),
+                args,
+                ..
+            } if matches!(types[expr.ty.0].kind, TTypeKind::Ascii { .. }) => {
+                args.iter().map(|arg| expression_scratch(arg, types)).sum()
+            }
+            TExprKind::IndirectCall { callee, args, .. }
+                if matches!(types[expr.ty.0].kind, TTypeKind::Ascii { .. }) =>
+            {
+                expression_scratch(callee, types).saturating_add(
+                    args.iter()
+                        .map(|arg| expression_scratch(arg, types))
+                        .sum::<u64>(),
+                )
+            }
+            TExprKind::Binary {
+                op: BinaryOp::Add,
+                left,
+                right,
+                ..
+            } if matches!(types[expr.ty.0].kind, TTypeKind::Ascii { .. }) => {
+                append_expression_scratch(left, types)
+                    .saturating_add(append_expression_scratch(right, types))
+            }
+            _ => expression_scratch(expr, types),
+        }
+    }
+
     fn block_scratch(block: &TBlock, types: &[TType]) -> u64 {
         let mut total = 0u64;
         for statement in &block.statements {
             match &statement.kind {
+                TStmtKind::Assign {
+                    place,
+                    op: AssignOp::Add,
+                    value,
+                    ..
+                } if matches!(types[place.ty.0].kind, TTypeKind::Ascii { .. }) => {
+                    total = total.saturating_add(append_expression_scratch(value, types))
+                }
+                TStmtKind::Let { ty, value, .. }
+                    if matches!(types[ty.0].kind, TTypeKind::Ascii { .. }) =>
+                {
+                    total = total.saturating_add(append_expression_scratch(value, types))
+                }
                 TStmtKind::Let { value, .. }
                 | TStmtKind::Assign { value, .. }
                 | TStmtKind::Expr(value)
@@ -1071,7 +1121,12 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 }
                 TStmtKind::Return(value) => {
                     if let Some(value) = value {
-                        total = total.saturating_add(expression_scratch(value, types));
+                        let scratch = if matches!(types[value.ty.0].kind, TTypeKind::Ascii { .. }) {
+                            append_expression_scratch(value, types)
+                        } else {
+                            expression_scratch(value, types)
+                        };
+                        total = total.saturating_add(scratch);
                     }
                 }
                 TStmtKind::If {
@@ -1130,7 +1185,12 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
             }
         }
         if let Some(tail) = &block.tail {
-            total = total.saturating_add(expression_scratch(tail, types));
+            let scratch = if matches!(types[tail.ty.0].kind, TTypeKind::Ascii { .. }) {
+                append_expression_scratch(tail, types)
+            } else {
+                expression_scratch(tail, types)
+            };
+            total = total.saturating_add(scratch);
         }
         total
     }
@@ -1196,10 +1256,12 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     };
                     let type_contract = match &program.types[param.ty.0].kind {
                         TTypeKind::Function {
+                            supports_append,
                             data_stack_requirement,
                             ..
                         } => format!(
-                            "; function targets need up to {data_stack_requirement} data-stack bytes"
+                            "; function targets need up to {data_stack_requirement} data-stack bytes{}",
+                            if *supports_append { "; supports append mode" } else { "" }
                         ),
                         _ => String::new(),
                     };
@@ -1211,7 +1273,13 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 .collect();
             let result_bytes = stack_storage_size(function.result, &program.types);
             let result_placement = if is_large_type(function.result, &program.types) {
-                format!("caller destination ({result_bytes} bytes)")
+                if appendable_ascii_result(function.result, &program.types) {
+                    format!(
+                        "caller destination ({result_bytes} bytes); fresh and append modes"
+                    )
+                } else {
+                    format!("caller destination ({result_bytes} bytes)")
+                }
             } else if function.result == Ty::Unit {
                 "none".to_owned()
             } else {
@@ -1665,6 +1733,218 @@ fn local_root(expr: &TExpr) -> Option<usize> {
             local_root(receiver)
         }
         _ => None,
+    }
+}
+
+fn result_ascii_payload(ty: Ty, types: &[TType]) -> Option<Ty> {
+    match types.get(ty.0).map(|definition| &definition.kind) {
+        Some(TTypeKind::Result(ok, _))
+            if matches!(
+                types.get(ok.0).map(|definition| &definition.kind),
+                Some(TTypeKind::Ascii { .. })
+            ) =>
+        {
+            Some(*ok)
+        }
+        _ => None,
+    }
+}
+
+fn appendable_ascii_result(ty: Ty, types: &[TType]) -> bool {
+    matches!(
+        types.get(ty.0).map(|definition| &definition.kind),
+        Some(TTypeKind::Ascii { .. })
+    ) || result_ascii_payload(ty, types).is_some()
+}
+
+fn returned_result_ascii_builder(function: &TFunction, types: &[TType]) -> Option<usize> {
+    if result_ascii_payload(function.result, types).is_none() {
+        return None;
+    }
+    fn collect_empty(block: &TBlock, empty: &mut std::collections::HashSet<usize>) {
+        for statement in &block.statements {
+            match &statement.kind {
+                TStmtKind::Let { id, value, .. } if matches!(value.kind, TExprKind::AsciiEmpty) => {
+                    empty.insert(*id);
+                }
+                TStmtKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    collect_empty(then_block, empty);
+                    if let Some(other) = else_block {
+                        collect_empty(other, empty);
+                    }
+                }
+                TStmtKind::For { body, .. }
+                | TStmtKind::ForEach { body, .. }
+                | TStmtKind::Block(body) => collect_empty(body, empty),
+                _ => {}
+            }
+        }
+    }
+    fn returned_id(expr: &TExpr) -> Option<usize> {
+        let TExprKind::Construct {
+            case_index: 0,
+            args,
+        } = &expr.kind
+        else {
+            return None;
+        };
+        match args.first().map(|arg| &arg.kind) {
+            Some(TExprKind::Local(id)) => Some(*id),
+            _ => None,
+        }
+    }
+    fn find_return(block: &TBlock) -> Option<usize> {
+        for statement in &block.statements {
+            match &statement.kind {
+                TStmtKind::Return(Some(value)) => {
+                    if let Some(id) = returned_id(value) {
+                        return Some(id);
+                    }
+                }
+                TStmtKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    if let Some(id) = find_return(then_block) {
+                        return Some(id);
+                    }
+                    if let Some(id) = else_block.as_ref().and_then(find_return) {
+                        return Some(id);
+                    }
+                }
+                TStmtKind::For { body, .. }
+                | TStmtKind::ForEach { body, .. }
+                | TStmtKind::Block(body) => {
+                    if let Some(id) = find_return(body) {
+                        return Some(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        block.tail.as_deref().and_then(returned_id)
+    }
+    let mut empty = std::collections::HashSet::new();
+    collect_empty(&function.body, &mut empty);
+    find_return(&function.body).filter(|id| empty.contains(id))
+}
+
+fn expression_uses_local_root(expr: &TExpr, root: usize) -> bool {
+    if local_root(expr) == Some(root) {
+        return true;
+    }
+    match &expr.kind {
+        TExprKind::Call { args, .. }
+        | TExprKind::Construct { args, .. }
+        | TExprKind::CollectionOp { args, .. }
+        | TExprKind::PoolOp { args, .. }
+        | TExprKind::MapOp { args, .. }
+        | TExprKind::SetOp { args, .. } => args
+            .iter()
+            .any(|value| expression_uses_local_root(value, root)),
+        TExprKind::IndirectCall { callee, args, .. } => {
+            expression_uses_local_root(callee, root)
+                || args
+                    .iter()
+                    .any(|value| expression_uses_local_root(value, root))
+        }
+        TExprKind::OptionalCall { receiver, args, .. } => {
+            expression_uses_local_root(receiver, root)
+                || args
+                    .iter()
+                    .any(|value| expression_uses_local_root(value, root))
+        }
+        TExprKind::AsciiUpper(value)
+        | TExprKind::AsciiFormat(value)
+        | TExprKind::AsciiCast(value)
+        | TExprKind::Take(value)
+        | TExprKind::OptionalToLong(value)
+        | TExprKind::Method {
+            receiver: value, ..
+        }
+        | TExprKind::Field {
+            receiver: value, ..
+        }
+        | TExprKind::ToLong(value)
+        | TExprKind::Cast { value, .. }
+        | TExprKind::Unary { value, .. }
+        | TExprKind::Convert { value, .. }
+        | TExprKind::Fit { value, .. }
+        | TExprKind::Try { value, .. }
+        | TExprKind::AsciiFit { value, .. } => expression_uses_local_root(value, root),
+        TExprKind::AsciiTryAppend { receiver, argument } => {
+            expression_uses_local_root(receiver, root) || expression_uses_local_root(argument, root)
+        }
+        TExprKind::Index {
+            receiver,
+            index,
+            grid,
+            ..
+        } => {
+            expression_uses_local_root(receiver, root)
+                || expression_uses_local_root(index, root)
+                || grid.as_ref().is_some_and(|grid| {
+                    expression_uses_local_root(&grid.x, root)
+                        || expression_uses_local_root(&grid.y, root)
+                })
+        }
+        TExprKind::Binary { left, right, .. } => {
+            expression_uses_local_root(left, root) || expression_uses_local_root(right, root)
+        }
+        TExprKind::Coalesce { option, fallback } => {
+            expression_uses_local_root(option, root) || expression_uses_local_root(fallback, root)
+        }
+        TExprKind::StructConstruct { fields } => fields
+            .iter()
+            .any(|(_, value)| expression_uses_local_root(value, root)),
+        TExprKind::Match { scrutinee, arms } => {
+            expression_uses_local_root(scrutinee, root)
+                || arms.iter().any(|arm| {
+                    arm.body
+                        .tail
+                        .as_deref()
+                        .is_some_and(|tail| expression_uses_local_root(tail, root))
+                        || arm
+                            .body
+                            .statements
+                            .iter()
+                            .any(|statement| match &statement.kind {
+                                TStmtKind::Let { value, .. }
+                                | TStmtKind::Assign { value, .. }
+                                | TStmtKind::Expr(value)
+                                | TStmtKind::Discard(value) => {
+                                    expression_uses_local_root(value, root)
+                                }
+                                TStmtKind::Return(Some(value)) => {
+                                    expression_uses_local_root(value, root)
+                                }
+                                _ => false,
+                            })
+                })
+        }
+        TExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            expression_uses_local_root(condition, root)
+                || then_block
+                    .tail
+                    .as_deref()
+                    .is_some_and(|tail| expression_uses_local_root(tail, root))
+                || else_block.as_ref().is_some_and(|block| {
+                    block
+                        .tail
+                        .as_deref()
+                        .is_some_and(|tail| expression_uses_local_root(tail, root))
+                })
+        }
+        _ => false,
     }
 }
 
@@ -2629,6 +2909,9 @@ struct FunctionEmitter<'a> {
     views: HashMap<usize, ViewInfo>,
     sort_scratch: HashMap<Ty, String>,
     reserved_ascii_locals: std::collections::HashSet<usize>,
+    append_variant: bool,
+    append_builder_local: Option<usize>,
+    append_entry_offset: Option<String>,
     prologue_end: usize,
     stack_top: String,
     entry_stack_top: String,
@@ -2665,7 +2948,29 @@ impl<'a> FunctionEmitter<'a> {
         expect_ids: &'a HashMap<String, usize>,
         print_ids: &'a HashMap<String, usize>,
     ) -> Self {
+        Self::new_mode(program, function, expect_ids, print_ids, false)
+    }
+
+    fn new_append_variant(
+        program: &'a TProgram,
+        function: &'a TFunction,
+        expect_ids: &'a HashMap<String, usize>,
+        print_ids: &'a HashMap<String, usize>,
+    ) -> Self {
+        Self::new_mode(program, function, expect_ids, print_ids, true)
+    }
+
+    fn new_mode(
+        program: &'a TProgram,
+        function: &'a TFunction,
+        expect_ids: &'a HashMap<String, usize>,
+        print_ids: &'a HashMap<String, usize>,
+        append_variant: bool,
+    ) -> Self {
         let reserved_ascii_locals = growing_ascii_locals(function, program);
+        let append_builder_local = append_variant
+            .then(|| returned_result_ascii_builder(function, &program.types))
+            .flatten();
         let mut this = Self {
             program,
             function,
@@ -2681,6 +2986,9 @@ impl<'a> FunctionEmitter<'a> {
             views: HashMap::new(),
             sort_scratch: HashMap::new(),
             reserved_ascii_locals,
+            append_variant,
+            append_builder_local,
+            append_entry_offset: None,
             prologue_end: 0,
             stack_top: ENTRY_STACK_TOP.to_owned(),
             entry_stack_top: "%nl.entry.top".to_owned(),
@@ -2727,7 +3035,15 @@ impl<'a> FunctionEmitter<'a> {
     fn emit_function(&mut self) -> String {
         let signature = lower_signature(self.function, &self.program.types);
         let mut params = vec!["ptr %nl.ctx".to_owned(), "ptr %nl.entry.top".to_owned()];
-        if signature.result_destination {
+        if self.append_variant {
+            if result_ascii_payload(self.function.result, &self.program.types).is_some() {
+                params.push("ptr %nl.result".to_owned());
+            }
+            params.extend([
+                "ptr %nl.append.data".to_owned(),
+                "ptr %nl.append.offset".to_owned(),
+            ]);
+        } else if signature.result_destination {
             params.push("ptr %nl.result".to_owned());
         }
         params.extend(
@@ -2767,9 +3083,41 @@ impl<'a> FunctionEmitter<'a> {
                 ));
             }
         }
+        if self.append_variant
+            && result_ascii_payload(self.function.result, &self.program.types).is_some()
+        {
+            let entry_offset = self.entry_alloca(Ty::Long);
+            let accepted = self.temp();
+            self.instruction(format!(
+                "{accepted} = load i64, ptr %nl.append.offset, align 1"
+            ));
+            self.instruction(format!("store i64 {accepted}, ptr {entry_offset}, align 1"));
+            self.append_entry_offset = Some(entry_offset);
+        }
         self.emit_block_contents(&self.function.body.clone());
         if !self.terminated {
             if let Some(tail) = self.function.body.tail.as_deref() {
+                if self.append_variant {
+                    if result_ascii_payload(self.function.result, &self.program.types).is_some() {
+                        self.emit_result_ascii_append_return(tail);
+                    } else {
+                        self.emit_ascii_stream(tail, "%nl.append.data", "%nl.append.offset");
+                    }
+                    if !self.terminated {
+                        self.terminate("ret void");
+                    }
+                    let mut out = format!(
+                        "; append variant for function {}\ndefine void @nl_fn_{}_append({}) {{\n",
+                        self.function.name, self.function.id, params
+                    );
+                    let final_top = self.entry_stack_top.clone();
+                    for line in &self.lines {
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                    out.push_str("}\n");
+                    return out.replace(ENTRY_STACK_TOP, &final_top);
+                }
                 if signature.result_destination {
                     self.emit_expr_to("%nl.result", tail);
                     if !self.terminated {
@@ -2818,8 +3166,21 @@ impl<'a> FunctionEmitter<'a> {
             }
         }
         let mut out = format!(
-            "; function {}\ndefine {} @nl_fn_{}({}) {{\n",
-            self.function.name, signature.result, self.function.id, params
+            "; {}function {}\ndefine {} @nl_fn_{}{}({}) {{\n",
+            if self.append_variant {
+                "append variant for "
+            } else {
+                ""
+            },
+            self.function.name,
+            if self.append_variant {
+                "void"
+            } else {
+                signature.result.as_str()
+            },
+            self.function.id,
+            if self.append_variant { "_append" } else { "" },
+            params
         );
         let final_top = self.entry_stack_top.clone();
         for line in &self.lines {
@@ -6084,6 +6445,136 @@ impl<'a> FunctionEmitter<'a> {
                 self.instruction(format!("{next} = add i64 {current}, {length}"));
                 self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
             }
+            TExprKind::Try {
+                value,
+                success_ty,
+                error_ty,
+                propagated_ty,
+            } if self.ascii_max(*success_ty).is_some() => {
+                let original_length = self.temp();
+                self.instruction(format!(
+                    "{original_length} = load i64, ptr {offset_slot}, align 1"
+                ));
+                let result_storage = match &value.kind {
+                    TExprKind::Call {
+                        target: CallTarget::Function(function_id),
+                        args,
+                        ..
+                    } if result_ascii_payload(value.ty, &self.program.types).is_some() => self
+                        .emit_ascii_append_result_call(
+                            *function_id,
+                            args,
+                            destination,
+                            &original_length,
+                            expr.span,
+                        ),
+                    TExprKind::IndirectCall {
+                        callee,
+                        args,
+                        params,
+                        ..
+                    } if result_ascii_payload(value.ty, &self.program.types).is_some()
+                        && self.function_type_supports_append(callee.ty) =>
+                    {
+                        self.emit_ascii_append_indirect_result_call(
+                            callee,
+                            args,
+                            params,
+                            value.ty,
+                            destination,
+                            &original_length,
+                            expr.span,
+                        )
+                    }
+                    _ => None,
+                };
+                if let Some(result_storage) = result_storage {
+                    let ascii = self.emit_try_from_storage(
+                        value.ty,
+                        *success_ty,
+                        *error_ty,
+                        *propagated_ty,
+                        &result_storage,
+                    );
+                    if self.terminated {
+                        return;
+                    }
+                    let amount = self.ascii_field(&ascii, *success_ty, 1);
+                    let new_length = self.temp();
+                    self.instruction(format!(
+                        "{new_length} = add i64 {original_length}, {amount}"
+                    ));
+                    self.instruction(format!(
+                        "store i64 {new_length}, ptr {offset_slot}, align 1"
+                    ));
+                } else {
+                    let descriptor = self.emit_ascii_descriptor(expr);
+                    if self.terminated {
+                        return;
+                    }
+                    let source = self.ascii_field(&descriptor, expr.ty, 0);
+                    let length = self.ascii_field(&descriptor, expr.ty, 1);
+                    let target = self.temp();
+                    self.instruction(format!(
+                        "{target} = getelementptr i8, ptr {destination}, i64 {original_length}"
+                    ));
+                    self.instruction(format!(
+                        "call void @llvm.memmove.p0.p0.i64(ptr {target}, ptr {source}, i64 {length}, i1 false)"
+                    ));
+                    let next = self.temp();
+                    self.instruction(format!("{next} = add i64 {original_length}, {length}"));
+                    self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
+                }
+            }
+            TExprKind::Call {
+                target: CallTarget::Function(function_id),
+                args,
+                ..
+            } if self.ascii_max(expr.ty).is_some() => {
+                self.emit_ascii_append_call(
+                    *function_id,
+                    args,
+                    destination,
+                    offset_slot,
+                    expr.span,
+                );
+            }
+            TExprKind::IndirectCall {
+                callee,
+                args,
+                params,
+                ..
+            } if self.ascii_max(expr.ty).is_some()
+                && self.function_type_supports_append(callee.ty) =>
+            {
+                if !self.emit_ascii_append_indirect_call(
+                    callee,
+                    args,
+                    params,
+                    destination,
+                    offset_slot,
+                    expr.span,
+                ) {
+                    let descriptor = self.emit_ascii_descriptor(expr);
+                    if self.terminated {
+                        return;
+                    }
+                    let source = self.ascii_field(&descriptor, expr.ty, 0);
+                    let length = self.ascii_field(&descriptor, expr.ty, 1);
+                    let current = self.temp();
+                    self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
+                    let target = self.temp();
+                    self.instruction(format!(
+                        "{target} = getelementptr i8, ptr {destination}, i64 {current}"
+                    ));
+                    self.instruction(format!(
+                        "call void @llvm.memmove.p0.p0.i64(ptr {target}, ptr {source}, i64 {length}, i1 false)"
+                    ));
+                    let next = self.temp();
+                    self.instruction(format!("{next} = add i64 {current}, {length}"));
+                    self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
+                }
+            }
             TExprKind::AsciiCast(value) | TExprKind::Take(value) => {
                 let descriptor = self.emit_ascii_descriptor(value);
                 if self.terminated {
@@ -6138,6 +6629,487 @@ impl<'a> FunctionEmitter<'a> {
                 self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
             }
         }
+    }
+
+    fn emit_result_ascii_append_return(&mut self, expr: &TExpr) {
+        let Some(payload_ty) = result_ascii_payload(self.function.result, &self.program.types)
+        else {
+            self.emit_expr_to("%nl.result", expr);
+            return;
+        };
+        if let TExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } = &expr.kind
+        {
+            let condition = self.emit_expr(condition);
+            if self.terminated {
+                return;
+            }
+            let then_label = self.new_label("result.append.if.ok");
+            let else_label = self.new_label("result.append.if.err");
+            self.terminate(format!(
+                "br i1 {condition}, label %{then_label}, label %{else_label}"
+            ));
+            self.start_block(&then_label);
+            self.emit_result_ascii_append_block(then_block);
+            self.start_block(&else_label);
+            if let Some(other) = else_block {
+                self.emit_result_ascii_append_block(other);
+            } else {
+                self.emit_all_iteration_cleanups();
+                self.terminate("ret void");
+            }
+            return;
+        }
+        let result_type = expr.ty;
+        let (case_index, value) = match &expr.kind {
+            TExprKind::Construct { case_index, args } if args.len() == 1 => {
+                (*case_index, args.first())
+            }
+            _ => {
+                self.emit_result_ascii_append_fresh(expr);
+                return;
+            }
+        };
+        if case_index != 0 {
+            self.emit_result_ascii_append_fresh(expr);
+            return;
+        }
+        let Some(value) = value else {
+            self.emit_result_ascii_append_fresh(expr);
+            return;
+        };
+        if self.ascii_max(value.ty).is_none() || self.terminated {
+            self.emit_result_ascii_append_fresh(expr);
+            return;
+        }
+        let start = self.temp();
+        self.instruction(format!(
+            "{start} = load i64, ptr %nl.append.offset, align 1"
+        ));
+        let (data, amount, final_length) =
+            if local_root(value).is_some_and(|id| self.append_builder_local == Some(id)) {
+                let descriptor = self.emit_expr(value);
+                if self.terminated {
+                    return;
+                }
+                let data = self.ascii_field(&descriptor, value.ty, 0);
+                let amount = self.ascii_field(&descriptor, value.ty, 1);
+                let final_length = self.temp();
+                self.instruction(format!("{final_length} = add i64 {start}, {amount}"));
+                (data, amount, final_length)
+            } else {
+                self.emit_ascii_stream(value, "%nl.append.data", "%nl.append.offset");
+                if self.terminated {
+                    return;
+                }
+                let final_length = self.temp();
+                self.instruction(format!(
+                    "{final_length} = load i64, ptr %nl.append.offset, align 1"
+                ));
+                let amount = self.temp();
+                self.instruction(format!("{amount} = sub i64 {final_length}, {start}"));
+                let data = self.temp();
+                self.instruction(format!(
+                    "{data} = getelementptr i8, ptr %nl.append.data, i64 {start}"
+                ));
+                (data, amount, final_length)
+            };
+        self.instruction(format!(
+            "store i64 {final_length}, ptr %nl.append.offset, align 1"
+        ));
+        let bytes = type_size(
+            result_type,
+            &self.program.types,
+            &mut vec![None; self.program.types.len()],
+        );
+        self.instruction(format!(
+            "call void @llvm.memset.p0.i64(ptr %nl.result, i8 0, i64 {bytes}, i1 false)"
+        ));
+        let tag = self.temp();
+        self.instruction(format!(
+            "{tag} = getelementptr {}, ptr %nl.result, i32 0, i32 0",
+            self.lltype(result_type)
+        ));
+        self.instruction(format!("store i32 0, ptr {tag}, align 1"));
+        let payload = self.temp();
+        self.instruction(format!(
+            "{payload} = getelementptr {}, ptr %nl.result, i32 0, i32 1",
+            self.lltype(result_type)
+        ));
+        let data_field = self.temp();
+        self.instruction(format!(
+            "{data_field} = getelementptr i8, ptr {payload}, i64 0"
+        ));
+        self.instruction(format!("store ptr {data}, ptr {data_field}, align 1"));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr i8, ptr {payload}, i64 8"
+        ));
+        self.instruction(format!("store i64 {amount}, ptr {length_field}, align 1"));
+        debug_assert!(self.ascii_max(payload_ty).is_some());
+    }
+
+    fn emit_result_ascii_append_fresh(&mut self, expr: &TExpr) {
+        self.emit_expr_to("%nl.result", expr);
+        if self.terminated {
+            return;
+        }
+        let result_ty = self.function.result;
+        let entry_offset = self
+            .append_entry_offset
+            .clone()
+            .expect("Result<Ascii> append variant records its entry offset");
+        let tag_pointer = self.temp();
+        self.instruction(format!(
+            "{tag_pointer} = getelementptr {}, ptr %nl.result, i32 0, i32 0",
+            self.lltype(result_ty)
+        ));
+        let tag = self.temp();
+        self.instruction(format!("{tag} = load i32, ptr {tag_pointer}, align 4"));
+        let succeeded = self.temp();
+        self.instruction(format!("{succeeded} = icmp eq i32 {tag}, 0"));
+        let success_label = self.new_label("result.append.fresh.ok");
+        let error_label = self.new_label("result.append.fresh.err");
+        let merge = self.new_label("result.append.fresh.end");
+        self.terminate(format!(
+            "br i1 {succeeded}, label %{success_label}, label %{error_label}"
+        ));
+        self.start_block(&success_label);
+        let payload = self.temp();
+        self.instruction(format!(
+            "{payload} = getelementptr {}, ptr %nl.result, i32 0, i32 1",
+            self.lltype(result_ty)
+        ));
+        let source_data_field = self.temp();
+        self.instruction(format!(
+            "{source_data_field} = getelementptr i8, ptr {payload}, i64 0"
+        ));
+        let source_data = self.temp();
+        self.instruction(format!(
+            "{source_data} = load ptr, ptr {source_data_field}, align 1"
+        ));
+        let amount_field = self.temp();
+        self.instruction(format!(
+            "{amount_field} = getelementptr i8, ptr {payload}, i64 8"
+        ));
+        let amount = self.temp();
+        self.instruction(format!("{amount} = load i64, ptr {amount_field}, align 1"));
+        let accepted = self.temp();
+        self.instruction(format!(
+            "{accepted} = load i64, ptr {entry_offset}, align 1"
+        ));
+        let target = self.temp();
+        self.instruction(format!(
+            "{target} = getelementptr i8, ptr %nl.append.data, i64 {accepted}"
+        ));
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {target}, ptr {source_data}, i64 {amount}, i1 false)"
+        ));
+        self.instruction(format!(
+            "store ptr {target}, ptr {source_data_field}, align 1"
+        ));
+        self.instruction(format!("store i64 {amount}, ptr {amount_field}, align 1"));
+        let new_length = self.temp();
+        self.instruction(format!("{new_length} = add i64 {accepted}, {amount}"));
+        self.instruction(format!(
+            "store i64 {new_length}, ptr %nl.append.offset, align 1"
+        ));
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&error_label);
+        let accepted = self.temp();
+        self.instruction(format!(
+            "{accepted} = load i64, ptr {entry_offset}, align 1"
+        ));
+        self.instruction(format!(
+            "store i64 {accepted}, ptr %nl.append.offset, align 1"
+        ));
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&merge);
+    }
+
+    fn emit_result_ascii_append_block(&mut self, block: &TBlock) {
+        self.emit_block_contents(block);
+        if self.terminated {
+            return;
+        }
+        if let Some(tail) = block.tail.as_deref() {
+            self.emit_result_ascii_append_return(tail);
+        }
+        if !self.terminated {
+            self.emit_all_iteration_cleanups();
+            self.terminate("ret void");
+        }
+    }
+
+    fn function_type_supports_append(&self, ty: Ty) -> bool {
+        matches!(
+            self.program.types.get(ty.0).map(|ty| &ty.kind),
+            Some(TTypeKind::Function {
+                supports_append: true,
+                ..
+            })
+        )
+    }
+
+    fn emit_ascii_append_call(
+        &mut self,
+        function_id: usize,
+        args: &[TExpr],
+        destination: &str,
+        offset_slot: &str,
+        call_span: Span,
+    ) {
+        let function = self.program.functions[function_id].clone();
+        if self.ascii_max(function.result).is_none() {
+            let mut call = TExpr {
+                kind: TExprKind::Call {
+                    target: CallTarget::Function(function_id),
+                    args: args.to_vec(),
+                    effect: Effect::None,
+                },
+                ty: function.result,
+                span: call_span,
+            };
+            let _ = &mut call;
+            return;
+        }
+        let saved_top = self.stack_top.clone();
+        let mut call_args = vec![
+            "ptr %nl.ctx".to_owned(),
+            format!("ptr {destination}"),
+            format!("ptr {offset_slot}"),
+        ];
+        let mut regions = Vec::new();
+        for (arg, param) in args.iter().zip(&function.params) {
+            let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
+            else {
+                return;
+            };
+            call_args.push(value);
+        }
+        call_args.insert(1, format!("ptr {}", self.stack_top));
+        if function.recursive {
+            self.emit_recursion_check(&[function_id], call_span);
+        }
+        self.instruction(format!(
+            "call void @nl_fn_{function_id}_append({})",
+            call_args.join(", ")
+        ));
+        self.finish_call_argument_regions(&regions, &saved_top);
+    }
+
+    fn emit_ascii_append_result_call(
+        &mut self,
+        function_id: usize,
+        args: &[TExpr],
+        destination: &str,
+        accepted: &str,
+        call_span: Span,
+    ) -> Option<String> {
+        let function = self.program.functions[function_id].clone();
+        if result_ascii_payload(function.result, &self.program.types).is_none() {
+            return None;
+        }
+        let result_size = stack_storage_size(function.result, &self.program.types);
+        let result_storage = self.entry_alloca_raw(&format!("[{result_size} x i8]"));
+        let offset = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 {accepted}, ptr {offset}, align 1"));
+        let saved_top = self.stack_top.clone();
+        let mut call_args = vec![
+            "ptr %nl.ctx".to_owned(),
+            format!("ptr {result_storage}"),
+            format!("ptr {destination}"),
+            format!("ptr {offset}"),
+        ];
+        let mut regions = Vec::new();
+        for (arg, param) in args.iter().zip(&function.params) {
+            let value = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)?;
+            call_args.push(value);
+        }
+        call_args.insert(1, format!("ptr {}", self.stack_top));
+        if function.recursive {
+            self.emit_recursion_check(&[function_id], call_span);
+        }
+        self.instruction(format!(
+            "call void @nl_fn_{function_id}_append({})",
+            call_args.join(", ")
+        ));
+        self.finish_call_argument_regions(&regions, &saved_top);
+        Some(result_storage)
+    }
+
+    fn emit_ascii_append_indirect_result_call(
+        &mut self,
+        callee: &TExpr,
+        args: &[TExpr],
+        params: &[TFunctionTypeParam],
+        result_ty: Ty,
+        destination: &str,
+        accepted: &str,
+        call_span: Span,
+    ) -> Option<String> {
+        let targets = self
+            .program
+            .function_type_targets
+            .get(callee.ty.0)
+            .cloned()
+            .unwrap_or_default();
+        if targets.is_empty()
+            || targets.iter().any(|target| {
+                result_ascii_payload(self.program.functions[*target].result, &self.program.types)
+                    .is_none()
+            })
+        {
+            return None;
+        }
+        let function_value = self.emit_expr(callee);
+        if self.terminated {
+            return None;
+        }
+        let result_size = stack_storage_size(result_ty, &self.program.types);
+        let result_storage = self.entry_alloca_raw(&format!("[{result_size} x i8]"));
+        let offset = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 {accepted}, ptr {offset}, align 1"));
+        let saved_top = self.stack_top.clone();
+        let mut lowered_args = Vec::with_capacity(args.len());
+        let mut regions = Vec::new();
+        for (arg, param) in args.iter().zip(params) {
+            let value = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)?;
+            lowered_args.push(value);
+        }
+        let call_top = self.stack_top.clone();
+        let recursive = targets
+            .iter()
+            .filter(|target| self.program.functions[**target].recursive)
+            .copied()
+            .collect::<Vec<_>>();
+        self.emit_recursion_check(&recursive, call_span);
+        let merge = self.new_label("ascii.append.result.indirect.merge");
+        for (index, target) in targets.iter().enumerate() {
+            let append_label = self.new_label("ascii.append.result.indirect.target");
+            let next_label = self.new_label("ascii.append.result.indirect.next");
+            let matches = self.temp();
+            self.instruction(format!(
+                "{matches} = icmp eq ptr {function_value}, @nl_fn_{target}"
+            ));
+            self.terminate(format!(
+                "br i1 {matches}, label %{append_label}, label %{next_label}"
+            ));
+            self.start_block(&append_label);
+            let mut call_args = vec![
+                "ptr %nl.ctx".to_owned(),
+                format!("ptr {call_top}"),
+                format!("ptr {result_storage}"),
+                format!("ptr {destination}"),
+                format!("ptr {offset}"),
+            ];
+            call_args.extend(lowered_args.iter().cloned());
+            self.instruction(format!(
+                "call void @nl_fn_{target}_append({})",
+                call_args.join(", ")
+            ));
+            if self.stack_top != saved_top {
+                self.instruction(format!(
+                    "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved_top})"
+                ));
+            }
+            self.terminate(format!("br label %{merge}"));
+            self.start_block(&next_label);
+            if index + 1 == targets.len() {
+                self.terminate("unreachable");
+            }
+        }
+        self.start_block(&merge);
+        self.stack_top = saved_top;
+        let _ = regions;
+        Some(result_storage)
+    }
+
+    fn emit_ascii_append_indirect_call(
+        &mut self,
+        callee: &TExpr,
+        args: &[TExpr],
+        params: &[TFunctionTypeParam],
+        destination: &str,
+        offset_slot: &str,
+        call_span: Span,
+    ) -> bool {
+        let targets = self
+            .program
+            .function_type_targets
+            .get(callee.ty.0)
+            .cloned()
+            .unwrap_or_default();
+        if targets.is_empty()
+            || targets.iter().any(|target| {
+                self.ascii_max(self.program.functions[*target].result)
+                    .is_none()
+            })
+        {
+            return false;
+        }
+        let function_value = self.emit_expr(callee);
+        if self.terminated {
+            return true;
+        }
+        let saved_top = self.stack_top.clone();
+        let mut lowered_args = Vec::with_capacity(args.len());
+        let mut regions = Vec::new();
+        for (arg, param) in args.iter().zip(params) {
+            let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
+            else {
+                return true;
+            };
+            lowered_args.push(value);
+        }
+        let call_top = self.stack_top.clone();
+        let recursive = targets
+            .iter()
+            .filter(|target| self.program.functions[**target].recursive)
+            .copied()
+            .collect::<Vec<_>>();
+        self.emit_recursion_check(&recursive, call_span);
+        let merge = self.new_label("ascii.append.indirect.merge");
+        for (index, target) in targets.iter().enumerate() {
+            let append_label = self.new_label("ascii.append.indirect.target");
+            let next_label = self.new_label("ascii.append.indirect.next");
+            let matches = self.temp();
+            self.instruction(format!(
+                "{matches} = icmp eq ptr {function_value}, @nl_fn_{target}"
+            ));
+            self.terminate(format!(
+                "br i1 {matches}, label %{append_label}, label %{next_label}"
+            ));
+            self.start_block(&append_label);
+            let mut call_args = vec![
+                "ptr %nl.ctx".to_owned(),
+                format!("ptr {call_top}"),
+                format!("ptr {destination}"),
+                format!("ptr {offset_slot}"),
+            ];
+            call_args.extend(lowered_args.iter().cloned());
+            self.instruction(format!(
+                "call void @nl_fn_{target}_append({})",
+                call_args.join(", ")
+            ));
+            if self.stack_top != saved_top {
+                self.instruction(format!(
+                    "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved_top})"
+                ));
+            }
+            self.terminate(format!("br label %{merge}"));
+            self.start_block(&next_label);
+            if index + 1 == targets.len() {
+                self.terminate("unreachable");
+            }
+        }
+        self.start_block(&merge);
+        self.stack_top = saved_top;
+        let _ = regions;
+        true
     }
 
     fn emit_ascii_to(&mut self, destination: &str, expr: &TExpr) {
@@ -6237,6 +7209,48 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_ascii_append_place(&mut self, place: &TPlace, value: &TExpr) {
+        if expression_uses_local_root(value, place.root) {
+            let saved_top = self.stack_top.clone();
+            let temporary = self.emit_runtime_region_alloc(value.ty, value.span, None);
+            self.emit_expr_to(&temporary, value);
+            if self.terminated {
+                return;
+            }
+            let descriptor = self.temp();
+            self.instruction(format!(
+                "{descriptor} = load {}, ptr {temporary}, align 1",
+                self.lltype(value.ty)
+            ));
+            let source = self.ascii_field(&descriptor, value.ty, 0);
+            let amount = self.ascii_field(&descriptor, value.ty, 1);
+            let destination = self.emit_place_pointer(place);
+            let builder = self.temp();
+            self.instruction(format!(
+                "{builder} = load {}, ptr {destination}, align 1",
+                self.lltype(place.ty)
+            ));
+            let target = self.ascii_field(&builder, place.ty, 0);
+            let old_length = self.ascii_field(&builder, place.ty, 1);
+            let append_at = self.temp();
+            self.instruction(format!(
+                "{append_at} = getelementptr i8, ptr {target}, i64 {old_length}"
+            ));
+            self.instruction(format!(
+                "call void @llvm.memmove.p0.p0.i64(ptr {append_at}, ptr {source}, i64 {amount}, i1 false)"
+            ));
+            let new_length = self.temp();
+            self.instruction(format!("{new_length} = add i64 {old_length}, {amount}"));
+            let length_field = self.temp();
+            self.instruction(format!(
+                "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+                self.lltype(place.ty)
+            ));
+            self.instruction(format!(
+                "store i64 {new_length}, ptr {length_field}, align 1"
+            ));
+            self.restore_stack_top(&saved_top);
+            return;
+        }
         let destination = self.emit_place_pointer(place);
         let descriptor = self.temp();
         self.instruction(format!(
@@ -6307,11 +7321,114 @@ impl<'a> FunctionEmitter<'a> {
         let place = Self::expr_place(receiver).expect("checker validated Ascii builder place");
         let destination = self.emit_place_pointer(&place);
         let saved_top = self.stack_top.clone();
-        let argument_storage = self.emit_runtime_region_alloc(argument.ty, argument.span, None);
-        self.emit_expr_to(&argument_storage, argument);
+        let builder_descriptor = self.temp();
+        self.instruction(format!(
+            "{builder_descriptor} = load {}, ptr {destination}, align 1",
+            self.lltype(receiver.ty)
+        ));
+        let target = self.ascii_field(&builder_descriptor, receiver.ty, 0);
+        let old_length = self.ascii_field(&builder_descriptor, receiver.ty, 1);
+        let builder_max = self.ascii_max(receiver.ty).unwrap_or(0);
+        let argument_max = self.ascii_max(argument.ty).unwrap_or(0);
+        let remaining = self.temp();
+        self.instruction(format!("{remaining} = sub i64 {builder_max}, {old_length}"));
+        let max_fits = self.temp();
+        if argument_max <= builder_max {
+            self.instruction(format!(
+                "{max_fits} = icmp uge i64 {remaining}, {argument_max}"
+            ));
+        } else {
+            self.instruction(format!("{max_fits} = icmp eq i64 0, 1"));
+        }
+        let fast_label = self.new_label("ascii.append.stream");
+        let scratch_label = self.new_label("ascii.append.scratch");
+        let merge = self.new_label("ascii.append.end");
+        self.terminate(format!(
+            "br i1 {max_fits}, label %{fast_label}, label %{scratch_label}"
+        ));
+        self.start_block(&fast_label);
+        let append_offset = self.entry_alloca(Ty::Long);
+        self.instruction(format!(
+            "store i64 {old_length}, ptr {append_offset}, align 1"
+        ));
+        self.emit_ascii_stream(argument, &target, &append_offset);
         if self.terminated {
             return String::new();
         }
+        let new_length = self.temp();
+        self.instruction(format!(
+            "{new_length} = load i64, ptr {append_offset}, align 1"
+        ));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(receiver.ty)
+        ));
+        self.instruction(format!(
+            "store i64 {new_length}, ptr {length_field}, align 1"
+        ));
+        let fast_result = self.emit_construct_values(expr.ty, 0, Vec::new());
+        let fast_end = self.current_label.clone();
+        self.instruction(format!(
+            "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved_top})"
+        ));
+        self.terminate(format!("br label %{merge}"));
+        self.stack_top = saved_top.clone();
+        self.start_block(&scratch_label);
+        let scratch_result =
+            self.emit_ascii_try_append_scratch(expr, receiver, argument, &destination, &saved_top);
+        let scratch_end = self.current_label.clone();
+        self.terminate(format!("br label %{merge}"));
+        self.start_block(&merge);
+        self.stack_top = saved_top;
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi {} [ {fast_result}, %{fast_end} ], [ {scratch_result}, %{scratch_end} ]",
+            self.lltype(expr.ty)
+        ));
+        result
+    }
+
+    fn emit_ascii_try_append_scratch(
+        &mut self,
+        expr: &TExpr,
+        receiver: &TExpr,
+        argument: &TExpr,
+        destination: &str,
+        saved_top: &str,
+    ) -> String {
+        let argument_storage = self.emit_runtime_region_alloc(argument.ty, argument.span, None);
+        let scratch_data = self.temp();
+        self.instruction(format!(
+            "{scratch_data} = getelementptr i8, ptr {argument_storage}, i64 16"
+        ));
+        let argument_data_field = self.temp();
+        self.instruction(format!(
+            "{argument_data_field} = getelementptr {}, ptr {argument_storage}, i32 0, i32 0",
+            self.lltype(argument.ty)
+        ));
+        self.instruction(format!(
+            "store ptr {scratch_data}, ptr {argument_data_field}, align 1"
+        ));
+        let argument_length_field = self.temp();
+        self.instruction(format!(
+            "{argument_length_field} = getelementptr {}, ptr {argument_storage}, i32 0, i32 1",
+            self.lltype(argument.ty)
+        ));
+        self.instruction(format!("store i64 0, ptr {argument_length_field}, align 1"));
+        let scratch_offset = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {scratch_offset}, align 1"));
+        self.emit_ascii_stream(argument, &scratch_data, &scratch_offset);
+        if self.terminated {
+            return String::new();
+        }
+        let scratch_length = self.temp();
+        self.instruction(format!(
+            "{scratch_length} = load i64, ptr {scratch_offset}, align 1"
+        ));
+        self.instruction(format!(
+            "store i64 {scratch_length}, ptr {argument_length_field}, align 1"
+        ));
         let argument_descriptor = self.temp();
         self.instruction(format!(
             "{argument_descriptor} = load {}, ptr {argument_storage}, align 1",
@@ -6369,7 +7486,7 @@ impl<'a> FunctionEmitter<'a> {
         ));
         self.terminate(format!("br label %{merge}"));
         self.start_block(&merge);
-        self.stack_top = saved_top;
+        self.stack_top = saved_top.to_owned();
         let result = self.temp();
         self.instruction(format!(
             "{result} = phi {} [ {ok}, %{ok_block} ], [ {full}, %{full_block} ]",
@@ -7125,6 +8242,27 @@ impl<'a> FunctionEmitter<'a> {
     fn emit_stmt(&mut self, stmt: &TStmt) {
         match &stmt.kind {
             TStmtKind::Let { id, ty, value, .. } => {
+                if self.append_variant && self.append_builder_local == Some(*id) {
+                    let descriptor = self.entry_alloca_raw("[16 x i8]");
+                    let accepted = self.temp();
+                    self.instruction(format!(
+                        "{accepted} = load i64, ptr %nl.append.offset, align 1"
+                    ));
+                    let data = self.temp();
+                    self.instruction(format!(
+                        "{data} = getelementptr i8, ptr %nl.append.data, i64 {accepted}"
+                    ));
+                    self.instruction(format!("store ptr {data}, ptr {descriptor}, align 1"));
+                    let length = self.temp();
+                    self.instruction(format!(
+                        "{length} = getelementptr i8, ptr {descriptor}, i64 8"
+                    ));
+                    self.instruction(format!("store i64 0, ptr {length}, align 1"));
+                    self.instruction(format!(
+                        "%local.{id} = getelementptr i8, ptr {descriptor}, i64 0"
+                    ));
+                    return;
+                }
                 if is_large_type(*ty, &self.program.types) {
                     if let TExprKind::Take(source) = &value.kind {
                         if let TExprKind::Local(source_id) = source.kind {
@@ -7298,6 +8436,19 @@ impl<'a> FunctionEmitter<'a> {
             }
             TStmtKind::Return(value) => {
                 if let Some(value) = value {
+                    if self.append_variant {
+                        if result_ascii_payload(self.function.result, &self.program.types).is_some()
+                        {
+                            self.emit_result_ascii_append_return(value);
+                        } else {
+                            self.emit_ascii_stream(value, "%nl.append.data", "%nl.append.offset");
+                        }
+                        if !self.terminated {
+                            self.emit_all_iteration_cleanups();
+                            self.terminate("ret void");
+                        }
+                        return;
+                    }
                     if is_large_type(self.function.result, &self.program.types) {
                         self.emit_expr_to("%nl.result", value);
                         if !self.terminated {
@@ -8918,10 +10069,27 @@ impl<'a> FunctionEmitter<'a> {
         if self.terminated {
             return String::new();
         }
+        self.emit_try_from_storage(
+            value.ty,
+            success_ty,
+            error_ty,
+            propagated_ty,
+            &source_pointer,
+        )
+    }
+
+    fn emit_try_from_storage(
+        &mut self,
+        value_ty: Ty,
+        success_ty: Ty,
+        error_ty: Option<Ty>,
+        propagated_ty: Ty,
+        source_pointer: &str,
+    ) -> String {
         let tag_pointer = self.temp();
         self.instruction(format!(
             "{tag_pointer} = getelementptr {}, ptr {source_pointer}, i32 0, i32 0",
-            self.lltype(value.ty)
+            self.lltype(value_ty)
         ));
         let tag = self.temp();
         self.instruction(format!("{tag} = load i32, ptr {tag_pointer}, align 4"));
@@ -8953,7 +10121,7 @@ impl<'a> FunctionEmitter<'a> {
                 let source_payload = self.temp();
                 self.instruction(format!(
                     "{source_payload} = getelementptr {}, ptr {source_pointer}, i32 0, i32 1",
-                    self.lltype(value.ty)
+                    self.lltype(value_ty)
                 ));
                 let result_payload = self.temp();
                 self.instruction(format!(
@@ -8981,7 +10149,7 @@ impl<'a> FunctionEmitter<'a> {
                 let source_payload = self.temp();
                 self.instruction(format!(
                     "{source_payload} = getelementptr {}, ptr {source_pointer}, i32 0, i32 1",
-                    self.lltype(value.ty)
+                    self.lltype(value_ty)
                 ));
                 let err = if err_ty == Ty::Unit {
                     String::new()
@@ -9008,7 +10176,7 @@ impl<'a> FunctionEmitter<'a> {
             let source_payload = self.temp();
             self.instruction(format!(
                 "{source_payload} = getelementptr {}, ptr {source_pointer}, i32 0, i32 1",
-                self.lltype(value.ty)
+                self.lltype(value_ty)
             ));
             let result = self.temp();
             self.instruction(format!(
