@@ -1,0 +1,28 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Ident 12 5 1 13 "print"
+LParen 17 1 1 18 "("
+String 18 4 1 19 "\"ff\""
+Dot 22 1 1 23 "."
+Ident 23 15 1 24 "parse_int_radix"
+LParen 38 1 1 39 "("
+Number 39 1 1 40 "3"
+RParen 40 1 1 41 ")"
+RParen 41 1 1 42 ")"
+RBrace 43 1 1 44 "}"
+Newline 44 1 1 45 "\n"
+Eof 45 0 2 1 ""
+== tree ==
+file "main.nl"
+Program 0..45
+  Function 0..44 name="main" recursive=false generics=[]
+    Block 10..44
+      Call 12..42 name="print"
+        MethodCall 18..41 name="parse_int_radix"
+          ByteString 18..22 value="ff"
+          Integer 39..40 magnitude=3 negative=false long_suffix=false

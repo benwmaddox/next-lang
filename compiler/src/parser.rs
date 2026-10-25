@@ -2166,13 +2166,31 @@ impl Parser<'_> {
         if long_suffix {
             digits = &digits[..digits.len() - 1];
         }
-        let cleaned: String = digits.chars().filter(|c| *c != '_').collect();
-        let (base, payload) = if cleaned.starts_with("0x") || cleaned.starts_with("0X") {
-            (16, &cleaned[2..])
-        } else if cleaned.starts_with("0b") || cleaned.starts_with("0B") {
-            (2, &cleaned[2..])
+        let (base, payload) = if digits.starts_with("0x") || digits.starts_with("0X") {
+            (16, &digits[2..])
+        } else if digits.starts_with("0b") || digits.starts_with("0B") {
+            (2, &digits[2..])
         } else {
-            (10, cleaned.as_str())
+            (10, digits)
+        };
+        let chars = payload.chars().collect::<Vec<_>>();
+        if chars.iter().enumerate().any(|(index, ch)| {
+            *ch == '_'
+                && (index == 0
+                    || index + 1 == chars.len()
+                    || chars[index - 1].to_digit(base).is_none()
+                    || chars[index + 1].to_digit(base).is_none())
+        }) {
+            return Err(ParseError {
+                span,
+                message: "underscores in integer literals must appear between digits".to_owned(),
+            });
+        }
+        let cleaned: String = digits.chars().filter(|c| *c != '_').collect();
+        let payload = if base == 16 || base == 2 {
+            &cleaned[2..]
+        } else {
+            cleaned.as_str()
         };
         let magnitude = u128::from_str_radix(payload, base).map_err(|_| ParseError {
             span,

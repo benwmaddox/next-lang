@@ -566,6 +566,8 @@ pub enum CallTarget {
     OutLong,
     Min,
     Max,
+    Abs,
+    Clamp,
     Sort {
         capacity: usize,
         is_list: bool,
@@ -600,6 +602,17 @@ pub enum MethodKind {
     ResultOk,
     UnwrapOption,
     UnwrapResult,
+    ByteIsDigit,
+    ByteIsAlpha,
+    ByteIsSpace,
+    ByteToLower,
+    ByteToUpper,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadSide {
+    Left,
+    Right,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -695,7 +708,25 @@ pub enum TExprKind {
     BytesEmpty,
     AsciiUpper(Box<TExpr>),
     TextUpper(Box<TExpr>),
-    AsciiFormat(Box<TExpr>),
+    AsciiFormat {
+        value: Box<TExpr>,
+        radix: u32,
+    },
+    AsciiPad {
+        value: Box<TExpr>,
+        width: Box<TExpr>,
+        side: PadSide,
+    },
+    AsciiZeroPad {
+        value: Box<TExpr>,
+        width: Box<TExpr>,
+    },
+    ParseInteger {
+        receiver: Box<TExpr>,
+        radix: u32,
+        literal: bool,
+        target: Ty,
+    },
     AsciiTryAppend {
         receiver: Box<TExpr>,
         argument: Box<TExpr>,
@@ -706,6 +737,11 @@ pub enum TExprKind {
         option_ty: Ty,
     },
     TextSlice {
+        receiver: Box<TExpr>,
+        start: Box<TExpr>,
+        end: Box<TExpr>,
+    },
+    AsciiSlice {
         receiver: Box<TExpr>,
         start: Box<TExpr>,
         end: Box<TExpr>,

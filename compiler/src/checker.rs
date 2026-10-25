@@ -2985,11 +2985,19 @@ impl Checker {
                 ..
             } => self.expression_may_be_string(left) || self.expression_may_be_string(right),
             ExprKind::Call { name, .. } => {
-                matches!(name.as_str(), "str" | "ascii_upper")
-                    || self
-                        .signatures
-                        .get(name)
-                        .is_some_and(|signature| self.is_string_type(signature.result))
+                matches!(
+                    name.as_str(),
+                    "str"
+                        | "str_hex"
+                        | "str_bin"
+                        | "ascii_upper"
+                        | "pad"
+                        | "pad_right"
+                        | "pad_zero"
+                ) || self
+                    .signatures
+                    .get(name)
+                    .is_some_and(|signature| self.is_string_type(signature.result))
             }
             ExprKind::MethodCall { receiver, name, .. } => {
                 matches!(
@@ -3248,7 +3256,16 @@ impl Checker {
                 .visible_value_type(name)
                 .is_some_and(|ty| self.is_ascii(ty)),
             ExprKind::Call { name, .. } => {
-                if matches!(name.as_str(), "str" | "ascii_upper") {
+                if matches!(
+                    name.as_str(),
+                    "str"
+                        | "str_hex"
+                        | "str_bin"
+                        | "ascii_upper"
+                        | "pad"
+                        | "pad_right"
+                        | "pad_zero"
+                ) {
                     return true;
                 }
                 let direct = self
@@ -3340,20 +3357,40 @@ impl Checker {
                     left.1.saturating_add(right.1).min(max_bytes),
                 )
             }
-            TExprKind::AsciiFormat(value) => {
+            TExprKind::AsciiFormat { value, radix } => {
                 let (lo, hi) = self.expr_range(value).unwrap_or_else(|| {
                     self.refinement(value.ty)
                         .map(|(_, lo, hi, _)| (lo, hi))
                         .unwrap_or_else(|| integer_bounds(self.base_type(value.ty)).unwrap())
                 });
                 let max_abs = lo.unsigned_abs().max(hi.unsigned_abs());
-                let digits = if max_abs == 0 {
-                    1
-                } else {
-                    max_abs.ilog10() as usize + 1
-                };
+                let digits = integer_digits(max_abs, *radix);
                 let sign = usize::from(lo < 0);
                 (1, digits.saturating_add(sign).min(max_bytes))
+            }
+            TExprKind::AsciiPad { value, width, .. } => {
+                let source = self
+                    .ascii_length_range(value)
+                    .unwrap_or((0, self.ascii_max(value.ty).unwrap_or(0)));
+                let width = self.expr_range(width).unwrap_or((0, 0));
+                (
+                    source.0.max(width.0.max(0) as usize),
+                    source.1.max(width.1.max(0) as usize).min(max_bytes),
+                )
+            }
+            TExprKind::AsciiZeroPad { value, width } => {
+                let (lo, hi) = self.expr_range(value).unwrap_or_else(|| {
+                    self.refinement(value.ty)
+                        .map(|(_, lo, hi, _)| (lo, hi))
+                        .unwrap_or_else(|| integer_bounds(self.base_type(value.ty)).unwrap())
+                });
+                let formatted = integer_digits(lo.unsigned_abs().max(hi.unsigned_abs()), 10)
+                    .saturating_add(usize::from(lo < 0));
+                let width = self.expr_range(width).unwrap_or((0, 0));
+                (
+                    1usize.max(width.0.max(0) as usize),
+                    formatted.max(width.1.max(0) as usize).min(max_bytes),
+                )
             }
             _ => (0, max_bytes),
         };
@@ -6109,6 +6146,85 @@ impl Checker {
             return Ok((empty_kind, ty));
         }
         let typed_collection = self.check_expr(receiver, None)?;
+        if matches!(
+            name,
+            "parse_int"
+                | "parse_long"
+                | "parse_int_radix"
+                | "parse_long_radix"
+                | "parse_int_literal"
+        ) {
+            if !self.is_string_type(typed_collection.ty) {
+                return Err(CheckError {
+                    span: method_span,
+                    message: format!(
+                        "{}.{} needs an Ascii, Text, or Bytes value",
+                        self.type_name(typed_collection.ty),
+                        name
+                    ),
+                });
+            }
+            let target = match name {
+                "parse_int" | "parse_int_radix" => Ty::Int,
+                "parse_long" | "parse_long_radix" | "parse_int_literal" => Ty::Long,
+                _ => unreachable!(),
+            };
+            let (radix, literal) = match name {
+                "parse_int" | "parse_long" => {
+                    if !args.is_empty() {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: format!("{name}() takes no arguments"),
+                        });
+                    }
+                    (10, false)
+                }
+                "parse_int_radix" | "parse_long_radix" => {
+                    if args.len() != 1 {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: format!("{name}(radix) takes one constant radix"),
+                        });
+                    }
+                    let radix = self.capacity_value(&args[0]).map_err(|_| CheckError {
+                        span: args[0].span,
+                        message: format!("{name} needs a constant radix of 2, 8, 10, or 16"),
+                    })?;
+                    if !matches!(radix, 2 | 8 | 10 | 16) {
+                        return Err(CheckError {
+                            span: args[0].span,
+                            message: format!("{name} supports only 2, 8, 10, or 16"),
+                        });
+                    }
+                    (radix as u32, false)
+                }
+                "parse_int_literal" => {
+                    if !args.is_empty() {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: "parse_int_literal() takes no arguments".to_owned(),
+                        });
+                    }
+                    // Source signs are unary operators, so a numeric literal token itself
+                    // has no sign. This method returns long to cover the full signed range.
+                    (10, true)
+                }
+                _ => unreachable!(),
+            };
+            let result = self.option_type(target, method_span);
+            if let Some(want) = expected {
+                self.type_mismatch(result, want, span)?;
+            }
+            return Ok((
+                TExprKind::ParseInteger {
+                    receiver: Box::new(typed_collection),
+                    radix,
+                    literal,
+                    target,
+                },
+                result,
+            ));
+        }
         if name == "bytes" && self.is_ascii(typed_collection.ty) && args.is_empty() {
             let maximum = self.ascii_max(typed_collection.ty).unwrap_or(0);
             let result = self.intern_bytes(maximum, method_span);
@@ -6328,6 +6444,21 @@ impl Checker {
                             receiver: Box::new(typed_collection),
                         },
                         result,
+                    ));
+                }
+                "slice" if args.len() == 2 => {
+                    let start = self.check_expr(&args[0], Some(Ty::Long))?;
+                    let end = self.check_expr(&args[1], Some(Ty::Long))?;
+                    if let Some(want) = expected {
+                        self.type_mismatch(typed_collection.ty, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::AsciiSlice {
+                            receiver: Box::new(typed_collection.clone()),
+                            start: Box::new(start),
+                            end: Box::new(end),
+                        },
+                        typed_collection.ty,
                     ));
                 }
                 "try_append" => {
@@ -7509,6 +7640,34 @@ impl Checker {
             });
         }
         let typed = typed_collection;
+        if self.is_byte_type(typed.ty) {
+            let (kind, result) = match name {
+                "is_digit" => (MethodKind::ByteIsDigit, Ty::Bool),
+                "is_alpha" => (MethodKind::ByteIsAlpha, Ty::Bool),
+                "is_space" => (MethodKind::ByteIsSpace, Ty::Bool),
+                "to_lower" => (MethodKind::ByteToLower, typed.ty),
+                "to_upper" => (MethodKind::ByteToUpper, typed.ty),
+                _ => {
+                    return Err(CheckError {
+                        span: method_span,
+                        message: format!(
+                            "no method '{}' on byte; available methods: is_digit(), is_alpha(), is_space(), to_lower(), and to_upper()",
+                            name
+                        ),
+                    });
+                }
+            };
+            if let Some(want) = expected {
+                self.type_mismatch(result, want, span)?;
+            }
+            return Ok((
+                TExprKind::Method {
+                    kind,
+                    receiver: Box::new(typed),
+                },
+                result,
+            ));
+        }
         let (kind, result) = match (self.types[typed.ty.0].kind.clone(), name) {
             (TTypeKind::Option(_), "is_none") => (MethodKind::IsNone, Ty::Bool),
             (TTypeKind::Option(_), "is_some") => (MethodKind::IsSome, Ty::Bool),
@@ -8784,6 +8943,24 @@ impl Checker {
         )
     }
 
+    fn check_padding_width(&mut self, expr: &Expr) -> Result<(TExpr, usize), CheckError> {
+        let width = self.check_expr(expr, Some(Ty::Long))?;
+        let range = self
+            .expr_range(&width)
+            .unwrap_or((i64::MIN as i128, i64::MAX as i128));
+        if range.0 < 0 {
+            return Err(CheckError {
+                span: expr.span,
+                message: "padding width must be a nonnegative constant or refined long; use a long 0..=N refinement".to_owned(),
+            });
+        }
+        let maximum = usize::try_from(range.1).map_err(|_| CheckError {
+            span: expr.span,
+            message: "padding width maximum must fit the platform size; reduce it".to_owned(),
+        })?;
+        Ok((width, maximum))
+    }
+
     fn check_call_expr_general(
         &mut self,
         expr: &Expr,
@@ -8828,11 +9005,11 @@ impl Checker {
                 };
                 let value = self.default_typed_value(target, *call_span)?;
                 return self.finish_expr(expr, (value.kind, target), expected);
-            } else if name == "str" {
+            } else if matches!(name.as_str(), "str" | "str_hex" | "str_bin") {
                 if args.len() != 1 {
                     return Err(CheckError {
                         span: *call_span,
-                        message: "str takes one int or long value".to_owned(),
+                        message: format!("{name} takes one int or long value"),
                     });
                 }
                 let value = self.check_expr(&args[0], None)?;
@@ -8840,32 +9017,213 @@ impl Checker {
                     return Err(CheckError {
                         span: args[0].span,
                         message: format!(
-                            "str needs int or long; found {}",
+                            "{name} needs int or long; found {}",
                             self.type_name(value.ty)
                         ),
                     });
                 }
+                let radix = match name.as_str() {
+                    "str" => 10,
+                    "str_hex" => 16,
+                    "str_bin" => 2,
+                    _ => unreachable!(),
+                };
                 let (lo, hi) = self.expr_range(&value).unwrap_or_else(|| {
                     self.refinement(value.ty)
                         .map(|(_, lo, hi, _)| (lo, hi))
                         .unwrap_or_else(|| integer_bounds(self.base_type(value.ty)).unwrap())
                 });
                 let max_abs = lo.unsigned_abs().max(hi.unsigned_abs());
-                let digits = if max_abs == 0 {
-                    1
-                } else {
-                    max_abs.ilog10() as usize + 1
-                };
+                let digits = integer_digits(max_abs, radix);
                 let maximum = digits.saturating_add(usize::from(lo < 0));
                 let ty = self.intern_ascii(maximum, *call_span);
                 if let Some(want) = expected {
-                    self.type_mismatch(ty, want, expr.span)?;
+                    if !self.string_width_fits(ty, want) {
+                        self.type_mismatch(ty, want, expr.span)?;
+                    }
                 }
                 return self.finish_expr(
                     expr,
-                    (TExprKind::AsciiFormat(Box::new(value)), ty),
+                    (
+                        TExprKind::AsciiFormat {
+                            value: Box::new(value),
+                            radix,
+                        },
+                        ty,
+                    ),
                     expected,
                 );
+            } else if matches!(name.as_str(), "pad" | "pad_right") {
+                if args.len() != 2 {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: format!("{name} takes a string and a width"),
+                    });
+                }
+                let value = self.check_expr(&args[0], None)?;
+                let (width, width_max) = self.check_padding_width(&args[1])?;
+                let inferred = if let Some(max_bytes) = self.ascii_max(value.ty) {
+                    self.intern_ascii(max_bytes.max(width_max), *call_span)
+                } else if let Some((max_codepoints, max_bytes)) = self.text_max(value.ty) {
+                    let padded_codepoints = max_codepoints.max(width_max);
+                    let padded_bytes = max_bytes
+                        .checked_add(width_max)
+                        .ok_or_else(|| CheckError {
+                            span: *call_span,
+                            message: "padding Text byte maximum overflows long; reduce an operand maximum".to_owned(),
+                        })?
+                        .max(padded_codepoints);
+                    self.intern_text(padded_codepoints, padded_bytes, *call_span)
+                } else {
+                    return Err(CheckError {
+                        span: args[0].span,
+                        message: format!(
+                            "{name} needs an Ascii or Text value; found {}",
+                            self.type_name(value.ty)
+                        ),
+                    });
+                };
+                if let Some(want) = expected {
+                    if !self.string_width_fits(inferred, want) {
+                        self.type_mismatch(inferred, want, expr.span)?;
+                    }
+                }
+                return self.finish_expr(
+                    expr,
+                    (
+                        TExprKind::AsciiPad {
+                            value: Box::new(value),
+                            width: Box::new(width),
+                            side: if name == "pad" {
+                                PadSide::Left
+                            } else {
+                                PadSide::Right
+                            },
+                        },
+                        inferred,
+                    ),
+                    expected,
+                );
+            } else if name == "pad_zero" {
+                if args.len() != 2 {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: "pad_zero takes an int or long value and a width".to_owned(),
+                    });
+                }
+                let value = self.check_expr(&args[0], None)?;
+                if !self.is_numeric(value.ty) {
+                    return Err(CheckError {
+                        span: args[0].span,
+                        message: format!(
+                            "pad_zero needs int or long; found {}",
+                            self.type_name(value.ty)
+                        ),
+                    });
+                }
+                let (width, width_max) = self.check_padding_width(&args[1])?;
+                let (lo, hi) = self.expr_range(&value).unwrap_or_else(|| {
+                    self.refinement(value.ty)
+                        .map(|(_, lo, hi, _)| (lo, hi))
+                        .unwrap_or_else(|| integer_bounds(self.base_type(value.ty)).unwrap())
+                });
+                let formatted = integer_digits(lo.unsigned_abs().max(hi.unsigned_abs()), 10)
+                    .saturating_add(usize::from(lo < 0));
+                let inferred = self.intern_ascii(formatted.max(width_max), *call_span);
+                if let Some(want) = expected {
+                    if !self.string_width_fits(inferred, want) {
+                        self.type_mismatch(inferred, want, expr.span)?;
+                    }
+                }
+                return self.finish_expr(
+                    expr,
+                    (
+                        TExprKind::AsciiZeroPad {
+                            value: Box::new(value),
+                            width: Box::new(width),
+                        },
+                        inferred,
+                    ),
+                    expected,
+                );
+            } else if name == "abs" {
+                if args.len() != 1 {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: "abs takes one int or long value".to_owned(),
+                    });
+                }
+                let value =
+                    self.check_expr(&args[0], expected.filter(|ty| self.is_numeric(*ty)))?;
+                if !self.is_numeric(value.ty) {
+                    return Err(CheckError {
+                        span: args[0].span,
+                        message: format!(
+                            "abs needs int or long; found {}",
+                            self.type_name(value.ty)
+                        ),
+                    });
+                }
+                let result_ty = self.base_type(value.ty);
+                if let Some(want) = expected {
+                    self.type_mismatch(result_ty, self.base_type(want), *call_span)?;
+                }
+                (
+                    TExprKind::Call {
+                        target: CallTarget::Abs,
+                        args: vec![value],
+                        effect: Effect::None,
+                    },
+                    result_ty,
+                )
+            } else if name == "clamp" {
+                if args.len() != 3 {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: "clamp takes a value, a lower bound, and an upper bound"
+                            .to_owned(),
+                    });
+                }
+                let context = expected.filter(|ty| self.is_numeric(*ty));
+                let value = self.check_expr(&args[0], context)?;
+                if !self.is_numeric(value.ty) {
+                    return Err(CheckError {
+                        span: args[0].span,
+                        message: format!(
+                            "clamp needs int or long values; found {}",
+                            self.type_name(value.ty)
+                        ),
+                    });
+                }
+                let base = self.base_type(value.ty);
+                let lower = self.check_expr(&args[1], Some(base))?;
+                let upper = self.check_expr(&args[2], Some(base))?;
+                if self.base_type(lower.ty) != base || self.base_type(upper.ty) != base {
+                    return Err(self.mixed_types_error(value.ty, lower.ty, *call_span));
+                }
+                let lower_range = self
+                    .expr_range(&lower)
+                    .unwrap_or_else(|| integer_bounds(base).unwrap());
+                let upper_range = self
+                    .expr_range(&upper)
+                    .unwrap_or_else(|| integer_bounds(base).unwrap());
+                if lower_range.0 > upper_range.1 {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: "clamp lower bound is greater than its upper bound".to_owned(),
+                    });
+                }
+                if let Some(want) = expected {
+                    self.type_mismatch(base, self.base_type(want), *call_span)?;
+                }
+                (
+                    TExprKind::Call {
+                        target: CallTarget::Clamp,
+                        args: vec![value, lower, upper],
+                        effect: Effect::None,
+                    },
+                    base,
+                )
             } else if name == "ascii_upper" {
                 if args.len() != 1 {
                     return Err(CheckError {
@@ -11778,7 +12136,6 @@ impl Checker {
                 }
             }
             TExprKind::AsciiUpper(value)
-            | TExprKind::AsciiFormat(value)
             | TExprKind::AsciiCast(value)
             | TExprKind::Take(value)
             | TExprKind::OptionalToLong(value)
@@ -11795,6 +12152,14 @@ impl Checker {
             | TExprKind::Fit { value, .. }
             | TExprKind::AsciiFit { value, .. } => {
                 Self::loop_ascii_growth_roots_expr(value, roots, cache)
+            }
+            TExprKind::AsciiFormat { value, .. }
+            | TExprKind::ParseInteger {
+                receiver: value, ..
+            } => Self::loop_ascii_growth_roots_expr(value, roots, cache),
+            TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+                Self::loop_ascii_growth_roots_expr(value, roots, cache);
+                Self::loop_ascii_growth_roots_expr(width, roots, cache);
             }
             TExprKind::Binary { left, right, .. } => {
                 Self::loop_ascii_growth_roots_expr(left, roots, cache);
@@ -12737,6 +13102,44 @@ impl Checker {
                 let (c, d) = self.expr_range(&args[1])?;
                 Some((a.max(c), b.max(d)))
             }
+            TExprKind::Call {
+                target: CallTarget::Abs,
+                args,
+                ..
+            } if args.len() == 1 => {
+                let (lo, hi) = self.expr_range(&args[0])?;
+                if lo >= 0 {
+                    Some((lo, hi))
+                } else {
+                    let (_, base_hi) = integer_bounds(self.base_type(expr.ty))?;
+                    let min_abs = if hi < 0 { hi.unsigned_abs() } else { 0 };
+                    let max_abs = lo.unsigned_abs().max(hi.unsigned_abs());
+                    Some((
+                        min_abs.min(base_hi as u128) as i128,
+                        max_abs.min(base_hi as u128) as i128,
+                    ))
+                }
+            }
+            TExprKind::Call {
+                target: CallTarget::Clamp,
+                args,
+                ..
+            } if args.len() == 3 => {
+                let (value_lo, value_hi) = self.expr_range(&args[0])?;
+                let (lower_lo, lower_hi) = self.expr_range(&args[1])?;
+                let (upper_lo, upper_hi) = self.expr_range(&args[2])?;
+                if lower_hi <= upper_lo {
+                    Some((
+                        value_lo.clamp(lower_lo, upper_lo),
+                        value_hi.clamp(lower_hi, upper_hi),
+                    ))
+                } else {
+                    // The runtime checks that each pair of bounds is ordered.
+                    // Every successful result lies between the smallest lower
+                    // bound and the largest upper bound.
+                    Some((lower_lo, upper_hi))
+                }
+            }
             _ => self.refinement(expr.ty).map(|(_, lo, hi, _)| (lo, hi)),
         }
     }
@@ -13498,7 +13901,6 @@ fn typed_expr_contains_take(expr: &TExpr) -> bool {
         TExprKind::Take(_) => true,
         TExprKind::Construct { args, .. } => args.iter().any(typed_expr_contains_take),
         TExprKind::AsciiUpper(value)
-        | TExprKind::AsciiFormat(value)
         | TExprKind::AsciiCast(value)
         | TExprKind::Convert { value, .. }
         | TExprKind::Fit { value, .. }
@@ -13507,6 +13909,13 @@ fn typed_expr_contains_take(expr: &TExpr) -> bool {
         | TExprKind::ToLong(value)
         | TExprKind::Cast { value, .. }
         | TExprKind::Unary { value, .. } => typed_expr_contains_take(value),
+        TExprKind::AsciiFormat { value, .. }
+        | TExprKind::ParseInteger {
+            receiver: value, ..
+        } => typed_expr_contains_take(value),
+        TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+            typed_expr_contains_take(value) || typed_expr_contains_take(width)
+        }
         TExprKind::AsciiFit { value, .. } => typed_expr_contains_take(value),
         TExprKind::AsciiTryAppend { receiver, argument } => {
             typed_expr_contains_take(receiver) || typed_expr_contains_take(argument)
@@ -13573,7 +13982,6 @@ fn check_recursive_region_expr(
         }
         | TExprKind::AsciiUpper(receiver)
         | TExprKind::TextUpper(receiver)
-        | TExprKind::AsciiFormat(receiver)
         | TExprKind::AsciiCast(receiver)
         | TExprKind::BytesView(receiver)
         | TExprKind::TextConvert {
@@ -13586,6 +13994,14 @@ fn check_recursive_region_expr(
         | TExprKind::Unary {
             value: receiver, ..
         } => recurse(receiver, active_regions)?,
+        TExprKind::AsciiFormat { value, .. }
+        | TExprKind::ParseInteger {
+            receiver: value, ..
+        } => recurse(value, active_regions)?,
+        TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+            recurse(value, active_regions)?;
+            recurse(width, active_regions)?;
+        }
         TExprKind::Index {
             receiver,
             index,
@@ -13600,7 +14016,12 @@ fn check_recursive_region_expr(
             }
         }
         TExprKind::Fill { value, .. } => recurse(value, active_regions)?,
-        TExprKind::TextSlice {
+        TExprKind::AsciiSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::TextSlice {
             receiver,
             start,
             end,
@@ -14175,7 +14596,7 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
                 | CallTarget::EnvFs
                 | CallTarget::EnvOut
                 | CallTarget::EnvErr => {}
-                CallTarget::Min | CallTarget::Max => {}
+                CallTarget::Min | CallTarget::Max | CallTarget::Abs | CallTarget::Clamp => {}
                 CallTarget::Sort { .. } | CallTarget::SortBy { .. } => {
                     if let Some(path) = args.first().and_then(global_path_from_expr) {
                         effects.add_write(path, true);
@@ -14309,15 +14730,27 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         | TExprKind::Try { value, .. }
         | TExprKind::AsciiUpper(value)
         | TExprKind::TextUpper(value)
-        | TExprKind::AsciiFormat(value)
         | TExprKind::AsciiCast(value)
         | TExprKind::BytesView(value)
         | TExprKind::TextConvert { value, .. }
         | TExprKind::Take(value)
         | TExprKind::Cast { value, .. }
         | TExprKind::Unary { value, .. } => collect_global_expr_effects(value, effects, functions),
+        TExprKind::AsciiFormat { value, .. }
+        | TExprKind::ParseInteger {
+            receiver: value, ..
+        } => collect_global_expr_effects(value, effects, functions),
+        TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+            collect_global_expr_effects(value, effects, functions);
+            collect_global_expr_effects(width, effects, functions);
+        }
         TExprKind::AsciiFit { value, .. } => collect_global_expr_effects(value, effects, functions),
-        TExprKind::TextSlice {
+        TExprKind::AsciiSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::TextSlice {
             receiver,
             start,
             end,
@@ -14507,7 +14940,6 @@ fn visit_global_calls_expr(
         }
         | TExprKind::AsciiUpper(receiver)
         | TExprKind::TextUpper(receiver)
-        | TExprKind::AsciiFormat(receiver)
         | TExprKind::AsciiCast(receiver)
         | TExprKind::BytesView(receiver)
         | TExprKind::TextConvert {
@@ -14521,6 +14953,14 @@ fn visit_global_calls_expr(
             value: receiver, ..
         } => {
             visit_global_calls_expr(receiver, active_views, check)?;
+        }
+        TExprKind::AsciiFormat { value, .. }
+        | TExprKind::ParseInteger {
+            receiver: value, ..
+        } => visit_global_calls_expr(value, active_views, check)?,
+        TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+            visit_global_calls_expr(value, active_views, check)?;
+            visit_global_calls_expr(width, active_views, check)?;
         }
         TExprKind::Index {
             receiver,
@@ -14538,7 +14978,12 @@ fn visit_global_calls_expr(
         }
         TExprKind::Fill { value, .. } => visit_global_calls_expr(value, active_views, check)?,
         TExprKind::AsciiFit { value, .. } => visit_global_calls_expr(value, active_views, check)?,
-        TExprKind::TextSlice {
+        TExprKind::AsciiSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::TextSlice {
             receiver,
             start,
             end,
@@ -14640,6 +15085,16 @@ fn integer_bounds(ty: Ty) -> Option<(i128, i128)> {
         Ty::Long => Some((i64::MIN as i128, i64::MAX as i128)),
         _ => None,
     }
+}
+
+fn integer_digits(mut magnitude: u128, radix: u32) -> usize {
+    debug_assert!(matches!(radix, 2 | 8 | 10 | 16));
+    let mut digits = 1;
+    while magnitude >= u128::from(radix) {
+        magnitude /= u128::from(radix);
+        digits += 1;
+    }
+    digits
 }
 
 fn is_prefix(a: &[usize], b: &[usize]) -> bool {

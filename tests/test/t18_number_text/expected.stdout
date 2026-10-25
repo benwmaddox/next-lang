@@ -1,0 +1,8 @@
+ok   decimal, hexadecimal, and binary formatting cover signed values
+ok   padding handles width, side, zero sign, and mixed maxima
+ok   integer parsing round trips extremes and accepts separated digits
+ok   integer parsing rejects malformed digits, prefixes, and overflow
+ok   Ascii, Text, and Bytes slices parse through their original length units
+ok   ASCII byte helpers classify and change only ASCII letters
+ok   abs, min, max, and clamp retain provable refinement ranges
+7 passed, 0 failed

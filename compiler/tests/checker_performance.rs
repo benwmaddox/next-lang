@@ -116,6 +116,16 @@ fn long_text_and_bytes_concatenations_and_many_fields_remain_linear() {
         ),
     );
 
+    let mut padded_appends = format!(
+        "fn main() {{\n    var joined: Ascii max {} = Ascii.empty()\n",
+        terms * 3
+    );
+    for _ in 0..terms {
+        padded_appends.push_str("    joined += pad(str(42), 3)\n");
+    }
+    padded_appends.push_str("    print(joined.len())\n}\n");
+    assert_compiles_quickly("thousand-pad-str-concatenations", &padded_appends);
+
     let fields = (0..terms)
         .map(|index| format!("field_{index}: Text max 1"))
         .collect::<Vec<_>>()

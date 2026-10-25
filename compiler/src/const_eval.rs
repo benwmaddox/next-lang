@@ -326,7 +326,6 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         }
         | TExprKind::AsciiUpper(receiver)
         | TExprKind::TextUpper(receiver)
-        | TExprKind::AsciiFormat(receiver)
         | TExprKind::AsciiCast(receiver)
         | TExprKind::BytesView(receiver)
         | TExprKind::TextConvert {
@@ -339,6 +338,14 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::Unary {
             value: receiver, ..
         } => collect_constant_references_expr(receiver, references),
+        TExprKind::AsciiFormat { value, .. }
+        | TExprKind::ParseInteger {
+            receiver: value, ..
+        } => collect_constant_references_expr(value, references),
+        TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+            collect_constant_references_expr(value, references);
+            collect_constant_references_expr(width, references);
+        }
         TExprKind::OptionalCall { receiver, args, .. } => {
             collect_constant_references_expr(receiver, references);
             for arg in args {
@@ -359,7 +366,12 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
             }
         }
         TExprKind::Fill { value, .. } => collect_constant_references_expr(value, references),
-        TExprKind::TextSlice {
+        TExprKind::AsciiSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::TextSlice {
             receiver,
             start,
             end,
@@ -558,7 +570,6 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         }
         | TExprKind::AsciiUpper(receiver)
         | TExprKind::TextUpper(receiver)
-        | TExprKind::AsciiFormat(receiver)
         | TExprKind::AsciiCast(receiver)
         | TExprKind::BytesView(receiver)
         | TExprKind::TextConvert {
@@ -571,6 +582,13 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         | TExprKind::Unary {
             value: receiver, ..
         } => expression_reads_global(receiver),
+        TExprKind::AsciiFormat { value, .. }
+        | TExprKind::ParseInteger {
+            receiver: value, ..
+        } => expression_reads_global(value),
+        TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+            expression_reads_global(value) || expression_reads_global(width)
+        }
         TExprKind::OptionalCall { receiver, args, .. } => {
             expression_reads_global(receiver) || args.iter().any(expression_reads_global)
         }
@@ -587,7 +605,12 @@ fn expression_reads_global(expr: &TExpr) -> bool {
                 })
         }
         TExprKind::Fill { value, .. } => expression_reads_global(value),
-        TExprKind::TextSlice {
+        TExprKind::AsciiSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::TextSlice {
             receiver,
             start,
             end,
@@ -855,7 +878,7 @@ fn collect_calls_expr(
                 | CallTarget::EnvOut
                 | CallTarget::EnvErr
                 | CallTarget::FsJoin => {}
-                CallTarget::Min | CallTarget::Max => {}
+                CallTarget::Min | CallTarget::Max | CallTarget::Abs | CallTarget::Clamp => {}
                 CallTarget::Sort { .. } | CallTarget::SortBy { .. } => {
                     effects.push((expr.span, "sort"))
                 }
@@ -906,7 +929,12 @@ fn collect_calls_expr(
             }
         }
         TExprKind::Fill { value, .. } => collect_calls_expr(value, calls, effects),
-        TExprKind::TextSlice {
+        TExprKind::AsciiSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::TextSlice {
             receiver,
             start,
             end,
@@ -944,13 +972,20 @@ fn collect_calls_expr(
         | TExprKind::Try { value, .. }
         | TExprKind::AsciiUpper(value)
         | TExprKind::TextUpper(value)
-        | TExprKind::AsciiFormat(value)
         | TExprKind::AsciiCast(value)
         | TExprKind::BytesView(value)
         | TExprKind::TextConvert { value, .. }
         | TExprKind::Take(value)
         | TExprKind::Cast { value, .. }
         | TExprKind::Unary { value, .. } => collect_calls_expr(value, calls, effects),
+        TExprKind::AsciiFormat { value, .. }
+        | TExprKind::ParseInteger {
+            receiver: value, ..
+        } => collect_calls_expr(value, calls, effects),
+        TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+            collect_calls_expr(value, calls, effects);
+            collect_calls_expr(width, calls, effects);
+        }
         TExprKind::AsciiFit { value, .. } => collect_calls_expr(value, calls, effects),
         TExprKind::AsciiTryAppend { receiver, argument } => {
             collect_calls_expr(receiver, calls, effects);
@@ -2215,6 +2250,26 @@ impl Evaluator<'_> {
                         left.max(right)
                     })
                 }
+                CallTarget::Abs => {
+                    let value = as_integer(&value_or_flow!(self.eval_expr(&args[0], locals)));
+                    let (minimum, _) = integer_bounds(expr.ty, self.types)
+                        .ok_or_else(|| self.failure(expr.span, "abs needs an integer type"))?;
+                    if value == minimum {
+                        return Err(self.failure(expr.span, "overflow in absolute value"));
+                    }
+                    ConstValue::Integer(value.abs())
+                }
+                CallTarget::Clamp => {
+                    let value = as_integer(&value_or_flow!(self.eval_expr(&args[0], locals)));
+                    let lower = as_integer(&value_or_flow!(self.eval_expr(&args[1], locals)));
+                    let upper = as_integer(&value_or_flow!(self.eval_expr(&args[2], locals)));
+                    if lower > upper {
+                        return Err(
+                            self.failure(expr.span, "clamp lower bound exceeds upper bound")
+                        );
+                    }
+                    ConstValue::Integer(value.clamp(lower, upper))
+                }
                 CallTarget::BinarySearch { .. } => {
                     let collection = value_or_flow!(self.eval_expr(&args[0], locals));
                     let key = value_or_flow!(self.eval_expr(&args[1], locals));
@@ -2965,11 +3020,15 @@ impl Evaluator<'_> {
             | TExprKind::BytesEmpty
             | TExprKind::AsciiUpper(_)
             | TExprKind::TextUpper(_)
-            | TExprKind::AsciiFormat(_)
+            | TExprKind::AsciiFormat { .. }
+            | TExprKind::AsciiPad { .. }
+            | TExprKind::AsciiZeroPad { .. }
+            | TExprKind::ParseInteger { .. }
             | TExprKind::AsciiTryAppend { .. }
             | TExprKind::AsciiCast(_)
             | TExprKind::AsciiFit { .. }
             | TExprKind::TextSlice { .. }
+            | TExprKind::AsciiSlice { .. }
             | TExprKind::BytesSlice { .. }
             | TExprKind::BytesView(_)
             | TExprKind::TextConvert { .. }
@@ -3108,6 +3167,36 @@ impl Evaluator<'_> {
         receiver: ConstValue,
         span: Span,
     ) -> Result<ConstValue, EvalFailure> {
+        if matches!(
+            kind,
+            MethodKind::ByteIsDigit
+                | MethodKind::ByteIsAlpha
+                | MethodKind::ByteIsSpace
+                | MethodKind::ByteToLower
+                | MethodKind::ByteToUpper
+        ) {
+            let byte = as_integer(&receiver);
+            return Ok(match kind {
+                MethodKind::ByteIsDigit => {
+                    ConstValue::Bool((b'0' as i128..=b'9' as i128).contains(&byte))
+                }
+                MethodKind::ByteIsAlpha => ConstValue::Bool(
+                    (b'A' as i128..=b'Z' as i128).contains(&byte)
+                        || (b'a' as i128..=b'z' as i128).contains(&byte),
+                ),
+                MethodKind::ByteIsSpace => {
+                    ConstValue::Bool((9..=13).contains(&byte) || byte == b' ' as i128)
+                }
+                MethodKind::ByteToLower if (b'A' as i128..=b'Z' as i128).contains(&byte) => {
+                    ConstValue::Integer(byte + 32)
+                }
+                MethodKind::ByteToUpper if (b'a' as i128..=b'z' as i128).contains(&byte) => {
+                    ConstValue::Integer(byte - 32)
+                }
+                MethodKind::ByteToLower | MethodKind::ByteToUpper => ConstValue::Integer(byte),
+                _ => unreachable!(),
+            });
+        }
         let ConstValue::Enum {
             case_index,
             payload,
@@ -3150,6 +3239,11 @@ impl Evaluator<'_> {
             MethodKind::UnwrapOption | MethodKind::UnwrapResult => {
                 return Err(self.failure(span, "unwrap failed during constant evaluation"));
             }
+            MethodKind::ByteIsDigit
+            | MethodKind::ByteIsAlpha
+            | MethodKind::ByteIsSpace
+            | MethodKind::ByteToLower
+            | MethodKind::ByteToUpper => unreachable!("byte methods were handled above"),
         })
     }
 

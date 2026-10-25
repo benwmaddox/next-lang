@@ -179,6 +179,11 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare i32 @nl_ascii_compare(ptr, i64, ptr, i64)\n");
     out.push_str("declare i64 @nl_hash_ascii(ptr, i64, i64)\n");
     out.push_str("declare i64 @nl_ascii_format_i64(i64, ptr)\n");
+    out.push_str("declare i64 @nl_ascii_format_i64_radix(i64, i32, ptr)\n");
+    out.push_str("declare i64 @nl_ascii_format_pad_i64(i64, i64, i32, i32, ptr)\n");
+    out.push_str("declare i64 @nl_ascii_format_zero_padded_i64(i64, i64, ptr)\n");
+    out.push_str("declare i64 @nl_pad_copy(ptr, i64, i64, i64, i32, ptr)\n");
+    out.push_str("declare i32 @nl_parse_integer(ptr, i64, i32, i32, i32, ptr)\n");
     out.push_str("declare void @nl_ascii_upper_copy(ptr, ptr, i64)\n");
     out.push_str("declare i32 @nl_utf8_count(ptr, i64, ptr)\n");
     out.push_str("declare i64 @nl_utf8_offset(ptr, i64, i64)\n");
@@ -784,13 +789,14 @@ fn static_ascii_length(expr: &TExpr, types: &[TType]) -> Option<usize> {
         TExprKind::AsciiUpper(value) | TExprKind::AsciiCast(value) | TExprKind::Take(value) => {
             static_ascii_length(value, types)
         }
-        TExprKind::AsciiFormat(value) => match value.kind {
+        TExprKind::AsciiFormat { value, radix } => match value.kind {
             TExprKind::Integer(value) => {
-                let digits = if value == 0 {
-                    1
-                } else {
-                    value.unsigned_abs().ilog10() as usize + 1
-                };
+                let mut magnitude = value.unsigned_abs();
+                let mut digits = 1;
+                while magnitude >= u128::from(*radix) {
+                    magnitude /= u128::from(*radix);
+                    digits += 1;
+                }
                 Some(digits + usize::from(value < 0))
             }
             _ => None,
@@ -1080,13 +1086,20 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
             }
             TExprKind::AsciiUpper(value)
             | TExprKind::TextUpper(value)
-            | TExprKind::AsciiFormat(value)
             | TExprKind::AsciiCast(value)
             | TExprKind::BytesView(value)
             | TExprKind::TextConvert { value, .. }
             | TExprKind::Take(value)
             | TExprKind::AsciiFit { value, .. } => {
                 own = own.saturating_add(expression_scratch(value, types));
+            }
+            TExprKind::AsciiFormat { value, .. }
+            | TExprKind::ParseInteger {
+                receiver: value, ..
+            } => own = own.saturating_add(expression_scratch(value, types)),
+            TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+                own = own.saturating_add(expression_scratch(value, types));
+                own = own.saturating_add(expression_scratch(width, types));
             }
             TExprKind::AsciiTryAppend { receiver, argument } => {
                 own = own.saturating_add(expression_scratch(receiver, types));
@@ -1234,7 +1247,12 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     ));
                 }
             }
-            TExprKind::TextSlice {
+            TExprKind::AsciiSlice {
+                receiver,
+                start,
+                end,
+            }
+            | TExprKind::TextSlice {
                 receiver,
                 start,
                 end,
@@ -2034,12 +2052,19 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         TExprKind::Method { receiver, .. } => collect_expect_sources_expr(receiver, sources),
         TExprKind::AsciiUpper(value)
         | TExprKind::TextUpper(value)
-        | TExprKind::AsciiFormat(value)
         | TExprKind::AsciiCast(value)
         | TExprKind::BytesView(value)
         | TExprKind::TextConvert { value, .. }
         | TExprKind::Take(value)
         | TExprKind::AsciiFit { value, .. } => collect_expect_sources_expr(value, sources),
+        TExprKind::AsciiFormat { value, .. }
+        | TExprKind::ParseInteger {
+            receiver: value, ..
+        } => collect_expect_sources_expr(value, sources),
+        TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+            collect_expect_sources_expr(value, sources);
+            collect_expect_sources_expr(width, sources);
+        }
         TExprKind::AsciiTryAppend { receiver, argument } => {
             collect_expect_sources_expr(receiver, sources);
             collect_expect_sources_expr(argument, sources);
@@ -2059,7 +2084,12 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
             }
         }
         TExprKind::Fill { value, .. } => collect_expect_sources_expr(value, sources),
-        TExprKind::TextSlice {
+        TExprKind::AsciiSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::TextSlice {
             receiver,
             start,
             end,
@@ -2763,7 +2793,6 @@ fn expression_uses_local_root(expr: &TExpr, root: usize) -> bool {
                     .any(|value| expression_uses_local_root(value, root))
         }
         TExprKind::AsciiUpper(value)
-        | TExprKind::AsciiFormat(value)
         | TExprKind::AsciiCast(value)
         | TExprKind::Take(value)
         | TExprKind::OptionalToLong(value)
@@ -2780,6 +2809,13 @@ fn expression_uses_local_root(expr: &TExpr, root: usize) -> bool {
         | TExprKind::Fit { value, .. }
         | TExprKind::Try { value, .. }
         | TExprKind::AsciiFit { value, .. } => expression_uses_local_root(value, root),
+        TExprKind::AsciiFormat { value, .. }
+        | TExprKind::ParseInteger {
+            receiver: value, ..
+        } => expression_uses_local_root(value, root),
+        TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+            expression_uses_local_root(value, root) || expression_uses_local_root(width, root)
+        }
         TExprKind::AsciiTryAppend { receiver, argument } => {
             expression_uses_local_root(receiver, root) || expression_uses_local_root(argument, root)
         }
@@ -2932,7 +2968,6 @@ fn growing_ascii_locals(
             }
             TExprKind::AsciiUpper(value)
             | TExprKind::TextUpper(value)
-            | TExprKind::AsciiFormat(value)
             | TExprKind::AsciiCast(value)
             | TExprKind::BytesView(value)
             | TExprKind::TextConvert { value, .. }
@@ -2945,8 +2980,21 @@ fn growing_ascii_locals(
             | TExprKind::ToLong(value)
             | TExprKind::Cast { value, .. }
             | TExprKind::Unary { value, .. } => visit_expr(value, program, growing, moves),
+            TExprKind::AsciiFormat { value, .. }
+            | TExprKind::ParseInteger {
+                receiver: value, ..
+            } => visit_expr(value, program, growing, moves),
+            TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+                visit_expr(value, program, growing, moves);
+                visit_expr(width, program, growing, moves);
+            }
             TExprKind::AsciiFit { value, .. } => visit_expr(value, program, growing, moves),
-            TExprKind::TextSlice {
+            TExprKind::AsciiSlice {
+                receiver,
+                start,
+                end,
+            }
+            | TExprKind::TextSlice {
                 receiver,
                 start,
                 end,
@@ -4411,12 +4459,28 @@ impl<'a> FunctionEmitter<'a> {
             TExprKind::Method { receiver, .. } => self.collect_expr(receiver),
             TExprKind::AsciiUpper(value)
             | TExprKind::TextUpper(value)
-            | TExprKind::AsciiFormat(value)
             | TExprKind::AsciiCast(value)
             | TExprKind::Take(value)
             | TExprKind::BytesView(value)
             | TExprKind::TextConvert { value, .. }
             | TExprKind::AsciiFit { value, .. } => self.collect_expr(value),
+            TExprKind::AsciiFormat { value, .. }
+            | TExprKind::ParseInteger {
+                receiver: value, ..
+            } => self.collect_expr(value),
+            TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+                self.collect_expr(value);
+                self.collect_expr(width);
+            }
+            TExprKind::AsciiSlice {
+                receiver,
+                start,
+                end,
+            } => {
+                self.collect_expr(receiver);
+                self.collect_expr(start);
+                self.collect_expr(end);
+            }
             TExprKind::TextSlice {
                 receiver,
                 start,
@@ -8367,7 +8431,7 @@ impl<'a> FunctionEmitter<'a> {
                 self.instruction(format!("{next} = add i64 {current}, {written}"));
                 self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
             }
-            TExprKind::AsciiFormat(value) => {
+            TExprKind::AsciiFormat { value, radix } => {
                 let raw = self.emit_expr(value);
                 if self.terminated {
                     return;
@@ -8387,10 +8451,99 @@ impl<'a> FunctionEmitter<'a> {
                 ));
                 let length = self.temp();
                 self.instruction(format!(
-                    "{length} = call i64 @nl_ascii_format_i64(i64 {numeric}, ptr {target})"
+                    "{length} = call i64 @nl_ascii_format_i64_radix(i64 {numeric}, i32 {radix}, ptr {target})"
                 ));
                 let next = self.temp();
                 self.instruction(format!("{next} = add i64 {current}, {length}"));
+                self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
+            }
+            TExprKind::AsciiPad { value, width, side } => {
+                let current = self.temp();
+                self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
+                let target = self.temp();
+                self.instruction(format!(
+                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
+                ));
+                let is_left = i32::from(matches!(side, PadSide::Left));
+                let amount = if let TExprKind::AsciiFormat {
+                    value: number,
+                    radix,
+                } = &value.kind
+                {
+                    let raw = self.emit_expr(number);
+                    if self.terminated {
+                        return;
+                    }
+                    let numeric = if base_type(number.ty, &self.program.types) == Ty::Int {
+                        let extended = self.temp();
+                        self.instruction(format!("{extended} = sext i32 {raw} to i64"));
+                        extended
+                    } else {
+                        raw
+                    };
+                    let width_value = self.emit_expr(width);
+                    if self.terminated {
+                        return;
+                    }
+                    let amount = self.temp();
+                    self.instruction(format!(
+                        "{amount} = call i64 @nl_ascii_format_pad_i64(i64 {numeric}, i64 {width_value}, i32 {radix}, i32 {is_left}, ptr {target})"
+                    ));
+                    amount
+                } else {
+                    let descriptor = self.emit_ascii_descriptor(value);
+                    if self.terminated {
+                        return;
+                    }
+                    let source = self.ascii_field(&descriptor, value.ty, 0);
+                    let byte_length = self.ascii_field(&descriptor, value.ty, 1);
+                    let codepoints = if self.is_text_type(value.ty) {
+                        self.ascii_field(&descriptor, value.ty, 2)
+                    } else {
+                        byte_length.clone()
+                    };
+                    let width_value = self.emit_expr(width);
+                    if self.terminated {
+                        return;
+                    }
+                    let amount = self.temp();
+                    self.instruction(format!(
+                        "{amount} = call i64 @nl_pad_copy(ptr {source}, i64 {byte_length}, i64 {codepoints}, i64 {width_value}, i32 {is_left}, ptr {target})"
+                    ));
+                    amount
+                };
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {current}, {amount}"));
+                self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
+            }
+            TExprKind::AsciiZeroPad { value, width } => {
+                let raw = self.emit_expr(value);
+                if self.terminated {
+                    return;
+                }
+                let numeric = if base_type(value.ty, &self.program.types) == Ty::Int {
+                    let extended = self.temp();
+                    self.instruction(format!("{extended} = sext i32 {raw} to i64"));
+                    extended
+                } else {
+                    raw
+                };
+                let width_value = self.emit_expr(width);
+                if self.terminated {
+                    return;
+                }
+                let current = self.temp();
+                self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
+                let target = self.temp();
+                self.instruction(format!(
+                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
+                ));
+                let amount = self.temp();
+                self.instruction(format!(
+                    "{amount} = call i64 @nl_ascii_format_zero_padded_i64(i64 {numeric}, i64 {width_value}, ptr {target})"
+                ));
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {current}, {amount}"));
                 self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
             }
             TExprKind::Try {
@@ -11375,6 +11528,14 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_expr_to(&mut self, destination: &str, expr: &TExpr) {
         match &expr.kind {
+            TExprKind::AsciiSlice {
+                receiver,
+                start,
+                end,
+            } => {
+                self.emit_string_slice_to(destination, expr, receiver, start, end, false);
+                return;
+            }
             TExprKind::TextSlice {
                 receiver,
                 start,
@@ -13789,6 +13950,49 @@ impl<'a> FunctionEmitter<'a> {
         self.print_text("}");
     }
 
+    fn emit_parse_integer(
+        &mut self,
+        expr: &TExpr,
+        receiver: &TExpr,
+        radix: u32,
+        literal: bool,
+        target: Ty,
+    ) -> String {
+        let descriptor = self.emit_ascii_descriptor(receiver);
+        if self.terminated {
+            return String::new();
+        }
+        let source = self.ascii_field(&descriptor, receiver.ty, 0);
+        let length = self.ascii_field(&descriptor, receiver.ty, 1);
+        let parsed_slot = self.entry_alloca(Ty::Long);
+        let valid_raw = self.temp();
+        self.instruction(format!(
+            "{valid_raw} = call i32 @nl_parse_integer(ptr {source}, i64 {length}, i32 {radix}, i32 {}, i32 {}, ptr {parsed_slot})",
+            i32::from(literal),
+            if base_type(target, &self.program.types) == Ty::Int { 32 } else { 64 }
+        ));
+        let valid = self.temp();
+        self.instruction(format!("{valid} = icmp ne i32 {valid_raw}, 0"));
+        let raw = self.temp();
+        self.instruction(format!("{raw} = load i64, ptr {parsed_slot}, align 1"));
+        let payload = if base_type(target, &self.program.types) == Ty::Int {
+            let narrowed = self.temp();
+            self.instruction(format!("{narrowed} = trunc i64 {raw} to i32"));
+            narrowed
+        } else {
+            raw
+        };
+        let some = self.emit_construct_values(expr.ty, 0, vec![(target, payload)]);
+        let none = self.emit_construct_values(expr.ty, 1, Vec::new());
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = select i1 {valid}, {} {some}, {} {none}",
+            self.lltype(expr.ty),
+            self.lltype(expr.ty)
+        ));
+        result
+    }
+
     fn emit_method(&mut self, expr: &TExpr, kind: MethodKind, receiver: &TExpr) -> String {
         let value = self.emit_expr(receiver);
         if kind == MethodKind::AsciiLen {
@@ -13800,12 +14004,27 @@ impl<'a> FunctionEmitter<'a> {
         if matches!(kind, MethodKind::TextByteLen | MethodKind::BytesLen) {
             return self.ascii_field(&value, receiver.ty, 1);
         }
+        if matches!(
+            kind,
+            MethodKind::ByteIsDigit
+                | MethodKind::ByteIsAlpha
+                | MethodKind::ByteIsSpace
+                | MethodKind::ByteToLower
+                | MethodKind::ByteToUpper
+        ) {
+            return self.emit_byte_method(kind, &value);
+        }
         let tag = self.emit_tag(receiver.ty, &value);
         match kind {
             MethodKind::AsciiLen => unreachable!("Ascii length was handled above"),
             MethodKind::TextLen | MethodKind::TextByteLen | MethodKind::BytesLen => {
                 unreachable!("string length was handled above")
             }
+            MethodKind::ByteIsDigit
+            | MethodKind::ByteIsAlpha
+            | MethodKind::ByteIsSpace
+            | MethodKind::ByteToLower
+            | MethodKind::ByteToUpper => unreachable!("byte methods were handled above"),
             MethodKind::IsNone | MethodKind::IsErr => {
                 let result = self.temp();
                 self.instruction(format!("{result} = icmp eq i32 {tag}, 1"));
@@ -13858,6 +14077,65 @@ impl<'a> FunctionEmitter<'a> {
                 ));
                 result
             }
+        }
+    }
+
+    fn emit_byte_method(&mut self, kind: MethodKind, value: &str) -> String {
+        let compare = |this: &mut Self, predicate: &str, bound: i32| {
+            let result = this.temp();
+            this.instruction(format!("{result} = icmp {predicate} i32 {value}, {bound}"));
+            result
+        };
+        match kind {
+            MethodKind::ByteIsDigit => {
+                let lower = compare(self, "uge", b'0' as i32);
+                let upper = compare(self, "ule", b'9' as i32);
+                let result = self.temp();
+                self.instruction(format!("{result} = and i1 {lower}, {upper}"));
+                result
+            }
+            MethodKind::ByteIsAlpha => {
+                let upper_lower = compare(self, "uge", b'A' as i32);
+                let upper_upper = compare(self, "ule", b'Z' as i32);
+                let upper = self.temp();
+                self.instruction(format!("{upper} = and i1 {upper_lower}, {upper_upper}"));
+                let lower_lower = compare(self, "uge", b'a' as i32);
+                let lower_upper = compare(self, "ule", b'z' as i32);
+                let lower = self.temp();
+                self.instruction(format!("{lower} = and i1 {lower_lower}, {lower_upper}"));
+                let result = self.temp();
+                self.instruction(format!("{result} = or i1 {upper}, {lower}"));
+                result
+            }
+            MethodKind::ByteIsSpace => {
+                let control_low = compare(self, "uge", 9);
+                let control_high = compare(self, "ule", 13);
+                let control = self.temp();
+                self.instruction(format!("{control} = and i1 {control_low}, {control_high}"));
+                let ordinary = compare(self, "eq", b' ' as i32);
+                let result = self.temp();
+                self.instruction(format!("{result} = or i1 {control}, {ordinary}"));
+                result
+            }
+            MethodKind::ByteToLower | MethodKind::ByteToUpper => {
+                let (first, last, delta) = if kind == MethodKind::ByteToLower {
+                    (b'A', b'Z', 32)
+                } else {
+                    (b'a', b'z', -32)
+                };
+                let at_least = compare(self, "uge", first as i32);
+                let at_most = compare(self, "ule", last as i32);
+                let is_letter_case = self.temp();
+                self.instruction(format!("{is_letter_case} = and i1 {at_least}, {at_most}"));
+                let adjusted = self.temp();
+                self.instruction(format!("{adjusted} = add i32 {value}, {delta}"));
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = select i1 {is_letter_case}, i32 {adjusted}, i32 {value}"
+                ));
+                result
+            }
+            _ => unreachable!("not a byte method"),
         }
     }
 
@@ -16575,6 +16853,65 @@ impl<'a> FunctionEmitter<'a> {
                 ));
                 result
             }
+            CallTarget::Abs => {
+                let value = self.emit_expr(&args[0]);
+                if self.terminated {
+                    return String::new();
+                }
+                let ty = base_type(args[0].ty, &self.program.types);
+                let llvm_ty = self.lltype(ty);
+                let minimum = if ty == Ty::Int {
+                    i32::MIN as i128
+                } else {
+                    i64::MIN as i128
+                };
+                let is_minimum = self.temp();
+                self.instruction(format!(
+                    "{is_minimum} = icmp eq {llvm_ty} {value}, {minimum}"
+                ));
+                self.guard(is_minimum, failure_for(ty, BinaryOp::Add, true), expr.span);
+                let negative = self.temp();
+                self.instruction(format!("{negative} = icmp slt {llvm_ty} {value}, 0"));
+                let magnitude = self.temp();
+                self.instruction(format!("{magnitude} = sub {llvm_ty} 0, {value}"));
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = select i1 {negative}, {llvm_ty} {magnitude}, {llvm_ty} {value}"
+                ));
+                result
+            }
+            CallTarget::Clamp => {
+                let value = self.emit_expr(&args[0]);
+                if self.terminated {
+                    return String::new();
+                }
+                let lower = self.emit_expr(&args[1]);
+                if self.terminated {
+                    return String::new();
+                }
+                let upper = self.emit_expr(&args[2]);
+                if self.terminated {
+                    return String::new();
+                }
+                let ty = base_type(args[0].ty, &self.program.types);
+                let llvm_ty = self.lltype(ty);
+                let invalid = self.temp();
+                self.instruction(format!("{invalid} = icmp sgt {llvm_ty} {lower}, {upper}"));
+                self.guard(invalid, Failure::InvalidClampBounds, expr.span);
+                let below = self.temp();
+                self.instruction(format!("{below} = icmp slt {llvm_ty} {value}, {lower}"));
+                let raised = self.temp();
+                self.instruction(format!(
+                    "{raised} = select i1 {below}, {llvm_ty} {lower}, {llvm_ty} {value}"
+                ));
+                let above = self.temp();
+                self.instruction(format!("{above} = icmp sgt {llvm_ty} {raised}, {upper}"));
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = select i1 {above}, {llvm_ty} {upper}, {llvm_ty} {raised}"
+                ));
+                result
+            }
             CallTarget::Sort { capacity, is_list } => {
                 debug_assert_eq!(*effect, Effect::None);
                 self.emit_sort(expr, args, *capacity, *is_list);
@@ -16898,6 +17235,8 @@ impl<'a> FunctionEmitter<'a> {
             | CallTarget::Print
             | CallTarget::Min
             | CallTarget::Max
+            | CallTarget::Abs
+            | CallTarget::Clamp
             | CallTarget::Sort { .. }
             | CallTarget::SortBy { .. }
             | CallTarget::BinarySearch { .. } => unreachable!(),
@@ -17036,12 +17375,20 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_construct(expr.ty, *case_index, args)
             }
             TExprKind::Method { kind, receiver } => self.emit_method(expr, *kind, receiver),
+            TExprKind::ParseInteger {
+                receiver,
+                radix,
+                literal,
+                target,
+            } => self.emit_parse_integer(expr, receiver, *radix, *literal, *target),
             TExprKind::AsciiEmpty | TExprKind::TextEmpty | TExprKind::BytesEmpty => {
                 "zeroinitializer".to_owned()
             }
             TExprKind::AsciiUpper(_)
             | TExprKind::TextUpper(_)
-            | TExprKind::AsciiFormat(_)
+            | TExprKind::AsciiFormat { .. }
+            | TExprKind::AsciiPad { .. }
+            | TExprKind::AsciiZeroPad { .. }
             | TExprKind::AsciiCast(_)
             | TExprKind::AsciiFit { .. } => {
                 let pointer = self.entry_alloca(expr.ty);
@@ -17053,7 +17400,8 @@ impl<'a> FunctionEmitter<'a> {
                 ));
                 value
             }
-            TExprKind::TextSlice { .. }
+            TExprKind::AsciiSlice { .. }
+            | TExprKind::TextSlice { .. }
             | TExprKind::BytesSlice { .. }
             | TExprKind::BytesView(_)
             | TExprKind::TextConvert { .. } => {
@@ -17740,6 +18088,7 @@ enum Failure {
     UnwrapErr = 15,
     IndexOutOfRange = 16,
     UnsortedInput = 17,
+    InvalidClampBounds = 21,
 }
 
 fn failure_for(ty: Ty, op: BinaryOp, unary: bool) -> Failure {

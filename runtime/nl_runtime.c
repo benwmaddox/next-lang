@@ -673,6 +673,7 @@ _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col)
         case 15: message = "unwrap called on err"; break;
         case 16: message = "index out of range"; break;
         case 17: message = "binary_search requires sorted input"; break;
+        case 21: message = "clamp lower bound is greater than its upper bound"; break;
         case 18: message = "data stack exhausted"; break;
         case 19: message = "recursion budget exhausted"; break;
         case 20: message = "standard output write failed"; break;
@@ -732,24 +733,153 @@ uint64_t nl_hash_ascii(const unsigned char *bytes, uint64_t length,
     return hash;
 }
 
-uint64_t nl_ascii_format_i64(int64_t value, unsigned char *destination) {
-    unsigned char reversed[20];
+uint64_t nl_ascii_format_i64_radix(int64_t value, int32_t radix,
+                                  unsigned char *destination) {
+    static const unsigned char digits[] = "0123456789abcdef";
+    unsigned char reversed[64];
     uint64_t length = 0;
     uint64_t magnitude;
     int negative = value < 0;
+    if (radix != 2 && radix != 8 && radix != 10 && radix != 16) return 0;
     if (negative) {
         magnitude = (uint64_t)(-(value + 1)) + 1;
     } else {
         magnitude = (uint64_t)value;
     }
     do {
-        reversed[length++] = (unsigned char)('0' + magnitude % 10);
-        magnitude /= 10;
+        reversed[length++] = digits[magnitude % (uint64_t)radix];
+        magnitude /= (uint64_t)radix;
     } while (magnitude != 0);
     if (negative) destination[0] = '-';
     uint64_t offset = (uint64_t)negative;
     while (length != 0) destination[offset++] = reversed[--length];
     return offset;
+}
+
+uint64_t nl_ascii_format_i64(int64_t value, unsigned char *destination) {
+    return nl_ascii_format_i64_radix(value, 10, destination);
+}
+
+uint64_t nl_ascii_format_pad_i64(int64_t value, int64_t width, int32_t radix,
+                                 int32_t pad_left,
+                                 unsigned char *destination) {
+    unsigned char formatted[66];
+    uint64_t length = nl_ascii_format_i64_radix(value, radix, formatted);
+    uint64_t padding = width > 0 && (uint64_t)width > length
+                           ? (uint64_t)width - length
+                           : 0;
+    if (pad_left && padding) memset(destination, ' ', (size_t)padding);
+    if (length) {
+        memmove(destination + (pad_left ? padding : 0), formatted, (size_t)length);
+    }
+    if (!pad_left && padding) {
+        memset(destination + length, ' ', (size_t)padding);
+    }
+    return length + padding;
+}
+
+uint64_t nl_ascii_format_zero_padded_i64(int64_t value, int64_t width,
+                                         unsigned char *destination) {
+    unsigned char formatted[66];
+    uint64_t length = nl_ascii_format_i64_radix(value, 10, formatted);
+    uint64_t padding = width > 0 && (uint64_t)width > length
+                           ? (uint64_t)width - length
+                           : 0;
+    uint64_t sign = length && formatted[0] == '-' ? 1 : 0;
+    if (sign) destination[0] = '-';
+    if (padding) memset(destination + sign, '0', (size_t)padding);
+    if (length > sign) {
+        memmove(destination + sign + padding, formatted + sign,
+                (size_t)(length - sign));
+    }
+    return length + padding;
+}
+
+static int nl_ascii_digit_value(unsigned char byte) {
+    if (byte >= '0' && byte <= '9') return (int)(byte - '0');
+    if (byte >= 'a' && byte <= 'f') return (int)(byte - 'a') + 10;
+    if (byte >= 'A' && byte <= 'F') return (int)(byte - 'A') + 10;
+    return -1;
+}
+
+int32_t nl_parse_integer(const unsigned char *bytes, uint64_t length,
+                         int32_t radix, int32_t literal, int32_t target_bits,
+                         int64_t *value) {
+    uint64_t start = 0;
+    int negative = 0;
+    if (!bytes || !value || (target_bits != 32 && target_bits != 64)) return 0;
+    if (literal) {
+        radix = 10;
+        if (length >= 2 && bytes[0] == '0' &&
+            (bytes[1] == 'x' || bytes[1] == 'X')) {
+            radix = 16;
+            start = 2;
+        } else if (length >= 2 && bytes[0] == '0' &&
+                   (bytes[1] == 'b' || bytes[1] == 'B')) {
+            radix = 2;
+            start = 2;
+        }
+    } else {
+        if (length && (bytes[0] == '+' || bytes[0] == '-')) {
+            negative = bytes[0] == '-';
+            start = 1;
+        }
+    }
+    if (radix != 2 && radix != 8 && radix != 10 && radix != 16) return 0;
+    if (start >= length) return 0;
+
+    uint64_t positive_limit = target_bits == 32 ? (uint64_t)INT32_MAX
+                                                 : (uint64_t)INT64_MAX;
+    uint64_t limit = negative ? positive_limit + 1 : positive_limit;
+    uint64_t magnitude = 0;
+    int saw_digit = 0;
+    int previous_underscore = 0;
+    for (uint64_t index = start; index < length; ++index) {
+        unsigned char byte = bytes[index];
+        if (byte == '_') {
+            if (!saw_digit || previous_underscore || index + 1 >= length) return 0;
+            int next_digit = nl_ascii_digit_value(bytes[index + 1]);
+            if (next_digit < 0 || next_digit >= radix) return 0;
+            previous_underscore = 1;
+            continue;
+        }
+        int digit = nl_ascii_digit_value(byte);
+        if (digit < 0 || digit >= radix) return 0;
+        if (magnitude > (limit - (uint64_t)digit) / (uint64_t)radix) return 0;
+        magnitude = magnitude * (uint64_t)radix + (uint64_t)digit;
+        saw_digit = 1;
+        previous_underscore = 0;
+    }
+    if (!saw_digit || previous_underscore) return 0;
+    if (negative) {
+        if (target_bits == 32 && magnitude == (uint64_t)INT32_MAX + 1) {
+            *value = INT32_MIN;
+        } else if (target_bits == 64 && magnitude == (uint64_t)INT64_MAX + 1) {
+            *value = INT64_MIN;
+        } else {
+            *value = -(int64_t)magnitude;
+        }
+    } else {
+        *value = (int64_t)magnitude;
+    }
+    return 1;
+}
+
+uint64_t nl_pad_copy(const unsigned char *source, uint64_t byte_length,
+                     uint64_t codepoints, int64_t width, int32_t pad_left,
+                     unsigned char *destination) {
+    uint64_t padding = width > 0 && (uint64_t)width > codepoints
+                           ? (uint64_t)width - codepoints
+                           : 0;
+    if (pad_left && padding) memset(destination, ' ', (size_t)padding);
+    if (byte_length) {
+        memmove(destination + (pad_left ? padding : 0), source,
+                (size_t)byte_length);
+    }
+    if (!pad_left && padding) {
+        memset(destination + byte_length, ' ', (size_t)padding);
+    }
+    return byte_length + padding;
 }
 
 void nl_ascii_upper_copy(const unsigned char *source,

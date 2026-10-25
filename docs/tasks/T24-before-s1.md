@@ -1,0 +1,11 @@
+# T24: small language items needed before S1
+
+Same rules (docs/PLAN.md). Collects PLAN.md's pre-S1 items. Each is small; do them in order and keep the suite passing after each.
+
+1. **Exit status for tools.** S1 must exit 2 on a syntax error and 3 on a tool failure, matching `nlc parse` (compiler/src/main.rs). Add `env.exit(code: int 0..=125) -> never` (needs the `env` grant; flushes standard output and error first; runs no further code; cleanup of regions is irrelevant because the process ends) — or, if a `never` result type doesn't exist, make it a statement the checker treats as ending control flow, like `return`. In tests, `env.exit` fails the test with a clear message instead of exiting the test runner. State the choice in the report.
+2. **Array and list literals.** `[5, 3, 9]` for `T[N]` (exactly N elements, else a build error naming both counts) and for `list<T, N>` (at most N), typed from context like other literals; nested literals (`[[1, 2], [3, 4]]` for `int[2][2]`); a trailing comma allowed; allowed in `const` and global initialisers (compile-time data, emitted as constant data, not built at runtime). Large literal tables (a 256-entry keyword or byte-class table) must build quickly: time a 10,000-element literal.
+3. **Byte-string `\xNN` escapes** (two hex digits) in byte-string literals; in a Text or Ascii literal, `\xNN` above 0x7F is a build error (Text literals use real UTF-8 characters). Update docs/syntax-tree-format.md's escaping notes and the parse corpus.
+4. **Diagnostics:** matching `ok(_)`/`err(_)` against an `Option` (e.g. `pool.remove(id)`) says "unknown enum case 'ok'; did you mean 'ok'"; it should say the value is an `Option<T>` and suggest `some(_)`/`none` (and the reverse for `some`/`none` against a `Result`).
+5. **nlc and closed pipes:** `nlc inspect stacks x | head` panics ("failed printing to stdout: Broken pipe"); nlc must exit quietly (status 0 if the work succeeded) when its stdout closes early, for every subcommand.
+
+Acceptance: a fixture per item, including a program that exits 2 and 3 through `env.exit` (checked by the run harness's expected.exit), literal tables used in a `const`, `\xff` in a byte string written to a file and read back, the two diagnostics, and an integration test piping nlc output into a reader that closes early. Report: docs/tasks/T24-report.md.
