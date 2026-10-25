@@ -1,0 +1,70 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 8 1 4 "classify"
+LParen 11 1 1 12 "("
+Ident 12 5 1 13 "value"
+Colon 17 1 1 18 ":"
+Ident 19 4 1 20 "byte"
+RParen 23 1 1 24 ")"
+Arrow 25 2 1 26 "->"
+Ident 28 3 1 29 "int"
+LBrace 32 1 1 33 "{"
+Newline 33 1 1 34 "\n"
+Ident 38 5 2 5 "match"
+Ident 44 5 2 11 "value"
+LBrace 50 1 2 17 "{"
+Newline 51 1 2 18 "\n"
+Number 60 2 3 9 "10"
+FatArrow 63 2 3 12 "=>"
+Number 66 1 3 15 "1"
+Comma 67 1 3 16 ","
+Newline 68 1 3 17 "\n"
+Number 77 2 4 9 "13"
+FatArrow 80 2 4 12 "=>"
+Number 83 1 4 15 "2"
+Newline 84 1 4 16 "\n"
+RBrace 89 1 5 5 "}"
+Newline 90 1 5 6 "\n"
+RBrace 91 1 6 1 "}"
+Newline 92 1 6 2 "\n"
+Ident 94 2 8 1 "fn"
+Ident 97 4 8 4 "main"
+LParen 101 1 8 8 "("
+RParen 102 1 8 9 ")"
+LBrace 104 1 8 11 "{"
+Newline 105 1 8 12 "\n"
+Ident 110 5 9 5 "print"
+LParen 115 1 9 10 "("
+Ident 116 8 9 11 "classify"
+LParen 124 1 9 19 "("
+Number 125 2 9 20 "10"
+RParen 127 1 9 22 ")"
+RParen 128 1 9 23 ")"
+Newline 129 1 9 24 "\n"
+RBrace 130 1 10 1 "}"
+Newline 131 1 10 2 "\n"
+Eof 132 0 11 1 ""
+== tree ==
+file "main.nl"
+Program 0..132
+  Function 0..92 name="classify" recursive=false generics=[]
+    Parameter 12..23 name="value" mode=read
+      ParameterType 19..23 name="byte" range=none policy=checked
+    ResultType 28..31 name="int" range=none policy=checked
+    Block 32..92
+      Match 38..90
+        Name 44..49 name="value"
+        MatchArm 60..67
+          Integer 60..62 magnitude=10 negative=false long_suffix=false
+          Block 66..67
+            Integer 66..67 magnitude=1 negative=false long_suffix=false
+        MatchArm 77..84
+          Integer 77..79 magnitude=13 negative=false long_suffix=false
+          Block 83..84
+            Integer 83..84 magnitude=2 negative=false long_suffix=false
+  Function 94..131 name="main" recursive=false generics=[]
+    Block 104..131
+      Call 110..129 name="print"
+        Call 116..128 name="classify"
+          Integer 125..127 magnitude=10 negative=false long_suffix=false

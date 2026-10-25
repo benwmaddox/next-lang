@@ -262,7 +262,7 @@ fn lex_file(
         var kind = TokenKind.Eof
         var width = 0L
         let remaining = length - pos
-        match (int)(value) {
+        match value {
             46 => {
                 if remaining >= 3L && source[absolute + 1L] == 46 && source[absolute + 2L] == 61 {
                     kind = TokenKind.RangeInclusive

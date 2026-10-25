@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,18 @@ static size_t nl_file_capacity;
 static int nl_test_mode;
 static int nl_print_fd = STDOUT_FILENO;
 
+#define NL_OUTPUT_BUFFER_CAPACITY (64u * 1024u)
+static unsigned char nl_output_buffers[2][NL_OUTPUT_BUFFER_CAPACITY];
+static size_t nl_output_lengths[2];
+static int nl_output_is_terminal[2];
+static int nl_output_shared_terminal = -1;
+static int nl_output_last_stream = -1;
+
+static int nl_output_flush_all(void);
+static int nl_output_write(int fd, const unsigned char *bytes, uint64_t length);
+static int nl_output_write_and_flush(int fd, const unsigned char *bytes,
+                                     uint64_t length);
+
 #define NL_TEST_VAR_STORAGE_CAPACITY 131072
 static const void *nl_test_var_descriptors[NL_TEST_VAR_STORAGE_CAPACITY];
 static const void *nl_test_var_data[NL_TEST_VAR_STORAGE_CAPACITY];
@@ -48,6 +61,8 @@ const char *nl_runtime_unicode_version(void) {
 }
 
 typedef struct {
+    void *header_mapping;
+    size_t header_bytes;
     void *mapping;
     size_t mapping_bytes;
     uint64_t reservation_bytes;
@@ -187,10 +202,11 @@ void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_b
         nl_stack_startup_failure_for(entry_name, bytes, "requested reservation is too large");
     }
     bytes = ((bytes + page_size - 1) / page_size) * page_size;
-    if (bytes > SIZE_MAX - page_size) {
+    if (page_size > SIZE_MAX / 2 || bytes > SIZE_MAX - 2 * page_size) {
         nl_stack_startup_failure_for(entry_name, bytes, "requested reservation is too large");
     }
-    size_t total = (size_t)bytes + (size_t)page_size;
+    /* Keep the context in a stable header page before the movable stack mapping. */
+    size_t total = (size_t)bytes + 2 * (size_t)page_size;
     void *mapping = mmap(NULL, total, PROT_NONE,
                          MAP_PRIVATE | MAP_ANONYMOUS
 #ifdef MAP_NORESERVE
@@ -201,21 +217,23 @@ void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_b
         nl_stack_startup_failure_for(entry_name, bytes,
                                      "could not reserve the requested address range");
     }
-    if (mprotect(mapping, (size_t)bytes, PROT_READ | PROT_WRITE) != 0) {
+    unsigned char *base = (unsigned char *)mapping + page_size;
+    if (sizeof(nl_data_stack_context) > page_size ||
+        mprotect(mapping, (size_t)page_size, PROT_READ | PROT_WRITE) != 0 ||
+        mprotect(base, (size_t)bytes, PROT_READ | PROT_WRITE) != 0) {
         munmap(mapping, total);
         nl_stack_startup_failure_for(entry_name, bytes,
                                      "could not enable writable data stack pages");
     }
-    nl_data_stack_context *context = calloc(1, sizeof(*context));
-    if (!context) {
-        munmap(mapping, total);
-        nl_stack_startup_failure_for(entry_name, bytes, "could not allocate stack context");
-    }
-    context->mapping = mapping;
-    context->mapping_bytes = total;
+    nl_data_stack_context *context = (nl_data_stack_context *)mapping;
+    memset(context, 0, sizeof(*context));
+    context->header_mapping = mapping;
+    context->header_bytes = (size_t)page_size;
+    context->mapping = base;
+    context->mapping_bytes = (size_t)bytes + (size_t)page_size;
     context->reservation_bytes = bytes;
     context->entry_name = entry_name;
-    context->base = (unsigned char *)mapping;
+    context->base = base;
     context->top = context->base;
     context->limit = context->base + bytes;
     nl_native_stack_setup(context, requested_recursion_budget);
@@ -341,6 +359,7 @@ static void nl_stack_grow_offset(nl_data_stack_context *context, uint64_t needed
     int poison_old_mapping = verify && strcmp(verify, "1") == 0;
     nl_poisoned_stack_mapping *poison_record = NULL;
     if (poison_old_mapping) {
+        /* NLC_STACK_VERIFY-only bookkeeping for retaining poisoned old mappings. */
         poison_record = malloc(sizeof(*poison_record));
         if (!poison_record) nl_fail(18, file_id, line, col);
     }
@@ -423,6 +442,7 @@ void nl_context_destroy(void *opaque) {
     nl_data_stack_context *context = opaque;
     if (!context) return;
 #if defined(__linux__)
+    if (nl_output_flush_all() != 0) nl_fail(20, -1, 0, 0);
 #if defined(NLC_STACK_MODE_OFFSET)
     const char *stack_stats = getenv("NLC_STACK_STATS");
     if (stack_stats && strcmp(stack_stats, "1") == 0) {
@@ -437,7 +457,8 @@ void nl_context_destroy(void *opaque) {
     }
 #endif
 #if defined(NLC_TEST_BUILD)
-    const char *report = getenv("NLC_TEST_REPORT_STACK_TOUCHED");
+    /* Test-only resident-page reporting; this allocation is outside program operations. */
+    const char *report = getenv("NLC_TEST_REPORT_STACK_RESIDENT");
     if (report && strcmp(report, "1") == 0) {
         long page = sysconf(_SC_PAGESIZE);
         if (page > 0) {
@@ -445,15 +466,15 @@ void nl_context_destroy(void *opaque) {
             unsigned char *residency = calloc(pages ? pages : 1, 1);
             if (residency && mincore(context->mapping, (size_t)context->reservation_bytes,
                                      residency) == 0) {
-                uint64_t touched = 0;
+                uint64_t resident_bytes = 0;
                 for (size_t index = 0; index < pages; ++index) {
-                    if (residency[index] & 1) touched += (uint64_t)page;
+                    if (residency[index] & 1) resident_bytes += (uint64_t)page;
                 }
                 fprintf(stderr,
-                        "nlc stack entry '%s': reserved=%llu bytes touched=%llu bytes peak_used=%llu bytes\n",
+                        "nlc stack entry '%s': reserved=%llu bytes resident=%llu bytes peak_used=%llu bytes\n",
                         context->entry_name ? context->entry_name : "<unknown>",
                         (unsigned long long)context->reservation_bytes,
-                        (unsigned long long)touched,
+                        (unsigned long long)resident_bytes,
                         (unsigned long long)context->peak_used_bytes);
             }
             free(residency);
@@ -461,6 +482,7 @@ void nl_context_destroy(void *opaque) {
     }
 #endif
 #if defined(NLC_STACK_MODE_OFFSET)
+    /* NLC_STACK_VERIFY-only records preserve poisoned old stack mappings. */
     nl_poisoned_stack_mapping *poisoned = context->poisoned_mappings;
     while (poisoned) {
         nl_poisoned_stack_mapping *next = poisoned->next;
@@ -470,8 +492,10 @@ void nl_context_destroy(void *opaque) {
     }
 #endif
     munmap(context->mapping, context->mapping_bytes);
+    void *header_mapping = context->header_mapping;
+    size_t header_bytes = context->header_bytes;
+    munmap(header_mapping, header_bytes);
 #endif
-    free(context);
 }
 
 void *nl_stack_alloc(void *opaque, void *top, uint64_t bytes, uint64_t alignment,
@@ -506,6 +530,7 @@ void nl_register_file(int32_t file_id, const char *name) {
     if (file_id < 0) return;
     size_t needed = (size_t)file_id + 1;
     if (needed > nl_file_capacity) {
+        /* Startup-only source-name registry growth for runtime diagnostics. */
         size_t capacity = nl_file_capacity ? nl_file_capacity : 8;
         while (capacity < needed) capacity *= 2;
         const char **files = realloc(nl_files, capacity * sizeof(*files));
@@ -533,6 +558,7 @@ void nl_set_test_mode(void) {
 
 void nl_test_var_storage_reset(void) {
     if (!nl_test_mode) return;
+    /* Test-only snapshots verify that one growing field leaves other lanes alone. */
     for (size_t index = 0; index < nl_test_var_count; ++index) {
         free(nl_test_var_metadata[index]);
         nl_test_var_metadata[index] = NULL;
@@ -576,6 +602,7 @@ void nl_test_var_storage_note(const void *descriptor, const void *data, uint64_t
             exit(70);
         }
         nl_test_var_descriptors[current] = descriptor;
+        /* Test-only metadata snapshot; never used by normal program operations. */
         nl_test_var_metadata[current] = malloc((size_t)metadata_size);
         if (!nl_test_var_metadata[current]) {
             fprintf(stderr, "test failure: cannot allocate variable-size metadata snapshot\n");
@@ -876,6 +903,9 @@ static const char *nl_file_name(int32_t file_id) {
 }
 
 _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col) {
+    (void)nl_output_flush_all();
+    (void)fflush(stdout);
+    (void)fflush(stderr);
     const char *file = nl_file_name(file_id);
     const char *message = "runtime failure";
     switch (kind) {
@@ -917,6 +947,9 @@ void nl_expect_fail_compare(int32_t file_id, int32_t line, int32_t col,
         snprintf(left_text, sizeof(left_text), "%lld", (long long)left);
         snprintf(right_text, sizeof(right_text), "%lld", (long long)right);
     }
+    (void)nl_output_flush_all();
+    (void)fflush(stdout);
+    (void)fflush(stderr);
     printf("  %s:%d:%d: %s\n    left:  %s\n    right: %s\n",
            nl_file_name(file_id), line, col, source, left_text, right_text);
     (void)fflush(stdout);
@@ -924,13 +957,16 @@ void nl_expect_fail_compare(int32_t file_id, int32_t line, int32_t col,
 
 void nl_expect_fail_bool(int32_t file_id, int32_t line, int32_t col,
                          const char *source) {
+    (void)nl_output_flush_all();
+    (void)fflush(stdout);
+    (void)fflush(stderr);
     printf("  %s:%d:%d: %s\n    value: false\n",
            nl_file_name(file_id), line, col, source);
     (void)fflush(stdout);
 }
 
 static void nl_print_bytes(const unsigned char *bytes, uint64_t length) {
-    if (nl_write_all(nl_print_fd, bytes, length) != 0) nl_fail(20, -1, 0, 0);
+    if (nl_output_write(nl_print_fd, bytes, length) != 0) nl_fail(20, -1, 0, 0);
 }
 
 void nl_print_ascii(const unsigned char *bytes, uint64_t length) {
@@ -1331,7 +1367,7 @@ void nl_print_set_fd(int32_t fd) {
 
 void nl_print_error_prefix(void) {
     static const unsigned char prefix[] = "error: ";
-    if (nl_write_all(STDERR_FILENO, prefix, sizeof(prefix) - 1) != 0) nl_fail(20, -1, 0, 0);
+    if (nl_output_write(STDERR_FILENO, prefix, sizeof(prefix) - 1) != 0) nl_fail(20, -1, 0, 0);
 }
 
 static void nl_print_decimal(int64_t value, int newline) {
@@ -1383,14 +1419,21 @@ void nl_print_newline(void) {
 
 void nl_expect_fail_header(int32_t file_id, int32_t line, int32_t col,
                            const char *source) {
+    (void)nl_output_flush_all();
+    (void)fflush(stdout);
+    (void)fflush(stderr);
     printf("  %s:%d:%d: %s\n", nl_file_name(file_id), line, col, source);
     (void)fflush(stdout);
 }
 void nl_expect_fail_left(void) {
+    (void)nl_output_flush_all();
+    (void)fflush(stdout);
     fputs("    left:  ", stdout);
     (void)fflush(stdout);
 }
 void nl_expect_fail_right(void) {
+    (void)nl_output_flush_all();
+    (void)fflush(stdout);
     fputs("    right: ", stdout);
     (void)fflush(stdout);
 }
@@ -1432,6 +1475,8 @@ static void nl_args_startup_failure(const char *message) {
     exit(1);
 }
 
+#if defined(NLC_TEST_BUILD)
+/* Test-only temporary-root cleanup may use short-lived path strings. */
 static void nl_remove_tree(const char *path) {
     DIR *directory = opendir(path);
     if (!directory) {
@@ -1453,8 +1498,10 @@ static void nl_remove_tree(const char *path) {
     closedir(directory);
     rmdir(path);
 }
+#endif
 
 void *nl_env_create(int argc, char **argv, int capabilities) {
+    /* Startup-only capability view, released after the program entry point. */
     nl_environment *environment = (nl_environment *)calloc(1, sizeof(nl_environment));
     if (!environment) nl_stack_startup_failure("cannot allocate capability environment");
     environment->capabilities = capabilities;
@@ -1472,6 +1519,7 @@ void *nl_env_create(int argc, char **argv, int capabilities) {
     char temporary[] = "/tmp/next-lang-test-XXXXXX";
     char *directory = mkdtemp(temporary);
     if (!directory) nl_stack_startup_failure("cannot create the test file-system root");
+    /* Test-only startup root copy, released by nl_env_destroy. */
     environment->test_directory = strdup(directory);
     if (!environment->test_directory) nl_stack_startup_failure("cannot save the test file-system root");
     environment->root_fd = open(directory, O_PATH | O_DIRECTORY | O_CLOEXEC);
@@ -1489,10 +1537,13 @@ void nl_env_destroy(void *value) {
     nl_environment *environment = (nl_environment *)value;
     if (!environment) return;
     if (environment->root_fd >= 0) close(environment->root_fd);
+#if defined(NLC_TEST_BUILD)
     if (environment->test_directory) {
         nl_remove_tree(environment->test_directory);
         free(environment->test_directory);
     }
+#endif
+    /* Startup-only capability environment cleanup. */
     free(environment);
 }
 
@@ -1504,6 +1555,7 @@ void *nl_env_out(void *value, int fd) {
 }
 
 _Noreturn void nl_env_exit(int32_t code) {
+    if (nl_output_flush_all() != 0) nl_fail(20, -1, 0, 0);
     (void)fflush(stdout);
     (void)fflush(stderr);
     if (nl_test_mode) {
@@ -1649,6 +1701,119 @@ static int nl_write_all(int fd, const unsigned char *bytes, uint64_t length) {
     return 0;
 }
 
+static int nl_output_index(int fd) {
+    if (fd == STDOUT_FILENO) return 0;
+    if (fd == STDERR_FILENO) return 1;
+    return -1;
+}
+
+static int nl_output_uses_same_terminal(void) {
+    if (nl_output_shared_terminal >= 0) return nl_output_shared_terminal;
+    struct stat output_status;
+    struct stat error_status;
+    nl_output_is_terminal[0] = isatty(STDOUT_FILENO) != 0;
+    nl_output_is_terminal[1] = isatty(STDERR_FILENO) != 0;
+    nl_output_shared_terminal =
+        nl_output_is_terminal[0] && nl_output_is_terminal[1] &&
+                fstat(STDOUT_FILENO, &output_status) == 0 &&
+                fstat(STDERR_FILENO, &error_status) == 0 &&
+                output_status.st_dev == error_status.st_dev &&
+                output_status.st_ino == error_status.st_ino
+            ? 1
+            : 0;
+    return nl_output_shared_terminal;
+}
+
+static int nl_output_flush_index(int index) {
+    int fd = index == 0 ? STDOUT_FILENO : STDERR_FILENO;
+    size_t length = nl_output_lengths[index];
+    size_t written = 0;
+    while (written < length) {
+        ssize_t result = write(fd, nl_output_buffers[index] + written,
+                               length - written);
+        if (result < 0 && errno == EINTR) continue;
+        if (result <= 0) {
+            int error = errno ? errno : EIO;
+            if (written) {
+                memmove(nl_output_buffers[index],
+                        nl_output_buffers[index] + written, length - written);
+                nl_output_lengths[index] = length - written;
+            }
+            return error;
+        }
+        written += (size_t)result;
+    }
+    nl_output_lengths[index] = 0;
+    return 0;
+}
+
+static int nl_output_flush_all(void) {
+    int shared_terminal = nl_output_uses_same_terminal();
+    int first = 0;
+    int second = 1;
+    if (shared_terminal && nl_output_lengths[0] && nl_output_lengths[1]) {
+        /* The last queued stream is newer, so flush the other stream first. */
+        if (nl_output_last_stream == 0) {
+            first = 1;
+            second = 0;
+        }
+    }
+    int error = nl_output_flush_index(first);
+    int other_error = nl_output_flush_index(second);
+    return error ? error : other_error;
+}
+
+static int nl_output_write(int fd, const unsigned char *bytes, uint64_t length) {
+    int index = nl_output_index(fd);
+    if (index < 0) return nl_write_all(fd, bytes, length);
+    int other = index == 0 ? 1 : 0;
+    int shared_terminal = nl_output_uses_same_terminal();
+    if (shared_terminal && nl_output_lengths[other]) {
+        int error = nl_output_flush_index(other);
+        if (error) return error;
+    }
+    int line_buffered = nl_output_is_terminal[index];
+    while (length) {
+        size_t available = NL_OUTPUT_BUFFER_CAPACITY - nl_output_lengths[index];
+        if (!available) {
+            int error = nl_output_flush_index(index);
+            if (error) return error;
+            available = NL_OUTPUT_BUFFER_CAPACITY;
+        }
+        size_t amount = length < available ? (size_t)length : available;
+        int flush_line = 0;
+        if (line_buffered) {
+            const unsigned char *newline = memchr(bytes, '\n', amount);
+            if (newline) {
+                amount = (size_t)(newline - bytes) + 1;
+                flush_line = 1;
+            }
+        }
+        memcpy(nl_output_buffers[index] + nl_output_lengths[index], bytes, amount);
+        nl_output_lengths[index] += amount;
+        bytes += amount;
+        length -= amount;
+        nl_output_last_stream = index;
+        if (flush_line) {
+            int error = nl_output_flush_index(index);
+            if (error) return error;
+        }
+    }
+    return 0;
+}
+
+static int nl_output_write_and_flush(int fd, const unsigned char *bytes,
+                                     uint64_t length) {
+    int index = nl_output_index(fd);
+    int error = nl_output_write(fd, bytes, length);
+    if (!error && index >= 0) error = nl_output_flush_index(index);
+    if (error && index >= 0) {
+        /* Out.write reports this failure to its caller; do not retry at exit. */
+        nl_output_lengths[index] = 0;
+    }
+    return error;
+}
+
 static int nl_write_byte_list(int fd, const void *value, uint64_t capacity) {
     if (!value) return EINVAL;
     int64_t count = *(const int64_t *)value;
@@ -1663,7 +1828,7 @@ static int nl_write_byte_list(int fd, const void *value, uint64_t capacity) {
             if (byte < 0 || byte > 255) return EINVAL;
             scratch[i] = (unsigned char)byte;
         }
-        int error = nl_write_all(fd, scratch, amount);
+        int error = nl_output_write(fd, scratch, amount);
         if (error) return error;
         offset += amount;
     }
@@ -1680,6 +1845,11 @@ void nl_fs_read(void *handle, void *path_value, int path_is_argument, uint64_t p
     }
     if (!nl_extract_path(path_value, path_is_argument, path_capacity, path, &error_tag, &error_code)) {
         nl_io_error(result, error_tag, error_code); return;
+    }
+    int flush_error = nl_output_flush_all();
+    if (flush_error) {
+        nl_io_error(result, nl_errno_error(flush_error), flush_error);
+        return;
     }
     int fd = nl_open_beneath(((nl_fs_handle *)handle)->root_fd, path, O_RDONLY | O_CLOEXEC, 0);
     if (fd < 0) { int error = errno; nl_io_error(result, nl_errno_error(error), error); return; }
@@ -1734,6 +1904,11 @@ void nl_fs_read_string(void *handle, void *path_value, int path_is_argument,
         nl_io_error(result, error_tag, error_code);
         return;
     }
+    int flush_error = nl_output_flush_all();
+    if (flush_error) {
+        nl_io_error(result, nl_errno_error(flush_error), flush_error);
+        return;
+    }
     int fd = nl_open_beneath(((nl_fs_handle *)handle)->root_fd,
                              path, O_RDONLY | O_CLOEXEC, 0);
     if (fd < 0) {
@@ -1741,17 +1916,11 @@ void nl_fs_read_string(void *handle, void *path_value, int path_is_argument,
         nl_io_error(result, nl_errno_error(error), error);
         return;
     }
-    unsigned char *staged = malloc(capacity ? (size_t)capacity : 1);
-    if (!staged) {
-        close(fd);
-        nl_io_error(result, 7, ENOMEM);
-        return;
-    }
     uint64_t total = 0;
     int failure = 0;
     while (total < capacity) {
         size_t amount = (size_t)((capacity - total) < 8192 ? capacity - total : 8192);
-        ssize_t got = read(fd, staged + total, amount);
+        ssize_t got = read(fd, output + total, amount);
         if (got < 0 && errno == EINTR) continue;
         if (got < 0) { failure = errno; break; }
         if (got == 0) break;
@@ -1770,33 +1939,166 @@ void nl_fs_read_string(void *handle, void *path_value, int path_is_argument,
     close(fd);
     int64_t codepoints = 0;
     if (!failure && error_tag != 2 && is_text) {
-        if (!nl_utf8_count(staged, total, &codepoints)) {
+        if (!nl_utf8_count(output, total, &codepoints)) {
             error_tag = NL_IO_ERROR_INVALID_UTF8;
         } else if ((uint64_t)codepoints > codepoint_capacity) {
             error_tag = 2;
         }
     }
     if (failure || error_tag == 2 || error_tag == NL_IO_ERROR_INVALID_UTF8) {
-        free(staged);
         nl_io_error(result, failure ? nl_errno_error(failure) : error_tag,
                     failure ? failure : error_code);
         return;
     }
-    if (total) memcpy(output, staged, (size_t)total);
-    free(staged);
     *output_length = (int64_t)total;
     if (output_codepoints) *output_codepoints = codepoints;
     nl_io_error(result, -1, 0);
 }
 
-typedef struct { char *name; size_t length; int kind; } nl_dir_item;
-static int nl_dir_compare(const void *left_value, const void *right_value) {
-    const nl_dir_item *left = (const nl_dir_item *)left_value;
-    const nl_dir_item *right = (const nl_dir_item *)right_value;
-    size_t common = left->length < right->length ? left->length : right->length;
-    int comparison = memcmp(left->name, right->name, common);
-    if (comparison) return comparison;
-    return left->length < right->length ? -1 : left->length > right->length;
+#define NL_DIR_NAME_SLOT_BYTES UINT64_C(16392)
+
+struct nl_linux_dirent64 {
+    uint64_t inode;
+    int64_t offset;
+    unsigned short record_length;
+    unsigned char type;
+    char name[];
+};
+
+typedef struct {
+    int fd;
+    size_t position;
+    size_t length;
+    unsigned char bytes[8192];
+} nl_directory_iterator;
+
+static int nl_directory_next(nl_directory_iterator *iterator,
+                             struct nl_linux_dirent64 **entry) {
+    for (;;) {
+        if (iterator->position == iterator->length) {
+#if defined(SYS_getdents64)
+            long amount = syscall(SYS_getdents64, iterator->fd,
+                                  iterator->bytes, sizeof(iterator->bytes));
+#else
+            long amount = -1;
+            errno = ENOSYS;
+#endif
+            if (amount < 0 && errno == EINTR) continue;
+            if (amount < 0) return -1;
+            if (amount == 0) return 0;
+            iterator->position = 0;
+            iterator->length = (size_t)amount;
+        }
+        size_t remaining = iterator->length - iterator->position;
+        if (remaining < offsetof(struct nl_linux_dirent64, name) + 1) {
+            errno = EIO;
+            return -1;
+        }
+        struct nl_linux_dirent64 *current =
+            (struct nl_linux_dirent64 *)(iterator->bytes + iterator->position);
+        size_t minimum = offsetof(struct nl_linux_dirent64, name) + 1;
+        if (current->record_length < minimum || current->record_length > remaining) {
+            errno = EIO;
+            return -1;
+        }
+        size_t name_capacity = current->record_length -
+                               offsetof(struct nl_linux_dirent64, name);
+        if (!memchr(current->name, 0, name_capacity)) {
+            errno = EIO;
+            return -1;
+        }
+        iterator->position += current->record_length;
+        *entry = current;
+        return 1;
+    }
+}
+
+static unsigned char *nl_dir_name_slot(unsigned char *base, size_t index) {
+    return base + 8 + (uint64_t)index * NL_DIR_NAME_SLOT_BYTES;
+}
+
+static int nl_dir_entry_compare(const unsigned char *base, size_t left_index,
+                                size_t right_index) {
+    const unsigned char *left = nl_dir_name_slot((unsigned char *)base, left_index);
+    const unsigned char *right = nl_dir_name_slot((unsigned char *)base, right_index);
+    uint64_t left_length = (uint64_t)*(const int64_t *)left;
+    uint64_t right_length = (uint64_t)*(const int64_t *)right;
+    const int32_t *left_bytes = (const int32_t *)(left + 8);
+    const int32_t *right_bytes = (const int32_t *)(right + 8);
+    uint64_t common = left_length < right_length ? left_length : right_length;
+    for (uint64_t index = 0; index < common; ++index) {
+        uint32_t left_byte = (uint32_t)left_bytes[index];
+        uint32_t right_byte = (uint32_t)right_bytes[index];
+        if (left_byte < right_byte) return -1;
+        if (left_byte > right_byte) return 1;
+    }
+    return left_length < right_length ? -1 : left_length > right_length;
+}
+
+static void nl_dir_entry_swap(unsigned char *base, uint64_t capacity,
+                              size_t left_index, size_t right_index) {
+    if (left_index == right_index) return;
+    unsigned char *left = nl_dir_name_slot(base, left_index);
+    unsigned char *right = nl_dir_name_slot(base, right_index);
+    uint64_t left_length = (uint64_t)*(int64_t *)left;
+    uint64_t right_length = (uint64_t)*(int64_t *)right;
+    int32_t *left_bytes = (int32_t *)(left + 8);
+    int32_t *right_bytes = (int32_t *)(right + 8);
+    uint64_t longest = left_length > right_length ? left_length : right_length;
+    for (uint64_t index = 0; index < longest; ++index) {
+        int32_t left_byte = index < left_length ? left_bytes[index] : 0;
+        int32_t right_byte = index < right_length ? right_bytes[index] : 0;
+        if (index < right_length) left_bytes[index] = right_byte;
+        if (index < left_length) right_bytes[index] = left_byte;
+    }
+    *(int64_t *)left = (int64_t)right_length;
+    *(int64_t *)right = (int64_t)left_length;
+
+    int32_t *kinds = (int32_t *)(base + 8 + capacity * NL_DIR_NAME_SLOT_BYTES);
+    int32_t kind = kinds[left_index];
+    kinds[left_index] = kinds[right_index];
+    kinds[right_index] = kind;
+}
+
+static void nl_dir_sift_down(unsigned char *base, uint64_t capacity,
+                             size_t root, size_t count) {
+    for (;;) {
+        size_t child = root * 2 + 1;
+        if (child >= count) return;
+        if (child + 1 < count &&
+            nl_dir_entry_compare(base, child, child + 1) < 0) {
+            ++child;
+        }
+        if (nl_dir_entry_compare(base, root, child) >= 0) return;
+        nl_dir_entry_swap(base, capacity, root, child);
+        root = child;
+    }
+}
+
+/* Sort the caller's live entries in place without a capacity-sized scratch array. */
+static void nl_dir_sort(unsigned char *base, uint64_t capacity, size_t count) {
+    for (size_t start = count / 2; start > 0;) {
+        --start;
+        nl_dir_sift_down(base, capacity, start, count);
+    }
+    for (size_t end = count; end > 1;) {
+        --end;
+        nl_dir_entry_swap(base, capacity, 0, end);
+        nl_dir_sift_down(base, capacity, 0, end);
+    }
+}
+
+static void nl_dir_entry_store(unsigned char *base, uint64_t capacity,
+                               size_t index, const char *name, size_t length,
+                               int kind) {
+    unsigned char *slot = nl_dir_name_slot(base, index);
+    *(int64_t *)slot = (int64_t)length;
+    int32_t *bytes = (int32_t *)(slot + 8);
+    for (size_t byte = 0; byte < length; ++byte) {
+        bytes[byte] = (unsigned char)name[byte];
+    }
+    int32_t *kinds = (int32_t *)(base + 8 + capacity * NL_DIR_NAME_SLOT_BYTES);
+    kinds[index] = kind;
 }
 
 void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t path_capacity,
@@ -1808,59 +2110,39 @@ void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t p
     if (!nl_extract_path(path_value, path_is_argument, path_capacity, path, &error_tag, &error_code)) {
         nl_io_error(result, error_tag, error_code); return;
     }
+    int flush_error = nl_output_flush_all();
+    if (flush_error) { nl_io_error(result, nl_errno_error(flush_error), flush_error); return; }
     int fd = nl_open_beneath(((nl_fs_handle *)handle)->root_fd, path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
     if (fd < 0) { int error = errno; nl_io_error(result, nl_errno_error(error), error); return; }
-    DIR *directory = fdopendir(fd);
-    if (!directory) { int error = errno; close(fd); nl_io_error(result, nl_errno_error(error), error); return; }
-    size_t allocated = capacity < 64 ? (size_t)capacity + 1 : 65;
-    if (allocated == 0) allocated = 1;
-    nl_dir_item *items = (nl_dir_item *)calloc(allocated, sizeof(nl_dir_item));
-    if (!items) { closedir(directory); nl_io_error(result, 7, ENOMEM); return; }
+    nl_directory_iterator iterator = { .fd = fd };
+    unsigned char *base = (unsigned char *)output;
     size_t count = 0;
     int failure_tag = -1, failure_code = 0;
-    struct dirent *entry;
-    while ((entry = readdir(directory)) != NULL) {
-        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
-        size_t length = strlen(entry->d_name);
+    for (;;) {
+        struct nl_linux_dirent64 *entry;
+        int next = nl_directory_next(&iterator, &entry);
+        if (next <= 0) {
+            if (next < 0) { failure_tag = nl_errno_error(errno); failure_code = errno; }
+            break;
+        }
+        if (!strcmp(entry->name, ".") || !strcmp(entry->name, "..")) continue;
+        size_t length = strlen(entry->name);
         if (length > 4096) { failure_tag = 4; break; }
         if ((uint64_t)count >= capacity) { failure_tag = 3; break; }
-        if (count >= allocated) {
-            size_t next = allocated * 2;
-            if (next > (size_t)capacity + 1) next = (size_t)capacity + 1;
-            nl_dir_item *grown = (nl_dir_item *)realloc(items, next * sizeof(nl_dir_item));
-            if (!grown) { failure_tag = 7; failure_code = ENOMEM; break; }
-            memset(grown + allocated, 0, (next - allocated) * sizeof(nl_dir_item));
-            items = grown; allocated = next;
-        }
-        items[count].name = strdup(entry->d_name);
-        if (!items[count].name) { failure_tag = 7; failure_code = ENOMEM; break; }
-        items[count].length = length;
         struct stat status;
-        if (fstatat(dirfd(directory), entry->d_name, &status, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (fstatat(fd, entry->name, &status, AT_SYMLINK_NOFOLLOW) != 0) {
             failure_tag = nl_errno_error(errno); failure_code = errno; break;
         }
-        items[count].kind = S_ISREG(status.st_mode) ? 0 : S_ISDIR(status.st_mode) ? 1 : 2;
+        int kind = S_ISREG(status.st_mode) ? 0 : S_ISDIR(status.st_mode) ? 1 : 2;
+        nl_dir_entry_store(base, capacity, count, entry->name, length, kind);
         count++;
     }
-    closedir(directory);
-    if (failure_tag < 0) qsort(items, count, sizeof(nl_dir_item), nl_dir_compare);
+    close(fd);
     if (failure_tag >= 0) {
-        for (size_t i = 0; i < count; ++i) free(items[i].name);
-        free(items);
         nl_io_error(result, failure_tag, failure_code); return;
     }
-    unsigned char *base = (unsigned char *)output;
-    for (size_t i = 0; i < count; ++i) {
-        unsigned char *name = base + 8 + i * 16392;
-        *(int64_t *)name = (int64_t)items[i].length;
-        int32_t *bytes = (int32_t *)(name + 8);
-        for (size_t j = 0; j < items[i].length; ++j) bytes[j] = (unsigned char)items[i].name[j];
-        int32_t *kind = (int32_t *)(base + 8 + (size_t)capacity * 16392 + i * 4);
-        *kind = items[i].kind;
-        free(items[i].name);
-    }
+    nl_dir_sort(base, capacity, count);
     *(int64_t *)output = (int64_t)count;
-    free(items);
     nl_io_error(result, -1, 0);
 }
 
@@ -1893,6 +2175,11 @@ void nl_fs_list_with_extension(void *handle, void *path_value, int path_is_argum
         nl_io_error(result, error_tag, error_code);
         return;
     }
+    int flush_error = nl_output_flush_all();
+    if (flush_error) {
+        nl_io_error(result, nl_errno_error(flush_error), flush_error);
+        return;
+    }
     int fd = nl_open_beneath(((nl_fs_handle *)handle)->root_fd,
                              path, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
     if (fd < 0) {
@@ -1900,83 +2187,40 @@ void nl_fs_list_with_extension(void *handle, void *path_value, int path_is_argum
         nl_io_error(result, nl_errno_error(error), error);
         return;
     }
-    DIR *directory = fdopendir(fd);
-    if (!directory) {
-        int error = errno;
-        close(fd);
-        nl_io_error(result, nl_errno_error(error), error);
-        return;
-    }
-    size_t allocated = capacity < 64 ? (size_t)capacity + 1 : 65;
-    if (allocated == 0) allocated = 1;
-    nl_dir_item *items = (nl_dir_item *)calloc(allocated, sizeof(nl_dir_item));
-    if (!items) {
-        closedir(directory);
-        nl_io_error(result, 7, ENOMEM);
-        return;
-    }
+    nl_directory_iterator iterator = { .fd = fd };
+    unsigned char *base = (unsigned char *)output;
     size_t count = 0;
     int failure_tag = -1, failure_code = 0;
-    struct dirent *entry;
-    while ((entry = readdir(directory)) != NULL) {
-        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
-        size_t length = strlen(entry->d_name);
-        if (!nl_has_extension(entry->d_name, length, extension, extension_length)) continue;
+    for (;;) {
+        struct nl_linux_dirent64 *entry;
+        int next = nl_directory_next(&iterator, &entry);
+        if (next <= 0) {
+            if (next < 0) { failure_tag = nl_errno_error(errno); failure_code = errno; }
+            break;
+        }
+        if (!strcmp(entry->name, ".") || !strcmp(entry->name, "..")) continue;
+        size_t length = strlen(entry->name);
+        if (!nl_has_extension(entry->name, length, extension, extension_length)) continue;
         if (length > 4096) {
             failure_tag = 4;
             break;
         }
         int kind = nl_entry_kind_beneath(((nl_fs_handle *)handle)->root_fd,
-                                         path, entry->d_name, length);
+                                         path, entry->name, length);
         if ((uint64_t)count >= capacity) {
             failure_tag = 3;
             break;
         }
-        if (count >= allocated) {
-            size_t next = allocated * 2;
-            if (next > (size_t)capacity + 1) next = (size_t)capacity + 1;
-            nl_dir_item *grown = (nl_dir_item *)realloc(items, next * sizeof(nl_dir_item));
-            if (!grown) {
-                failure_tag = 7;
-                failure_code = ENOMEM;
-                break;
-            }
-            memset(grown + allocated, 0, (next - allocated) * sizeof(nl_dir_item));
-            items = grown;
-            allocated = next;
-        }
-        items[count].name = strdup(entry->d_name);
-        if (!items[count].name) {
-            failure_tag = 7;
-            failure_code = ENOMEM;
-            break;
-        }
-        items[count].length = length;
-        items[count].kind = kind;
+        nl_dir_entry_store(base, capacity, count, entry->name, length, kind);
         ++count;
     }
-    closedir(directory);
-    if (failure_tag < 0) qsort(items, count, sizeof(nl_dir_item), nl_dir_compare);
+    close(fd);
     if (failure_tag >= 0) {
-        for (size_t i = 0; i < count; ++i) free(items[i].name);
-        free(items);
         nl_io_error(result, failure_tag, failure_code);
         return;
     }
-    unsigned char *base = (unsigned char *)output;
-    for (size_t i = 0; i < count; ++i) {
-        unsigned char *name = base + 8 + i * 16392;
-        *(int64_t *)name = (int64_t)items[i].length;
-        int32_t *bytes = (int32_t *)(name + 8);
-        for (size_t j = 0; j < items[i].length; ++j) {
-            bytes[j] = (unsigned char)items[i].name[j];
-        }
-        int32_t *kind = (int32_t *)(base + 8 + (size_t)capacity * 16392 + i * 4);
-        *kind = items[i].kind;
-        free(items[i].name);
-    }
+    nl_dir_sort(base, capacity, count);
     *(int64_t *)output = (int64_t)count;
-    free(items);
     nl_io_error(result, -1, 0);
 }
 
@@ -2058,30 +2302,35 @@ void nl_out_write(void *handle, void *data_value, int data_is_argument, uint64_t
         const unsigned char *bytes; uint64_t length; int tag = -1, code = 0;
         unsigned char scratch[4096];
         if (!nl_extract_raw(data_value, data_is_argument, data_capacity, scratch, &bytes, &length, &tag, &code)) error = code ? code : EINVAL;
-        else error = nl_write_all(out->fd, bytes, length);
+        else error = nl_output_write(out->fd, bytes, length);
     } else error = nl_write_byte_list(out->fd, data_value, data_capacity);
-    if (!error && line) error = nl_write_all(out->fd, (const unsigned char *)"\n", 1);
+    if (!error && line) error = nl_output_write(out->fd, (const unsigned char *)"\n", 1);
+    if (!error) error = nl_output_write_and_flush(out->fd, NULL, 0);
+    if (error) {
+        int index = nl_output_index(out->fd);
+        if (index >= 0) nl_output_lengths[index] = 0;
+    }
     nl_io_error(result, error ? nl_errno_error(error) : -1, error);
 }
 
 void nl_out_arg(void *handle, void *argument, int line, void *result) {
     nl_out_handle *out = (nl_out_handle *)handle;
     const unsigned char *bytes = argument ? (const unsigned char *)argument : (const unsigned char *)"";
-    int error = nl_write_all(out->fd, bytes, strlen((const char *)bytes));
-    if (!error && line) error = nl_write_all(out->fd, (const unsigned char *)"\n", 1);
+    int error = nl_output_write_and_flush(out->fd, bytes, strlen((const char *)bytes));
+    if (!error && line) error = nl_output_write_and_flush(out->fd, (const unsigned char *)"\n", 1);
     nl_io_error(result, error ? nl_errno_error(error) : -1, error);
 }
 
 void nl_out_int(void *handle, int32_t value, void *result) {
     unsigned char buffer[21];
     uint64_t length = nl_ascii_format_i64(value, buffer);
-    int error = nl_write_all(((nl_out_handle *)handle)->fd, buffer, length);
+    int error = nl_output_write_and_flush(((nl_out_handle *)handle)->fd, buffer, length);
     nl_io_error(result, error ? nl_errno_error(error) : -1, error);
 }
 void nl_out_long(void *handle, int64_t value, void *result) {
     unsigned char buffer[21];
     uint64_t length = nl_ascii_format_i64(value, buffer);
-    int error = nl_write_all(((nl_out_handle *)handle)->fd, buffer, length);
+    int error = nl_output_write_and_flush(((nl_out_handle *)handle)->fd, buffer, length);
     nl_io_error(result, error ? nl_errno_error(error) : -1, error);
 }
 void nl_print_arg(void *argument) {
