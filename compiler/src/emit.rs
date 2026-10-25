@@ -49,17 +49,35 @@ fn error_printer_function(id: usize, error_ty: Ty) -> TFunction {
     }
 }
 
+fn stack_top_writeback_ir(offset_stack: bool, top: &str) -> String {
+    if offset_stack {
+        format!("  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 {top})\n")
+    } else {
+        format!("  call void @nl_context_set_top(ptr %nl.ctx, ptr {top})\n")
+    }
+}
+
 fn emit_entry_call(
     out: &mut String,
     program: &TProgram,
     entry: &TFunction,
     error_printer: Option<usize>,
     label_prefix: &str,
+    offset_stack: bool,
+    entry_may_grow: bool,
 ) -> bool {
+    let top_argument = if offset_stack {
+        "i64 %nl.top"
+    } else {
+        "ptr %nl.top"
+    };
     let Some(error_ty) = result_error_type(entry.result, &program.types) else {
-        let mut args = vec!["ptr %nl.ctx".to_owned(), "ptr %nl.top".to_owned()];
+        let mut args = vec!["ptr %nl.ctx".to_owned(), top_argument.to_owned()];
         if entry.params.first().is_some() {
             args.push("ptr %nl.env".to_owned());
+        }
+        if entry_may_grow {
+            out.push_str(&stack_top_writeback_ir(offset_stack, "%nl.top"));
         }
         out.push_str(&format!(
             "  call void @nl_fn_{}({})\n",
@@ -76,12 +94,15 @@ fn emit_entry_call(
     out.push_str(&format!(
         "  {result_storage} = alloca {result_llvm_ty}, align 1\n"
     ));
-    let mut args = vec!["ptr %nl.ctx".to_owned(), "ptr %nl.top".to_owned()];
+    let mut args = vec!["ptr %nl.ctx".to_owned(), top_argument.to_owned()];
     if is_large_result {
         args.push(format!("ptr {result_storage}"));
     }
     if entry.params.first().is_some() {
         args.push("ptr %nl.env".to_owned());
+    }
+    if entry_may_grow {
+        out.push_str(&stack_top_writeback_ir(offset_stack, "%nl.top"));
     }
     if is_large_result {
         out.push_str(&format!(
@@ -122,14 +143,23 @@ fn emit_entry_call(
         ));
         format!("{} {value}", llvm_type(error_ty, &program.types))
     };
+    out.push_str(&stack_top_writeback_ir(offset_stack, "%nl.top"));
     out.push_str(&format!(
-        "  call void @nl_fn_{printer_id}(ptr %nl.ctx, ptr %nl.top, {printer_param})\n  call void @nl_print_set_fd(i32 1)\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 1\n{success_label}:\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 0\n"
+        "  call void @nl_fn_{printer_id}(ptr %nl.ctx, {top_argument}, {printer_param})\n  call void @nl_print_set_fd(i32 1)\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 1\n{success_label}:\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 0\n"
     ));
     true
 }
 
 pub fn emit(program: &TProgram) -> String {
+    emit_with_stack_mode(program, false)
+}
+
+pub fn emit_with_stack_mode(program: &TProgram, offset_stack: bool) -> String {
     let contracts = stack_contracts(program);
+    let growing_functions = contracts
+        .iter()
+        .map(|contract| contract.byte_requirement > 0)
+        .collect::<Vec<_>>();
     let stack_entries = entry_stack_reservations(program, &contracts);
     let mut static_strings = static_strings(program);
     let initial_static_string_count = static_strings.values.len();
@@ -138,10 +168,19 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare void @nl_fail(i32, i32, i32, i32) noreturn cold nounwind\n");
     out.push_str("declare ptr @nl_context_create(i64, i64, ptr)\n");
     out.push_str("declare ptr @nl_context_base(ptr)\n");
+    out.push_str("declare ptr @nl_context_limit(ptr)\n");
+    out.push_str("declare void @nl_context_note_peak(ptr, ptr)\n");
     out.push_str("declare void @nl_context_destroy(ptr)\n");
     out.push_str("declare void @nl_context_set_top(ptr, ptr)\n");
     out.push_str("declare void @nl_recursion_check(ptr, i64, i32, i32, i32)\n");
     out.push_str("declare ptr @nl_stack_alloc(ptr, ptr, i64, i64, i32, i32, i32)\n");
+    if offset_stack {
+        out.push_str("declare i64 @nl_context_base_offset(ptr)\n");
+        out.push_str("declare void @nl_context_set_top_offset(ptr, i64)\n");
+        out.push_str("declare i64 @nl_context_reservation_bytes(ptr)\n");
+        out.push_str("declare void @nl_context_note_peak_offset(ptr, i64)\n");
+        out.push_str("declare i64 @nl_stack_alloc_offset(ptr, i64, i64, i64, i32, i32, i32)\n");
+    }
     out.push_str("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
     out.push_str("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
     out.push_str("declare void @nl_register_file(i32, ptr)\n");
@@ -618,6 +657,8 @@ pub fn emit(program: &TProgram) -> String {
             &expect_ids,
             &print_ids,
             &mut static_strings,
+            &growing_functions,
+            offset_stack,
         );
         out.push_str(&emitter.emit_function());
         out.push('\n');
@@ -628,6 +669,8 @@ pub fn emit(program: &TProgram) -> String {
                 &expect_ids,
                 &print_ids,
                 &mut static_strings,
+                &growing_functions,
+                offset_stack,
             );
             out.push_str(&append.emit_function());
             out.push('\n');
@@ -637,8 +680,15 @@ pub fn emit(program: &TProgram) -> String {
         if let TGlobalInitializer::Runtime(value) = &global.initializer {
             let id = program.functions.len() + global.id;
             let init = global_initializer_function(global, value, id);
-            let mut emitter =
-                FunctionEmitter::new(program, &init, &expect_ids, &print_ids, &mut static_strings);
+            let mut emitter = FunctionEmitter::new(
+                program,
+                &init,
+                &expect_ids,
+                &print_ids,
+                &mut static_strings,
+                &growing_functions,
+                offset_stack,
+            );
             out.push_str(&emitter.emit_function());
             out.push('\n');
         }
@@ -651,6 +701,8 @@ pub fn emit(program: &TProgram) -> String {
             &expect_ids,
             &print_ids,
             &mut static_strings,
+            &growing_functions,
+            offset_stack,
         );
         out.push_str(&emitter.emit_function());
         out.push('\n');
@@ -683,11 +735,16 @@ pub fn emit(program: &TProgram) -> String {
         };
         let name_id = print_ids[&entry.name];
         out.push_str(&format!(
-            "  %nl.ctx = call ptr @nl_context_create(i64 {}, i64 {}, ptr getelementptr inbounds ([{} x i8], ptr @.nl.print.{name_id}, i64 0, i64 0))\n  %nl.top = call ptr @nl_context_base(ptr %nl.ctx)\n",
+            "  %nl.ctx = call ptr @nl_context_create(i64 {}, i64 {}, ptr getelementptr inbounds ([{} x i8], ptr @.nl.print.{name_id}, i64 0, i64 0))\n",
             entry.reservation_bytes,
             program.recursion_budget_bytes,
             entry.name.len() + 1
         ));
+        if offset_stack {
+            out.push_str("  %nl.top = call i64 @nl_context_base_offset(ptr %nl.ctx)\n");
+        } else {
+            out.push_str("  %nl.top = call ptr @nl_context_base(ptr %nl.ctx)\n");
+        }
     } else {
         let default = main_entry.expect("tests have a stack reservation");
         let default_name_id = print_ids[&default.name];
@@ -732,11 +789,16 @@ pub fn emit(program: &TProgram) -> String {
             ));
         }
         out.push_str(&format!(
-            "  %nl.stack.bytes = phi i64 {}\n  %nl.stack.entry = phi ptr {}\n  %nl.ctx = call ptr @nl_context_create(i64 %nl.stack.bytes, i64 {}, ptr %nl.stack.entry)\n  %nl.top = call ptr @nl_context_base(ptr %nl.ctx)\n",
+            "  %nl.stack.bytes = phi i64 {}\n  %nl.stack.entry = phi ptr {}\n  %nl.ctx = call ptr @nl_context_create(i64 %nl.stack.bytes, i64 {}, ptr %nl.stack.entry)\n",
             bytes_phi.join(", "),
             name_phi.join(", "),
             program.recursion_budget_bytes
         ));
+        if offset_stack {
+            out.push_str("  %nl.top = call i64 @nl_context_base_offset(ptr %nl.ctx)\n");
+        } else {
+            out.push_str("  %nl.top = call ptr @nl_context_base(ptr %nl.ctx)\n");
+        }
     }
     let capability_mask = (i32::from(program.capabilities.iter().any(|cap| cap == "fs")))
         | (i32::from(program.capabilities.iter().any(|cap| cap == "out")) << 1)
@@ -761,9 +823,12 @@ pub fn emit(program: &TProgram) -> String {
                 program.globals[*id].initializer,
                 TGlobalInitializer::Runtime(_)
             ) {
+                let init_id = program.functions.len() + id;
+                out.push_str(&stack_top_writeback_ir(offset_stack, "%nl.top"));
                 out.push_str(&format!(
-                    "  call void @nl_fn_{}(ptr %nl.ctx, ptr %nl.top)\n",
-                    program.functions.len() + id
+                    "  call void @nl_fn_{}(ptr %nl.ctx, {} %nl.top)\n",
+                    init_id,
+                    if offset_stack { "i64" } else { "ptr" }
                 ));
             }
         }
@@ -774,8 +839,15 @@ pub fn emit(program: &TProgram) -> String {
             if entry.recursive {
                 out.push_str(&recursion_check_instruction(&[entry.id], entry.span));
             }
-            entry_handles_exit =
-                emit_entry_call(&mut out, program, entry, error_printer_id, "nl.main");
+            entry_handles_exit = emit_entry_call(
+                &mut out,
+                program,
+                entry,
+                error_printer_id,
+                "nl.main",
+                offset_stack,
+                growing_functions[entry.id],
+            );
         }
         if !entry_handles_exit {
             out.push_str("  call void @nl_env_destroy(ptr %nl.env)\n");
@@ -793,10 +865,15 @@ pub fn emit(program: &TProgram) -> String {
             let run = format!("test.run.{index}");
             out.push_str(&format!("  %test.is.{index} = icmp eq i32 %test.selected, {index}\n  br i1 %test.is.{index}, label %{run}, label %{next}\n"));
             let test_function = &program.functions[test.function_id];
-            if test_function.params.is_empty() {
-                out.push_str(&format!("{run}:\n  call void @nl_set_test_mode()\n  %test.result.{index} = call i32 @nl_fn_{}(ptr %nl.ctx, ptr %nl.top)\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 %test.result.{index}\n", test.function_id));
+            let test_top_writeback = if growing_functions[test.function_id] {
+                stack_top_writeback_ir(offset_stack, "%nl.top")
             } else {
-                out.push_str(&format!("{run}:\n  call void @nl_set_test_mode()\n  %test.result.{index} = call i32 @nl_fn_{}(ptr %nl.ctx, ptr %nl.top, ptr %nl.env)\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 %test.result.{index}\n", test.function_id));
+                String::new()
+            };
+            if test_function.params.is_empty() {
+                out.push_str(&format!("{run}:\n  call void @nl_set_test_mode()\n{test_top_writeback}  %test.result.{index} = call i32 @nl_fn_{}(ptr %nl.ctx, {} %nl.top)\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 %test.result.{index}\n", test.function_id, if offset_stack { "i64" } else { "ptr" }));
+            } else {
+                out.push_str(&format!("{run}:\n  call void @nl_set_test_mode()\n{test_top_writeback}  %test.result.{index} = call i32 @nl_fn_{}(ptr %nl.ctx, {} %nl.top, ptr %nl.env)\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 %test.result.{index}\n", test.function_id, if offset_stack { "i64" } else { "ptr" }));
             }
         }
         out.push_str(&format!("test.dispatch.{}:\n", program.tests.len()));
@@ -805,8 +882,15 @@ pub fn emit(program: &TProgram) -> String {
             if entry.recursive {
                 out.push_str(&recursion_check_instruction(&[entry.id], entry.span));
             }
-            entry_handles_exit =
-                emit_entry_call(&mut out, program, entry, error_printer_id, "nl.fallback");
+            entry_handles_exit = emit_entry_call(
+                &mut out,
+                program,
+                entry,
+                error_printer_id,
+                "nl.fallback",
+                offset_stack,
+                growing_functions[entry.id],
+            );
         }
         if !entry_handles_exit {
             out.push_str("  call void @nl_env_destroy(ptr %nl.env)\n");
@@ -816,6 +900,32 @@ pub fn emit(program: &TProgram) -> String {
         out.push_str("}\n");
     }
     out.push_str("\n!0 = !{!\"branch_weights\", i32 1, i32 2000}\n");
+    if offset_stack {
+        out.push_str(&offset_list_alias_metadata(&program.types));
+    }
+    out
+}
+
+const OFFSET_LIST_ALIAS_METADATA_BASE: usize = 1_000_000;
+
+fn offset_list_alias_ids(ty: Ty) -> (usize, usize, usize) {
+    let base = OFFSET_LIST_ALIAS_METADATA_BASE + ty.0 * 4;
+    (base, base + 1, base + 2)
+}
+
+fn offset_list_alias_metadata(types: &[TType]) -> String {
+    let mut out = String::new();
+    for (index, ty) in types.iter().enumerate() {
+        if !matches!(ty.kind, TTypeKind::List { .. }) {
+            continue;
+        }
+        let ty = Ty(index);
+        let (domain, scope, scope_list) = offset_list_alias_ids(ty);
+        out.push_str(&format!(
+            "!{domain} = distinct !{{!{domain}, !\"next-lang offset list alias domain\"}}\n!{scope} = distinct !{{!{scope}, !{domain}, !\"list type {} data lanes do not overlap its count\"}}\n!{scope_list} = !{{!{scope}}}\n",
+            ty.0
+        ));
+    }
     out
 }
 
@@ -1996,6 +2106,523 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
             }
         })
         .collect()
+}
+
+/// Returns the first feature outside the relocatable list and Ascii-builder
+/// vertical slice. Unsupported stack-backed paths fail before LLVM emission.
+pub fn offset_spike_unsupported_reason(
+    program: &TProgram,
+    _contracts: &[StackContract],
+) -> Option<String> {
+    if program
+        .globals
+        .iter()
+        .any(|global| matches!(&global.initializer, TGlobalInitializer::Runtime(_)))
+    {
+        return Some("runtime global initializers are not supported".to_owned());
+    }
+    if let Some(global) = program
+        .globals
+        .iter()
+        .find(|global| is_large_type(global.ty, &program.types))
+    {
+        return Some(format!(
+            "large global '{}' is outside the offset stack slice",
+            global.name
+        ));
+    }
+    if let Some(global) = program
+        .globals
+        .iter()
+        .find(|global| offset_ascii_payload_type(global.ty, &program.types))
+    {
+        return Some(format!(
+            "Ascii/Text/Bytes global '{}' is outside the offset stack slice",
+            global.name
+        ));
+    }
+    if let Some(constant) = program.constants.iter().find(|constant| {
+        is_large_type(constant.ty, &program.types)
+            || offset_ascii_payload_type(constant.ty, &program.types)
+    }) {
+        return Some(format!(
+            "large or string constant '{}' is outside the offset stack slice",
+            constant.name
+        ));
+    }
+    let mut reachable = vec![false; program.functions.len()];
+    let mut pending = program
+        .functions
+        .iter()
+        .filter(|function| function.name == "main" || function.is_test)
+        .map(|function| function.id)
+        .collect::<Vec<_>>();
+    while let Some(function_id) = pending.pop() {
+        if reachable[function_id] {
+            continue;
+        }
+        reachable[function_id] = true;
+        if let Some(edges) = program.call_graph.get(function_id) {
+            pending.extend(edges.iter().map(|edge| edge.target));
+        }
+    }
+    for function in program
+        .functions
+        .iter()
+        .filter(|function| reachable[function.id])
+    {
+        for ty in function
+            .params
+            .iter()
+            .map(|param| param.ty)
+            .chain([function.result])
+        {
+            if is_large_type(ty, &program.types) && !offset_spike_supported_type(ty, &program.types)
+            {
+                return Some(format!(
+                    "function '{}' uses large type '{}' outside the offset stack slice",
+                    function.name,
+                    program.types[base_type(ty, &program.types).0].name
+                ));
+            }
+        }
+        if matches!(
+            program.types[base_type(function.result, &program.types).0].kind,
+            TTypeKind::Ascii { .. }
+        ) {
+            return Some(format!(
+                "function '{}' returns Ascii, which is outside the offset stack slice",
+                function.name
+            ));
+        }
+        if let Some(reason) = offset_spike_check_block(&function.body, program) {
+            return Some(format!("function '{}': {reason}", function.name));
+        }
+    }
+    None
+}
+
+fn offset_spike_supported_type(ty: Ty, types: &[TType]) -> bool {
+    match &types[base_type(ty, types).0].kind {
+        TTypeKind::Ascii { .. } => true,
+        TTypeKind::List { element, .. } => offset_scalar_type(*element, types),
+        _ => false,
+    }
+}
+
+fn offset_ascii_payload_type(ty: Ty, types: &[TType]) -> bool {
+    matches!(
+        types[base_type(ty, types).0].kind,
+        TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. }
+    )
+}
+
+fn offset_spike_check_block(block: &TBlock, program: &TProgram) -> Option<String> {
+    for statement in &block.statements {
+        let reason = match &statement.kind {
+            TStmtKind::Let { ty, value, .. } => {
+                let large_result_call = is_large_type(*ty, &program.types)
+                    && matches!(value.kind, TExprKind::Call { .. });
+                offset_spike_check_expr(value, program)
+                    .or_else(|| {
+                        (!large_result_call
+                        && is_large_type(value.ty, &program.types)
+                        && matches!(value.kind, TExprKind::Call { .. }))
+                    .then(|| {
+                        "large results from calls are supported only as direct local initializers"
+                            .to_owned()
+                    })
+                    })
+                    .or_else(|| {
+                        (is_large_type(*ty, &program.types)
+                            && !offset_spike_supported_type(*ty, &program.types))
+                        .then(|| {
+                            format!(
+                                "local type '{}' is outside the offset stack slice",
+                                program.types[base_type(*ty, &program.types).0].name
+                            )
+                        })
+                    })
+            }
+            TStmtKind::Assign { place, value, .. } => offset_spike_check_place(place, program)
+                .or_else(|| offset_spike_check_expr(value, program)),
+            TStmtKind::Return(value) => value.as_ref().and_then(|value| {
+                if is_large_type(value.ty, &program.types)
+                    && matches!(value.kind, TExprKind::Call { .. })
+                {
+                    Some(
+                        "large results from calls cannot be returned through another call"
+                            .to_owned(),
+                    )
+                } else {
+                    offset_spike_check_expr(value, program)
+                }
+            }),
+            TStmtKind::Expr(value) | TStmtKind::Discard(value) => {
+                offset_spike_check_expr(value, program)
+            }
+            TStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => offset_spike_check_expr(condition, program)
+                .or_else(|| offset_spike_check_block(then_block, program))
+                .or_else(|| {
+                    else_block
+                        .as_ref()
+                        .and_then(|block| offset_spike_check_block(block, program))
+                }),
+            TStmtKind::For {
+                ty,
+                start,
+                end,
+                body,
+                ..
+            } => {
+                if is_large_type(*ty, &program.types)
+                    && !offset_spike_supported_type(*ty, &program.types)
+                {
+                    Some("large counted-loop values are outside the offset stack slice".to_owned())
+                } else {
+                    offset_spike_check_expr(start, program)
+                        .or_else(|| offset_spike_check_expr(end, program))
+                        .or_else(|| offset_spike_check_block(body, program))
+                }
+            }
+            TStmtKind::ForEach {
+                collection,
+                source,
+                body,
+                is_list,
+                ..
+            } => {
+                if !*is_list {
+                    Some("only list iteration is supported in offset stack mode".to_owned())
+                } else {
+                    offset_spike_check_expr(collection, program)
+                        .or_else(|| offset_spike_check_place(source, program))
+                        .or_else(|| offset_spike_check_block(body, program))
+                }
+            }
+            TStmtKind::Expect { kind, .. } => match kind {
+                TExpectKind::Bool(value) => offset_spike_check_expr(value, program),
+                TExpectKind::Compare { left, right, .. } => offset_spike_check_expr(left, program)
+                    .or_else(|| offset_spike_check_expr(right, program)),
+                TExpectKind::StackPeak { .. } => None,
+            },
+            TStmtKind::Block(block) => offset_spike_check_block(block, program),
+            TStmtKind::Break | TStmtKind::Continue => None,
+        };
+        if reason.is_some() {
+            return reason;
+        }
+    }
+    block
+        .tail
+        .as_deref()
+        .and_then(|tail| offset_spike_check_expr(tail, program))
+}
+
+fn offset_spike_check_place(place: &TPlace, program: &TProgram) -> Option<String> {
+    if is_large_type(place.ty, &program.types)
+        && !offset_spike_supported_type(place.ty, &program.types)
+    {
+        return Some(format!(
+            "place type '{}' is outside the offset stack slice",
+            program.types[base_type(place.ty, &program.types).0].name
+        ));
+    }
+    for projection in &place.path {
+        if let TProjection::Index { index, grid, .. } = projection {
+            if offset_spike_contains_call(index) {
+                return Some(
+                    "function calls in collection indices are outside the offset stack slice"
+                        .to_owned(),
+                );
+            }
+            if let Some(reason) = offset_spike_check_expr(index, program) {
+                return Some(reason);
+            }
+            if let Some(grid) = grid {
+                if let Some(reason) = offset_spike_check_expr(&grid.x, program)
+                    .or_else(|| offset_spike_check_expr(&grid.y, program))
+                {
+                    return Some(reason);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn offset_spike_check_expr(expr: &TExpr, program: &TProgram) -> Option<String> {
+    if is_large_type(expr.ty, &program.types)
+        && !offset_spike_supported_type(expr.ty, &program.types)
+    {
+        return Some(format!(
+            "expression type '{}' is outside the offset stack slice",
+            program.types[base_type(expr.ty, &program.types).0].name
+        ));
+    }
+    let check = |value: &TExpr| offset_spike_check_expr(value, program);
+    match &expr.kind {
+        TExprKind::Call { args, target, .. } => {
+            if !matches!(target, CallTarget::Function(_) | CallTarget::Print) {
+                return Some(
+                    "runtime calls other than print are outside the offset stack slice".to_owned(),
+                );
+            }
+            args.iter().find_map(check)
+        }
+        TExprKind::IndirectCall { .. } | TExprKind::OptionalCall { .. } => {
+            Some("indirect and optional calls are outside the offset stack slice".to_owned())
+        }
+        TExprKind::Method { kind, receiver } => {
+            if !matches!(
+                kind,
+                MethodKind::AsciiLen | MethodKind::IsOk | MethodKind::IsErr
+            ) {
+                return Some("this method is outside the offset stack slice".to_owned());
+            }
+            check(receiver)
+        }
+        TExprKind::AsciiEmpty
+        | TExprKind::ByteString(_)
+        | TExprKind::Integer(_)
+        | TExprKind::Bool(_)
+        | TExprKind::Unit
+        | TExprKind::Local(_) => None,
+        TExprKind::AsciiFormat { value, .. } | TExprKind::ToLong(value) => check(value),
+        TExprKind::AsciiTryAppend { receiver, argument } => {
+            check(receiver).or_else(|| check(argument))
+        }
+        TExprKind::Binary { left, right, .. } => check(left).or_else(|| check(right)),
+        TExprKind::Index {
+            receiver, index, ..
+        } => {
+            if offset_spike_contains_call(index) {
+                Some(
+                    "function calls in collection indices are outside the offset stack slice"
+                        .to_owned(),
+                )
+            } else {
+                check(receiver).or_else(|| check(index))
+            }
+        }
+        TExprKind::Field { receiver, .. } => check(receiver),
+        TExprKind::CollectionOp {
+            receiver, args, op, ..
+        } => {
+            if !matches!(
+                op,
+                CollectionOp::Push | CollectionOp::Count | CollectionOp::Len
+            ) {
+                return Some(
+                    "this collection operation is outside the offset stack slice".to_owned(),
+                );
+            }
+            if matches!(op, CollectionOp::Push) && args.iter().any(offset_spike_contains_call) {
+                return Some(
+                    "function calls in list push arguments are outside the offset stack slice"
+                        .to_owned(),
+                );
+            }
+            if matches!(op, CollectionOp::Push) && !expr_is_place_for_contract(receiver) {
+                return Some("offset list operations require a named local collection".to_owned());
+            }
+            check(receiver).or_else(|| args.iter().find_map(check))
+        }
+        TExprKind::StructConstruct { fields } => fields.iter().find_map(|(_, value)| check(value)),
+        TExprKind::EmptyList
+        | TExprKind::EmptyArray
+        | TExprKind::EmptyGrid
+        | TExprKind::EmptyPool
+        | TExprKind::EmptyMap
+        | TExprKind::EmptySet
+        | TExprKind::EmptyQueue
+        | TExprKind::EmptyRing => None,
+        TExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => check(condition)
+            .or_else(|| offset_spike_check_block(then_block, program))
+            .or_else(|| {
+                else_block
+                    .as_ref()
+                    .and_then(|block| offset_spike_check_block(block, program))
+            }),
+        TExprKind::Match { scrutinee, arms } => check(scrutinee).or_else(|| {
+            arms.iter()
+                .find_map(|arm| offset_spike_check_block(&arm.body, program))
+        }),
+        TExprKind::Return(value) => value.as_deref().and_then(check),
+        _ => Some("this expression is outside the offset stack slice".to_owned()),
+    }
+}
+
+fn offset_spike_contains_call(expr: &TExpr) -> bool {
+    match &expr.kind {
+        TExprKind::Call { .. }
+        | TExprKind::IndirectCall { .. }
+        | TExprKind::OptionalCall { .. } => true,
+        TExprKind::Method { receiver, .. }
+        | TExprKind::Field { receiver, .. }
+        | TExprKind::ToLong(receiver)
+        | TExprKind::Take(receiver)
+        | TExprKind::Cast {
+            value: receiver, ..
+        }
+        | TExprKind::Unary {
+            value: receiver, ..
+        }
+        | TExprKind::AsciiUpper(receiver)
+        | TExprKind::TextUpper(receiver)
+        | TExprKind::AsciiCast(receiver)
+        | TExprKind::AsciiFit {
+            value: receiver, ..
+        }
+        | TExprKind::TextConvert {
+            value: receiver, ..
+        }
+        | TExprKind::BytesView(receiver)
+        | TExprKind::BytesValidateUtf8(receiver)
+        | TExprKind::OptionalToLong(receiver)
+        | TExprKind::Convert {
+            value: receiver, ..
+        }
+        | TExprKind::Fit {
+            value: receiver, ..
+        }
+        | TExprKind::Try {
+            value: receiver, ..
+        } => offset_spike_contains_call(receiver),
+        TExprKind::AsciiFormat { value, .. } => offset_spike_contains_call(value),
+        TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
+            offset_spike_contains_call(value) || offset_spike_contains_call(width)
+        }
+        TExprKind::ParseInteger { receiver, .. } => offset_spike_contains_call(receiver),
+        TExprKind::BytesPush { receiver, byte, .. } => {
+            offset_spike_contains_call(receiver) || offset_spike_contains_call(byte)
+        }
+        TExprKind::AsciiTryAppend { receiver, argument }
+        | TExprKind::TextTryAppend { receiver, argument }
+        | TExprKind::BytesTryAppend { receiver, argument }
+        | TExprKind::Binary {
+            left: receiver,
+            right: argument,
+            ..
+        } => offset_spike_contains_call(receiver) || offset_spike_contains_call(argument),
+        TExprKind::Index {
+            receiver, index, ..
+        }
+        | TExprKind::BytesIndex {
+            receiver, index, ..
+        } => offset_spike_contains_call(receiver) || offset_spike_contains_call(index),
+        TExprKind::AsciiSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::TextSlice {
+            receiver,
+            start,
+            end,
+        } => {
+            offset_spike_contains_call(receiver)
+                || offset_spike_contains_call(start)
+                || offset_spike_contains_call(end)
+        }
+        TExprKind::CollectionOp { receiver, args, .. } => {
+            offset_spike_contains_call(receiver) || args.iter().any(offset_spike_contains_call)
+        }
+        TExprKind::PoolOp { receiver, args, .. }
+        | TExprKind::MapOp { receiver, args, .. }
+        | TExprKind::SetOp { receiver, args, .. } => {
+            offset_spike_contains_call(receiver) || args.iter().any(offset_spike_contains_call)
+        }
+        TExprKind::Construct { args, .. } => args.iter().any(offset_spike_contains_call),
+        TExprKind::Fill { value, .. } => offset_spike_contains_call(value),
+        TExprKind::CollectionLiteral(values) => values.iter().any(offset_spike_contains_call),
+        TExprKind::StructConstruct { fields } => fields
+            .iter()
+            .any(|(_, value)| offset_spike_contains_call(value)),
+        TExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            offset_spike_contains_call(condition)
+                || offset_spike_contains_call_block(then_block)
+                || else_block
+                    .as_ref()
+                    .is_some_and(offset_spike_contains_call_block)
+        }
+        TExprKind::Match { scrutinee, arms } => {
+            offset_spike_contains_call(scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| offset_spike_contains_call_block(&arm.body))
+        }
+        TExprKind::Return(value) => value.as_deref().is_some_and(offset_spike_contains_call),
+        TExprKind::Coalesce { option, fallback } => {
+            offset_spike_contains_call(option) || offset_spike_contains_call(fallback)
+        }
+        _ => false,
+    }
+}
+
+fn offset_spike_contains_call_block(block: &TBlock) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            TStmtKind::Let { value, .. } | TStmtKind::Expr(value) | TStmtKind::Discard(value) => {
+                offset_spike_contains_call(value)
+            }
+            TStmtKind::Assign { value, .. } => offset_spike_contains_call(value),
+            TStmtKind::Return(value) => value.as_ref().is_some_and(offset_spike_contains_call),
+            TStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                offset_spike_contains_call(condition)
+                    || offset_spike_contains_call_block(then_block)
+                    || else_block
+                        .as_ref()
+                        .is_some_and(offset_spike_contains_call_block)
+            }
+            TStmtKind::For {
+                start, end, body, ..
+            } => {
+                offset_spike_contains_call(start)
+                    || offset_spike_contains_call(end)
+                    || offset_spike_contains_call_block(body)
+            }
+            TStmtKind::ForEach {
+                collection, body, ..
+            } => offset_spike_contains_call(collection) || offset_spike_contains_call_block(body),
+            TStmtKind::Block(block) => offset_spike_contains_call_block(block),
+            TStmtKind::Expect { .. } | TStmtKind::Break | TStmtKind::Continue => false,
+        })
+        || block
+            .tail
+            .as_deref()
+            .is_some_and(offset_spike_contains_call)
+}
+
+fn offset_scalar_type(ty: Ty, types: &[TType]) -> bool {
+    match &types[base_type(ty, types).0].kind {
+        TTypeKind::Bool | TTypeKind::Int | TTypeKind::Long | TTypeKind::Id { .. } => true,
+        TTypeKind::Struct(fields) => fields.iter().all(|field| {
+            matches!(
+                &types[base_type(field.ty, types).0].kind,
+                TTypeKind::Bool | TTypeKind::Int | TTypeKind::Long | TTypeKind::Id { .. }
+            )
+        }),
+        _ => false,
+    }
 }
 
 fn growing_payload_bytes(ty: Ty, types: &[TType]) -> u64 {
@@ -5378,6 +6005,7 @@ struct FunctionEmitter<'a> {
     expect_ids: &'a HashMap<String, usize>,
     print_ids: &'a HashMap<String, usize>,
     static_strings: &'a mut StaticStringPool,
+    growing_functions: &'a [bool],
     lines: Vec<String>,
     temp: usize,
     label: usize,
@@ -5392,9 +6020,13 @@ struct FunctionEmitter<'a> {
     append_variant: bool,
     append_builder_local: Option<usize>,
     append_entry_offset: Option<String>,
+    alloca_end: usize,
     prologue_end: usize,
     stack_top: String,
     entry_stack_top: String,
+    offset_stack: bool,
+    stack_alloc_cache_initialized: bool,
+    stack_highwater_initialized: bool,
 }
 
 const ENTRY_STACK_TOP: &str = "__NL_ENTRY_STACK_TOP__";
@@ -5403,6 +6035,7 @@ const ENTRY_STACK_TOP: &str = "__NL_ENTRY_STACK_TOP__";
 struct ViewInfo {
     collection_ty: Ty,
     collection_ptr: String,
+    collection_offset: Option<String>,
     counter_id: usize,
 }
 
@@ -5410,6 +6043,7 @@ struct ViewInfo {
 struct CallArgumentRegion {
     collection_ty: Ty,
     collection_ptr: String,
+    collection_offset: Option<String>,
     index: String,
     temporary: String,
     copy_back: bool,
@@ -5428,6 +6062,8 @@ impl<'a> FunctionEmitter<'a> {
         expect_ids: &'a HashMap<String, usize>,
         print_ids: &'a HashMap<String, usize>,
         static_strings: &'a mut StaticStringPool,
+        growing_functions: &'a [bool],
+        offset_stack: bool,
     ) -> Self {
         Self::new_mode(
             program,
@@ -5435,7 +6071,9 @@ impl<'a> FunctionEmitter<'a> {
             expect_ids,
             print_ids,
             static_strings,
+            growing_functions,
             false,
+            offset_stack,
         )
     }
 
@@ -5445,6 +6083,8 @@ impl<'a> FunctionEmitter<'a> {
         expect_ids: &'a HashMap<String, usize>,
         print_ids: &'a HashMap<String, usize>,
         static_strings: &'a mut StaticStringPool,
+        growing_functions: &'a [bool],
+        offset_stack: bool,
     ) -> Self {
         Self::new_mode(
             program,
@@ -5452,7 +6092,9 @@ impl<'a> FunctionEmitter<'a> {
             expect_ids,
             print_ids,
             static_strings,
+            growing_functions,
             true,
+            offset_stack,
         )
     }
 
@@ -5462,7 +6104,9 @@ impl<'a> FunctionEmitter<'a> {
         expect_ids: &'a HashMap<String, usize>,
         print_ids: &'a HashMap<String, usize>,
         static_strings: &'a mut StaticStringPool,
+        growing_functions: &'a [bool],
         append_variant: bool,
+        offset_stack: bool,
     ) -> Self {
         let reserved_ascii_locals = growing_ascii_locals(function, program);
         let returned_ascii_builder_local =
@@ -5479,6 +6123,7 @@ impl<'a> FunctionEmitter<'a> {
             expect_ids,
             print_ids,
             static_strings,
+            growing_functions,
             lines: Vec::new(),
             temp: 0,
             label: 0,
@@ -5493,9 +6138,13 @@ impl<'a> FunctionEmitter<'a> {
             append_variant,
             append_builder_local,
             append_entry_offset: None,
+            alloca_end: 0,
             prologue_end: 0,
             stack_top: ENTRY_STACK_TOP.to_owned(),
             entry_stack_top: "%nl.entry.top".to_owned(),
+            offset_stack,
+            stack_alloc_cache_initialized: false,
+            stack_highwater_initialized: false,
         };
         for param in &function.params {
             this.record_slot(param.id, param.ty);
@@ -5506,6 +6155,127 @@ impl<'a> FunctionEmitter<'a> {
 
     fn lltype(&self, ty: Ty) -> String {
         llvm_type(ty, &self.program.types)
+    }
+
+    fn stack_top_llvm_type(&self) -> &'static str {
+        if self.offset_stack { "i64" } else { "ptr" }
+    }
+
+    fn publish_stack_top(&mut self) {
+        if self.offset_stack {
+            self.instruction(format!(
+                "call void @nl_context_set_top_offset(ptr %nl.ctx, i64 {})",
+                self.stack_top
+            ));
+        } else {
+            self.instruction(format!(
+                "call void @nl_context_set_top(ptr %nl.ctx, ptr {})",
+                self.stack_top
+            ));
+        }
+    }
+
+    fn publish_stack_top_before_call(&mut self, may_place: bool) {
+        if may_place {
+            self.publish_stack_top();
+        }
+    }
+
+    fn publish_stack_top_before_function_call(&mut self, function_id: usize) {
+        let may_place = self.function_may_grow(function_id);
+        self.publish_stack_top_before_call(may_place);
+    }
+
+    fn function_may_grow(&self, function_id: usize) -> bool {
+        self.growing_functions
+            .get(function_id)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    fn call_targets_may_grow(&self, function_ty: Ty) -> bool {
+        self.program
+            .function_type_targets
+            .get(function_ty.0)
+            .into_iter()
+            .flatten()
+            .any(|target| self.function_may_grow(*target))
+    }
+
+    fn emit_refresh_base(&mut self) -> String {
+        debug_assert!(self.offset_stack);
+        let base = self.temp();
+        self.instruction(format!("{base} = call ptr @nl_context_base(ptr %nl.ctx)"));
+        self.instruction(format!("store ptr {base}, ptr %nl.base.slot, align 8"));
+        let limit = self.temp();
+        self.instruction(format!(
+            "{limit} = call i64 @nl_context_reservation_bytes(ptr %nl.ctx)"
+        ));
+        self.instruction(format!("store i64 {limit}, ptr %nl.limit.slot, align 8"));
+        base
+    }
+
+    fn list_count_alias_scope(&self, collection_ty: Ty) -> String {
+        if self.offset_stack
+            && matches!(
+                self.program.types[collection_ty.0].kind,
+                TTypeKind::List { .. }
+            )
+        {
+            let (_, _, scope_list) = offset_list_alias_ids(collection_ty);
+            format!(", !alias.scope !{scope_list}")
+        } else {
+            String::new()
+        }
+    }
+
+    fn list_data_noalias_scope(&self, collection_ty: Ty) -> String {
+        if self.offset_stack
+            && matches!(
+                self.program.types[collection_ty.0].kind,
+                TTypeKind::List { .. }
+            )
+        {
+            let (_, _, scope_list) = offset_list_alias_ids(collection_ty);
+            format!(", !noalias !{scope_list}")
+        } else {
+            String::new()
+        }
+    }
+
+    fn list_data_noalias_for_place(&self, place: &TPlace) -> String {
+        if !self.offset_stack {
+            return String::new();
+        }
+        let mut current_ty = self.root_type(place.root);
+        let mut list_ty = None;
+        for projection in &place.path {
+            match projection {
+                TProjection::Field(field) => {
+                    if let TTypeKind::Struct(fields) = &self.program.types[current_ty.0].kind {
+                        current_ty = fields[*field].ty;
+                    } else {
+                        return String::new();
+                    }
+                }
+                TProjection::Index { .. } => match self.program.types[current_ty.0].kind {
+                    TTypeKind::List { element, .. } => {
+                        list_ty = Some(current_ty);
+                        current_ty = element;
+                    }
+                    TTypeKind::Array { element, .. }
+                    | TTypeKind::Queue { element, .. }
+                    | TTypeKind::Ring { element, .. }
+                    | TTypeKind::Grid { element, .. }
+                    | TTypeKind::Pool { element, .. } => current_ty = element,
+                    TTypeKind::Map { value, .. } => current_ty = value,
+                    _ => return String::new(),
+                },
+            }
+        }
+        list_ty
+            .map(|ty| self.list_data_noalias_scope(ty))
+            .unwrap_or_default()
     }
 
     fn is_write_param(&self, id: usize) -> bool {
@@ -5550,6 +6320,14 @@ impl<'a> FunctionEmitter<'a> {
     fn emit_inline_descriptor(&mut self, pointer: &str, ty: Ty) -> String {
         let descriptor_ty = self.lltype(ty);
         let data = self.emit_inline_data_pointer(pointer, ty);
+        let data = if self.offset_stack && is_growing_string_type(ty, &self.program.types) {
+            let encoded = self.emit_tagged_ascii_pointer(&data);
+            let tagged = self.temp();
+            self.instruction(format!("{tagged} = inttoptr i64 {encoded} to ptr"));
+            tagged
+        } else {
+            data
+        };
         let length = self.temp();
         self.instruction(format!("{length} = load i64, ptr {pointer}, align 1"));
         let mut descriptor = self.temp();
@@ -5667,7 +6445,14 @@ impl<'a> FunctionEmitter<'a> {
             return value.to_owned();
         }
         let target_llvm = self.lltype(target_ty);
-        let data = self.ascii_field(value, source_ty, 0);
+        let data = if self.offset_stack && is_growing_string_type(source_ty, &self.program.types) {
+            let encoded = self.emit_encoded_ascii_data_field(value, source_ty);
+            let pointer = self.temp();
+            self.instruction(format!("{pointer} = inttoptr i64 {encoded} to ptr"));
+            pointer
+        } else {
+            self.ascii_field(value, source_ty, 0)
+        };
         let length = self.ascii_field(value, source_ty, 1);
         let mut result = self.temp();
         self.instruction(format!(
@@ -5745,19 +6530,97 @@ impl<'a> FunctionEmitter<'a> {
         }
     }
 
+    fn has_offset_slot(&self, id: usize) -> bool {
+        self.offset_stack
+            && is_large_type(self.root_type(id), &self.program.types)
+            && !self.is_large_param(id)
+    }
+
+    fn emit_offset_pointer(&mut self, offset: &str) -> String {
+        let base = self.temp();
+        self.instruction(format!("{base} = load ptr, ptr %nl.base.slot, align 8"));
+        let pointer = self.temp();
+        self.instruction(format!(
+            "{pointer} = getelementptr i8, ptr {base}, i64 {offset}"
+        ));
+        pointer
+    }
+
+    fn emit_pointer_offset(&mut self, pointer: &str) -> String {
+        let base = self.temp();
+        self.instruction(format!("{base} = load ptr, ptr %nl.base.slot, align 8"));
+        let pointer_value = self.temp();
+        self.instruction(format!("{pointer_value} = ptrtoint ptr {pointer} to i64"));
+        let base_value = self.temp();
+        self.instruction(format!("{base_value} = ptrtoint ptr {base} to i64"));
+        let offset = self.temp();
+        self.instruction(format!("{offset} = sub i64 {pointer_value}, {base_value}"));
+        offset
+    }
+
+    fn emit_local_offset(&mut self, id: usize) -> String {
+        if self.is_large_param(id) && self.offset_stack {
+            return format!("%arg.{id}");
+        }
+        if self.has_offset_slot(id) {
+            let offset = self.temp();
+            self.instruction(format!(
+                "{offset} = load i64, ptr %local.offset.{id}, align 1"
+            ));
+            return offset;
+        }
+        let pointer = self.local_pointer(id);
+        self.emit_pointer_offset(&pointer)
+    }
+
+    fn emit_local_pointer(&mut self, id: usize) -> String {
+        if self.offset_stack && is_large_type(self.root_type(id), &self.program.types) {
+            let offset = self.emit_local_offset(id);
+            return self.emit_offset_pointer(&offset);
+        }
+        self.local_pointer(id)
+    }
+
+    fn emit_view_collection_pointer(&mut self, view: &ViewInfo) -> String {
+        if let Some(offset) = &view.collection_offset {
+            self.emit_offset_pointer(offset)
+        } else {
+            view.collection_ptr.clone()
+        }
+    }
+
+    fn emit_result_pointer(&mut self) -> String {
+        if self.offset_stack {
+            self.emit_offset_pointer("%nl.result.offset")
+        } else {
+            "%nl.result".to_owned()
+        }
+    }
+
     fn emit_function(&mut self) -> String {
-        let signature = lower_signature(self.function, &self.program.types);
-        let mut params = vec!["ptr %nl.ctx".to_owned(), "ptr %nl.entry.top".to_owned()];
+        let signature = lower_signature_mode(self.function, &self.program.types, self.offset_stack);
+        let mut params = vec![
+            "ptr %nl.ctx".to_owned(),
+            format!("{} %nl.entry.top", self.stack_top_llvm_type()),
+        ];
         if self.append_variant {
             if result_ascii_payload(self.function.result, &self.program.types).is_some() {
                 params.push("ptr %nl.result".to_owned());
             }
             params.extend([
-                "ptr %nl.append.data".to_owned(),
+                if self.offset_stack {
+                    "i64 %nl.append.data".to_owned()
+                } else {
+                    "ptr %nl.append.data".to_owned()
+                },
                 "ptr %nl.append.offset".to_owned(),
             ]);
         } else if signature.result_destination {
-            params.push("ptr %nl.result".to_owned());
+            params.push(if self.offset_stack {
+                "i64 %nl.result.offset".to_owned()
+            } else {
+                "ptr %nl.result".to_owned()
+            });
         }
         params.extend(
             self.function
@@ -5768,9 +6631,22 @@ impl<'a> FunctionEmitter<'a> {
         );
         let params = params.join(", ");
         self.lines.push("entry:".to_owned());
+        if self.offset_stack {
+            self.lines
+                .push("  %nl.base.slot = alloca ptr, align 8".to_owned());
+            self.lines
+                .push("  %nl.base.initial = call ptr @nl_context_base(ptr %nl.ctx)".to_owned());
+            self.lines
+                .push("  store ptr %nl.base.initial, ptr %nl.base.slot, align 8".to_owned());
+        }
         let slots = self.slots.clone();
         for (id, ty) in slots.iter().enumerate() {
             if let Some(ty) = *ty {
+                if self.has_offset_slot(id) {
+                    self.lines
+                        .push(format!("  %local.offset.{id} = alloca i64, align 8"));
+                    continue;
+                }
                 if self.is_write_param(id)
                     || self.is_pool_param(id)
                     || self.is_large_param(id)
@@ -5783,6 +6659,7 @@ impl<'a> FunctionEmitter<'a> {
             }
         }
         self.prologue_end = self.lines.len();
+        self.alloca_end = self.prologue_end;
         for param in &self.function.params {
             if param.mode == ParamMode::Read
                 && !self.is_pool_param(param.id)
@@ -5833,7 +6710,8 @@ impl<'a> FunctionEmitter<'a> {
                     return out.replace(ENTRY_STACK_TOP, &final_top);
                 }
                 if signature.result_destination {
-                    self.emit_expr_to("%nl.result", tail);
+                    let destination = self.emit_result_pointer();
+                    self.emit_expr_to(&destination, tail);
                     if !self.terminated {
                         self.terminate("ret void");
                     }
@@ -5973,6 +6851,223 @@ impl<'a> FunctionEmitter<'a> {
         self.terminate("ret i32 0");
     }
 
+    fn ensure_stack_alloc_caches(&mut self) {
+        if !self.stack_alloc_cache_initialized {
+            let mut lines = Vec::new();
+            if self.offset_stack {
+                lines.extend([
+                    "  %nl.limit.slot = alloca i64, align 8".to_owned(),
+                    "  %nl.limit.initial = call i64 @nl_context_reservation_bytes(ptr %nl.ctx)"
+                        .to_owned(),
+                    "  store i64 %nl.limit.initial, ptr %nl.limit.slot, align 8".to_owned(),
+                ]);
+            } else {
+                lines
+                    .push("  %nl.limit.cache = call ptr @nl_context_limit(ptr %nl.ctx)".to_owned());
+            }
+            self.lines.splice(self.alloca_end..self.alloca_end, lines);
+            let count = if self.offset_stack { 3 } else { 1 };
+            self.alloca_end += count;
+            self.prologue_end += count;
+            self.stack_alloc_cache_initialized = true;
+        }
+        if !self.stack_highwater_initialized {
+            let lines = if self.offset_stack {
+                vec![
+                    "  %nl.highwater.slot = alloca i64, align 8".to_owned(),
+                    "  store i64 %nl.entry.top, ptr %nl.highwater.slot, align 8".to_owned(),
+                ]
+            } else {
+                vec![
+                    "  %nl.highwater.slot = alloca ptr, align 8".to_owned(),
+                    "  store ptr %nl.entry.top, ptr %nl.highwater.slot, align 8".to_owned(),
+                ]
+            };
+            let count = lines.len();
+            self.lines.splice(self.alloca_end..self.alloca_end, lines);
+            self.alloca_end += count;
+            self.prologue_end += count;
+            self.stack_highwater_initialized = true;
+        }
+    }
+
+    fn stack_highwater_lines(&mut self, top: &str) -> Vec<String> {
+        let old = self.temp();
+        let current = self.temp();
+        let current_int = self.temp();
+        let old_int = self.temp();
+        let is_higher = self.temp();
+        let high = self.temp();
+        if self.offset_stack {
+            vec![
+                format!("  {old} = load i64, ptr %nl.highwater.slot, align 8"),
+                format!("  {is_higher} = icmp ugt i64 {top}, {old}"),
+                format!("  {high} = select i1 {is_higher}, i64 {top}, i64 {old}"),
+                format!("  store i64 {high}, ptr %nl.highwater.slot, align 8"),
+            ]
+        } else {
+            vec![
+                format!("  {old} = load ptr, ptr %nl.highwater.slot, align 8"),
+                format!("  {current_int} = ptrtoint ptr {top} to i64"),
+                format!("  {old_int} = ptrtoint ptr {old} to i64"),
+                format!("  {is_higher} = icmp ugt i64 {current_int}, {old_int}"),
+                format!("  {current} = select i1 {is_higher}, ptr {top}, ptr {old}"),
+                format!("  store ptr {current}, ptr %nl.highwater.slot, align 8"),
+            ]
+        }
+    }
+
+    fn emit_inline_region_alloc(
+        &mut self,
+        pointer: String,
+        bytes: &str,
+        span: Span,
+        insert: bool,
+    ) -> String {
+        self.ensure_stack_alloc_caches();
+        let top = if insert {
+            self.entry_stack_top.clone()
+        } else {
+            self.stack_top.clone()
+        };
+        let addend = self.temp();
+        let aligned = self.temp();
+        let next_value = self.temp();
+        let no_overflow = self.temp();
+        let within_limit = self.temp();
+        let fits = self.temp();
+        let slow_label = self.new_label("stack.alloc.slow");
+        let fast_label = self.new_label("stack.alloc.fast");
+        let end_label = self.new_label("stack.alloc.end");
+        let slow_value = self.temp();
+        let slow_next = self.temp();
+        let fast_ptr = self.temp();
+        let fast_next = self.temp();
+        let allocated = if self.offset_stack {
+            self.temp()
+        } else {
+            pointer.clone()
+        };
+        let next = self.temp();
+        let mut lines = Vec::new();
+
+        if self.offset_stack {
+            lines.extend([
+                format!("  {addend} = add i64 {top}, 7"),
+                format!("  {aligned} = and i64 {addend}, -8"),
+                format!("  {next_value} = add i64 {aligned}, {bytes}"),
+                format!("  {no_overflow} = icmp uge i64 {next_value}, {aligned}"),
+            ]);
+            let loaded_limit = self.temp();
+            lines.push(format!(
+                "  {loaded_limit} = load i64, ptr %nl.limit.slot, align 8"
+            ));
+            lines.push(format!(
+                "  {within_limit} = icmp ule i64 {next_value}, {loaded_limit}"
+            ));
+            lines.push(format!("  {fits} = and i1 {no_overflow}, {within_limit}"));
+        } else {
+            let top_int = self.temp();
+            let limit_int = self.temp();
+            lines.extend([
+                format!("  {top_int} = ptrtoint ptr {top} to i64"),
+                format!("  {addend} = add i64 {top_int}, 7"),
+                format!("  {aligned} = and i64 {addend}, -8"),
+                format!("  {next_value} = add i64 {aligned}, {bytes}"),
+                format!("  {no_overflow} = icmp uge i64 {next_value}, {aligned}"),
+                format!("  {limit_int} = ptrtoint ptr %nl.limit.cache to i64"),
+                format!("  {within_limit} = icmp ule i64 {next_value}, {limit_int}"),
+                format!("  {fits} = and i1 {no_overflow}, {within_limit}"),
+            ]);
+        }
+        lines.push(format!(
+            "  br i1 {fits}, label %{fast_label}, label %{slow_label}"
+        ));
+        lines.push(format!("{fast_label}:"));
+        if self.offset_stack {
+            lines.push(format!("  br label %{end_label}"));
+        } else {
+            lines.push(format!("  {fast_ptr} = inttoptr i64 {aligned} to ptr"));
+            lines.push(format!("  {fast_next} = inttoptr i64 {next_value} to ptr"));
+            lines.push(format!("  br label %{end_label}"));
+        }
+        lines.push(format!("{slow_label}:"));
+        if self.offset_stack {
+            lines.push(format!(
+                "  {slow_value} = call i64 @nl_stack_alloc_offset(ptr %nl.ctx, i64 {top}, i64 {bytes}, i64 8, i32 {}, i32 {}, i32 {})",
+                span.file, span.line, span.col
+            ));
+            let refreshed_base = self.temp();
+            let refreshed_limit = self.temp();
+            lines.push(format!(
+                "  {refreshed_base} = call ptr @nl_context_base(ptr %nl.ctx)"
+            ));
+            lines.push(format!(
+                "  store ptr {refreshed_base}, ptr %nl.base.slot, align 8"
+            ));
+            lines.push(format!(
+                "  {refreshed_limit} = call i64 @nl_context_reservation_bytes(ptr %nl.ctx)"
+            ));
+            lines.push(format!(
+                "  store i64 {refreshed_limit}, ptr %nl.limit.slot, align 8"
+            ));
+            lines.push(format!("  {slow_next} = add i64 {slow_value}, {bytes}"));
+            lines.push(format!("  br label %{end_label}"));
+        } else {
+            lines.push(format!(
+                "  {slow_value} = call ptr @nl_stack_alloc(ptr %nl.ctx, ptr {top}, i64 {bytes}, i64 8, i32 {}, i32 {}, i32 {})",
+                span.file, span.line, span.col
+            ));
+            lines.push(format!(
+                "  {slow_next} = getelementptr i8, ptr {slow_value}, i64 {bytes}"
+            ));
+            lines.push(format!("  br label %{end_label}"));
+        }
+        lines.push(format!("{end_label}:"));
+        if self.offset_stack {
+            lines.push(format!(
+                "  {allocated} = phi i64 [ {aligned}, %{fast_label} ], [ {slow_value}, %{slow_label} ]"
+            ));
+            lines.push(format!(
+                "  {next} = phi i64 [ {next_value}, %{fast_label} ], [ {slow_next}, %{slow_label} ]"
+            ));
+            let base = self.temp();
+            lines.push(format!("  {base} = load ptr, ptr %nl.base.slot, align 8"));
+            lines.push(format!(
+                "  {pointer} = getelementptr i8, ptr {base}, i64 {allocated}"
+            ));
+            if let Some(id) = pointer
+                .strip_prefix("%local.")
+                .and_then(|id| id.parse::<usize>().ok())
+            {
+                lines.push(format!(
+                    "  store i64 {allocated}, ptr %local.offset.{id}, align 8"
+                ));
+            }
+        } else {
+            lines.push(format!(
+                "  {pointer} = phi ptr [ {fast_ptr}, %{fast_label} ], [ {slow_value}, %{slow_label} ]"
+            ));
+            lines.push(format!(
+                "  {next} = phi ptr [ {fast_next}, %{fast_label} ], [ {slow_next}, %{slow_label} ]"
+            ));
+        }
+        lines.extend(self.stack_highwater_lines(&next));
+
+        if insert {
+            let count = lines.len();
+            self.lines
+                .splice(self.prologue_end..self.prologue_end, lines);
+            self.prologue_end += count;
+            self.entry_stack_top = next;
+        } else {
+            self.lines.extend(lines);
+            self.current_label = end_label;
+            self.stack_top = next;
+        }
+        pointer
+    }
+
     fn emit_region_alloc_lines(
         &mut self,
         ptr: String,
@@ -5980,39 +7075,13 @@ impl<'a> FunctionEmitter<'a> {
         span: Span,
         insert: bool,
     ) -> String {
-        let after = self.temp();
-        let instructions = [
-            format!(
-                "  {ptr} = call ptr @nl_stack_alloc(ptr %nl.ctx, ptr {}, i64 {bytes}, i64 8, i32 {}, i32 {}, i32 {})",
-                self.entry_stack_top, span.file, span.line, span.col
-            ),
-            format!("  {after} = getelementptr i8, ptr {ptr}, i64 {bytes}"),
-        ];
-        if insert {
-            for (offset, instruction) in instructions.into_iter().enumerate() {
-                self.lines.insert(self.prologue_end + offset, instruction);
-            }
-            self.prologue_end += 2;
-        } else {
-            self.lines.extend(instructions);
-        }
-        self.entry_stack_top = after;
-        ptr
+        self.emit_inline_region_alloc(ptr, &bytes.to_string(), span, insert)
     }
 
     fn emit_runtime_region_alloc(&mut self, ty: Ty, span: Span, name: Option<String>) -> String {
         let bytes = stack_storage_size(ty, &self.program.types);
         let ptr = name.unwrap_or_else(|| self.temp());
-        let after = self.temp();
-        self.instruction(format!(
-            "{ptr} = call ptr @nl_stack_alloc(ptr %nl.ctx, ptr {}, i64 {bytes}, i64 8, i32 {}, i32 {}, i32 {})",
-            self.stack_top, span.file, span.line, span.col
-        ));
-        self.instruction(format!(
-            "{after} = getelementptr i8, ptr {ptr}, i64 {bytes}"
-        ));
-        self.stack_top = after;
-        ptr
+        self.emit_inline_region_alloc(ptr, &bytes.to_string(), span, false)
     }
 
     fn emit_runtime_region_alloc_dynamic(
@@ -6022,23 +7091,20 @@ impl<'a> FunctionEmitter<'a> {
         name: Option<String>,
     ) -> String {
         let ptr = name.unwrap_or_else(|| self.temp());
-        self.instruction(format!(
-            "{ptr} = call ptr @nl_stack_alloc(ptr %nl.ctx, ptr {}, i64 {bytes}, i64 8, i32 {}, i32 {}, i32 {})",
-            self.stack_top, span.file, span.line, span.col
-        ));
-        let after = self.temp();
-        self.instruction(format!(
-            "{after} = getelementptr i8, ptr {ptr}, i64 {bytes}"
-        ));
-        self.stack_top = after;
-        ptr
+        self.emit_inline_region_alloc(ptr, bytes, span, false)
     }
 
     fn restore_stack_top(&mut self, saved: &str) {
         if self.stack_top != saved {
-            self.instruction(format!(
-                "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved})"
-            ));
+            if self.offset_stack {
+                self.instruction(format!(
+                    "call void @nl_context_set_top_offset(ptr %nl.ctx, i64 {saved})"
+                ));
+            } else {
+                self.instruction(format!(
+                    "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved})"
+                ));
+            }
             self.stack_top = saved.to_owned();
         }
     }
@@ -6050,9 +7116,10 @@ impl<'a> FunctionEmitter<'a> {
             return self.emit_region_alloc_lines(ptr, bytes, self.function.span, true);
         }
         self.lines.insert(
-            self.prologue_end,
+            self.alloca_end,
             format!("  {ptr} = alloca {}", self.lltype(ty)),
         );
+        self.alloca_end += 1;
         self.prologue_end += 1;
         ptr
     }
@@ -6063,7 +7130,8 @@ impl<'a> FunctionEmitter<'a> {
             return self.emit_region_alloc_lines(ptr, bytes, self.function.span, true);
         }
         self.lines
-            .insert(self.prologue_end, format!("  {ptr} = alloca {llvm_ty}"));
+            .insert(self.alloca_end, format!("  {ptr} = alloca {llvm_ty}"));
+        self.alloca_end += 1;
         self.prologue_end += 1;
         ptr
     }
@@ -7138,15 +8206,17 @@ impl<'a> FunctionEmitter<'a> {
                     self.lltype(element)
                 ));
                 let ptr = self.emit_collection_lane_pointer(collection_ty, pointer, index, lane);
+                let noalias = self.list_data_noalias_scope(collection_ty);
                 self.instruction(format!(
-                    "store {} {lane_value}, ptr {ptr}, align 1",
+                    "store {} {lane_value}, ptr {ptr}, align 1{noalias}",
                     self.lltype(field.ty)
                 ));
             }
         } else {
             let ptr = self.emit_collection_lane_pointer(collection_ty, pointer, index, 0);
+            let noalias = self.list_data_noalias_scope(collection_ty);
             self.instruction(format!(
-                "store {} {value}, ptr {ptr}, align 1",
+                "store {} {value}, ptr {ptr}, align 1{noalias}",
                 self.lltype(element)
             ));
         }
@@ -7501,7 +8571,10 @@ impl<'a> FunctionEmitter<'a> {
             self.lltype(collection_ty)
         ));
         let count = self.temp();
-        self.instruction(format!("{count} = load i64, ptr {ptr}, align 1"));
+        let alias_scope = self.list_count_alias_scope(collection_ty);
+        self.instruction(format!(
+            "{count} = load i64, ptr {ptr}, align 1{alias_scope}"
+        ));
         count
     }
 
@@ -9293,7 +10366,7 @@ impl<'a> FunctionEmitter<'a> {
             let pointer = self.emit_expr_storage(receiver);
             return self.emit_collection_count(collection_ty, &pointer);
         }
-        let pointer = if Self::expr_place(receiver).is_some() {
+        let mut pointer = if Self::expr_place(receiver).is_some() {
             self.emit_place_pointer_expr(receiver)
         } else {
             self.emit_expr_storage(receiver)
@@ -9335,6 +10408,9 @@ impl<'a> FunctionEmitter<'a> {
             self.instruction(format!("store i64 0, ptr {count_ptr}, align 1"));
             return String::new();
         }
+        let pointer_offset = (self.offset_stack
+            && is_large_type(collection_ty, &self.program.types))
+        .then(|| self.emit_pointer_offset(&pointer));
         let mut values = Vec::with_capacity(args.len());
         let mut value_storages = Vec::with_capacity(args.len());
         for arg in args {
@@ -9349,6 +10425,9 @@ impl<'a> FunctionEmitter<'a> {
             if self.terminated {
                 return String::new();
             }
+        }
+        if let Some(offset) = &pointer_offset {
+            pointer = self.emit_offset_pointer(offset);
         }
         if matches!(
             self.program.types[collection_ty.0].kind,
@@ -9899,11 +10978,12 @@ impl<'a> FunctionEmitter<'a> {
         } else if let Some(constant) = constant_from_root(place.root) {
             format!("@nl.const.{constant}")
         } else {
-            self.local_pointer(place.root)
+            self.emit_local_pointer(place.root)
         };
         let mut current_ty = self.root_type(place.root);
         let mut soa: Option<(Ty, String, String)> = None;
         if let Some(view) = self.views.get(&place.root).cloned() {
+            let view_collection_ptr = self.emit_view_collection_pointer(&view);
             let idx = self.temp();
             self.instruction(format!(
                 "{idx} = load i64, ptr %local.{}, align 1",
@@ -9913,7 +10993,7 @@ impl<'a> FunctionEmitter<'a> {
                 self.program.types[view.collection_ty.0].kind,
                 TTypeKind::Queue { .. } | TTypeKind::Ring { .. }
             ) {
-                self.emit_queue_ring_physical_index(view.collection_ty, &view.collection_ptr, &idx)
+                self.emit_queue_ring_physical_index(view.collection_ty, &view_collection_ptr, &idx)
             } else {
                 idx
             };
@@ -9929,11 +11009,11 @@ impl<'a> FunctionEmitter<'a> {
             };
             current_ty = element;
             if matches!(self.program.types[element.0].kind, TTypeKind::Struct(_)) {
-                soa = Some((view.collection_ty, view.collection_ptr, idx));
+                soa = Some((view.collection_ty, view_collection_ptr, idx));
             } else {
                 pointer = self.emit_collection_lane_pointer(
                     view.collection_ty,
-                    &view.collection_ptr,
+                    &view_collection_ptr,
                     &idx,
                     0,
                 );
@@ -10087,7 +11167,14 @@ impl<'a> FunctionEmitter<'a> {
         if let TExprKind::Constant(id) = &expr.kind {
             return format!("@nl.const.{id}");
         }
-        let pointer = self.entry_alloca(expr.ty);
+        let pointer = if self.offset_stack && is_large_type(expr.ty, &self.program.types) {
+            self.emit_runtime_region_alloc(expr.ty, expr.span, None)
+        } else {
+            self.entry_alloca(expr.ty)
+        };
+        let offset = self
+            .offset_stack
+            .then(|| self.emit_pointer_offset(&pointer));
         if is_large_type(expr.ty, &self.program.types) {
             self.emit_expr_to(&pointer, expr);
         } else {
@@ -10099,7 +11186,11 @@ impl<'a> FunctionEmitter<'a> {
                 ));
             }
         }
-        pointer
+        if let Some(offset) = &offset {
+            self.emit_offset_pointer(offset)
+        } else {
+            pointer
+        }
     }
 
     fn place_struct_element(&self, place: &TPlace) -> Option<(Ty, TProjection, String)> {
@@ -10179,7 +11270,10 @@ impl<'a> FunctionEmitter<'a> {
                         proven: true,
                         grid: None,
                     },
-                    view.collection_ptr.clone(),
+                    view.collection_offset
+                        .as_ref()
+                        .map(|offset| format!("__nl_offset__{offset}"))
+                        .unwrap_or_else(|| view.collection_ptr.clone()),
                 ));
             }
         }
@@ -10205,6 +11299,7 @@ impl<'a> FunctionEmitter<'a> {
             if collection_var_lane(view.collection_ty, &self.program.types, lane)
                 .is_some_and(|layout| layout.ty == place.ty)
             {
+                let collection_pointer = self.emit_view_collection_pointer(&view);
                 let counter = self.temp();
                 self.instruction(format!(
                     "{counter} = load i64, ptr %local.{}, align 1",
@@ -10216,13 +11311,13 @@ impl<'a> FunctionEmitter<'a> {
                 ) {
                     self.emit_queue_ring_physical_index(
                         view.collection_ty,
-                        &view.collection_ptr,
+                        &collection_pointer,
                         &counter,
                     )
                 } else {
                     counter
                 };
-                return Some((view.collection_ty, view.collection_ptr, index, lane));
+                return Some((view.collection_ty, collection_pointer, index, lane));
             }
         }
 
@@ -10287,8 +11382,11 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_struct_element_address(&mut self, place: &TPlace) -> Option<(Ty, String, String)> {
         let (collection_ty, projection, explicit_ptr) = self.place_struct_element(place)?;
+        let explicit_offset = explicit_ptr.strip_prefix("__nl_offset__");
         let has_explicit_pointer = !explicit_ptr.is_empty();
-        let pointer = if has_explicit_pointer {
+        let pointer = if let Some(offset) = explicit_offset {
+            self.emit_offset_pointer(offset)
+        } else if has_explicit_pointer {
             explicit_ptr
         } else {
             let mut collection_place = place.clone();
@@ -10377,6 +11475,29 @@ impl<'a> FunctionEmitter<'a> {
         mode: ParamMode,
         regions: &mut Vec<CallArgumentRegion>,
     ) -> Option<String> {
+        if self.offset_stack && is_large_type(param_ty, &self.program.types) {
+            if let Some(place) = Self::expr_place(arg) {
+                if place.path.is_empty()
+                    && global_from_root(place.root).is_none()
+                    && constant_from_root(place.root).is_none()
+                {
+                    return Some(format!("i64 {}", self.emit_local_offset(place.root)));
+                }
+                let pointer = self.emit_place_pointer(&place);
+                if self.terminated {
+                    return None;
+                }
+                let offset = self.emit_pointer_offset(&pointer);
+                return Some(format!("i64 {offset}"));
+            }
+            let pointer = self.emit_runtime_region_alloc(param_ty, arg.span, None);
+            let offset = self.emit_pointer_offset(&pointer);
+            self.emit_expr_to(&pointer, arg);
+            if self.terminated {
+                return None;
+            }
+            return Some(format!("i64 {offset}"));
+        }
         if mode == ParamMode::Read && is_growing_string_type(param_ty, &self.program.types) {
             let (source_expr, source_ty) = match &arg.kind {
                 TExprKind::TextConvert {
@@ -10398,10 +11519,18 @@ impl<'a> FunctionEmitter<'a> {
             if let Some((collection_ty, collection_ptr, index)) =
                 self.emit_struct_element_address(&place)
             {
+                let collection_offset = (self.offset_stack
+                    && is_large_type(collection_ty, &self.program.types))
+                .then(|| self.emit_pointer_offset(&collection_ptr));
                 let temporary = if is_large_type(param_ty, &self.program.types) {
                     self.emit_runtime_region_alloc(param_ty, arg.span, None)
                 } else {
                     self.entry_alloca(param_ty)
+                };
+                let collection_ptr = if let Some(offset) = &collection_offset {
+                    self.emit_offset_pointer(offset)
+                } else {
+                    collection_ptr
                 };
                 self.emit_gather_collection_element(
                     collection_ty,
@@ -10412,6 +11541,7 @@ impl<'a> FunctionEmitter<'a> {
                 regions.push(CallArgumentRegion {
                     collection_ty,
                     collection_ptr,
+                    collection_offset,
                     index,
                     temporary: temporary.clone(),
                     copy_back: mode != ParamMode::Read,
@@ -10425,7 +11555,15 @@ impl<'a> FunctionEmitter<'a> {
                 if let Some((collection_ty, collection_ptr, index)) =
                     self.emit_struct_element_address(&place)
                 {
+                    let collection_offset = (self.offset_stack
+                        && is_large_type(collection_ty, &self.program.types))
+                    .then(|| self.emit_pointer_offset(&collection_ptr));
                     let temporary = self.emit_runtime_region_alloc(param_ty, arg.span, None);
+                    let collection_ptr = if let Some(offset) = &collection_offset {
+                        self.emit_offset_pointer(offset)
+                    } else {
+                        collection_ptr
+                    };
                     self.emit_gather_collection_element(
                         collection_ty,
                         &collection_ptr,
@@ -10435,6 +11573,7 @@ impl<'a> FunctionEmitter<'a> {
                     regions.push(CallArgumentRegion {
                         collection_ty,
                         collection_ptr,
+                        collection_offset,
                         index,
                         temporary: temporary.clone(),
                         copy_back: false,
@@ -10463,15 +11602,36 @@ impl<'a> FunctionEmitter<'a> {
         (!self.terminated).then(|| format!("{} {value}", self.lltype(param_ty)))
     }
 
-    fn finish_call_argument_regions(&mut self, regions: &[CallArgumentRegion], saved_top: &str) {
+    fn emit_call_argument_region_copybacks(
+        &mut self,
+        regions: &[CallArgumentRegion],
+        callee_may_grow: bool,
+    ) {
+        if self.offset_stack && callee_may_grow {
+            self.emit_refresh_base();
+        }
         for region in regions.iter().filter(|region| region.copy_back) {
+            let collection_ptr = if let Some(offset) = &region.collection_offset {
+                self.emit_offset_pointer(offset)
+            } else {
+                region.collection_ptr.clone()
+            };
             self.emit_scatter_collection_element(
                 region.collection_ty,
-                &region.collection_ptr,
+                &collection_ptr,
                 &region.index,
                 &region.temporary,
             );
         }
+    }
+
+    fn finish_call_argument_regions(
+        &mut self,
+        regions: &[CallArgumentRegion],
+        saved_top: &str,
+        callee_may_grow: bool,
+    ) {
+        self.emit_call_argument_region_copybacks(regions, callee_may_grow);
         self.restore_stack_top(saved_top);
     }
 
@@ -10515,7 +11675,78 @@ impl<'a> FunctionEmitter<'a> {
             "{value} = extractvalue {} {descriptor}, {index}",
             self.lltype(ty)
         ));
+        if self.offset_stack && index == 0 && is_growing_string_type(ty, &self.program.types) {
+            let encoded = self.temp();
+            self.instruction(format!("{encoded} = ptrtoint ptr {value} to i64"));
+            return self.emit_decode_tagged_ascii_pointer(&encoded);
+        }
         value
+    }
+
+    fn emit_tagged_ascii_pointer(&mut self, pointer: &str) -> String {
+        let base = self.temp();
+        self.instruction(format!("{base} = load ptr, ptr %nl.base.slot, align 8"));
+        let address = self.temp();
+        self.instruction(format!("{address} = ptrtoint ptr {pointer} to i64"));
+        let base_address = self.temp();
+        self.instruction(format!("{base_address} = ptrtoint ptr {base} to i64"));
+        let offset = self.temp();
+        self.instruction(format!("{offset} = sub i64 {address}, {base_address}"));
+        let tagged = self.temp();
+        self.instruction(format!("{tagged} = or i64 {offset}, -9223372036854775808"));
+        tagged
+    }
+
+    fn emit_encoded_ascii_data_field(&mut self, descriptor: &str, ty: Ty) -> String {
+        let pointer = self.temp();
+        self.instruction(format!(
+            "{pointer} = extractvalue {} {descriptor}, 0",
+            self.lltype(ty)
+        ));
+        let encoded = self.temp();
+        self.instruction(format!("{encoded} = ptrtoint ptr {pointer} to i64"));
+        encoded
+    }
+
+    fn emit_decode_tagged_ascii_pointer(&mut self, encoded: &str) -> String {
+        let is_offset = self.temp();
+        self.instruction(format!("{is_offset} = icmp slt i64 {encoded}, 0"));
+        let offset = self.temp();
+        self.instruction(format!("{offset} = and i64 {encoded}, 9223372036854775807"));
+        let base = self.temp();
+        self.instruction(format!("{base} = load ptr, ptr %nl.base.slot, align 8"));
+        let stack_pointer = self.temp();
+        self.instruction(format!(
+            "{stack_pointer} = getelementptr i8, ptr {base}, i64 {offset}"
+        ));
+        let static_pointer = self.temp();
+        self.instruction(format!("{static_pointer} = inttoptr i64 {encoded} to ptr"));
+        let pointer = self.temp();
+        self.instruction(format!(
+            "{pointer} = select i1 {is_offset}, ptr {stack_pointer}, ptr {static_pointer}"
+        ));
+        pointer
+    }
+
+    fn emit_ascii_stream_destination(&mut self, pointer: &str) -> String {
+        if self.offset_stack {
+            self.emit_tagged_ascii_pointer(pointer)
+        } else {
+            pointer.to_owned()
+        }
+    }
+
+    fn emit_ascii_stream_target(&mut self, destination: &str, current: &str) -> String {
+        let base_pointer = if self.offset_stack {
+            self.emit_decode_tagged_ascii_pointer(destination)
+        } else {
+            destination.to_owned()
+        };
+        let target = self.temp();
+        self.instruction(format!(
+            "{target} = getelementptr i8, ptr {base_pointer}, i64 {current}"
+        ));
+        target
     }
 
     fn emit_decimal_ascii_input(&mut self, expr: &TExpr) -> Option<String> {
@@ -10586,10 +11817,7 @@ impl<'a> FunctionEmitter<'a> {
             TExprKind::ByteString(bytes) if self.ascii_max(expr.ty).is_some() => {
                 let current = self.temp();
                 self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
-                let start = self.temp();
-                self.instruction(format!(
-                    "{start} = getelementptr i8, ptr {destination}, i64 {current}"
-                ));
+                let start = self.emit_ascii_stream_target(destination, &current);
                 if bytes.len() <= 64 {
                     for (index, byte) in bytes.iter().enumerate() {
                         let pointer = self.temp();
@@ -10628,10 +11856,7 @@ impl<'a> FunctionEmitter<'a> {
                 let length = self.ascii_field(&descriptor, value.ty, 1);
                 let current = self.temp();
                 self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
-                let target = self.temp();
-                self.instruction(format!(
-                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
-                ));
+                let target = self.emit_ascii_stream_target(destination, &current);
                 self.instruction(format!(
                     "call void @nl_ascii_upper_copy(ptr {source}, ptr {target}, i64 {length})"
                 ));
@@ -10648,10 +11873,7 @@ impl<'a> FunctionEmitter<'a> {
                 let length = self.ascii_field(&descriptor, value.ty, 1);
                 let current = self.temp();
                 self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
-                let target = self.temp();
-                self.instruction(format!(
-                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
-                ));
+                let target = self.emit_ascii_stream_target(destination, &current);
                 let written = self.temp();
                 self.instruction(format!(
                     "{written} = call i64 @nl_text_upper_copy(ptr {source}, i64 {length}, ptr {target}, ptr null)"
@@ -10674,10 +11896,7 @@ impl<'a> FunctionEmitter<'a> {
                 };
                 let current = self.temp();
                 self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
-                let target = self.temp();
-                self.instruction(format!(
-                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
-                ));
+                let target = self.emit_ascii_stream_target(destination, &current);
                 let length = if *radix == 10 {
                     self.emit_decimal_ascii_write(&numeric, &target)
                 } else {
@@ -10694,10 +11913,7 @@ impl<'a> FunctionEmitter<'a> {
             TExprKind::AsciiPad { value, width, side } => {
                 let current = self.temp();
                 self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
-                let target = self.temp();
-                self.instruction(format!(
-                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
-                ));
+                let target = self.emit_ascii_stream_target(destination, &current);
                 let is_left = i32::from(matches!(side, PadSide::Left));
                 let amount = if let TExprKind::AsciiFormat {
                     value: number,
@@ -10768,10 +11984,7 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 let current = self.temp();
                 self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
-                let target = self.temp();
-                self.instruction(format!(
-                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
-                ));
+                let target = self.emit_ascii_stream_target(destination, &current);
                 let amount = self.temp();
                 self.instruction(format!(
                     "{amount} = call i64 @nl_ascii_format_zero_padded_i64(i64 {numeric}, i64 {width_value}, ptr {target})"
@@ -10849,10 +12062,7 @@ impl<'a> FunctionEmitter<'a> {
                     }
                     let source = self.ascii_field(&descriptor, expr.ty, 0);
                     let length = self.ascii_field(&descriptor, expr.ty, 1);
-                    let target = self.temp();
-                    self.instruction(format!(
-                        "{target} = getelementptr i8, ptr {destination}, i64 {original_length}"
-                    ));
+                    let target = self.emit_ascii_stream_target(destination, &original_length);
                     self.instruction(format!(
                         "call void @llvm.memmove.p0.p0.i64(ptr {target}, ptr {source}, i64 {length}, i1 false)"
                     ));
@@ -10896,10 +12106,7 @@ impl<'a> FunctionEmitter<'a> {
                     let length = self.ascii_field(&descriptor, expr.ty, 1);
                     let current = self.temp();
                     self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
-                    let target = self.temp();
-                    self.instruction(format!(
-                        "{target} = getelementptr i8, ptr {destination}, i64 {current}"
-                    ));
+                    let target = self.emit_ascii_stream_target(destination, &current);
                     self.instruction(format!(
                         "call void @llvm.memmove.p0.p0.i64(ptr {target}, ptr {source}, i64 {length}, i1 false)"
                     ));
@@ -10930,10 +12137,7 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 let current = self.temp();
                 self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
-                let target = self.temp();
-                self.instruction(format!(
-                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
-                ));
+                let target = self.emit_ascii_stream_target(destination, &current);
                 self.instruction(format!(
                     "call void @llvm.memmove.p0.p0.i64(ptr {target}, ptr {source}, i64 {length}, i1 false)"
                 ));
@@ -10950,10 +12154,7 @@ impl<'a> FunctionEmitter<'a> {
                 let length = self.ascii_field(&descriptor, expr.ty, 1);
                 let current = self.temp();
                 self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
-                let target = self.temp();
-                self.instruction(format!(
-                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
-                ));
+                let target = self.emit_ascii_stream_target(destination, &current);
                 self.instruction(format!(
                     "call void @llvm.memmove.p0.p0.i64(ptr {target}, ptr {source}, i64 {length}, i1 false)"
                 ));
@@ -11192,6 +12393,7 @@ impl<'a> FunctionEmitter<'a> {
         call_span: Span,
     ) {
         let function = self.program.functions[function_id].clone();
+        let callee_may_grow = self.function_may_grow(function_id);
         if !self.is_ascii_type(function.result) {
             let mut call = TExpr {
                 kind: TExprKind::Call {
@@ -11208,7 +12410,11 @@ impl<'a> FunctionEmitter<'a> {
         let saved_top = self.stack_top.clone();
         let mut call_args = vec![
             "ptr %nl.ctx".to_owned(),
-            format!("ptr {destination}"),
+            if self.offset_stack {
+                format!("i64 {destination}")
+            } else {
+                format!("ptr {destination}")
+            },
             format!("ptr {offset_slot}"),
         ];
         let mut regions = Vec::new();
@@ -11219,15 +12425,19 @@ impl<'a> FunctionEmitter<'a> {
             };
             call_args.push(value);
         }
-        call_args.insert(1, format!("ptr {}", self.stack_top));
+        call_args.insert(
+            1,
+            format!("{} {}", self.stack_top_llvm_type(), self.stack_top),
+        );
         if function.recursive {
             self.emit_recursion_check(&[function_id], call_span);
         }
+        self.publish_stack_top_before_call(callee_may_grow);
         self.instruction(format!(
             "call void @nl_fn_{function_id}_append({})",
             call_args.join(", ")
         ));
-        self.finish_call_argument_regions(&regions, &saved_top);
+        self.finish_call_argument_regions(&regions, &saved_top, callee_may_grow);
     }
 
     fn emit_ascii_append_result_call(
@@ -11239,6 +12449,7 @@ impl<'a> FunctionEmitter<'a> {
         call_span: Span,
     ) -> Option<String> {
         let function = self.program.functions[function_id].clone();
+        let callee_may_grow = self.function_may_grow(function_id);
         if result_ascii_payload(function.result, &self.program.types).is_none() {
             return None;
         }
@@ -11258,15 +12469,19 @@ impl<'a> FunctionEmitter<'a> {
             let value = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)?;
             call_args.push(value);
         }
-        call_args.insert(1, format!("ptr {}", self.stack_top));
+        call_args.insert(
+            1,
+            format!("{} {}", self.stack_top_llvm_type(), self.stack_top),
+        );
         if function.recursive {
             self.emit_recursion_check(&[function_id], call_span);
         }
+        self.publish_stack_top_before_call(callee_may_grow);
         self.instruction(format!(
             "call void @nl_fn_{function_id}_append({})",
             call_args.join(", ")
         ));
-        self.finish_call_argument_regions(&regions, &saved_top);
+        self.finish_call_argument_regions(&regions, &saved_top, callee_may_grow);
         Some(result_storage)
     }
 
@@ -11328,6 +12543,7 @@ impl<'a> FunctionEmitter<'a> {
                 "br i1 {matches}, label %{append_label}, label %{next_label}"
             ));
             self.start_block(&append_label);
+            let target_may_grow = self.function_may_grow(*target);
             let mut call_args = vec![
                 "ptr %nl.ctx".to_owned(),
                 format!("ptr {call_top}"),
@@ -11336,10 +12552,14 @@ impl<'a> FunctionEmitter<'a> {
                 format!("ptr {offset}"),
             ];
             call_args.extend(lowered_args.iter().cloned());
+            self.publish_stack_top_before_call(target_may_grow);
             self.instruction(format!(
                 "call void @nl_fn_{target}_append({})",
                 call_args.join(", ")
             ));
+            if self.offset_stack && target_may_grow {
+                self.emit_refresh_base();
+            }
             if self.stack_top != saved_top {
                 self.instruction(format!(
                     "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved_top})"
@@ -11413,6 +12633,7 @@ impl<'a> FunctionEmitter<'a> {
                 "br i1 {matches}, label %{append_label}, label %{next_label}"
             ));
             self.start_block(&append_label);
+            let target_may_grow = self.function_may_grow(*target);
             let mut call_args = vec![
                 "ptr %nl.ctx".to_owned(),
                 format!("ptr {call_top}"),
@@ -11420,10 +12641,14 @@ impl<'a> FunctionEmitter<'a> {
                 format!("ptr {offset_slot}"),
             ];
             call_args.extend(lowered_args.iter().cloned());
+            self.publish_stack_top_before_call(target_may_grow);
             self.instruction(format!(
                 "call void @nl_fn_{target}_append({})",
                 call_args.join(", ")
             ));
+            if self.offset_stack && target_may_grow {
+                self.emit_refresh_base();
+            }
             if self.stack_top != saved_top {
                 self.instruction(format!(
                     "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved_top})"
@@ -11447,16 +12672,24 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_ascii_to_data(&mut self, destination: &str, expr: &TExpr, data: &str) {
-        let length_field = destination.to_owned();
+        let destination_offset = self
+            .offset_stack
+            .then(|| self.emit_pointer_offset(destination));
+        let stream_destination = self.emit_ascii_stream_destination(data);
         let offset_slot = self.entry_alloca(Ty::Long);
         self.instruction(format!("store i64 0, ptr {offset_slot}, align 1"));
-        self.emit_ascii_stream(expr, &data, &offset_slot);
+        self.emit_ascii_stream(expr, &stream_destination, &offset_slot);
         if self.terminated {
             return;
         }
+        let destination = if let Some(offset) = &destination_offset {
+            self.emit_offset_pointer(offset)
+        } else {
+            destination.to_owned()
+        };
         let length = self.temp();
         self.instruction(format!("{length} = load i64, ptr {offset_slot}, align 1"));
-        self.instruction(format!("store i64 {length}, ptr {length_field}, align 1"));
+        self.instruction(format!("store i64 {length}, ptr {destination}, align 1"));
     }
 
     fn emit_text_to(&mut self, destination: &str, expr: &TExpr) {
@@ -11466,13 +12699,21 @@ impl<'a> FunctionEmitter<'a> {
             ..
         } = &expr.kind
         {
+            let destination_offset = self
+                .offset_stack
+                .then(|| self.emit_pointer_offset(destination));
             let descriptor = self.emit_expr(value);
             if self.terminated {
                 return;
             }
             let data = self.ascii_field(&descriptor, value.ty, 0);
             let length = self.ascii_field(&descriptor, value.ty, 1);
-            let target = self.emit_inline_data_pointer(destination, expr.ty);
+            let destination = if let Some(offset) = &destination_offset {
+                self.emit_offset_pointer(offset)
+            } else {
+                destination.to_owned()
+            };
+            let target = self.emit_inline_data_pointer(&destination, expr.ty);
             self.instruction(format!(
                 "call void @llvm.memmove.p0.p0.i64(ptr {target}, ptr {data}, i64 {length}, i1 false)"
             ));
@@ -11499,20 +12740,33 @@ impl<'a> FunctionEmitter<'a> {
             self.emit_text_to(destination, expr);
             return;
         }
-        let length_field = destination.to_owned();
+        let destination_offset = self
+            .offset_stack
+            .then(|| self.emit_pointer_offset(destination));
+        let stream_destination = self.emit_ascii_stream_destination(data);
+        let offset_slot = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {offset_slot}, align 1"));
+        self.emit_ascii_stream(expr, &stream_destination, &offset_slot);
+        if self.terminated {
+            return;
+        }
+        let destination = if let Some(offset) = &destination_offset {
+            self.emit_offset_pointer(offset)
+        } else {
+            destination.to_owned()
+        };
+        let data = if self.offset_stack {
+            self.emit_decode_tagged_ascii_pointer(&stream_destination)
+        } else {
+            data.to_owned()
+        };
         let cp_field = self.temp();
         self.instruction(format!(
             "{cp_field} = getelementptr i8, ptr {destination}, i64 8"
         ));
-        let offset_slot = self.entry_alloca(Ty::Long);
-        self.instruction(format!("store i64 0, ptr {offset_slot}, align 1"));
-        self.emit_ascii_stream(expr, &data, &offset_slot);
-        if self.terminated {
-            return;
-        }
         let length = self.temp();
         self.instruction(format!("{length} = load i64, ptr {offset_slot}, align 1"));
-        self.instruction(format!("store i64 {length}, ptr {length_field}, align 1"));
+        self.instruction(format!("store i64 {length}, ptr {destination}, align 1"));
         let count = self.entry_alloca(Ty::Long);
         let valid = self.temp();
         self.instruction(format!(
@@ -11839,7 +13093,8 @@ impl<'a> FunctionEmitter<'a> {
         let length = self.ascii_field(&descriptor, place.ty, 1);
         let offset = self.entry_alloca(Ty::Long);
         self.instruction(format!("store i64 {length}, ptr {offset}, align 1"));
-        self.emit_ascii_stream(value, &data, &offset);
+        let stream_destination = self.emit_ascii_stream_destination(&data);
+        self.emit_ascii_stream(value, &stream_destination, &offset);
         if self.terminated {
             return;
         }
@@ -11886,6 +13141,9 @@ impl<'a> FunctionEmitter<'a> {
     ) -> String {
         let place = Self::expr_place(receiver).expect("checker validated Ascii builder place");
         let destination = self.emit_place_pointer(&place);
+        let destination_offset = self
+            .offset_stack
+            .then(|| self.emit_pointer_offset(&destination));
         let saved_top = self.stack_top.clone();
         let builder_descriptor = self.emit_string_place_descriptor(&place, &destination);
         let target = self.ascii_field(&builder_descriptor, receiver.ty, 0);
@@ -11959,7 +13217,8 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!(
             "store i64 {old_length}, ptr {append_offset}, align 1"
         ));
-        self.emit_ascii_stream(argument, &target, &append_offset);
+        let stream_target = self.emit_ascii_stream_destination(&target);
+        self.emit_ascii_stream(argument, &stream_target, &append_offset);
         if self.terminated {
             return String::new();
         }
@@ -11967,15 +13226,18 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!(
             "{new_length} = load i64, ptr {append_offset}, align 1"
         ));
-        let length_pointer = self.string_place_length_pointer(&place, &destination);
+        let current_destination = if let Some(offset) = &destination_offset {
+            self.emit_offset_pointer(offset)
+        } else {
+            destination.clone()
+        };
+        let length_pointer = self.string_place_length_pointer(&place, &current_destination);
         self.instruction(format!(
             "store i64 {new_length}, ptr {length_pointer}, align 1"
         ));
         let fast_result = self.emit_construct_values(expr.ty, 0, Vec::new());
         let fast_end = self.current_label.clone();
-        self.instruction(format!(
-            "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved_top})"
-        ));
+        self.restore_stack_top(&saved_top);
         self.terminate(format!("br label %{merge}"));
         self.stack_top = saved_top.clone();
         self.start_block(&scratch_label);
@@ -12001,10 +13263,16 @@ impl<'a> FunctionEmitter<'a> {
         destination: &str,
         saved_top: &str,
     ) -> String {
+        let destination_offset = self
+            .offset_stack
+            .then(|| self.emit_pointer_offset(destination));
         let scratch_bytes = 16usize.saturating_add(self.ascii_max(argument.ty).unwrap_or(0));
         let scratch_bytes = scratch_bytes.to_string();
         let argument_storage =
             self.emit_runtime_region_alloc_dynamic(&scratch_bytes, argument.span, None);
+        let argument_storage_offset = self
+            .offset_stack
+            .then(|| self.emit_pointer_offset(&argument_storage));
         let scratch_data = self.temp();
         self.instruction(format!(
             "{scratch_data} = getelementptr i8, ptr {argument_storage}, i64 16"
@@ -12014,9 +13282,18 @@ impl<'a> FunctionEmitter<'a> {
             "{argument_data_field} = getelementptr {}, ptr {argument_storage}, i32 0, i32 0",
             self.lltype(argument.ty)
         ));
-        self.instruction(format!(
-            "store ptr {scratch_data}, ptr {argument_data_field}, align 1"
-        ));
+        if self.offset_stack {
+            let encoded = self.emit_tagged_ascii_pointer(&scratch_data);
+            let pointer = self.temp();
+            self.instruction(format!("{pointer} = inttoptr i64 {encoded} to ptr"));
+            self.instruction(format!(
+                "store ptr {pointer}, ptr {argument_data_field}, align 1"
+            ));
+        } else {
+            self.instruction(format!(
+                "store ptr {scratch_data}, ptr {argument_data_field}, align 1"
+            ));
+        }
         let argument_length_field = self.temp();
         self.instruction(format!(
             "{argument_length_field} = getelementptr {}, ptr {argument_storage}, i32 0, i32 1",
@@ -12025,13 +13302,24 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!("store i64 0, ptr {argument_length_field}, align 1"));
         let scratch_offset = self.entry_alloca(Ty::Long);
         self.instruction(format!("store i64 0, ptr {scratch_offset}, align 1"));
-        self.emit_ascii_stream(argument, &scratch_data, &scratch_offset);
+        let scratch_destination = self.emit_ascii_stream_destination(&scratch_data);
+        self.emit_ascii_stream(argument, &scratch_destination, &scratch_offset);
         if self.terminated {
             return String::new();
         }
         let scratch_length = self.temp();
         self.instruction(format!(
             "{scratch_length} = load i64, ptr {scratch_offset}, align 1"
+        ));
+        let argument_storage = if let Some(offset) = &argument_storage_offset {
+            self.emit_offset_pointer(offset)
+        } else {
+            argument_storage
+        };
+        let argument_length_field = self.temp();
+        self.instruction(format!(
+            "{argument_length_field} = getelementptr {}, ptr {argument_storage}, i32 0, i32 1",
+            self.lltype(argument.ty)
         ));
         self.instruction(format!(
             "store i64 {scratch_length}, ptr {argument_length_field}, align 1"
@@ -12044,6 +13332,11 @@ impl<'a> FunctionEmitter<'a> {
         let source = self.ascii_field(&argument_descriptor, argument.ty, 0);
         let amount = self.ascii_field(&argument_descriptor, argument.ty, 1);
         let place = Self::expr_place(receiver).expect("checker validated Ascii builder place");
+        let destination = if let Some(offset) = &destination_offset {
+            self.emit_offset_pointer(offset)
+        } else {
+            destination.to_owned()
+        };
         let builder_descriptor = self.emit_string_place_descriptor(&place, &destination);
         let target = self.ascii_field(&builder_descriptor, receiver.ty, 0);
         let old_length = self.ascii_field(&builder_descriptor, receiver.ty, 1);
@@ -12074,16 +13367,12 @@ impl<'a> FunctionEmitter<'a> {
         ));
         let ok = self.emit_construct_values(expr.ty, 0, Vec::new());
         let ok_block = self.current_label.clone();
-        self.instruction(format!(
-            "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved_top})"
-        ));
+        self.restore_stack_top(saved_top);
         self.terminate(format!("br label %{merge}"));
         self.start_block(&full_label);
         let full = self.emit_construct_values(expr.ty, 1, Vec::new());
         let full_block = self.current_label.clone();
-        self.instruction(format!(
-            "call void @nl_context_set_top(ptr %nl.ctx, ptr {saved_top})"
-        ));
+        self.restore_stack_top(saved_top);
         self.terminate(format!("br label %{merge}"));
         self.start_block(&merge);
         self.stack_top = saved_top.to_owned();
@@ -12542,9 +13831,13 @@ impl<'a> FunctionEmitter<'a> {
     ) -> String {
         let destination_size = stack_storage_size(destination_ty, &self.program.types);
         let destination_start = self.temp();
-        self.instruction(format!(
-            "{destination_start} = ptrtoint ptr {destination} to i64"
-        ));
+        if self.offset_stack {
+            self.instruction(format!("{destination_start} = add i64 {destination}, 0"));
+        } else {
+            self.instruction(format!(
+                "{destination_start} = ptrtoint ptr {destination} to i64"
+            ));
+        }
         let destination_end = self.temp();
         self.instruction(format!(
             "{destination_end} = add i64 {destination_start}, {destination_size}"
@@ -12556,7 +13849,11 @@ impl<'a> FunctionEmitter<'a> {
                 continue;
             }
             let source_start = self.temp();
-            self.instruction(format!("{source_start} = ptrtoint ptr {source} to i64"));
+            if self.offset_stack {
+                self.instruction(format!("{source_start} = add i64 {source}, 0"));
+            } else {
+                self.instruction(format!("{source_start} = ptrtoint ptr {source} to i64"));
+            }
             let source_end = self.temp();
             self.instruction(format!(
                 "{source_end} = add i64 {source_start}, {source_size}"
@@ -12605,15 +13902,27 @@ impl<'a> FunctionEmitter<'a> {
         in_place_alias_parameter: Option<usize>,
     ) -> String {
         let function = self.program.functions[function_id].clone();
-        let signature = lower_signature(&function, &self.program.types);
+        let callee_may_grow = self.function_may_grow(function_id);
+        let signature = lower_signature_mode(&function, &self.program.types, self.offset_stack);
         let saved_top = self.stack_top.clone();
         let mut call_args = vec!["ptr %nl.ctx".to_owned()];
         let mut result_storage = None;
+        let mut result_offset_storage = None;
         if signature.result_destination {
-            let destination = result_destination
-                .map(str::to_owned)
-                .unwrap_or_else(|| self.entry_alloca(function.result));
-            call_args.push(format!("ptr {destination}"));
+            let destination = result_destination.map(str::to_owned).unwrap_or_else(|| {
+                if self.offset_stack {
+                    self.emit_runtime_region_alloc(function.result, call_span, None)
+                } else {
+                    self.entry_alloca(function.result)
+                }
+            });
+            if self.offset_stack {
+                let offset = self.emit_pointer_offset(&destination);
+                call_args.push(format!("i64 {offset}"));
+                result_offset_storage = Some(offset);
+            } else {
+                call_args.push(format!("ptr {destination}"));
+            }
             result_storage = Some(destination);
         }
         let mut regions = Vec::new();
@@ -12625,6 +13934,8 @@ impl<'a> FunctionEmitter<'a> {
             };
             if value.starts_with("ptr ") {
                 pointer_args.push((index, value[4..].to_owned(), param.ty));
+            } else if self.offset_stack && is_large_type(param.ty, &self.program.types) {
+                pointer_args.push((index, value[4..].to_owned(), param.ty));
             }
             call_args.push(value);
         }
@@ -12634,14 +13945,18 @@ impl<'a> FunctionEmitter<'a> {
         if signature.result_destination && result_destination.is_some() && !pointer_args.is_empty()
         {
             let destination = result_storage.as_deref().unwrap();
+            let destination_offset = result_offset_storage.clone();
             let argument_top = self.stack_top.clone();
             let overlap_args = pointer_args
                 .iter()
                 .filter(|(index, _, _)| Some(*index) != in_place_alias_parameter)
                 .map(|(_, pointer, ty)| (pointer.clone(), *ty))
                 .collect::<Vec<_>>();
-            let overlaps =
-                self.emit_pointer_overlap_any(destination, function.result, &overlap_args);
+            let overlaps = if let Some(offset) = &destination_offset {
+                self.emit_pointer_overlap_any(offset, function.result, &overlap_args)
+            } else {
+                self.emit_pointer_overlap_any(destination, function.result, &overlap_args)
+            };
             let direct_label = self.new_label("call.result.direct");
             let scratch_label = self.new_label("call.result.scratch");
             let merge_label = self.new_label("call.result.end");
@@ -12651,30 +13966,48 @@ impl<'a> FunctionEmitter<'a> {
 
             self.start_block(&direct_label);
             let mut direct_args = call_args.clone();
-            direct_args.insert(1, format!("ptr {}", self.stack_top));
+            direct_args.insert(
+                1,
+                format!("{} {}", self.stack_top_llvm_type(), self.stack_top),
+            );
             let direct_call = direct_args.join(", ");
+            self.publish_stack_top_before_call(callee_may_grow);
             self.instruction(format!("call void @nl_fn_{function_id}({direct_call})"));
-            self.finish_call_argument_regions(&regions, &saved_top);
+            self.finish_call_argument_regions(&regions, &saved_top, callee_may_grow);
             self.terminate(format!("br label %{merge_label}"));
 
             self.stack_top = argument_top.clone();
             self.start_block(&scratch_label);
             let scratch = self.emit_runtime_region_alloc(function.result, call_span, None);
+            let scratch_offset = self
+                .offset_stack
+                .then(|| self.emit_pointer_offset(&scratch));
             let mut scratch_args = call_args;
-            scratch_args[1] = format!("ptr {scratch}");
-            scratch_args.insert(1, format!("ptr {}", self.stack_top));
+            scratch_args[1] = if let Some(offset) = &scratch_offset {
+                format!("i64 {offset}")
+            } else {
+                format!("ptr {scratch}")
+            };
+            scratch_args.insert(
+                1,
+                format!("{} {}", self.stack_top_llvm_type(), self.stack_top),
+            );
             let scratch_call = scratch_args.join(", ");
+            self.publish_stack_top_before_call(callee_may_grow);
             self.instruction(format!("call void @nl_fn_{function_id}({scratch_call})"));
-            for region in regions.iter().filter(|region| region.copy_back) {
-                self.emit_scatter_collection_element(
-                    region.collection_ty,
-                    &region.collection_ptr,
-                    &region.index,
-                    &region.temporary,
-                );
-            }
+            self.emit_call_argument_region_copybacks(&regions, callee_may_grow);
             self.restore_stack_top(&argument_top);
-            self.emit_copy_value_storage(destination, &scratch, function.result);
+            if let Some(scratch_offset) = &scratch_offset {
+                let scratch = self.emit_offset_pointer(scratch_offset);
+                let destination = self.emit_offset_pointer(
+                    destination_offset
+                        .as_deref()
+                        .expect("offset destination was captured before a growing call"),
+                );
+                self.emit_copy_value_storage(&destination, &scratch, function.result);
+            } else {
+                self.emit_copy_value_storage(destination, &scratch, function.result);
+            }
             self.restore_stack_top(&saved_top);
             self.terminate(format!("br label %{merge_label}"));
 
@@ -12682,17 +14015,29 @@ impl<'a> FunctionEmitter<'a> {
             self.start_block(&merge_label);
             return String::new();
         }
-        call_args.insert(1, format!("ptr {}", self.stack_top));
+        call_args.insert(
+            1,
+            format!("{} {}", self.stack_top_llvm_type(), self.stack_top),
+        );
         let lowered = call_args.join(", ");
         if signature.result == "void" {
+            self.publish_stack_top_before_call(callee_may_grow);
             self.instruction(format!("call void @nl_fn_{function_id}({lowered})"));
             if function.result == Ty::Never {
                 self.terminate("unreachable");
                 return String::new();
             }
-            self.finish_call_argument_regions(&regions, &saved_top);
+            self.finish_call_argument_regions(&regions, &saved_top, callee_may_grow);
             if signature.result_destination && result_destination.is_none() {
-                let storage = result_storage.unwrap();
+                let storage = if self.offset_stack {
+                    self.emit_offset_pointer(
+                        result_offset_storage
+                            .as_deref()
+                            .expect("offset result destination was recorded"),
+                    )
+                } else {
+                    result_storage.unwrap()
+                };
                 if is_growing_string_type(function.result, &self.program.types) {
                     self.emit_inline_descriptor(&storage, function.result)
                 } else {
@@ -12708,11 +14053,12 @@ impl<'a> FunctionEmitter<'a> {
             }
         } else {
             let value = self.temp();
+            self.publish_stack_top_before_call(callee_may_grow);
             self.instruction(format!(
                 "{value} = call {} @nl_fn_{function_id}({lowered})",
                 signature.result
             ));
-            self.finish_call_argument_regions(&regions, &saved_top);
+            self.finish_call_argument_regions(&regions, &saved_top, callee_may_grow);
             value
         }
     }
@@ -12730,14 +14076,26 @@ impl<'a> FunctionEmitter<'a> {
         if self.terminated {
             return String::new();
         }
+        let callee_may_grow = self.call_targets_may_grow(callee.ty);
         let saved_top = self.stack_top.clone();
         let large_result = is_large_type(result_ty, &self.program.types);
         let mut call_args = vec!["ptr %nl.ctx".to_owned()];
+        let mut result_offset_storage = None;
         let result_storage = if large_result {
-            let pointer = result_destination
-                .map(str::to_owned)
-                .unwrap_or_else(|| self.entry_alloca(result_ty));
-            call_args.push(format!("ptr {pointer}"));
+            let pointer = result_destination.map(str::to_owned).unwrap_or_else(|| {
+                if self.offset_stack {
+                    self.emit_runtime_region_alloc(result_ty, call_span, None)
+                } else {
+                    self.entry_alloca(result_ty)
+                }
+            });
+            if self.offset_stack {
+                let offset = self.emit_pointer_offset(&pointer);
+                call_args.push(format!("i64 {offset}"));
+                result_offset_storage = Some(offset);
+            } else {
+                call_args.push(format!("ptr {pointer}"));
+            }
             Some(pointer)
         } else {
             None
@@ -12750,6 +14108,8 @@ impl<'a> FunctionEmitter<'a> {
                 return String::new();
             };
             if value.starts_with("ptr ") {
+                pointer_args.push((value[4..].to_owned(), param.ty));
+            } else if self.offset_stack && value.starts_with("i64 ") {
                 pointer_args.push((value[4..].to_owned(), param.ty));
             }
             call_args.push(value);
@@ -12771,8 +14131,13 @@ impl<'a> FunctionEmitter<'a> {
         self.emit_recursion_check(&targets, call_span);
         if large_result && result_destination.is_some() && !pointer_args.is_empty() {
             let destination = result_storage.as_deref().unwrap();
+            let destination_offset = result_offset_storage.clone();
             let argument_top = self.stack_top.clone();
-            let overlaps = self.emit_pointer_overlap_any(destination, result_ty, &pointer_args);
+            let overlaps = if let Some(offset) = &destination_offset {
+                self.emit_pointer_overlap_any(offset, result_ty, &pointer_args)
+            } else {
+                self.emit_pointer_overlap_any(destination, result_ty, &pointer_args)
+            };
             let direct_label = self.new_label("indirect.result.direct");
             let scratch_label = self.new_label("indirect.result.scratch");
             let merge_label = self.new_label("indirect.result.end");
@@ -12782,30 +14147,44 @@ impl<'a> FunctionEmitter<'a> {
 
             self.start_block(&direct_label);
             let mut direct_args = call_args.clone();
-            direct_args.insert(1, format!("ptr {}", self.stack_top));
+            direct_args.insert(
+                1,
+                format!("{} {}", self.stack_top_llvm_type(), self.stack_top),
+            );
             let direct_call = direct_args.join(", ");
+            self.publish_stack_top_before_call(callee_may_grow);
             self.instruction(format!("call void {function_value}({direct_call})"));
-            self.finish_call_argument_regions(&regions, &saved_top);
+            self.finish_call_argument_regions(&regions, &saved_top, callee_may_grow);
             self.terminate(format!("br label %{merge_label}"));
 
             self.stack_top = argument_top.clone();
             self.start_block(&scratch_label);
             let scratch = self.emit_runtime_region_alloc(result_ty, call_span, None);
+            let scratch_offset = self
+                .offset_stack
+                .then(|| self.emit_pointer_offset(&scratch));
             let mut scratch_args = call_args;
-            scratch_args[1] = format!("ptr {scratch}");
-            scratch_args.insert(1, format!("ptr {}", self.stack_top));
+            scratch_args[1] = if let Some(offset) = &scratch_offset {
+                format!("i64 {offset}")
+            } else {
+                format!("ptr {scratch}")
+            };
+            scratch_args.insert(
+                1,
+                format!("{} {}", self.stack_top_llvm_type(), self.stack_top),
+            );
             let scratch_call = scratch_args.join(", ");
+            self.publish_stack_top_before_call(callee_may_grow);
             self.instruction(format!("call void {function_value}({scratch_call})"));
-            for region in regions.iter().filter(|region| region.copy_back) {
-                self.emit_scatter_collection_element(
-                    region.collection_ty,
-                    &region.collection_ptr,
-                    &region.index,
-                    &region.temporary,
-                );
-            }
+            self.emit_call_argument_region_copybacks(&regions, callee_may_grow);
             self.restore_stack_top(&argument_top);
-            self.emit_copy_value_storage(destination, &scratch, result_ty);
+            if let Some(scratch_offset) = &scratch_offset {
+                let scratch = self.emit_offset_pointer(scratch_offset);
+                let destination = self.emit_offset_pointer(destination_offset.as_deref().unwrap());
+                self.emit_copy_value_storage(&destination, &scratch, result_ty);
+            } else {
+                self.emit_copy_value_storage(destination, &scratch, result_ty);
+            }
             self.restore_stack_top(&saved_top);
             self.terminate(format!("br label %{merge_label}"));
 
@@ -12816,8 +14195,9 @@ impl<'a> FunctionEmitter<'a> {
         call_args.insert(1, format!("ptr {}", self.stack_top));
         let lowered = call_args.join(", ");
         if large_result {
+            self.publish_stack_top_before_call(callee_may_grow);
             self.instruction(format!("call void {function_value}({lowered})"));
-            self.finish_call_argument_regions(&regions, &saved_top);
+            self.finish_call_argument_regions(&regions, &saved_top, callee_may_grow);
             if result_destination.is_none() {
                 let storage = result_storage.unwrap();
                 if is_growing_string_type(result_ty, &self.program.types) {
@@ -12834,20 +14214,22 @@ impl<'a> FunctionEmitter<'a> {
                 String::new()
             }
         } else if result_ty == Ty::Unit || result_ty == Ty::Never {
+            self.publish_stack_top_before_call(callee_may_grow);
             self.instruction(format!("call void {function_value}({lowered})"));
             if result_ty == Ty::Never {
                 self.terminate("unreachable");
             } else {
-                self.finish_call_argument_regions(&regions, &saved_top);
+                self.finish_call_argument_regions(&regions, &saved_top, callee_may_grow);
             }
             String::new()
         } else {
             let value = self.temp();
+            self.publish_stack_top_before_call(callee_may_grow);
             self.instruction(format!(
                 "{value} = call {} {function_value}({lowered})",
                 self.lltype(result_ty)
             ));
-            self.finish_call_argument_regions(&regions, &saved_top);
+            self.finish_call_argument_regions(&regions, &saved_top, callee_may_grow);
             value
         }
     }
@@ -14090,7 +15472,7 @@ impl<'a> FunctionEmitter<'a> {
                     if let Some(length) = self.ascii_static_length(value) {
                         let bytes = length.saturating_add(16).to_string();
                         let pointer = if self.preallocated_local_regions.contains(id) {
-                            format!("%local.{id}")
+                            self.emit_local_pointer(*id)
                         } else {
                             self.emit_runtime_region_alloc_dynamic(
                                 &bytes,
@@ -14104,32 +15486,51 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 if is_large_type(*ty, &self.program.types) {
                     if returned_lazy_local(self.function, &self.program.types) == Some(*id) {
-                        let pointer = format!("%local.{id}");
-                        self.instruction(format!(
-                            "{pointer} = getelementptr i8, ptr %nl.result, i64 0"
-                        ));
+                        let pointer = self.emit_result_pointer();
+                        if self.offset_stack {
+                            self.instruction(format!(
+                                "store i64 %nl.result.offset, ptr %local.offset.{id}, align 1"
+                            ));
+                        } else {
+                            self.instruction(format!(
+                                "%local.{id} = getelementptr i8, ptr {pointer}, i64 0"
+                            ));
+                        }
                         self.emit_expr_to(&pointer, value);
                         return;
                     }
                     if !self.append_variant && self.returned_ascii_builder_local == Some(*id) {
-                        let pointer = format!("%local.{id}");
-                        self.instruction(format!(
-                            "{pointer} = getelementptr i8, ptr %nl.result, i64 0"
-                        ));
+                        let pointer = self.emit_result_pointer();
+                        if self.offset_stack {
+                            self.instruction(format!(
+                                "store i64 %nl.result.offset, ptr %local.offset.{id}, align 1"
+                            ));
+                        } else {
+                            self.instruction(format!(
+                                "%local.{id} = getelementptr i8, ptr {pointer}, i64 0"
+                            ));
+                        }
                         self.emit_expr_to(&pointer, value);
                         return;
                     }
                     if let TExprKind::Take(source) = &value.kind {
                         if let TExprKind::Local(source_id) = source.kind {
-                            let source_pointer = self.local_pointer(source_id);
-                            self.instruction(format!(
-                                "%local.{id} = getelementptr i8, ptr {source_pointer}, i64 0"
-                            ));
+                            if self.offset_stack && self.has_offset_slot(*id) {
+                                let offset = self.emit_local_offset(source_id);
+                                self.instruction(format!(
+                                    "store i64 {offset}, ptr %local.offset.{id}, align 1"
+                                ));
+                            } else {
+                                let source_pointer = self.emit_local_pointer(source_id);
+                                self.instruction(format!(
+                                    "%local.{id} = getelementptr i8, ptr {source_pointer}, i64 0"
+                                ));
+                            }
                             return;
                         }
                     }
                     let pointer = if self.preallocated_local_regions.contains(id) {
-                        format!("%local.{id}")
+                        self.emit_local_pointer(*id)
                     } else {
                         self.emit_runtime_region_alloc(*ty, stmt.span, Some(format!("%local.{id}")))
                     };
@@ -14254,8 +15655,9 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 if *op == AssignOp::Set {
                     if let Some(pointer) = pointer {
+                        let noalias = self.list_data_noalias_for_place(place);
                         self.instruction(format!(
-                            "store {} {rhs}, ptr {pointer}, align 1",
+                            "store {} {rhs}, ptr {pointer}, align 1{noalias}",
                             self.lltype(*ty)
                         ));
                     } else if let Some((collection_ty, pointer, index)) = struct_address {
@@ -14276,8 +15678,9 @@ impl<'a> FunctionEmitter<'a> {
                     if !self.terminated {
                         let result = self.emit_policy_conversion(result, *ty, *operator_span);
                         if let Some(pointer) = pointer {
+                            let noalias = self.list_data_noalias_for_place(place);
                             self.instruction(format!(
-                                "store {} {result}, ptr {pointer}, align 1",
+                                "store {} {result}, ptr {pointer}, align 1{noalias}",
                                 self.lltype(*ty)
                             ));
                         } else if let Some((collection_ty, pointer, index)) = struct_address {
@@ -14309,7 +15712,8 @@ impl<'a> FunctionEmitter<'a> {
                         return;
                     }
                     if is_large_type(self.function.result, &self.program.types) {
-                        self.emit_expr_to("%nl.result", value);
+                        let destination = self.emit_result_pointer();
+                        self.emit_expr_to(&destination, value);
                         if !self.terminated {
                             self.emit_all_iteration_cleanups();
                             self.terminate("ret void");
@@ -14513,6 +15917,9 @@ impl<'a> FunctionEmitter<'a> {
     ) {
         let collection_ptr = self.emit_place_pointer(source);
         let collection_ty = collection.ty;
+        let collection_offset = (self.offset_stack
+            && is_large_type(collection_ty, &self.program.types))
+        .then(|| self.emit_pointer_offset(&collection_ptr));
         let capacity = match self.program.types[collection_ty.0].kind {
             TTypeKind::Array { capacity, .. }
             | TTypeKind::List { capacity, .. }
@@ -14598,6 +16005,7 @@ impl<'a> FunctionEmitter<'a> {
                 ViewInfo {
                     collection_ty,
                     collection_ptr: collection_ptr.clone(),
+                    collection_offset: collection_offset.clone(),
                     counter_id,
                 },
             );
@@ -14761,6 +16169,7 @@ impl<'a> FunctionEmitter<'a> {
                 ViewInfo {
                     collection_ty,
                     collection_ptr,
+                    collection_offset,
                     counter_id,
                 },
             );
@@ -16450,7 +17859,7 @@ impl<'a> FunctionEmitter<'a> {
         self.start_block(&some_label);
         let (receiver_ty, receiver_arg) = self.emit_payload(receiver.ty, &receiver_value, 0, 0);
         let target = self.program.functions[function_id].clone();
-        let signature = lower_signature(&target, &self.program.types);
+        let signature = lower_signature_mode(&target, &self.program.types, self.offset_stack);
         let mut lowered_args = vec!["ptr %nl.ctx".to_owned()];
         let result_storage = if signature.result_destination {
             let pointer = self.entry_alloca(target.result);
@@ -16478,13 +17887,20 @@ impl<'a> FunctionEmitter<'a> {
             };
             lowered_args.push(value);
         }
-        lowered_args.insert(1, format!("ptr {}", self.stack_top));
+        lowered_args.insert(
+            1,
+            format!("{} {}", self.stack_top_llvm_type(), self.stack_top),
+        );
         let call_args = lowered_args.join(", ");
         if target.recursive {
             self.emit_recursion_check(&[function_id], expr.span);
         }
         let function_result = if signature.result == "void" {
+            self.publish_stack_top_before_function_call(function_id);
             self.instruction(format!("call void @nl_fn_{function_id}({call_args})"));
+            if self.offset_stack && self.function_may_grow(function_id) {
+                self.emit_refresh_base();
+            }
             if let Some(pointer) = result_storage {
                 let value = self.temp();
                 self.instruction(format!(
@@ -16497,13 +17913,17 @@ impl<'a> FunctionEmitter<'a> {
             }
         } else {
             let result = self.temp();
+            self.publish_stack_top_before_function_call(function_id);
             self.instruction(format!(
                 "{result} = call {} @nl_fn_{function_id}({call_args})",
                 signature.result
             ));
+            if self.offset_stack && self.function_may_grow(function_id) {
+                self.emit_refresh_base();
+            }
             result
         };
-        self.finish_call_argument_regions(&regions, &saved_top);
+        self.finish_call_argument_regions(&regions, &saved_top, false);
         let some = if wraps_result {
             self.emit_construct_values(expr.ty, 0, vec![(target.result, function_result)])
         } else {
@@ -16560,7 +17980,7 @@ impl<'a> FunctionEmitter<'a> {
         self.start_block(&some_label);
 
         let target = self.program.functions[function_id].clone();
-        let signature = lower_signature(&target, &self.program.types);
+        let signature = lower_signature_mode(&target, &self.program.types, self.offset_stack);
         let mut lowered_args = vec!["ptr %nl.ctx".to_owned()];
         let result_destination = if signature.result_destination {
             if wraps_result {
@@ -16611,22 +18031,33 @@ impl<'a> FunctionEmitter<'a> {
             return;
         }
 
-        lowered_args.insert(1, format!("ptr {}", self.stack_top));
+        lowered_args.insert(
+            1,
+            format!("{} {}", self.stack_top_llvm_type(), self.stack_top),
+        );
         let call_args = lowered_args.join(", ");
         if self.program.functions[function_id].recursive {
             self.emit_recursion_check(&[function_id], expr.span);
         }
         if signature.result_destination {
+            self.publish_stack_top_before_function_call(function_id);
             self.instruction(format!("call void @nl_fn_{function_id}({call_args})"));
+            if self.offset_stack && self.function_may_grow(function_id) {
+                self.emit_refresh_base();
+            }
             if wraps_result {
                 self.emit_sum_tag_to(expr.ty, destination, 0);
             }
         } else if signature.result != "void" {
             let value = self.temp();
+            self.publish_stack_top_before_function_call(function_id);
             self.instruction(format!(
                 "{value} = call {} @nl_fn_{function_id}({call_args})",
                 signature.result
             ));
+            if self.offset_stack && self.function_may_grow(function_id) {
+                self.emit_refresh_base();
+            }
             if wraps_result {
                 let payload = self.temp();
                 self.instruction(format!(
@@ -16647,7 +18078,7 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_sum_tag_to(expr.ty, destination, 0);
             }
         }
-        self.finish_call_argument_regions(&regions, &saved_top);
+        self.finish_call_argument_regions(&regions, &saved_top, false);
         self.restore_stack_top(&saved_top);
         self.terminate(format!("br label %{merge}"));
 
@@ -18369,10 +19800,16 @@ impl<'a> FunctionEmitter<'a> {
                 .collect::<Vec<_>>();
             self.emit_recursion_check(&targets, call_span);
             let result = self.temp();
+            let callback_may_grow = self.call_targets_may_grow(callback_ty);
+            self.publish_stack_top_before_call(callback_may_grow);
             self.instruction(format!(
-                "{result} = call i1 {function_value}(ptr %nl.ctx, ptr {}, {args})",
+                "{result} = call i1 {function_value}(ptr %nl.ctx, {} {}, {args})",
+                self.stack_top_llvm_type(),
                 self.stack_top
             ));
+            if self.offset_stack && callback_may_grow {
+                self.emit_refresh_base();
+            }
             if large_element {
                 self.restore_stack_top(&saved_top);
             }
@@ -19768,21 +21205,25 @@ impl<'a> FunctionEmitter<'a> {
                     );
                 }
                 if self.append_variant && self.append_builder_local == Some(*id) {
-                    return self.emit_append_builder_descriptor(&self.local_pointer(*id), expr.ty);
+                    let pointer = self.emit_local_pointer(*id);
+                    return self.emit_append_builder_descriptor(&pointer, expr.ty);
                 }
                 if is_growing_string_type(expr.ty, &self.program.types)
                     && !self.is_read_string_param(*id)
                 {
-                    return self.emit_inline_descriptor(&self.local_pointer(*id), expr.ty);
+                    let pointer = self.emit_local_pointer(*id);
+                    return self.emit_inline_descriptor(&pointer, expr.ty);
                 }
                 if self.inline_option_payload(expr.ty).is_some() {
-                    return self.emit_inline_option_descriptor(&self.local_pointer(*id), expr.ty);
+                    let pointer = self.emit_local_pointer(*id);
+                    return self.emit_inline_option_descriptor(&pointer, expr.ty);
                 }
+                let pointer = self.emit_local_pointer(*id);
                 let tmp = self.temp();
                 self.instruction(format!(
                     "{tmp} = load {}, ptr {}, align 1",
                     self.lltype(expr.ty),
-                    self.local_pointer(*id)
+                    pointer
                 ));
                 tmp
             }
@@ -20054,7 +21495,8 @@ impl<'a> FunctionEmitter<'a> {
             TExprKind::Return(value) => {
                 if let Some(value) = value {
                     if is_large_type(self.function.result, &self.program.types) {
-                        self.emit_expr_to("%nl.result", value);
+                        let destination = self.emit_result_pointer();
+                        self.emit_expr_to(&destination, value);
                         if !self.terminated {
                             self.emit_all_iteration_cleanups();
                             self.terminate("ret void");
@@ -20542,9 +21984,33 @@ impl<'a> FunctionEmitter<'a> {
         );
         let text = text.into();
         if text.starts_with("ret ") {
-            self.lines.push(format!(
-                "  call void @nl_context_set_top(ptr %nl.ctx, ptr %nl.entry.top)"
-            ));
+            if self.stack_highwater_initialized {
+                let highwater = self.temp();
+                if self.offset_stack {
+                    self.lines.push(format!(
+                        "  {highwater} = load i64, ptr %nl.highwater.slot, align 8"
+                    ));
+                    self.lines.push(format!(
+                        "  call void @nl_context_note_peak_offset(ptr %nl.ctx, i64 {highwater})"
+                    ));
+                } else {
+                    self.lines.push(format!(
+                        "  {highwater} = load ptr, ptr %nl.highwater.slot, align 8"
+                    ));
+                    self.lines.push(format!(
+                        "  call void @nl_context_note_peak(ptr %nl.ctx, ptr {highwater})"
+                    ));
+                }
+            }
+            if self.offset_stack {
+                self.lines.push(format!(
+                    "  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.entry.top)"
+                ));
+            } else {
+                self.lines.push(format!(
+                    "  call void @nl_context_set_top(ptr %nl.ctx, ptr %nl.entry.top)"
+                ));
+            }
         }
         self.lines.push(format!("  {text}"));
         self.terminated = true;
@@ -20631,7 +22097,11 @@ struct LoweredSignature {
 
 // All language function ABI decisions live here, including the hidden stack
 // context/top arguments and caller-owned destinations for large results.
-fn lower_signature(function: &TFunction, types: &[TType]) -> LoweredSignature {
+fn lower_signature_mode(
+    function: &TFunction,
+    types: &[TType],
+    offset_stack: bool,
+) -> LoweredSignature {
     let result_destination = !function.is_test && is_large_type(function.result, types);
     LoweredSignature {
         result: if function.is_test {
@@ -20645,6 +22115,9 @@ fn lower_signature(function: &TFunction, types: &[TType]) -> LoweredSignature {
             .params
             .iter()
             .map(|param| {
+                if offset_stack && is_large_type(param.ty, types) {
+                    return "i64".to_owned();
+                }
                 if param.mode != ParamMode::Read
                     || matches!(types[param.ty.0].kind, TTypeKind::Pool { .. })
                     || (is_large_type(param.ty, types)

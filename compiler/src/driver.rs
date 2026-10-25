@@ -65,6 +65,33 @@ pub struct CompileOutput {
     call_graph: Vec<Vec<usize>>,
     recursive_functions: Vec<bool>,
     recursion_budget_bytes: u64,
+    stack_mode: StackMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StackMode {
+    Pointer,
+    Offset,
+}
+
+impl StackMode {
+    fn from_environment() -> Result<Self, String> {
+        match std::env::var("NLC_STACK_MODE") {
+            Ok(value) if value == "pointer" => Ok(Self::Pointer),
+            Ok(value) if value == "offset" => Ok(Self::Offset),
+            Ok(value) => Err(format!(
+                "NLC_STACK_MODE must be pointer or offset, got '{value}'"
+            )),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Pointer),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("NLC_STACK_MODE must be valid UTF-8: pointer or offset".to_owned())
+            }
+        }
+    }
+
+    fn is_offset(self) -> bool {
+        self == Self::Offset
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -375,6 +402,23 @@ fn compile_package_on_worker(
     package: &Path,
     require_main: bool,
 ) -> Result<CompileOutput, PackageError> {
+    let stack_mode = StackMode::from_environment().map_err(|message| {
+        PackageError::Compile(CompileError {
+            file: package
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("<package>")
+                .to_owned(),
+            span: Span {
+                file: 0,
+                line: 1,
+                col: 1,
+                start_offset: 0,
+                end_offset: 0,
+            },
+            message,
+        })
+    })?;
     let memory_config = read_memory_config(package)?;
     let entries = fs::read_dir(package)
         .map_err(|e| PackageError::Tool(format!("cannot read package directory: {e}")))?;
@@ -447,6 +491,24 @@ fn compile_package_on_worker(
     emit::apply_function_type_stack_contracts(&mut typed, &function_contracts);
     let contracts = emit::stack_contracts(&typed);
     let stack_entries = emit::entry_stack_reservations(&typed, &contracts);
+    if stack_mode.is_offset() {
+        if let Some(reason) = emit::offset_spike_unsupported_reason(&typed, &contracts) {
+            return Err(PackageError::Compile(CompileError {
+                file: files
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "<package>".to_owned()),
+                span: Span {
+                    file: 0,
+                    line: 1,
+                    col: 1,
+                    start_offset: 0,
+                    end_offset: 0,
+                },
+                message: format!("not supported in offset stack mode: {reason}"),
+            }));
+        }
+    }
     let mut stack_peak_expectations = Vec::new();
     for (test_index, test) in typed.tests.iter().enumerate() {
         collect_stack_peak_expectations(
@@ -480,7 +542,11 @@ fn compile_package_on_worker(
         .iter()
         .map(|function| function.recursive)
         .collect();
-    let llvm_ir = emit::emit(&typed);
+    let llvm_ir = if stack_mode.is_offset() {
+        emit::emit_with_stack_mode(&typed, true)
+    } else {
+        emit::emit(&typed)
+    };
     Ok(CompileOutput {
         llvm_ir,
         files,
@@ -492,6 +558,7 @@ fn compile_package_on_worker(
         call_graph,
         recursive_functions,
         recursion_budget_bytes: typed.recursion_budget_bytes,
+        stack_mode,
     })
 }
 
@@ -1182,6 +1249,7 @@ fn clang_internal(
             test_build,
             optimization,
             collect_native_frames,
+            compiled.stack_mode,
         )?;
         return if collect_native_frames {
             read_native_frame_sizes(output).map(Some)
@@ -1193,7 +1261,15 @@ fn clang_internal(
     let parent = ir.parent().unwrap_or_else(|| Path::new("."));
     let probe = parent.join("nlc-recursion-frame-probe");
     let patched_ir = parent.join("nlc-recursion-final.ll");
-    run_clang(ir, &probe, &runtime, test_build, optimization, true)?;
+    run_clang(
+        ir,
+        &probe,
+        &runtime,
+        test_build,
+        optimization,
+        true,
+        compiled.stack_mode,
+    )?;
     let mut frames = read_native_frame_sizes(&probe)?;
     for _ in 0..3 {
         let patched = patch_recursion_checks(&source, compiled, &frames)?;
@@ -1207,6 +1283,7 @@ fn clang_internal(
             test_build,
             optimization,
             true,
+            compiled.stack_mode,
         )?;
         let final_frames = read_native_frame_sizes(output)?;
         if final_frames == frames {
@@ -1231,6 +1308,7 @@ fn run_clang(
     test_build: bool,
     optimization: &str,
     collect_stack_sizes: bool,
+    stack_mode: StackMode,
 ) -> Result<(), PackageError> {
     let mut command = Command::new("clang");
     command.arg(format!("-O{optimization}"));
@@ -1239,6 +1317,9 @@ fn run_clang(
     }
     if test_build {
         command.arg("-DNLC_TEST_BUILD=1");
+    }
+    if stack_mode.is_offset() {
+        command.arg("-DNLC_STACK_MODE_OFFSET=1");
     }
     let result = command
         .arg(ir)

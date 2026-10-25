@@ -1,0 +1,216 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 6 1 4 "grower"
+LParen 9 1 1 10 "("
+Ident 10 6 1 11 "values"
+Colon 16 1 1 17 ":"
+Ident 18 5 1 19 "write"
+Ident 24 4 1 25 "list"
+Lt 28 1 1 29 "<"
+Ident 29 4 1 30 "long"
+Comma 33 1 1 34 ","
+Number 35 3 1 36 "128"
+Gt 38 1 1 39 ">"
+RParen 39 1 1 40 ")"
+LBrace 41 1 1 42 "{"
+Newline 42 1 1 43 "\n"
+Ident 47 3 2 5 "let"
+Ident 51 7 2 9 "scratch"
+Colon 58 1 2 16 ":"
+Ident 60 4 2 18 "list"
+Lt 64 1 2 22 "<"
+Ident 65 4 2 23 "long"
+Comma 69 1 2 27 ","
+Number 71 6 2 29 "100000"
+Gt 77 1 2 35 ">"
+Eq 79 1 2 37 "="
+Ident 81 4 2 39 "list"
+LBrace 86 1 2 44 "{"
+RBrace 87 1 2 45 "}"
+Newline 88 1 2 46 "\n"
+Ident 93 5 3 5 "print"
+LParen 98 1 3 10 "("
+Ident 99 7 3 11 "scratch"
+Dot 106 1 3 18 "."
+Ident 107 5 3 19 "count"
+LParen 112 1 3 24 "("
+RParen 113 1 3 25 ")"
+RParen 114 1 3 26 ")"
+Newline 115 1 3 27 "\n"
+Ident 120 6 4 5 "values"
+LBracket 126 1 4 11 "["
+Number 127 1 4 12 "0"
+RBracket 128 1 4 13 "]"
+PlusEq 130 2 4 15 "+="
+Number 133 2 4 18 "1L"
+Newline 135 1 4 20 "\n"
+RBrace 136 1 5 1 "}"
+Newline 137 1 5 2 "\n"
+Ident 139 2 7 1 "fn"
+Ident 142 4 7 4 "main"
+LParen 146 1 7 8 "("
+RParen 147 1 7 9 ")"
+LBrace 149 1 7 11 "{"
+Newline 150 1 7 12 "\n"
+Ident 155 3 8 5 "var"
+Ident 159 6 8 9 "values"
+Colon 165 1 8 15 ":"
+Ident 167 4 8 17 "list"
+Lt 171 1 8 21 "<"
+Ident 172 4 8 22 "long"
+Comma 176 1 8 26 ","
+Number 178 3 8 28 "128"
+Gt 181 1 8 31 ">"
+Eq 183 1 8 33 "="
+Ident 185 4 8 35 "list"
+LBrace 190 1 8 40 "{"
+RBrace 191 1 8 41 "}"
+Newline 192 1 8 42 "\n"
+Ident 197 7 9 5 "discard"
+Ident 205 6 9 13 "values"
+Dot 211 1 9 19 "."
+Ident 212 4 9 20 "push"
+LParen 216 1 9 24 "("
+Number 217 2 9 25 "1L"
+RParen 219 1 9 27 ")"
+Newline 220 1 9 28 "\n"
+Ident 225 3 10 5 "var"
+Ident 229 10 10 9 "until_grow"
+Eq 240 1 10 20 "="
+Number 242 1 10 22 "0"
+Newline 243 1 10 23 "\n"
+Ident 249 3 12 5 "for"
+Ident 253 5 12 9 "index"
+Ident 259 2 12 15 "in"
+Number 262 1 12 18 "0"
+Range 263 2 12 19 ".."
+Number 265 2 12 21 "12"
+LBrace 268 1 12 24 "{"
+Newline 269 1 12 25 "\n"
+Ident 278 2 13 9 "if"
+Ident 281 10 13 12 "until_grow"
+EqEq 292 2 13 23 "=="
+Number 295 1 13 26 "0"
+LBrace 297 1 13 28 "{"
+Newline 298 1 13 29 "\n"
+Ident 311 6 14 13 "grower"
+LParen 317 1 14 19 "("
+Ident 318 6 14 20 "values"
+RParen 324 1 14 26 ")"
+Newline 325 1 14 27 "\n"
+Ident 338 10 15 13 "until_grow"
+Eq 349 1 15 24 "="
+Number 351 1 15 26 "3"
+Newline 352 1 15 27 "\n"
+RBrace 361 1 16 9 "}"
+Ident 363 4 16 11 "else"
+LBrace 368 1 16 16 "{"
+Newline 369 1 16 17 "\n"
+Ident 382 10 17 13 "until_grow"
+MinusEq 393 2 17 24 "-="
+Number 396 1 17 27 "1"
+Newline 397 1 17 28 "\n"
+RBrace 406 1 18 9 "}"
+Newline 407 1 18 10 "\n"
+Ident 417 3 20 9 "let"
+Ident 421 8 20 13 "observed"
+Eq 430 1 20 22 "="
+Ident 432 6 20 24 "values"
+LBracket 438 1 20 30 "["
+Number 439 1 20 31 "0"
+RBracket 440 1 20 32 "]"
+Newline 441 1 20 33 "\n"
+Ident 450 6 21 9 "values"
+LBracket 456 1 21 15 "["
+Number 457 1 21 16 "0"
+RBracket 458 1 21 17 "]"
+PlusEq 460 2 21 19 "+="
+Ident 463 8 21 22 "observed"
+Plus 472 1 21 31 "+"
+Number 474 2 21 33 "1L"
+Newline 476 1 21 35 "\n"
+RBrace 481 1 22 5 "}"
+Newline 482 1 22 6 "\n"
+Ident 488 5 24 5 "print"
+LParen 493 1 24 10 "("
+Ident 494 6 24 11 "values"
+LBracket 500 1 24 17 "["
+Number 501 1 24 18 "0"
+RBracket 502 1 24 19 "]"
+RParen 503 1 24 20 ")"
+Newline 504 1 24 21 "\n"
+RBrace 505 1 25 1 "}"
+Newline 506 1 25 2 "\n"
+Eof 507 0 26 1 ""
+== tree ==
+file "main.nl"
+Program 0..507
+  Function 0..137 name="grower" recursive=false generics=[]
+    Parameter 10..39 name="values" mode=write
+      ParameterType 24..39 name="list" range=none policy=checked
+        TypeArgument 29..33 name="long" range=none policy=checked
+        Integer 35..38 magnitude=128 negative=false long_suffix=false
+    Block 41..137
+      Let 47..88 mutable=false name="scratch"
+        Annotation 60..78 name="list" range=none policy=checked
+          TypeArgument 65..69 name="long" range=none policy=checked
+          Integer 71..77 magnitude=100000 negative=false long_suffix=false
+        ListLiteral 81..88
+      ExpressionStatement 93..115
+        Call 93..115 name="print"
+          MethodCall 99..114 name="count"
+            Name 99..106 name="scratch"
+      Assign 120..135 op=+=
+        Index 120..129
+          Name 120..126 name="values"
+          Integer 127..128 magnitude=0 negative=false long_suffix=false
+        Integer 133..135 magnitude=1 negative=false long_suffix=true
+  Function 139..506 name="main" recursive=false generics=[]
+    Block 149..506
+      Let 155..192 mutable=true name="values"
+        Annotation 167..182 name="list" range=none policy=checked
+          TypeArgument 172..176 name="long" range=none policy=checked
+          Integer 178..181 magnitude=128 negative=false long_suffix=false
+        ListLiteral 185..192
+      Discard 197..220
+        MethodCall 205..220 name="push"
+          Name 205..211 name="values"
+          Integer 217..219 magnitude=1 negative=false long_suffix=true
+      Let 225..243 mutable=true name="until_grow"
+        Integer 242..243 magnitude=0 negative=false long_suffix=false
+      For 249..482 name="index" inclusive=false
+        Integer 262..263 magnitude=0 negative=false long_suffix=false
+        Integer 265..267 magnitude=12 negative=false long_suffix=false
+        Block 268..482
+          ExpressionStatement 278..407
+            If 278..407
+              Binary 281..296 op=eq
+                Name 281..291 name="until_grow"
+                Integer 295..296 magnitude=0 negative=false long_suffix=false
+              Block 297..362
+                ExpressionStatement 311..325
+                  Call 311..325 name="grower"
+                    Name 318..324 name="values"
+                Assign 338..352 op==
+                  Name 338..348 name="until_grow"
+                  Integer 351..352 magnitude=3 negative=false long_suffix=false
+              Block 368..407
+                Assign 382..397 op=-=
+                  Name 382..392 name="until_grow"
+                  Integer 396..397 magnitude=1 negative=false long_suffix=false
+          Let 417..441 mutable=false name="observed"
+            Index 432..441
+              Name 432..438 name="values"
+              Integer 439..440 magnitude=0 negative=false long_suffix=false
+          Assign 450..476 op=+=
+            Index 450..459
+              Name 450..456 name="values"
+              Integer 457..458 magnitude=0 negative=false long_suffix=false
+            Binary 463..476 op=add
+              Name 463..471 name="observed"
+              Integer 474..476 magnitude=1 negative=false long_suffix=true
+      Call 488..504 name="print"
+        Index 494..503
+          Name 494..500 name="values"
+          Integer 501..502 magnitude=0 negative=false long_suffix=false

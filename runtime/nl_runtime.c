@@ -11,6 +11,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <linux/openat2.h>
 
 #include "nl_unicode_upper.h"
@@ -34,6 +35,14 @@ static unsigned char *nl_test_var_metadata[NL_TEST_VAR_STORAGE_CAPACITY];
 static uint64_t nl_test_var_metadata_sizes[NL_TEST_VAR_STORAGE_CAPACITY];
 static size_t nl_test_var_count;
 
+#if defined(NLC_STACK_MODE_OFFSET) && defined(__linux__)
+typedef struct nl_poisoned_stack_mapping {
+    void *address;
+    size_t bytes;
+    struct nl_poisoned_stack_mapping *next;
+} nl_poisoned_stack_mapping;
+#endif
+
 const char *nl_runtime_unicode_version(void) {
     return nl_unicode_version;
 }
@@ -47,6 +56,15 @@ typedef struct {
     unsigned char *base;
     unsigned char *top;
     unsigned char *limit;
+#if defined(NLC_STACK_MODE_OFFSET)
+    uint64_t top_offset;
+    uint64_t growth_count;
+    uint64_t relocation_count;
+    uint64_t growth_nanoseconds;
+#if defined(__linux__)
+    nl_poisoned_stack_mapping *poisoned_mappings;
+#endif
+#endif
     uintptr_t native_stack_limit;
     uintptr_t native_stack_start;
     uint64_t recursion_budget;
@@ -154,6 +172,12 @@ void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_b
     if (page <= 0) nl_stack_startup_failure_for(entry_name, requested_bytes,
                                                  "could not determine the system page size");
     uint64_t bytes = nl_data_stack_reservation(requested_bytes, entry_name);
+#if defined(NLC_STACK_MODE_OFFSET)
+    const char *preallocated = getenv("NLC_STACK_PREALLOC");
+    if (!preallocated || strcmp(preallocated, "1") != 0) {
+        bytes = UINT64_C(256) * 1024;
+    }
+#endif
     if (bytes == 0) {
         nl_stack_startup_failure_for(entry_name, requested_bytes,
                                      "computed data stack reservation is zero");
@@ -233,6 +257,40 @@ void *nl_context_base(void *opaque) {
     return context ? context->base : NULL;
 }
 
+void *nl_context_limit(void *opaque) {
+    nl_data_stack_context *context = opaque;
+    return context ? context->limit : NULL;
+}
+
+void nl_context_note_peak(void *opaque, const void *top) {
+    nl_data_stack_context *context = opaque;
+    if (!context || !top) return;
+    uintptr_t base = (uintptr_t)context->base;
+    uintptr_t address = (uintptr_t)top;
+    if (address < base || address - base > context->reservation_bytes) return;
+    uint64_t used = (uint64_t)(address - base);
+    if (used > context->peak_used_bytes) context->peak_used_bytes = used;
+}
+
+#if defined(NLC_STACK_MODE_OFFSET)
+uint64_t nl_context_base_offset(void *opaque) {
+    /* Offsets are relative to the current base, so the base is always zero. */
+    (void)opaque;
+    return 0;
+}
+
+uint64_t nl_context_reservation_bytes(void *opaque) {
+    nl_data_stack_context *context = opaque;
+    return context ? context->reservation_bytes : 0;
+}
+
+void nl_context_note_peak_offset(void *opaque, uint64_t top_offset) {
+    nl_data_stack_context *context = opaque;
+    if (!context || top_offset > context->reservation_bytes) return;
+    if (top_offset > context->peak_used_bytes) context->peak_used_bytes = top_offset;
+}
+#endif
+
 void nl_context_set_top(void *opaque, void *top) {
     nl_data_stack_context *context = opaque;
     if (!context) return;
@@ -243,10 +301,141 @@ void nl_context_set_top(void *opaque, void *top) {
     context->top = top;
 }
 
+#if defined(NLC_STACK_MODE_OFFSET)
+void nl_context_set_top_offset(void *opaque, uint64_t top_offset) {
+    nl_data_stack_context *context = opaque;
+    if (!context) return;
+    if (top_offset > context->reservation_bytes) {
+        nl_stack_startup_failure("invalid offset data stack top");
+    }
+    context->top_offset = top_offset;
+}
+
+#if defined(__linux__)
+static uint64_t nl_monotonic_nanoseconds(void) {
+    struct timespec time;
+    if (clock_gettime(CLOCK_MONOTONIC, &time) != 0) return 0;
+    return (uint64_t)time.tv_sec * UINT64_C(1000000000) + (uint64_t)time.tv_nsec;
+}
+
+static void nl_stack_grow_offset(nl_data_stack_context *context, uint64_t needed_bytes,
+                                 int32_t file_id, int32_t line, int32_t col) {
+    if (needed_bytes <= context->reservation_bytes) return;
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) nl_fail(18, file_id, line, col);
+    uint64_t page_size = (uint64_t)page;
+    uint64_t new_bytes = context->reservation_bytes;
+    while (new_bytes < needed_bytes) {
+        if (new_bytes > UINT64_MAX / 2) {
+            new_bytes = needed_bytes;
+            break;
+        }
+        new_bytes *= 2;
+    }
+    if (new_bytes > UINT64_MAX - (page_size - 1)) nl_fail(18, file_id, line, col);
+    new_bytes = ((new_bytes + page_size - 1) / page_size) * page_size;
+    if (new_bytes > SIZE_MAX - page_size) nl_fail(18, file_id, line, col);
+
+    size_t target_bytes = (size_t)new_bytes + (size_t)page_size;
+    const char *verify = getenv("NLC_STACK_VERIFY");
+    int poison_old_mapping = verify && strcmp(verify, "1") == 0;
+    nl_poisoned_stack_mapping *poison_record = NULL;
+    if (poison_old_mapping) {
+        poison_record = malloc(sizeof(*poison_record));
+        if (!poison_record) nl_fail(18, file_id, line, col);
+    }
+    void *target = mmap(NULL, target_bytes, PROT_NONE,
+                        MAP_PRIVATE | MAP_ANONYMOUS
+#ifdef MAP_NORESERVE
+                            | MAP_NORESERVE
+#endif
+                        , -1, 0);
+    if (target == MAP_FAILED) {
+        free(poison_record);
+        nl_fail(18, file_id, line, col);
+    }
+
+    uint64_t start = nl_monotonic_nanoseconds();
+    void *moved = mremap(context->mapping, (size_t)context->reservation_bytes,
+                         (size_t)new_bytes, MREMAP_MAYMOVE | MREMAP_FIXED, target);
+    uint64_t end = nl_monotonic_nanoseconds();
+    if (end >= start) context->growth_nanoseconds += end - start;
+    context->growth_count += 1;
+    if (moved == MAP_FAILED) {
+        munmap(target, target_bytes);
+        free(poison_record);
+        nl_fail(18, file_id, line, col);
+    }
+
+    unsigned char *old_base = context->base;
+    uint64_t old_bytes = context->reservation_bytes;
+    if (moved != old_base) context->relocation_count += 1;
+    munmap(old_base + old_bytes, (size_t)page_size);
+    if (poison_old_mapping) {
+        size_t old_mapping_bytes = (size_t)old_bytes + (size_t)page_size;
+        void *poison = mmap(old_base, old_mapping_bytes, PROT_NONE,
+                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED
+#ifdef MAP_NORESERVE
+                                | MAP_NORESERVE
+#endif
+                            , -1, 0);
+        if (poison == MAP_FAILED) {
+            free(poison_record);
+            nl_fail(18, file_id, line, col);
+        }
+        poison_record->address = poison;
+        poison_record->bytes = old_mapping_bytes;
+        poison_record->next = context->poisoned_mappings;
+        context->poisoned_mappings = poison_record;
+    }
+    context->mapping = moved;
+    context->mapping_bytes = target_bytes;
+    context->reservation_bytes = new_bytes;
+    context->base = (unsigned char *)moved;
+    context->limit = context->base + new_bytes;
+}
+#endif
+
+uint64_t nl_stack_alloc_offset(void *opaque, uint64_t top_offset, uint64_t bytes,
+                               uint64_t alignment, int32_t file_id, int32_t line,
+                               int32_t col) {
+    nl_data_stack_context *context = opaque;
+    if (!context || alignment == 0 || (alignment & (alignment - 1)) != 0) {
+        nl_stack_startup_failure("invalid offset region allocation request");
+    }
+    if (top_offset > context->reservation_bytes || top_offset > UINT64_MAX - (alignment - 1)) {
+        nl_fail(18, file_id, line, col);
+    }
+    uint64_t aligned = (top_offset + alignment - 1) & ~(alignment - 1);
+    if (bytes > UINT64_MAX - aligned) nl_fail(18, file_id, line, col);
+    uint64_t after = aligned + bytes;
+#if defined(__linux__)
+    nl_stack_grow_offset(context, after, file_id, line, col);
+#else
+    if (after > context->reservation_bytes) nl_fail(18, file_id, line, col);
+#endif
+    if (after > context->peak_used_bytes) context->peak_used_bytes = after;
+    return aligned;
+}
+#endif
+
 void nl_context_destroy(void *opaque) {
     nl_data_stack_context *context = opaque;
     if (!context) return;
 #if defined(__linux__)
+#if defined(NLC_STACK_MODE_OFFSET)
+    const char *stack_stats = getenv("NLC_STACK_STATS");
+    if (stack_stats && strcmp(stack_stats, "1") == 0) {
+        fprintf(stderr,
+                "nl offset stack entry '%s': reserved=%llu peak_used=%llu growths=%llu relocations=%llu growth_ns=%llu\n",
+                context->entry_name ? context->entry_name : "<unknown>",
+                (unsigned long long)context->reservation_bytes,
+                (unsigned long long)context->peak_used_bytes,
+                (unsigned long long)context->growth_count,
+                (unsigned long long)context->relocation_count,
+                (unsigned long long)context->growth_nanoseconds);
+    }
+#endif
 #if defined(NLC_TEST_BUILD)
     const char *report = getenv("NLC_TEST_REPORT_STACK_TOUCHED");
     if (report && strcmp(report, "1") == 0) {
@@ -271,6 +460,15 @@ void nl_context_destroy(void *opaque) {
         }
     }
 #endif
+#if defined(NLC_STACK_MODE_OFFSET)
+    nl_poisoned_stack_mapping *poisoned = context->poisoned_mappings;
+    while (poisoned) {
+        nl_poisoned_stack_mapping *next = poisoned->next;
+        munmap(poisoned->address, poisoned->bytes);
+        free(poisoned);
+        poisoned = next;
+    }
+#endif
     munmap(context->mapping, context->mapping_bytes);
 #endif
     free(context);
@@ -278,6 +476,14 @@ void nl_context_destroy(void *opaque) {
 
 void *nl_stack_alloc(void *opaque, void *top, uint64_t bytes, uint64_t alignment,
                      int32_t file_id, int32_t line, int32_t col) {
+#if defined(NLC_STACK_MODE_OFFSET)
+    (void)opaque;
+    (void)top;
+    (void)bytes;
+    (void)alignment;
+    nl_stack_startup_failure("offset stack mode received a pointer-based region allocation");
+    return NULL;
+#else
     nl_data_stack_context *context = opaque;
     if (!context || alignment == 0 || (alignment & (alignment - 1)) != 0) {
         nl_stack_startup_failure("invalid region allocation request");
@@ -292,10 +498,8 @@ void *nl_stack_alloc(void *opaque, void *top, uint64_t bytes, uint64_t alignment
     if (bytes > UINTPTR_MAX - aligned || aligned + (uintptr_t)bytes > limit) {
         nl_fail(18, file_id, line, col);
     }
-    context->top = (void *)(aligned + (uintptr_t)bytes);
-    uint64_t used = (uint64_t)(aligned + (uintptr_t)bytes - base);
-    if (used > context->peak_used_bytes) context->peak_used_bytes = used;
     return (void *)aligned;
+#endif
 }
 
 void nl_register_file(int32_t file_id, const char *name) {
