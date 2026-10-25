@@ -1,0 +1,137 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "stop"
+LParen 7 1 1 8 "("
+Ident 8 3 1 9 "env"
+Colon 11 1 1 12 ":"
+Ident 13 3 1 14 "Env"
+Comma 16 1 1 17 ","
+Ident 18 4 1 19 "code"
+Colon 22 1 1 23 ":"
+Ident 24 3 1 25 "int"
+Number 28 1 1 29 "0"
+RangeInclusive 29 3 1 30 "..="
+Number 32 3 1 33 "125"
+RParen 35 1 1 36 ")"
+Arrow 37 2 1 38 "->"
+Ident 40 5 1 41 "never"
+LBrace 46 1 1 47 "{"
+Newline 47 1 1 48 "\n"
+Ident 52 3 2 5 "env"
+Dot 55 1 2 8 "."
+Ident 56 4 2 9 "exit"
+LParen 60 1 2 13 "("
+Ident 61 4 2 14 "code"
+RParen 65 1 2 18 ")"
+Newline 66 1 2 19 "\n"
+RBrace 67 1 3 1 "}"
+Newline 68 1 3 2 "\n"
+Ident 70 2 5 1 "fn"
+Ident 73 4 5 4 "main"
+LParen 77 1 5 8 "("
+Ident 78 3 5 9 "env"
+Colon 81 1 5 12 ":"
+Ident 83 3 5 14 "Env"
+RParen 86 1 5 17 ")"
+Arrow 88 2 5 19 "->"
+Ident 91 6 5 22 "Result"
+Lt 97 1 5 28 "<"
+LParen 98 1 5 29 "("
+RParen 99 1 5 30 ")"
+Comma 100 1 5 31 ","
+Ident 102 7 5 33 "IoError"
+Gt 109 1 5 40 ">"
+LBrace 111 1 5 42 "{"
+Newline 112 1 5 43 "\n"
+Ident 117 3 6 5 "let"
+Ident 121 5 6 9 "ready"
+Colon 126 1 6 14 ":"
+Ident 128 6 6 16 "Result"
+Lt 134 1 6 22 "<"
+LParen 135 1 6 23 "("
+RParen 136 1 6 24 ")"
+Comma 137 1 6 25 ","
+Ident 139 7 6 27 "IoError"
+Gt 146 1 6 34 ">"
+Eq 148 1 6 36 "="
+Ident 150 2 6 38 "ok"
+LParen 152 1 6 40 "("
+LParen 153 1 6 41 "("
+RParen 154 1 6 42 ")"
+RParen 155 1 6 43 ")"
+Newline 156 1 6 44 "\n"
+Ident 161 5 7 5 "ready"
+Question 166 1 7 10 "?"
+Newline 167 1 7 11 "\n"
+Ident 172 3 8 5 "let"
+Ident 176 8 8 9 "callback"
+Colon 184 1 8 17 ":"
+Ident 186 2 8 19 "fn"
+LParen 188 1 8 21 "("
+Ident 189 3 8 22 "Env"
+Comma 192 1 8 25 ","
+Ident 194 3 8 27 "int"
+Number 198 1 8 31 "0"
+RangeInclusive 199 3 8 32 "..="
+Number 202 3 8 35 "125"
+RParen 205 1 8 38 ")"
+Arrow 207 2 8 40 "->"
+Ident 210 5 8 43 "never"
+Ident 216 7 8 49 "effects"
+Ident 224 3 8 57 "env"
+Eq 228 1 8 61 "="
+Ident 230 4 8 63 "stop"
+Newline 234 1 8 67 "\n"
+Ident 239 8 9 5 "callback"
+LParen 247 1 9 13 "("
+Ident 248 3 9 14 "env"
+Comma 251 1 9 17 ","
+Number 253 1 9 19 "7"
+RParen 254 1 9 20 ")"
+Newline 255 1 9 21 "\n"
+RBrace 256 1 10 1 "}"
+Newline 257 1 10 2 "\n"
+Eof 258 0 11 1 ""
+== tree ==
+file "main.nl"
+Program 0..258
+  Function 0..68 name="stop" recursive=false generics=[]
+    Parameter 8..16 name="env" mode=read
+      ParameterType 13..16 name="Env" range=none policy=checked
+    Parameter 18..35 name="code" mode=read
+      ParameterType 24..35 name="int" range=0..=125 policy=checked
+    ResultType 40..45 name="never" range=none policy=checked
+    Block 46..68
+      MethodCall 52..66 name="exit"
+        Name 52..55 name="env"
+        Name 61..65 name="code"
+  Function 70..257 name="main" recursive=false generics=[]
+    Parameter 78..86 name="env" mode=read
+      ParameterType 83..86 name="Env" range=none policy=checked
+    ResultType 91..110 name="Result" range=none policy=checked
+      TypeArgument 98..100 name="()" range=none policy=checked
+      TypeArgument 102..109 name="IoError" range=none policy=checked
+    Block 111..257
+      Let 117..156 mutable=false name="ready"
+        Annotation 128..147 name="Result" range=none policy=checked
+          TypeArgument 135..137 name="()" range=none policy=checked
+          TypeArgument 139..146 name="IoError" range=none policy=checked
+        Call 150..156 name="ok"
+          Unit 153..155
+      ExpressionStatement 161..167
+        Try 161..167
+          Name 161..166 name="ready"
+      Let 172..234 mutable=false name="callback"
+        Annotation 186..227 name="fn" range=none policy=checked
+          FunctionType 186..227
+            FunctionTypeParameter 189..192 mode=read
+              ParameterType 189..192 name="Env" range=none policy=checked
+            FunctionTypeParameter 194..205 mode=read
+              ParameterType 194..205 name="int" range=0..=125 policy=checked
+            ResultType 210..215 name="never" range=none policy=checked
+            Effect 224..227 kind=env
+        Name 230..234 name="stop"
+      Call 239..255 name="callback"
+        Name 248..251 name="env"
+        Integer 253..254 magnitude=7 negative=false long_suffix=false

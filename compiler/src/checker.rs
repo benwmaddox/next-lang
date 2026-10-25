@@ -551,7 +551,7 @@ impl Checker {
                 let result = function
                     .result
                     .as_ref()
-                    .map(|ty| self.parse_type(ty))
+                    .map(|ty| self.parse_function_result_type(ty))
                     .transpose()?
                     .unwrap_or(Ty::Unit);
                 let signature = Signature { id, params, result };
@@ -1427,6 +1427,20 @@ impl Checker {
         Ok(result)
     }
 
+    fn parse_function_result_type(&mut self, ty: &TypeAst) -> Result<Ty, CheckError> {
+        if ty.name == "never"
+            && ty.args.is_empty()
+            && ty.const_args.is_empty()
+            && ty.array_caps.is_empty()
+            && ty.range.is_none()
+            && ty.function.is_none()
+        {
+            Ok(Ty::Never)
+        } else {
+            self.parse_type(ty)
+        }
+    }
+
     fn parse_function_type(&mut self, function: &FunctionTypeAst) -> Result<Ty, CheckError> {
         let params = function
             .params
@@ -1448,7 +1462,7 @@ impl Checker {
         let result = function
             .result
             .as_deref()
-            .map(|result| self.parse_type(result))
+            .map(|result| self.parse_function_result_type(result))
             .transpose()?
             .unwrap_or(Ty::Unit);
         if self.type_contains_pool(result) {
@@ -3805,7 +3819,20 @@ impl Checker {
             }
         }
         let body = self.check_block(&function.body, false, Some(signature.result))?;
-        if signature.result != Ty::Unit && body.falls_through && body.tail.is_none() {
+        if signature.result == Ty::Never && body.falls_through {
+            return Err(CheckError {
+                span: function.body.span,
+                message: format!(
+                    "function '{}' can complete normally; every path in a '-> never' function must end in a never expression",
+                    function.name
+                ),
+            });
+        }
+        if signature.result != Ty::Unit
+            && signature.result != Ty::Never
+            && body.falls_through
+            && body.tail.is_none()
+        {
             return Err(CheckError {
                 span: function.body.span,
                 message: format!(
@@ -4990,6 +5017,16 @@ impl Checker {
                         message:
                             "a test cannot return; let the test finish so all expectations run"
                                 .to_owned(),
+                    });
+                }
+                if self.current_return == Ty::Never {
+                    let function_name = &self.ast_functions[self.current_function].name;
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message: format!(
+                            "function '{}' returns never and cannot use 'return'; end every path with a never expression",
+                            function_name
+                        ),
                     });
                 }
                 let result = match value {
@@ -8552,7 +8589,7 @@ impl Checker {
         let result = function
             .result
             .as_ref()
-            .map(|result| self.parse_type(result))
+            .map(|result| self.parse_function_result_type(result))
             .transpose();
         self.current_generic_owners = previous_owners;
         self.current_generic_capacities = previous_capacities;
@@ -11047,6 +11084,16 @@ impl Checker {
                         message:
                             "a test cannot return; let the test finish so all expectations run"
                                 .to_owned(),
+                    });
+                }
+                if self.current_return == Ty::Never {
+                    let function_name = &self.ast_functions[self.current_function].name;
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: format!(
+                            "function '{}' returns never and cannot use 'return'; end every path with a never expression",
+                            function_name
+                        ),
                     });
                 }
                 let typed = match value {

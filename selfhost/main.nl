@@ -1,4 +1,4 @@
-fn usage(env: Env) {
+fn usage(env: Env) -> never {
     match env.err.write(b"usage: nlc run selfhost -- lex <package> [--tokens] [--tree]\n") {
         ok(_) => env.exit(3),
         err(_) => env.exit(3),
@@ -7,16 +7,16 @@ fn usage(env: Env) {
 
 fn main(env: Env) {
     let args = env.args()
-    if args.count() < 2L || args.count() > 4L { usage(env); env.exit(3) }
+    if args.count() < 2L || args.count() > 4L { usage(env) }
 
     let command = match args.get(0L) {
         some(value) => value,
-        none => { usage(env); env.exit(3) },
+        none => usage(env),
     }
-    if !argument_equals(command, "lex") { usage(env); env.exit(3) }
+    if !argument_equals(command, "lex") { usage(env) }
     let package = match args.get(1L) {
         some(value) => value,
-        none => { usage(env); env.exit(3) },
+        none => usage(env),
     }
 
     var want_tokens = false
@@ -24,20 +24,19 @@ fn main(env: Env) {
     for flag_index in 2L..args.count() {
         let flag = match args.get(flag_index) {
             some(value) => value,
-            none => { usage(env); env.exit(3) },
+            none => usage(env),
         }
         if argument_equals(flag, "--tokens") {
-            if want_tokens { usage(env); env.exit(3) }
+            if want_tokens { usage(env) }
             want_tokens = true
         } else if argument_equals(flag, "--tree") {
-            if want_tree { usage(env); env.exit(3) }
+            if want_tree { usage(env) }
             want_tree = true
         } else {
             usage(env)
-            env.exit(3)
         }
     }
-    if want_tree { fail_tool(env, "not implemented yet"); env.exit(3) }
+    if want_tree { fail_tool(env, "not implemented yet") }
 
     var entries: list<DirEntry, MAX_DIRECTORY_ENTRIES> = list {}
     var source: Bytes max MAX_SOURCE_BYTES_PER_PACKAGE = Bytes.empty()

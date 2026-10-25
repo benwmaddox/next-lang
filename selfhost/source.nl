@@ -181,21 +181,21 @@ fn write_file_count_limit(out: Out) -> Result<(), IoError> {
     write_diagnostic(out, b"<package>", 1L, 1L, "source file limit of 256 per package exceeded")
 }
 
-fn fail_tool(env: Env, message: Ascii max 160) {
+fn fail_tool(env: Env, message: Ascii max 160) -> never {
     match write_tool_error(env.err, message) {
         ok(_) => env.exit(3),
         err(_) => env.exit(3),
     }
 }
 
-fn fail_diagnostic(env: Env, result: Result<(), IoError>) {
+fn fail_diagnostic(env: Env, result: Result<(), IoError>) -> never {
     match result {
         ok(_) => env.exit(2),
         err(_) => env.exit(3),
     }
 }
 
-fn fail_lex(env: Env, file: Bytes max 4096, problem: LexProblem) {
+fn fail_lex(env: Env, file: Bytes max 4096, problem: LexProblem) -> never {
     match write_lex_diagnostic(env.err, file, problem) {
         ok(_) => env.exit(2),
         err(_) => env.exit(3),
@@ -232,7 +232,7 @@ fn load_and_lex(
             let file_name = display_name(entry.name)
             let path = match env.fs.join(package, entry.name) {
                 ok(value) => value,
-                err(_) => { fail_tool(env, "cannot join source path"); env.exit(3) },
+                err(_) => fail_tool(env, "cannot join source path"),
             }
             match env.fs.read(path, file_data) {
                 ok(_) => (),
@@ -267,7 +267,7 @@ fn load_and_lex(
             let first_token = tokens.count()
             let summary = match lex_file(source, base, file_length, tokens, delimiters) {
                 ok(value) => value,
-                err(problem) => { fail_lex(env, file_name, problem); env.exit(2) },
+                err(problem) => fail_lex(env, file_name, problem),
             }
             if tokens.count() > MAX_TOKENS_PER_PACKAGE {
                 fail_diagnostic(env, write_package_token_limit(env.err, file_name))

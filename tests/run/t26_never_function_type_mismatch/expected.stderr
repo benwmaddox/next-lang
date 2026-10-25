@@ -1,0 +1,1 @@
+main.nl:6:61: error: expected fn(Env, int 0..=125) -> int effects env, found fn(Env, int 0..=125) -> never; cast explicitly with (fn(Env, int 0..=125) -> int effects env)value

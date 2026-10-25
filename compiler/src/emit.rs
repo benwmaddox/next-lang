@@ -10730,6 +10730,10 @@ impl<'a> FunctionEmitter<'a> {
         let lowered = call_args.join(", ");
         if signature.result == "void" {
             self.instruction(format!("call void @nl_fn_{function_id}({lowered})"));
+            if function.result == Ty::Never {
+                self.terminate("unreachable");
+                return String::new();
+            }
             self.finish_call_argument_regions(&regions, &saved_top);
             if signature.result_destination && result_destination.is_none() {
                 let value = self.temp();
@@ -10865,9 +10869,13 @@ impl<'a> FunctionEmitter<'a> {
             } else {
                 String::new()
             }
-        } else if result_ty == Ty::Unit {
+        } else if result_ty == Ty::Unit || result_ty == Ty::Never {
             self.instruction(format!("call void {function_value}({lowered})"));
-            self.finish_call_argument_regions(&regions, &saved_top);
+            if result_ty == Ty::Never {
+                self.terminate("unreachable");
+            } else {
+                self.finish_call_argument_regions(&regions, &saved_top);
+            }
             String::new()
         } else {
             let value = self.temp();

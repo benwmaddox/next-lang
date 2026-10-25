@@ -1,0 +1,1 @@
+main.nl:2:32: error: function 'fail' returns never and cannot use 'return'; end every path with a never expression

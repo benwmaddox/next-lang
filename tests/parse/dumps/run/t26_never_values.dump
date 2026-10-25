@@ -1,0 +1,223 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "fail"
+LParen 7 1 1 8 "("
+Ident 8 3 1 9 "env"
+Colon 11 1 1 12 ":"
+Ident 13 3 1 14 "Env"
+Comma 16 1 1 17 ","
+Ident 18 4 1 19 "code"
+Colon 22 1 1 23 ":"
+Ident 24 3 1 25 "int"
+Number 28 1 1 29 "0"
+RangeInclusive 29 3 1 30 "..="
+Number 32 3 1 33 "125"
+RParen 35 1 1 36 ")"
+Arrow 37 2 1 38 "->"
+Ident 40 5 1 41 "never"
+LBrace 46 1 1 47 "{"
+Newline 47 1 1 48 "\n"
+Ident 52 3 2 5 "env"
+Dot 55 1 2 8 "."
+Ident 56 4 2 9 "exit"
+LParen 60 1 2 13 "("
+Ident 61 4 2 14 "code"
+RParen 65 1 2 18 ")"
+Newline 66 1 2 19 "\n"
+RBrace 67 1 3 1 "}"
+Newline 68 1 3 2 "\n"
+Ident 70 2 5 1 "fn"
+Ident 73 10 5 4 "fail_again"
+LParen 83 1 5 14 "("
+Ident 84 3 5 15 "env"
+Colon 87 1 5 18 ":"
+Ident 89 3 5 20 "Env"
+Comma 92 1 5 23 ","
+Ident 94 4 5 25 "code"
+Colon 98 1 5 29 ":"
+Ident 100 3 5 31 "int"
+Number 104 1 5 35 "0"
+RangeInclusive 105 3 5 36 "..="
+Number 108 3 5 39 "125"
+RParen 111 1 5 42 ")"
+Arrow 113 2 5 44 "->"
+Ident 116 5 5 47 "never"
+LBrace 122 1 5 53 "{"
+Newline 123 1 5 54 "\n"
+Ident 128 4 6 5 "fail"
+LParen 132 1 6 9 "("
+Ident 133 3 6 10 "env"
+Comma 136 1 6 13 ","
+Ident 138 4 6 15 "code"
+RParen 142 1 6 19 ")"
+Newline 143 1 6 20 "\n"
+RBrace 144 1 7 1 "}"
+Newline 145 1 7 2 "\n"
+Ident 147 2 9 1 "fn"
+Ident 150 6 9 4 "accept"
+LParen 156 1 9 10 "("
+Ident 157 5 9 11 "value"
+Colon 162 1 9 16 ":"
+Ident 164 3 9 18 "int"
+RParen 167 1 9 21 ")"
+Arrow 169 2 9 23 "->"
+Ident 172 3 9 26 "int"
+LBrace 176 1 9 30 "{"
+Ident 178 5 9 32 "value"
+RBrace 184 1 9 38 "}"
+Newline 185 1 9 39 "\n"
+Ident 187 2 11 1 "fn"
+Ident 190 4 11 4 "main"
+LParen 194 1 11 8 "("
+Ident 195 3 11 9 "env"
+Colon 198 1 11 12 ":"
+Ident 200 3 11 14 "Env"
+RParen 203 1 11 17 ")"
+Arrow 205 2 11 19 "->"
+Ident 208 6 11 22 "Result"
+Lt 214 1 11 28 "<"
+LParen 215 1 11 29 "("
+RParen 216 1 11 30 ")"
+Comma 217 1 11 31 ","
+Ident 219 7 11 33 "IoError"
+Gt 226 1 11 40 ">"
+LBrace 228 1 11 42 "{"
+Newline 229 1 11 43 "\n"
+Ident 234 3 12 5 "let"
+Ident 238 5 12 9 "first"
+Colon 243 1 12 14 ":"
+Ident 245 3 12 16 "int"
+Eq 249 1 12 20 "="
+Ident 251 2 12 22 "if"
+Ident 254 4 12 25 "true"
+LBrace 259 1 12 30 "{"
+Number 261 2 12 32 "10"
+RBrace 264 1 12 35 "}"
+Ident 266 4 12 37 "else"
+LBrace 271 1 12 42 "{"
+Ident 273 6 12 44 "accept"
+LParen 279 1 12 50 "("
+Ident 280 10 12 51 "fail_again"
+LParen 290 1 12 61 "("
+Ident 291 3 12 62 "env"
+Comma 294 1 12 65 ","
+Number 296 1 12 67 "9"
+RParen 297 1 12 68 ")"
+RParen 298 1 12 69 ")"
+RBrace 300 1 12 71 "}"
+Newline 301 1 12 72 "\n"
+Ident 306 3 13 5 "let"
+Ident 310 6 13 9 "second"
+Colon 316 1 13 15 ":"
+Ident 318 3 13 17 "int"
+Eq 322 1 13 21 "="
+Ident 324 5 13 23 "match"
+Ident 330 4 13 29 "true"
+LBrace 335 1 13 34 "{"
+Newline 336 1 13 35 "\n"
+Ident 345 4 14 9 "true"
+FatArrow 350 2 14 14 "=>"
+Number 353 2 14 17 "20"
+Comma 355 1 14 19 ","
+Newline 356 1 14 20 "\n"
+Ident 365 5 15 9 "false"
+FatArrow 371 2 15 15 "=>"
+Ident 374 6 15 18 "accept"
+LParen 380 1 15 24 "("
+Ident 381 4 15 25 "fail"
+LParen 385 1 15 29 "("
+Ident 386 3 15 30 "env"
+Comma 389 1 15 33 ","
+Number 391 1 15 35 "8"
+RParen 392 1 15 36 ")"
+RParen 393 1 15 37 ")"
+Comma 394 1 15 38 ","
+Newline 395 1 15 39 "\n"
+RBrace 400 1 16 5 "}"
+Newline 401 1 16 6 "\n"
+Ident 406 5 17 5 "print"
+LParen 411 1 17 10 "("
+Ident 412 5 17 11 "first"
+Plus 418 1 17 17 "+"
+Ident 420 6 17 19 "second"
+RParen 426 1 17 25 ")"
+Newline 427 1 17 26 "\n"
+Ident 432 2 18 5 "ok"
+LParen 434 1 18 7 "("
+LParen 435 1 18 8 "("
+RParen 436 1 18 9 ")"
+RParen 437 1 18 10 ")"
+Newline 438 1 18 11 "\n"
+RBrace 439 1 19 1 "}"
+Newline 440 1 19 2 "\n"
+Eof 441 0 20 1 ""
+== tree ==
+file "main.nl"
+Program 0..441
+  Function 0..68 name="fail" recursive=false generics=[]
+    Parameter 8..16 name="env" mode=read
+      ParameterType 13..16 name="Env" range=none policy=checked
+    Parameter 18..35 name="code" mode=read
+      ParameterType 24..35 name="int" range=0..=125 policy=checked
+    ResultType 40..45 name="never" range=none policy=checked
+    Block 46..68
+      MethodCall 52..66 name="exit"
+        Name 52..55 name="env"
+        Name 61..65 name="code"
+  Function 70..145 name="fail_again" recursive=false generics=[]
+    Parameter 84..92 name="env" mode=read
+      ParameterType 89..92 name="Env" range=none policy=checked
+    Parameter 94..111 name="code" mode=read
+      ParameterType 100..111 name="int" range=0..=125 policy=checked
+    ResultType 116..121 name="never" range=none policy=checked
+    Block 122..145
+      Call 128..143 name="fail"
+        Name 133..136 name="env"
+        Name 138..142 name="code"
+  Function 147..185 name="accept" recursive=false generics=[]
+    Parameter 157..167 name="value" mode=read
+      ParameterType 164..167 name="int" range=none policy=checked
+    ResultType 172..175 name="int" range=none policy=checked
+    Block 176..185
+      Name 178..183 name="value"
+  Function 187..440 name="main" recursive=false generics=[]
+    Parameter 195..203 name="env" mode=read
+      ParameterType 200..203 name="Env" range=none policy=checked
+    ResultType 208..227 name="Result" range=none policy=checked
+      TypeArgument 215..217 name="()" range=none policy=checked
+      TypeArgument 219..226 name="IoError" range=none policy=checked
+    Block 228..440
+      Let 234..301 mutable=false name="first"
+        Annotation 245..248 name="int" range=none policy=checked
+        If 251..301
+          Bool 254..258 value=true
+          Block 259..265
+            Integer 261..263 magnitude=10 negative=false long_suffix=false
+          Block 271..301
+            Call 273..299 name="accept"
+              Call 280..298 name="fail_again"
+                Name 291..294 name="env"
+                Integer 296..297 magnitude=9 negative=false long_suffix=false
+      Let 306..401 mutable=false name="second"
+        Annotation 318..321 name="int" range=none policy=checked
+        Match 324..401
+          Bool 330..334 value=true
+          MatchArm 345..355
+            BoolPattern 345..349 value=true
+            Block 353..355
+              Integer 353..355 magnitude=20 negative=false long_suffix=false
+          MatchArm 365..394
+            BoolPattern 365..370 value=false
+            Block 374..394
+              Call 374..394 name="accept"
+                Call 381..393 name="fail"
+                  Name 386..389 name="env"
+                  Integer 391..392 magnitude=8 negative=false long_suffix=false
+      ExpressionStatement 406..427
+        Call 406..427 name="print"
+          Binary 412..426 op=add
+            Name 412..417 name="first"
+            Name 420..426 name="second"
+      Call 432..438 name="ok"
+        Unit 435..437

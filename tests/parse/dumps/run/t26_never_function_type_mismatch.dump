@@ -1,0 +1,87 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "stop"
+LParen 7 1 1 8 "("
+Ident 8 3 1 9 "env"
+Colon 11 1 1 12 ":"
+Ident 13 3 1 14 "Env"
+Comma 16 1 1 17 ","
+Ident 18 4 1 19 "code"
+Colon 22 1 1 23 ":"
+Ident 24 3 1 25 "int"
+Number 28 1 1 29 "0"
+RangeInclusive 29 3 1 30 "..="
+Number 32 3 1 33 "125"
+RParen 35 1 1 36 ")"
+Arrow 37 2 1 38 "->"
+Ident 40 5 1 41 "never"
+LBrace 46 1 1 47 "{"
+Newline 47 1 1 48 "\n"
+Ident 52 3 2 5 "env"
+Dot 55 1 2 8 "."
+Ident 56 4 2 9 "exit"
+LParen 60 1 2 13 "("
+Ident 61 4 2 14 "code"
+RParen 65 1 2 18 ")"
+Newline 66 1 2 19 "\n"
+RBrace 67 1 3 1 "}"
+Newline 68 1 3 2 "\n"
+Ident 70 2 5 1 "fn"
+Ident 73 4 5 4 "main"
+LParen 77 1 5 8 "("
+Ident 78 3 5 9 "env"
+Colon 81 1 5 12 ":"
+Ident 83 3 5 14 "Env"
+RParen 86 1 5 17 ")"
+LBrace 88 1 5 19 "{"
+Newline 89 1 5 20 "\n"
+Ident 94 3 6 5 "let"
+Ident 98 8 6 9 "callback"
+Colon 106 1 6 17 ":"
+Ident 108 2 6 19 "fn"
+LParen 110 1 6 21 "("
+Ident 111 3 6 22 "Env"
+Comma 114 1 6 25 ","
+Ident 116 3 6 27 "int"
+Number 120 1 6 31 "0"
+RangeInclusive 121 3 6 32 "..="
+Number 124 3 6 35 "125"
+RParen 127 1 6 38 ")"
+Arrow 129 2 6 40 "->"
+Ident 132 3 6 43 "int"
+Ident 136 7 6 47 "effects"
+Ident 144 3 6 55 "env"
+Eq 148 1 6 59 "="
+Ident 150 4 6 61 "stop"
+Newline 154 1 6 65 "\n"
+RBrace 155 1 7 1 "}"
+Newline 156 1 7 2 "\n"
+Eof 157 0 8 1 ""
+== tree ==
+file "main.nl"
+Program 0..157
+  Function 0..68 name="stop" recursive=false generics=[]
+    Parameter 8..16 name="env" mode=read
+      ParameterType 13..16 name="Env" range=none policy=checked
+    Parameter 18..35 name="code" mode=read
+      ParameterType 24..35 name="int" range=0..=125 policy=checked
+    ResultType 40..45 name="never" range=none policy=checked
+    Block 46..68
+      MethodCall 52..66 name="exit"
+        Name 52..55 name="env"
+        Name 61..65 name="code"
+  Function 70..156 name="main" recursive=false generics=[]
+    Parameter 78..86 name="env" mode=read
+      ParameterType 83..86 name="Env" range=none policy=checked
+    Block 88..156
+      Let 94..154 mutable=false name="callback"
+        Annotation 108..147 name="fn" range=none policy=checked
+          FunctionType 108..147
+            FunctionTypeParameter 111..114 mode=read
+              ParameterType 111..114 name="Env" range=none policy=checked
+            FunctionTypeParameter 116..127 mode=read
+              ParameterType 116..127 name="int" range=0..=125 policy=checked
+            ResultType 132..135 name="int" range=none policy=checked
+            Effect 144..147 kind=env
+        Name 150..154 name="stop"
