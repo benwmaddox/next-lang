@@ -925,18 +925,6 @@ pub fn llvm_type(ty: Ty, types: &[TType]) -> String {
     if matches!(types[ty.0].kind, TTypeKind::Bytes { .. }) {
         return "%nl.bytes".to_owned();
     }
-    if matches!(types[ty.0].kind, TTypeKind::Option(inner) if matches!(types[inner.0].kind, TTypeKind::Ascii { .. }))
-    {
-        return "%nl.option.ascii".to_owned();
-    }
-    if matches!(types[ty.0].kind, TTypeKind::Option(inner) if matches!(types[inner.0].kind, TTypeKind::Text { .. }))
-    {
-        return "%nl.option.text".to_owned();
-    }
-    if matches!(types[ty.0].kind, TTypeKind::Option(inner) if matches!(types[inner.0].kind, TTypeKind::Bytes { .. }))
-    {
-        return "%nl.option.bytes".to_owned();
-    }
     match ty {
         Ty::Int => "i32".to_owned(),
         Ty::Long => "i64".to_owned(),

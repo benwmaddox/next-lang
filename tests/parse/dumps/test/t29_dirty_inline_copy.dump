@@ -1,0 +1,126 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 9 1 4 "duplicate"
+LParen 12 1 1 13 "("
+Ident 13 5 1 14 "value"
+Colon 18 1 1 19 ":"
+Ident 20 5 1 21 "Ascii"
+Ident 26 3 1 27 "max"
+Number 30 7 1 31 "9000000"
+RParen 37 1 1 38 ")"
+Arrow 39 2 1 40 "->"
+Ident 42 5 1 43 "Ascii"
+Ident 48 3 1 49 "max"
+Number 52 7 1 53 "9000000"
+LBrace 60 1 1 61 "{"
+Ident 62 5 1 63 "value"
+RBrace 68 1 1 69 "}"
+Newline 69 1 1 70 "\n"
+Ident 71 4 3 1 "test"
+String 76 43 3 6 "\"copy only touches live inline field bytes\""
+LBrace 120 1 3 50 "{"
+Newline 121 1 3 51 "\n"
+Ident 126 3 4 5 "var"
+Ident 130 6 4 9 "source"
+Colon 136 1 4 15 ":"
+Ident 138 5 4 17 "Ascii"
+Ident 144 3 4 23 "max"
+Number 148 7 4 27 "9000000"
+Eq 156 1 4 35 "="
+Ident 158 5 4 37 "Ascii"
+Dot 163 1 4 42 "."
+Ident 164 5 4 43 "empty"
+LParen 169 1 4 48 "("
+RParen 170 1 4 49 ")"
+Newline 171 1 4 50 "\n"
+Ident 176 3 5 5 "for"
+Ident 180 5 5 9 "index"
+Ident 186 2 5 15 "in"
+Number 189 1 5 18 "0"
+Range 190 2 5 19 ".."
+Number 192 7 5 21 "8000000"
+LBrace 200 1 5 29 "{"
+Ident 202 6 5 31 "source"
+PlusEq 209 2 5 38 "+="
+String 212 3 5 41 "\"x\""
+RBrace 216 1 5 45 "}"
+Newline 217 1 5 46 "\n"
+Ident 222 6 6 5 "expect"
+Ident 229 6 6 12 "source"
+Dot 235 1 6 18 "."
+Ident 236 3 6 19 "len"
+LParen 239 1 6 22 "("
+RParen 240 1 6 23 ")"
+EqEq 242 2 6 25 "=="
+Number 245 8 6 28 "8000000L"
+Newline 253 1 6 36 "\n"
+Ident 258 6 7 5 "source"
+Eq 265 1 7 12 "="
+String 267 3 7 14 "\"x\""
+Newline 270 1 7 17 "\n"
+Ident 275 3 8 5 "let"
+Ident 279 6 8 9 "copied"
+Eq 286 1 8 16 "="
+Ident 288 9 8 18 "duplicate"
+LParen 297 1 8 27 "("
+Ident 298 6 8 28 "source"
+RParen 304 1 8 34 ")"
+Newline 305 1 8 35 "\n"
+Ident 310 6 9 5 "expect"
+Ident 317 6 9 12 "copied"
+EqEq 324 2 9 19 "=="
+String 327 3 9 22 "\"x\""
+Newline 330 1 9 25 "\n"
+RBrace 331 1 10 1 "}"
+Newline 332 1 10 2 "\n"
+Ident 334 2 12 1 "fn"
+Ident 337 4 12 4 "main"
+LParen 341 1 12 8 "("
+RParen 342 1 12 9 ")"
+LBrace 344 1 12 11 "{"
+RBrace 345 1 12 12 "}"
+Newline 346 1 12 13 "\n"
+Eof 347 0 13 1 ""
+== tree ==
+file "main.nl"
+Program 0..347
+  Function 0..69 name="duplicate" recursive=false generics=[]
+    Parameter 13..37 name="value" mode=read
+      ParameterType 20..37 name="Ascii" range=none policy=checked
+        Integer 30..37 magnitude=9000000 negative=false long_suffix=false
+    ResultType 42..59 name="Ascii" range=none policy=checked
+      Integer 52..59 magnitude=9000000 negative=false long_suffix=false
+    Block 60..69
+      Name 62..67 name="value"
+  Test 71..332 name="copy only touches live inline field bytes"
+    Block 120..332
+      Let 126..171 mutable=true name="source"
+        Annotation 138..155 name="Ascii" range=none policy=checked
+          Integer 148..155 magnitude=9000000 negative=false long_suffix=false
+        MethodCall 158..171 name="empty"
+          Name 158..163 name="Ascii"
+      For 176..217 name="index" inclusive=false
+        Integer 189..190 magnitude=0 negative=false long_suffix=false
+        Integer 192..199 magnitude=8000000 negative=false long_suffix=false
+        Block 200..217
+          Assign 202..215 op=+=
+            Name 202..208 name="source"
+            ByteString 212..215 value="x"
+      Expect 222..253 source="expect source.len() == 8000000L"
+        Binary 229..253 op=eq
+          MethodCall 229..241 name="len"
+            Name 229..235 name="source"
+          Integer 245..253 magnitude=8000000 negative=false long_suffix=true
+      Assign 258..270 op==
+        Name 258..264 name="source"
+        ByteString 267..270 value="x"
+      Let 275..305 mutable=false name="copied"
+        Call 288..305 name="duplicate"
+          Name 298..304 name="source"
+      Expect 310..330 source="expect copied == \"x\""
+        Binary 317..330 op=eq
+          Name 317..323 name="copied"
+          ByteString 327..330 value="x"
+  Function 334..346 name="main" recursive=false generics=[]
+    Block 344..346

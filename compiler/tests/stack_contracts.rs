@@ -178,7 +178,7 @@ fn worked_reservation_is_small_and_reports_loop_growth() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("entry point main"));
     assert!(
-        stdout.contains("data stack worst case: 40348 bytes"),
+        stdout.contains("data stack worst case: 40332 bytes"),
         "{stdout}"
     );
     assert!(

@@ -667,12 +667,6 @@ impl Checker {
 
     fn check_constant_expr(&mut self, id: usize) -> Result<TConstExpr, CheckError> {
         let declaration = self.ast_constants[id].clone();
-        if self.type_has_unsupported_static_string_sum(self.constant_types[id]) {
-            return Err(CheckError {
-                span: declaration.ty.span,
-                message: "constant values with enum payloads containing Ascii, Text, or Bytes cannot be emitted as static data; construct the enum at runtime instead".to_owned(),
-            });
-        }
         self.current_function = 0;
         self.current_return = self.constant_types[id];
         self.current_is_test = false;
@@ -1406,7 +1400,7 @@ impl Checker {
                 cap_expr.span,
             );
         }
-        let mut size_cache = vec![None; self.types.len()];
+        let mut size_cache = vec![None; self.types.len() * 2];
         let bytes = self.type_size_checked(result, &mut size_cache, ty.span)?;
         if bytes > i64::MAX as u128 {
             return Err(CheckError {
@@ -1734,81 +1728,6 @@ impl Checker {
                 _ => false,
             }
         }
-        visit(self, ty, &mut std::collections::HashSet::new())
-    }
-
-    fn type_has_unsupported_static_string_sum(&self, ty: Ty) -> bool {
-        fn contains_string(
-            checker: &Checker,
-            ty: Ty,
-            seen: &mut std::collections::HashSet<Ty>,
-        ) -> bool {
-            if !seen.insert(ty) {
-                return false;
-            }
-            match &checker.types[ty.0].kind {
-                TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. } => true,
-                TTypeKind::Refinement { base, .. } => contains_string(checker, *base, seen),
-                TTypeKind::Struct(fields) => fields
-                    .iter()
-                    .any(|field| contains_string(checker, field.ty, seen)),
-                TTypeKind::Enum(cases) => cases
-                    .iter()
-                    .flat_map(|case| &case.payload)
-                    .any(|field| contains_string(checker, *field, seen)),
-                TTypeKind::Option(inner) => contains_string(checker, *inner, seen),
-                TTypeKind::Result(ok, err) => {
-                    contains_string(checker, *ok, seen) || contains_string(checker, *err, seen)
-                }
-                TTypeKind::Array { element, .. }
-                | TTypeKind::List { element, .. }
-                | TTypeKind::Queue { element, .. }
-                | TTypeKind::Ring { element, .. }
-                | TTypeKind::Grid { element, .. }
-                | TTypeKind::Pool { element, .. } => contains_string(checker, *element, seen),
-                TTypeKind::Map { key, value, .. } => {
-                    contains_string(checker, *key, seen) || contains_string(checker, *value, seen)
-                }
-                TTypeKind::Set { key, .. } => contains_string(checker, *key, seen),
-                _ => false,
-            }
-        }
-
-        fn visit(checker: &Checker, ty: Ty, seen: &mut std::collections::HashSet<Ty>) -> bool {
-            if !seen.insert(ty) {
-                return false;
-            }
-            match &checker.types[ty.0].kind {
-                TTypeKind::Option(inner) => {
-                    contains_string(checker, *inner, &mut std::collections::HashSet::new())
-                }
-                TTypeKind::Result(ok, err) => {
-                    contains_string(checker, *ok, &mut std::collections::HashSet::new())
-                        || contains_string(checker, *err, &mut std::collections::HashSet::new())
-                }
-                TTypeKind::Enum(cases) => {
-                    cases.iter().flat_map(|case| &case.payload).any(|field| {
-                        contains_string(checker, *field, &mut std::collections::HashSet::new())
-                    })
-                }
-                TTypeKind::Refinement { base, .. } => visit(checker, *base, seen),
-                TTypeKind::Struct(fields) => {
-                    fields.iter().any(|field| visit(checker, field.ty, seen))
-                }
-                TTypeKind::Array { element, .. }
-                | TTypeKind::List { element, .. }
-                | TTypeKind::Queue { element, .. }
-                | TTypeKind::Ring { element, .. }
-                | TTypeKind::Grid { element, .. }
-                | TTypeKind::Pool { element, .. } => visit(checker, *element, seen),
-                TTypeKind::Map { key, value, .. } => {
-                    visit(checker, *key, seen) || visit(checker, *value, seen)
-                }
-                TTypeKind::Set { key, .. } => visit(checker, *key, seen),
-                _ => false,
-            }
-        }
-
         visit(self, ty, &mut std::collections::HashSet::new())
     }
 
@@ -2526,6 +2445,25 @@ impl Checker {
         cache: &mut [Option<u128>],
         span: Span,
     ) -> Result<u128, CheckError> {
+        self.type_size_checked_mode(ty, cache, span, true)
+    }
+
+    fn type_size_checked_legacy(
+        &self,
+        ty: Ty,
+        cache: &mut [Option<u128>],
+        span: Span,
+    ) -> Result<u128, CheckError> {
+        self.type_size_checked_mode(ty, cache, span, false)
+    }
+
+    fn type_size_checked_mode(
+        &self,
+        ty: Ty,
+        cache: &mut [Option<u128>],
+        span: Span,
+        inline_growing: bool,
+    ) -> Result<u128, CheckError> {
         if ty == Ty::Int {
             return Ok(4);
         }
@@ -2538,7 +2476,8 @@ impl Checker {
         if ty == Ty::Unit || ty == Ty::Never {
             return Ok(0);
         }
-        if let Some(size) = cache.get(ty.0).and_then(|v| *v) {
+        let cache_index = ty.0 * 2 + usize::from(inline_growing);
+        if let Some(size) = cache.get(cache_index).and_then(|v| *v) {
             return Ok(size);
         }
         let checked_add = |left: u128, right: u128| {
@@ -2583,13 +2522,30 @@ impl Checker {
             Ok(extra)
         };
         let size = match &self.types[ty.0].kind {
-            TTypeKind::Refinement { base, .. } => self.type_size_checked(*base, cache, span)?,
-            TTypeKind::Ascii { .. } | TTypeKind::Bytes { .. } => 16,
-            TTypeKind::Text { .. } => 24,
+            TTypeKind::Refinement { base, .. } => {
+                self.type_size_checked_mode(*base, cache, span, inline_growing)?
+            }
+            TTypeKind::Ascii { max_bytes } | TTypeKind::Bytes { max_bytes } => {
+                if inline_growing {
+                    checked_add(8, *max_bytes as u128)?
+                } else {
+                    16
+                }
+            }
+            TTypeKind::Text { max_bytes, .. } => {
+                if inline_growing {
+                    checked_add(16, *max_bytes as u128)?
+                } else {
+                    24
+                }
+            }
             TTypeKind::Struct(fields) => {
                 let mut size = 0u128;
                 for field in fields {
-                    size = checked_add(size, self.type_size_checked(field.ty, cache, span)?)?;
+                    size = checked_add(
+                        size,
+                        self.type_size_checked_mode(field.ty, cache, span, inline_growing)?,
+                    )?;
                 }
                 size
             }
@@ -2611,7 +2567,7 @@ impl Checker {
                     payload = checked_add(
                         payload,
                         checked_mul(
-                            self.type_size_checked(lane, cache, span)?,
+                            self.type_size_checked_legacy(lane, cache, span)?,
                             *capacity as u128,
                         )?,
                     )?;
@@ -2636,8 +2592,8 @@ impl Checker {
                 value,
                 capacity,
             } => {
-                let key_size = self.type_size_checked(*key, cache, span)?;
-                let value_size = self.type_size_checked(*value, cache, span)?;
+                let key_size = self.type_size_checked_legacy(*key, cache, span)?;
+                let value_size = self.type_size_checked_legacy(*value, cache, span)?;
                 let per_entry = checked_add(17, checked_add(key_size, value_size)?)?;
                 let key_storage = match self.types[key.0].kind {
                     TTypeKind::Ascii { max_bytes } => {
@@ -2651,7 +2607,7 @@ impl Checker {
                 )?
             }
             TTypeKind::Set { key, capacity } => {
-                let key_size = self.type_size_checked(*key, cache, span)?;
+                let key_size = self.type_size_checked_legacy(*key, cache, span)?;
                 let per_entry = checked_add(17, key_size)?;
                 let key_storage = match self.types[key.0].kind {
                     TTypeKind::Ascii { max_bytes } => {
@@ -2679,7 +2635,7 @@ impl Checker {
                     payload = checked_add(
                         payload,
                         checked_mul(
-                            self.type_size_checked(lane, cache, span)?,
+                            self.type_size_checked_legacy(lane, cache, span)?,
                             *capacity as u128,
                         )?,
                     )?;
@@ -2697,8 +2653,10 @@ impl Checker {
                 for case in self.types[ty.0].cases() {
                     let mut case_size = 0u128;
                     for field in case.payload {
-                        case_size =
-                            checked_add(case_size, self.type_size_checked(field, cache, span)?)?;
+                        case_size = checked_add(
+                            case_size,
+                            self.type_size_checked_mode(field, cache, span, inline_growing)?,
+                        )?;
                     }
                     payload = payload.max(case_size);
                 }
@@ -2716,7 +2674,7 @@ impl Checker {
             | TTypeKind::Unit
             | TTypeKind::Never => unreachable!(),
         };
-        if let Some(slot) = cache.get_mut(ty.0) {
+        if let Some(slot) = cache.get_mut(cache_index) {
             *slot = Some(size);
         }
         Ok(size)
@@ -2792,7 +2750,7 @@ impl Checker {
                 }
                 _ => {}
             }
-            let mut cache = vec![None; self.types.len()];
+            let mut cache = vec![None; self.types.len() * 2];
             let size = self.type_size_checked(Ty(id), &mut cache, definition.span)?;
             if size > i64::MAX as u128 {
                 return Err(CheckError { span: definition.span, message: "collection size overflows long; reduce a capacity or the nested element size".to_owned() });
@@ -4039,15 +3997,6 @@ impl Checker {
                 });
             }
             let ty = self.global_types[id].expect("registered global type");
-            if effects.reads.is_empty() && self.type_has_unsupported_static_string_sum(ty) {
-                return Err(CheckError {
-                    span: declaration.value.span,
-                    message: format!(
-                        "global '{}' has enum payloads containing Ascii, Text, or Bytes that cannot be emitted as static data; construct the enum at runtime instead",
-                        declaration.name
-                    ),
-                });
-            }
             let initializer = if effects.reads.is_empty() {
                 TGlobalInitializer::Constant(crate::const_eval::evaluate_expression(
                     &declaration.name,
@@ -4308,7 +4257,7 @@ impl Checker {
 
     fn layout_globals(&self, mut globals: Vec<TGlobal>) -> Result<(Vec<TGlobal>, u64), CheckError> {
         let mut offset = 0u128;
-        let mut cache = vec![None; self.types.len()];
+        let mut cache = vec![None; self.types.len() * 2];
         for global in &mut globals {
             offset = offset.checked_add(7).ok_or_else(|| CheckError {
                 span: global.span,
@@ -14418,7 +14367,7 @@ fn check_recursive_region_block(
             } => {
                 let large = checker.type_size_checked(
                     *ty,
-                    &mut vec![None; checker.types.len()],
+                    &mut vec![None; checker.types.len() * 2],
                     statement.span,
                 )? > 4_096;
                 if large {
@@ -14582,7 +14531,7 @@ fn check_recursive_region_block(
                 if let Some(element_ty) = element_ty {
                     if checker.type_size_checked(
                         element_ty,
-                        &mut vec![None; checker.types.len()],
+                        &mut vec![None; checker.types.len() * 2],
                         statement.span,
                     )? > 4_096
                     {
@@ -14942,7 +14891,8 @@ fn check_recursive_region_expr(
             ),
         });
     }
-    if checker.type_size_checked(expr.ty, &mut vec![None; checker.types.len()], expr.span)? > 4_096
+    if checker.type_size_checked(expr.ty, &mut vec![None; checker.types.len() * 2], expr.span)?
+        > 4_096
         && matches!(
             expr.kind,
             TExprKind::Call { .. }
@@ -14966,9 +14916,11 @@ fn check_recursive_region_expr(
         _ => return Ok(()),
     };
     for arg in args {
-        let is_large =
-            checker.type_size_checked(arg.ty, &mut vec![None; checker.types.len()], arg.span)?
-                > 4_096;
+        let is_large = checker.type_size_checked(
+            arg.ty,
+            &mut vec![None; checker.types.len() * 2],
+            arg.span,
+        )? > 4_096;
         let gathered_element =
             matches!(arg.kind, TExprKind::Field { .. } | TExprKind::Index { .. });
         if is_large && (!region_expr_is_place(arg) || gathered_element) {

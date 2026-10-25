@@ -1,0 +1,28 @@
+Fields { ascii: name, text: hé😀, bytes: abc }
+true
+10
+Nested { fields: Fields { ascii: name, text: hé😀, bytes: abc }, count: 42 }
+true
+true
+Stored(Nested { fields: Fields { ascii: name, text: hé😀, bytes: abc }, count: 42 })
+true
+Raw(raw, 多字, binary)
+true
+some(Fields { ascii: name, text: hé😀, bytes: abc })
+true
+true
+ok(Nested { fields: Fields { ascii: name, text: hé😀, bytes: abc }, count: 42 })
+true
+err(Fields { ascii: name, text: hé😀, bytes: abc })
+Nested { fields: Fields { ascii: const, text: hé😀, bytes: cbytes }, count: 7 }
+some(Fields { ascii: option, text: text, bytes: bytes })
+Raw(constant, enum, case)
+err(Fields { ascii: error, text: constant, bytes: err })
+15
+Nested { fields: Fields { ascii: global, text: 世界, bytes: global }, count: 9 }
+some(Fields { ascii: global, text: option, bytes: global })
+err(Fields { ascii: global, text: error, bytes: global })
+Nested { fields: Fields { ascii: global, text: é😀, bytes: done }, count: 9 }
+old
+文字
+arg
