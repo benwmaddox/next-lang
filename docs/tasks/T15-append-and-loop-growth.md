@@ -64,7 +64,7 @@ docs/tasks/T15-report.md.
   }
 
   fn log_line(buf: grow Ascii max 4096, x: Ascii max 40) -> Result<(), Full> {
-      buf.try_append(field(x) ?? return ok(()))   // a capacity error is Full; a parse error is handled by ??
+      match field(x) { ok(f) => buf.try_append(f), err(_) => ok(()) }   // a capacity error is Full; a parse error is handled by match (`??` is for Option only, DESIGN.md)
   }
   ```
 
