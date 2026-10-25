@@ -1,0 +1,1 @@
+main.nl:7:9: error: large value 'scratch' keeps a data-stack region alive across a recursive call; move it out of this cycle or end its scope before the call

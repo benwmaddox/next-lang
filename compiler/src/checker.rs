@@ -402,7 +402,8 @@ impl Checker {
         }
         let (call_graph, indirect_targets) =
             self.resolve_indirect_calls(&functions, direct_call_graph)?;
-        self.check_recursion(&call_graph)?;
+        self.check_recursion(&call_graph, &functions)?;
+        self.check_recursive_regions(&functions, &call_graph)?;
         let constants = crate::const_eval::evaluate_constants(
             &constant_exprs,
             &functions,
@@ -441,6 +442,7 @@ impl Checker {
             global_state_bytes,
             job_headroom_bytes: 256 * 1024 * 1024,
             globals_budget_bytes: 64 * 1024 * 1024,
+            recursion_budget_bytes: 0,
             files: self.files,
             call_graph,
             function_type_targets,
@@ -2472,6 +2474,7 @@ impl Checker {
             body,
             span: function.span,
             is_test: false,
+            recursive: function.recursive,
         })
     }
 
@@ -2983,6 +2986,7 @@ impl Checker {
                 body,
                 span: test.span,
                 is_test: true,
+                recursive: false,
             },
             TTest {
                 name: test.name,
@@ -6300,6 +6304,537 @@ impl Checker {
     }
 
     fn check_expr(&mut self, expr: &Expr, expected: Option<Ty>) -> Result<TExpr, CheckError> {
+        match &expr.kind {
+            ExprKind::Call {
+                name,
+                call_span,
+                args,
+            } => self.check_call_expr(expr, name, call_span, args, expected),
+            ExprKind::IndirectCall { callee, args } => {
+                let typed_callee = self.check_expr(callee, None)?;
+                let checked = self.check_indirect_call(typed_callee, args, expr.span, expected)?;
+                self.finish_expr_allow_never(expr, checked, expected)
+            }
+            ExprKind::MethodCall {
+                receiver,
+                name,
+                method_span,
+                args,
+            } => {
+                let checked = self.check_method_call(
+                    receiver,
+                    name,
+                    *method_span,
+                    args,
+                    expected,
+                    expr.span,
+                )?;
+                self.finish_expr_allow_never(expr, checked, expected)
+            }
+            ExprKind::Binary {
+                op,
+                operator_span,
+                left,
+                right,
+            } => {
+                let saved_suppression = self.suppress_function_value_effect_check;
+                if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+                    self.suppress_function_value_effect_check = true;
+                }
+                let checked = self.check_binary_expr(*op, left, right, expected, *operator_span);
+                self.suppress_function_value_effect_check = saved_suppression;
+                self.finish_expr_allow_never(expr, checked?, expected)
+            }
+            ExprKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                let checked = self.check_if(
+                    condition,
+                    then_block,
+                    else_block.as_ref(),
+                    expected,
+                    true,
+                    expr.span,
+                )?;
+                self.finish_expr_allow_never(expr, (checked.kind, checked.ty), expected)
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                let checked = self.check_match(scrutinee, arms, expected, expr.span)?;
+                self.finish_expr_allow_never(expr, checked, expected)
+            }
+            _ => self.check_expr_inner(expr, expected),
+        }
+    }
+
+    #[inline(never)]
+    fn check_call_expr(
+        &mut self,
+        expr: &Expr,
+        name: &String,
+        call_span: &Span,
+        args: &[Expr],
+        expected: Option<Ty>,
+    ) -> Result<TExpr, CheckError> {
+        if !self.generic_functions.contains_key(name) && self.visible_value_type(name).is_none() {
+            if let Some(signature) = self.signatures.get(name).cloned() {
+                return self
+                    .check_direct_function_call(expr, name, call_span, args, expected, signature);
+            }
+        }
+        self.check_call_expr_general(expr, name, call_span, args, expected)
+    }
+
+    #[inline(never)]
+    fn check_direct_function_call(
+        &mut self,
+        expr: &Expr,
+        name: &String,
+        call_span: &Span,
+        args: &[Expr],
+        expected: Option<Ty>,
+        signature: Signature,
+    ) -> Result<TExpr, CheckError> {
+        if args.len() != signature.params.len() {
+            return Err(CheckError {
+                span: *call_span,
+                message: format!(
+                    "function '{}' takes {} argument(s), but got {}",
+                    name,
+                    signature.params.len(),
+                    args.len()
+                ),
+            });
+        }
+        let mut typed_args = Vec::new();
+        let mut arg_places = Vec::<Option<TPlace>>::new();
+        for (arg, param) in args.iter().zip(signature.params.iter().copied()) {
+            let place = self.resolve_place(arg).ok();
+            for (previous, previous_param) in arg_places.iter().zip(signature.params.iter()) {
+                if (param.mode == ParamMode::Write || previous_param.mode == ParamMode::Write)
+                    && previous.as_ref().zip(place.as_ref()).is_some_and(|(a, b)| {
+                        places_overlap(&self.canonical_place(a), &self.canonical_place(b))
+                    })
+                {
+                    return Err(CheckError { span: arg.span, message: "arguments overlap, and at least one is passed as write; pass separate fields or a copy".to_owned() });
+                }
+            }
+            if param.mode == ParamMode::Write {
+                let place = place.clone().ok_or_else(|| CheckError {
+                    span: arg.span,
+                    message: "a write argument must be an assignable place".to_owned(),
+                })?;
+                if !self.place_is_mutable(&place) {
+                    return Err(CheckError { span: arg.span, message: "a write argument must be a var, a field of a var, or another write parameter".to_owned() });
+                }
+                let canonical = self.canonical_place(&place);
+                let write_collection = matches!(
+                    self.types[place.ty.0].kind,
+                    TTypeKind::Map { .. } | TTypeKind::Set { .. }
+                );
+                if self.active_views.iter().any(|view| {
+                    let view = self.canonical_place(view);
+                    let replaces_map_value = view.path.len() == canonical.path.len()
+                        && view.path.last().is_some_and(|projection| {
+                            matches!(projection, TProjection::Index { is_map: true, .. })
+                        });
+                    places_overlap(&view, &canonical)
+                        && (write_collection
+                            || replaces_map_value
+                            || !places_proven_prefix(&view, &canonical))
+                }) {
+                    return Err(CheckError {
+                        span: arg.span,
+                        message: "cannot pass storage containing a live collection view as write"
+                            .to_owned(),
+                    });
+                }
+                let same_embedded_pool_shape = self.type_contains_pool(param.ty)
+                    && self.specialized_struct_base.get(&place.ty) == Some(&param.ty)
+                    && !self.specialized_struct_owners.contains_key(&place.ty);
+                if place.ty != param.ty && !same_embedded_pool_shape {
+                    return Err(CheckError {
+                        span: arg.span,
+                        message: format!(
+                            "write argument needs exactly {}; found {}",
+                            self.type_name(param.ty),
+                            self.type_name(place.ty)
+                        ),
+                    });
+                }
+                self.invalidate_place(&place);
+                self.invalidate_collection_counts(&place);
+                if same_embedded_pool_shape {
+                    typed_args.push(self.check_expr(arg, None)?);
+                } else {
+                    typed_args.push(self.check_expr(arg, Some(param.ty))?);
+                }
+            } else {
+                typed_args.push(self.check_store(arg, param.ty)?);
+            }
+            arg_places.push(place);
+        }
+        if let Some(want) = expected {
+            self.type_mismatch(signature.result, want, *call_span)?;
+        }
+        if !self.checking_constant && !self.checking_global_initializer {
+            self.edges.push(Edge {
+                from: self.current_function,
+                to: signature.id,
+                span: *call_span,
+            });
+        }
+        self.finish_expr_allow_never(
+            expr,
+            (
+                TExprKind::Call {
+                    target: CallTarget::Function(signature.id),
+                    args: typed_args,
+                    effect: Effect::None,
+                },
+                signature.result,
+            ),
+            expected,
+        )
+    }
+
+    fn check_call_expr_general(
+        &mut self,
+        expr: &Expr,
+        name: &String,
+        call_span: &Span,
+        args: &[Expr],
+        expected: Option<Ty>,
+    ) -> Result<TExpr, CheckError> {
+        let (kind, ty) = {
+            if let Some(value_ty) = self.visible_value_type(name) {
+                if !self.is_function_type(value_ty) {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: format!(
+                            "value '{}' has type {} and cannot be called; use a function-typed value",
+                            name,
+                            self.type_name(value_ty)
+                        ),
+                    });
+                }
+                let name_expr = Expr {
+                    kind: ExprKind::Name(name.clone()),
+                    span: *call_span,
+                };
+                let callee = self.check_expr(&name_expr, None)?;
+                let (kind, result) =
+                    self.check_indirect_call(callee, args, *call_span, expected)?;
+                return self.finish_expr(expr, (kind, result), expected);
+            }
+            if name == "default" {
+                if !args.is_empty() {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: "default takes no arguments".to_owned(),
+                    });
+                }
+                let Some(target) = expected else {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: "default needs an expected type; add a type annotation".to_owned(),
+                    });
+                };
+                let value = self.default_typed_value(target, *call_span)?;
+                return self.finish_expr(expr, (value.kind, target), expected);
+            } else if matches!(name.as_str(), "sort" | "sort_by" | "binary_search") {
+                let checked = self.check_sort_builtin(name, args, *call_span)?;
+                return self.finish_expr(expr, checked, expected);
+            } else if name == "fill" {
+                if args.len() != 1 {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: format!("fill takes one value, but got {}", args.len()),
+                    });
+                }
+                let Some(target) = expected else {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: "fill needs an expected array type; add a T[N] annotation"
+                            .to_owned(),
+                    });
+                };
+                let (element, capacity) = match self.types[target.0].kind {
+                    TTypeKind::Array { element, capacity }
+                    | TTypeKind::Grid {
+                        element, capacity, ..
+                    } => (element, capacity),
+                    _ => {
+                        return Err(CheckError {
+                                span: *call_span,
+                                message: "fill constructs a fixed array or grid; add an array or grid type annotation".to_owned(),
+                            });
+                    }
+                };
+                let value = self.check_store(&args[0], element)?;
+                return self.finish_expr(
+                    expr,
+                    (
+                        TExprKind::Fill {
+                            value: Box::new(value),
+                            capacity,
+                        },
+                        target,
+                    ),
+                    expected,
+                );
+            } else if matches!(name.as_str(), "some" | "none" | "ok" | "err") {
+                self.check_builtin_constructor(name, args, *call_span, expected)?
+                    .unwrap()
+            } else if name == "min" || name == "max" {
+                if args.len() != 2 {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: format!("{} takes two values; got {}", name, args.len()),
+                    });
+                }
+                let (left, right) = self.check_operand_pair(
+                    &args[0],
+                    &args[1],
+                    expected.filter(|ty| self.is_numeric(*ty)),
+                )?;
+                if self.base_type(left.ty) != self.base_type(right.ty) || !self.is_numeric(left.ty)
+                {
+                    return Err(self.mixed_types_error(left.ty, right.ty, *call_span));
+                }
+                let result_ty = self.base_type(left.ty);
+                if let Some(want) = expected {
+                    self.type_mismatch(result_ty, self.base_type(want), *call_span)?;
+                }
+                (
+                    TExprKind::Call {
+                        target: if name == "min" {
+                            CallTarget::Min
+                        } else {
+                            CallTarget::Max
+                        },
+                        args: vec![left, right],
+                        effect: Effect::None,
+                    },
+                    result_ty,
+                )
+            } else if expected.is_some_and(|want| {
+                self.types[want.0].is_sum() && self.find_case_in_type(want, name).is_some()
+            }) {
+                let want = expected.unwrap();
+                let index = self.find_case_in_type(want, name).unwrap().0;
+                self.check_constructor(want, index, args, *call_span, Some(want))?
+            } else if self.types.iter().skip(5).any(|ty| {
+                matches!(ty.kind, TTypeKind::Enum(_))
+                    && ty.cases().iter().any(|case| case.name == *name)
+            }) {
+                self.check_unqualified_constructor(name, args, *call_span, expected)?
+            } else if name == "print" {
+                if args.len() != 1 {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: format!(
+                            "print takes one argument, but got {}; call print(value)",
+                            args.len()
+                        ),
+                    });
+                }
+                let suppress_value_check = matches!(&args[0].kind, ExprKind::Name(value)
+                        if self.signatures.contains_key(value)
+                            && self.find_binding(value).is_none()
+                            && !self.global_ids.contains_key(value)
+                            && !self.constant_ids.contains_key(value));
+                let saved_suppression = self.suppress_function_value_effect_check;
+                self.suppress_function_value_effect_check |= suppress_value_check;
+                let checked_arg = self.check_expr(&args[0], None);
+                self.suppress_function_value_effect_check = saved_suppression;
+                let arg = checked_arg?;
+                if !matches!(self.base_type(arg.ty), Ty::Int | Ty::Long | Ty::Bool)
+                    && !self.types[arg.ty.0].is_sum()
+                    && !matches!(self.types[arg.ty.0].kind, TTypeKind::Struct(_))
+                    && !matches!(
+                        self.types[arg.ty.0].kind,
+                        TTypeKind::Array { .. }
+                            | TTypeKind::List { .. }
+                            | TTypeKind::Queue { .. }
+                            | TTypeKind::Ring { .. }
+                            | TTypeKind::Grid { .. }
+                            | TTypeKind::Map { .. }
+                            | TTypeKind::Set { .. }
+                            | TTypeKind::Pool { .. }
+                            | TTypeKind::Function { .. }
+                    )
+                {
+                    return Err(CheckError {
+                            span: args[0].span,
+                            message: "print supports int, long, bool, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values"
+                                .to_owned(),
+                        });
+                }
+                if let Some(want) = expected {
+                    self.type_mismatch(Ty::Unit, want, *call_span)?;
+                }
+                (
+                    TExprKind::Call {
+                        target: CallTarget::Print,
+                        args: vec![arg],
+                        effect: Effect::Observable,
+                    },
+                    Ty::Unit,
+                )
+            } else {
+                let signature = if self.generic_functions.contains_key(name) {
+                    let (id, actual_owners) =
+                        self.instantiate_generic_function(name, args, *call_span)?;
+                    let placeholders = self
+                        .function_owner_substitutions
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let owner_remap = placeholders
+                        .iter()
+                        .filter_map(|(parameter, placeholder)| {
+                            actual_owners
+                                .get(parameter)
+                                .map(|actual| (*placeholder, *actual))
+                        })
+                        .collect::<HashMap<_, _>>();
+                    let signature = self.substitute_signature_owners(
+                        self.function_signatures[&id].clone(),
+                        &owner_remap,
+                        *call_span,
+                    )?;
+                    signature
+                } else if let Some(signature) = self.signatures.get(name).cloned() {
+                    signature
+                } else {
+                    return Err(self.unknown_function(name, *call_span));
+                };
+                if args.len() != signature.params.len() {
+                    return Err(CheckError {
+                        span: *call_span,
+                        message: format!(
+                            "function '{}' takes {} argument(s), but got {}",
+                            name,
+                            signature.params.len(),
+                            args.len()
+                        ),
+                    });
+                }
+                let mut typed_args = Vec::new();
+                let mut arg_places = Vec::<Option<TPlace>>::new();
+                for (arg, param) in args.iter().zip(signature.params.iter().copied()) {
+                    let place = self.resolve_place(arg).ok();
+                    for (previous, previous_param) in arg_places.iter().zip(signature.params.iter())
+                    {
+                        if (param.mode == ParamMode::Write
+                            || previous_param.mode == ParamMode::Write)
+                            && previous.as_ref().zip(place.as_ref()).is_some_and(|(a, b)| {
+                                places_overlap(&self.canonical_place(a), &self.canonical_place(b))
+                            })
+                        {
+                            return Err(CheckError { span: arg.span, message: "arguments overlap, and at least one is passed as write; pass separate fields or a copy".to_owned() });
+                        }
+                    }
+                    if param.mode == ParamMode::Write {
+                        let place = place.clone().ok_or_else(|| CheckError {
+                            span: arg.span,
+                            message: "a write argument must be an assignable place".to_owned(),
+                        })?;
+                        if !self.place_is_mutable(&place) {
+                            return Err(CheckError { span: arg.span, message: "a write argument must be a var, a field of a var, or another write parameter".to_owned() });
+                        }
+                        let canonical = self.canonical_place(&place);
+                        let write_collection = matches!(
+                            self.types[place.ty.0].kind,
+                            TTypeKind::Map { .. } | TTypeKind::Set { .. }
+                        );
+                        if self.active_views.iter().any(|view| {
+                            let view = self.canonical_place(view);
+                            let replaces_map_value = view.path.len() == canonical.path.len()
+                                && view.path.last().is_some_and(|projection| {
+                                    matches!(projection, TProjection::Index { is_map: true, .. })
+                                });
+                            places_overlap(&view, &canonical)
+                                && (write_collection
+                                    || replaces_map_value
+                                    || !places_proven_prefix(&view, &canonical))
+                        }) {
+                            return Err(CheckError {
+                                span: arg.span,
+                                message:
+                                    "cannot pass storage containing a live collection view as write"
+                                        .to_owned(),
+                            });
+                        }
+                        let same_embedded_pool_shape = self.type_contains_pool(param.ty)
+                            && self.specialized_struct_base.get(&place.ty) == Some(&param.ty)
+                            && !self.specialized_struct_owners.contains_key(&place.ty);
+                        if place.ty != param.ty && !same_embedded_pool_shape {
+                            return Err(CheckError {
+                                span: arg.span,
+                                message: format!(
+                                    "write argument needs exactly {}; found {}",
+                                    self.type_name(param.ty),
+                                    self.type_name(place.ty)
+                                ),
+                            });
+                        }
+                        self.invalidate_place(&place);
+                        self.invalidate_collection_counts(&place);
+                        if same_embedded_pool_shape {
+                            typed_args.push(self.check_expr(arg, None)?);
+                        } else {
+                            typed_args.push(self.check_expr(arg, Some(param.ty))?);
+                        }
+                    } else {
+                        typed_args.push(self.check_store(arg, param.ty)?);
+                    }
+                    arg_places.push(place);
+                }
+                if let Some(want) = expected {
+                    self.type_mismatch(signature.result, want, *call_span)?;
+                }
+                if !self.checking_constant && !self.checking_global_initializer {
+                    self.edges.push(Edge {
+                        from: self.current_function,
+                        to: signature.id,
+                        span: *call_span,
+                    });
+                }
+                (
+                    TExprKind::Call {
+                        target: CallTarget::Function(signature.id),
+                        args: typed_args,
+                        effect: Effect::None,
+                    },
+                    signature.result,
+                )
+            }
+        };
+        self.finish_expr_allow_never(expr, (kind, ty), expected)
+    }
+
+    fn finish_expr_allow_never(
+        &self,
+        expr: &Expr,
+        (kind, ty): (TExprKind, Ty),
+        expected: Option<Ty>,
+    ) -> Result<TExpr, CheckError> {
+        if let Some(want) = expected {
+            if ty != Ty::Never {
+                self.type_mismatch(ty, want, expr.span)?;
+            }
+        }
+        Ok(TExpr {
+            kind,
+            ty,
+            span: expr.span,
+        })
+    }
+
+    fn check_expr_inner(&mut self, expr: &Expr, expected: Option<Ty>) -> Result<TExpr, CheckError> {
         let (kind, ty) = match &expr.kind {
             ExprKind::Unit => {
                 if let Some(want) = expected {
@@ -6832,320 +7367,7 @@ impl Checker {
                     option_ty,
                 )
             }
-            ExprKind::Call {
-                name,
-                call_span,
-                args,
-            } => {
-                if let Some(value_ty) = self.visible_value_type(name) {
-                    if !self.is_function_type(value_ty) {
-                        return Err(CheckError {
-                            span: *call_span,
-                            message: format!(
-                                "value '{}' has type {} and cannot be called; use a function-typed value",
-                                name,
-                                self.type_name(value_ty)
-                            ),
-                        });
-                    }
-                    let name_expr = Expr {
-                        kind: ExprKind::Name(name.clone()),
-                        span: *call_span,
-                    };
-                    let callee = self.check_expr(&name_expr, None)?;
-                    let (kind, result) =
-                        self.check_indirect_call(callee, args, *call_span, expected)?;
-                    return self.finish_expr(expr, (kind, result), expected);
-                }
-                if name == "default" {
-                    if !args.is_empty() {
-                        return Err(CheckError {
-                            span: *call_span,
-                            message: "default takes no arguments".to_owned(),
-                        });
-                    }
-                    let Some(target) = expected else {
-                        return Err(CheckError {
-                            span: *call_span,
-                            message: "default needs an expected type; add a type annotation"
-                                .to_owned(),
-                        });
-                    };
-                    let value = self.default_typed_value(target, *call_span)?;
-                    return self.finish_expr(expr, (value.kind, target), expected);
-                } else if matches!(name.as_str(), "sort" | "sort_by" | "binary_search") {
-                    let checked = self.check_sort_builtin(name, args, *call_span)?;
-                    return self.finish_expr(expr, checked, expected);
-                } else if name == "fill" {
-                    if args.len() != 1 {
-                        return Err(CheckError {
-                            span: *call_span,
-                            message: format!("fill takes one value, but got {}", args.len()),
-                        });
-                    }
-                    let Some(target) = expected else {
-                        return Err(CheckError {
-                            span: *call_span,
-                            message: "fill needs an expected array type; add a T[N] annotation"
-                                .to_owned(),
-                        });
-                    };
-                    let (element, capacity) = match self.types[target.0].kind {
-                        TTypeKind::Array { element, capacity }
-                        | TTypeKind::Grid {
-                            element, capacity, ..
-                        } => (element, capacity),
-                        _ => {
-                            return Err(CheckError {
-                                span: *call_span,
-                                message: "fill constructs a fixed array or grid; add an array or grid type annotation".to_owned(),
-                            });
-                        }
-                    };
-                    let value = self.check_store(&args[0], element)?;
-                    return self.finish_expr(
-                        expr,
-                        (
-                            TExprKind::Fill {
-                                value: Box::new(value),
-                                capacity,
-                            },
-                            target,
-                        ),
-                        expected,
-                    );
-                } else if matches!(name.as_str(), "some" | "none" | "ok" | "err") {
-                    self.check_builtin_constructor(name, args, *call_span, expected)?
-                        .unwrap()
-                } else if name == "min" || name == "max" {
-                    if args.len() != 2 {
-                        return Err(CheckError {
-                            span: *call_span,
-                            message: format!("{} takes two values; got {}", name, args.len()),
-                        });
-                    }
-                    let (left, right) = self.check_operand_pair(
-                        &args[0],
-                        &args[1],
-                        expected.filter(|ty| self.is_numeric(*ty)),
-                    )?;
-                    if self.base_type(left.ty) != self.base_type(right.ty)
-                        || !self.is_numeric(left.ty)
-                    {
-                        return Err(self.mixed_types_error(left.ty, right.ty, *call_span));
-                    }
-                    let result_ty = self.base_type(left.ty);
-                    if let Some(want) = expected {
-                        self.type_mismatch(result_ty, self.base_type(want), *call_span)?;
-                    }
-                    (
-                        TExprKind::Call {
-                            target: if name == "min" {
-                                CallTarget::Min
-                            } else {
-                                CallTarget::Max
-                            },
-                            args: vec![left, right],
-                            effect: Effect::None,
-                        },
-                        result_ty,
-                    )
-                } else if expected.is_some_and(|want| {
-                    self.types[want.0].is_sum() && self.find_case_in_type(want, name).is_some()
-                }) {
-                    let want = expected.unwrap();
-                    let index = self.find_case_in_type(want, name).unwrap().0;
-                    self.check_constructor(want, index, args, *call_span, Some(want))?
-                } else if self.types.iter().skip(5).any(|ty| {
-                    matches!(ty.kind, TTypeKind::Enum(_))
-                        && ty.cases().iter().any(|case| case.name == *name)
-                }) {
-                    self.check_unqualified_constructor(name, args, *call_span, expected)?
-                } else if name == "print" {
-                    if args.len() != 1 {
-                        return Err(CheckError {
-                            span: *call_span,
-                            message: format!(
-                                "print takes one argument, but got {}; call print(value)",
-                                args.len()
-                            ),
-                        });
-                    }
-                    let suppress_value_check = matches!(&args[0].kind, ExprKind::Name(value)
-                        if self.signatures.contains_key(value)
-                            && self.find_binding(value).is_none()
-                            && !self.global_ids.contains_key(value)
-                            && !self.constant_ids.contains_key(value));
-                    let saved_suppression = self.suppress_function_value_effect_check;
-                    self.suppress_function_value_effect_check |= suppress_value_check;
-                    let checked_arg = self.check_expr(&args[0], None);
-                    self.suppress_function_value_effect_check = saved_suppression;
-                    let arg = checked_arg?;
-                    if !matches!(self.base_type(arg.ty), Ty::Int | Ty::Long | Ty::Bool)
-                        && !self.types[arg.ty.0].is_sum()
-                        && !matches!(self.types[arg.ty.0].kind, TTypeKind::Struct(_))
-                        && !matches!(
-                            self.types[arg.ty.0].kind,
-                            TTypeKind::Array { .. }
-                                | TTypeKind::List { .. }
-                                | TTypeKind::Queue { .. }
-                                | TTypeKind::Ring { .. }
-                                | TTypeKind::Grid { .. }
-                                | TTypeKind::Map { .. }
-                                | TTypeKind::Set { .. }
-                                | TTypeKind::Pool { .. }
-                                | TTypeKind::Function { .. }
-                        )
-                    {
-                        return Err(CheckError {
-                            span: args[0].span,
-                            message: "print supports int, long, bool, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values"
-                                .to_owned(),
-                        });
-                    }
-                    if let Some(want) = expected {
-                        self.type_mismatch(Ty::Unit, want, *call_span)?;
-                    }
-                    (
-                        TExprKind::Call {
-                            target: CallTarget::Print,
-                            args: vec![arg],
-                            effect: Effect::Observable,
-                        },
-                        Ty::Unit,
-                    )
-                } else {
-                    let signature = if self.generic_functions.contains_key(name) {
-                        let (id, actual_owners) =
-                            self.instantiate_generic_function(name, args, *call_span)?;
-                        let placeholders = self
-                            .function_owner_substitutions
-                            .get(&id)
-                            .cloned()
-                            .unwrap_or_default();
-                        let owner_remap = placeholders
-                            .iter()
-                            .filter_map(|(parameter, placeholder)| {
-                                actual_owners
-                                    .get(parameter)
-                                    .map(|actual| (*placeholder, *actual))
-                            })
-                            .collect::<HashMap<_, _>>();
-                        let signature = self.substitute_signature_owners(
-                            self.function_signatures[&id].clone(),
-                            &owner_remap,
-                            *call_span,
-                        )?;
-                        signature
-                    } else if let Some(signature) = self.signatures.get(name).cloned() {
-                        signature
-                    } else {
-                        return Err(self.unknown_function(name, *call_span));
-                    };
-                    if args.len() != signature.params.len() {
-                        return Err(CheckError {
-                            span: *call_span,
-                            message: format!(
-                                "function '{}' takes {} argument(s), but got {}",
-                                name,
-                                signature.params.len(),
-                                args.len()
-                            ),
-                        });
-                    }
-                    let mut typed_args = Vec::new();
-                    let mut arg_places = Vec::<Option<TPlace>>::new();
-                    for (arg, param) in args.iter().zip(signature.params.iter().copied()) {
-                        let place = self.resolve_place(arg).ok();
-                        for (previous, previous_param) in
-                            arg_places.iter().zip(signature.params.iter())
-                        {
-                            if (param.mode == ParamMode::Write
-                                || previous_param.mode == ParamMode::Write)
-                                && previous.as_ref().zip(place.as_ref()).is_some_and(|(a, b)| {
-                                    places_overlap(
-                                        &self.canonical_place(a),
-                                        &self.canonical_place(b),
-                                    )
-                                })
-                            {
-                                return Err(CheckError { span: arg.span, message: "arguments overlap, and at least one is passed as write; pass separate fields or a copy".to_owned() });
-                            }
-                        }
-                        if param.mode == ParamMode::Write {
-                            let place = place.clone().ok_or_else(|| CheckError {
-                                span: arg.span,
-                                message: "a write argument must be an assignable place".to_owned(),
-                            })?;
-                            if !self.place_is_mutable(&place) {
-                                return Err(CheckError { span: arg.span, message: "a write argument must be a var, a field of a var, or another write parameter".to_owned() });
-                            }
-                            let canonical = self.canonical_place(&place);
-                            let write_collection = matches!(
-                                self.types[place.ty.0].kind,
-                                TTypeKind::Map { .. } | TTypeKind::Set { .. }
-                            );
-                            if self.active_views.iter().any(|view| {
-                                let view = self.canonical_place(view);
-                                let replaces_map_value = view.path.len() == canonical.path.len()
-                                    && view.path.last().is_some_and(|projection| {
-                                        matches!(
-                                            projection,
-                                            TProjection::Index { is_map: true, .. }
-                                        )
-                                    });
-                                places_overlap(&view, &canonical)
-                                    && (write_collection
-                                        || replaces_map_value
-                                        || !places_proven_prefix(&view, &canonical))
-                            }) {
-                                return Err(CheckError { span: arg.span, message: "cannot pass storage containing a live collection view as write".to_owned() });
-                            }
-                            let same_embedded_pool_shape = self.type_contains_pool(param.ty)
-                                && self.specialized_struct_base.get(&place.ty) == Some(&param.ty)
-                                && !self.specialized_struct_owners.contains_key(&place.ty);
-                            if place.ty != param.ty && !same_embedded_pool_shape {
-                                return Err(CheckError {
-                                    span: arg.span,
-                                    message: format!(
-                                        "write argument needs exactly {}; found {}",
-                                        self.type_name(param.ty),
-                                        self.type_name(place.ty)
-                                    ),
-                                });
-                            }
-                            self.invalidate_place(&place);
-                            self.invalidate_collection_counts(&place);
-                            if same_embedded_pool_shape {
-                                typed_args.push(self.check_expr(arg, None)?);
-                            } else {
-                                typed_args.push(self.check_expr(arg, Some(param.ty))?);
-                            }
-                        } else {
-                            typed_args.push(self.check_store(arg, param.ty)?);
-                        }
-                        arg_places.push(place);
-                    }
-                    if let Some(want) = expected {
-                        self.type_mismatch(signature.result, want, *call_span)?;
-                    }
-                    if !self.checking_constant && !self.checking_global_initializer {
-                        self.edges.push(Edge {
-                            from: self.current_function,
-                            to: signature.id,
-                            span: *call_span,
-                        });
-                    }
-                    (
-                        TExprKind::Call {
-                            target: CallTarget::Function(signature.id),
-                            args: typed_args,
-                            effect: Effect::None,
-                        },
-                        signature.result,
-                    )
-                }
-            }
+            ExprKind::Call { .. } => unreachable!("calls use the recursive-safe checker path"),
             ExprKind::IndirectCall { callee, args } => {
                 let typed_callee = self.check_expr(callee, None)?;
                 self.check_indirect_call(typed_callee, args, expr.span, expected)?
@@ -9728,61 +9950,662 @@ impl Checker {
         Ok((graph, targets))
     }
 
-    fn check_recursion(&self, call_graph: &[Vec<TCallEdge>]) -> Result<(), CheckError> {
-        let n = call_graph.len();
-        let graph = call_graph
-            .iter()
-            .enumerate()
-            .map(|(from, edges)| {
-                edges
-                    .iter()
-                    .map(|edge| Edge {
-                        from,
-                        to: edge.target,
-                        span: edge.span,
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        let mut state = vec![0u8; n];
-        fn visit(
-            v: usize,
-            graph: &[Vec<Edge>],
-            state: &mut [u8],
-            names: &[String],
-        ) -> Result<(), CheckError> {
-            state[v] = 1;
-            for edge in &graph[v] {
-                if state[edge.to] == 1 {
-                    return Err(CheckError {
-                        span: edge.span,
-                        message: format!(
-                            "call cycle detected at '{}'; recursion is opt-in with 'recursive' and is not supported yet",
-                            names[edge.to]
-                        ),
-                    });
-                }
-                if state[edge.to] == 0 {
-                    visit(edge.to, graph, state, names)?;
-                }
+    fn check_recursion(
+        &self,
+        call_graph: &[Vec<TCallEdge>],
+        functions: &[TFunction],
+    ) -> Result<(), CheckError> {
+        for component in strongly_connected_components(call_graph) {
+            let cyclic = component.len() > 1
+                || component
+                    .first()
+                    .is_some_and(|id| call_graph[*id].iter().any(|edge| edge.target == *id));
+            if !cyclic {
+                continue;
             }
-            state[v] = 2;
-            Ok(())
-        }
-        let mut names = self
-            .ast_functions
-            .iter()
-            .map(|f| f.name.clone())
-            .collect::<Vec<_>>();
-        names.extend(
-            (0..self.ast_tests.len()).map(|index| format!("test {}", self.ast_tests[index].name)),
-        );
-        for v in 0..n {
-            if state[v] == 0 {
-                visit(v, &graph, &mut state, &names)?;
+            let mut unmarked = component
+                .iter()
+                .copied()
+                .filter(|id| !functions[*id].recursive)
+                .collect::<Vec<_>>();
+            if unmarked.is_empty() {
+                continue;
             }
+            unmarked.sort_unstable();
+            let names = unmarked
+                .iter()
+                .map(|id| format!("'{}'", functions[*id].name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(CheckError {
+                span: functions[unmarked[0]].span,
+                message: format!(
+                    "call cycle contains unmarked function(s) {names}; mark every function in the cycle 'recursive'"
+                ),
+            });
         }
         Ok(())
+    }
+
+    fn check_recursive_regions(
+        &self,
+        functions: &[TFunction],
+        call_graph: &[Vec<TCallEdge>],
+    ) -> Result<(), CheckError> {
+        let components = strongly_connected_components(call_graph);
+        let mut component_of = vec![usize::MAX; functions.len()];
+        let mut cyclic_component = vec![false; components.len()];
+        for (component_id, component) in components.iter().enumerate() {
+            for function in component {
+                component_of[*function] = component_id;
+            }
+            cyclic_component[component_id] = component.len() > 1
+                || component
+                    .first()
+                    .is_some_and(|id| call_graph[*id].iter().any(|edge| edge.target == *id));
+        }
+        for function in functions {
+            let component = component_of[function.id];
+            if !cyclic_component[component] {
+                continue;
+            }
+            check_recursive_region_block(
+                self,
+                function,
+                &function.body,
+                call_graph,
+                &component_of,
+                &cyclic_component,
+                &mut Vec::new(),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn strongly_connected_components(call_graph: &[Vec<TCallEdge>]) -> Vec<Vec<usize>> {
+    let count = call_graph.len();
+    let mut visited = vec![false; count];
+    let mut order = Vec::with_capacity(count);
+    for root in 0..count {
+        if visited[root] {
+            continue;
+        }
+        visited[root] = true;
+        let mut stack = vec![(root, 0usize)];
+        while let Some((node, edge_index)) = stack.last_mut() {
+            if *edge_index < call_graph[*node].len() {
+                let target = call_graph[*node][*edge_index].target;
+                *edge_index += 1;
+                if target < count && !visited[target] {
+                    visited[target] = true;
+                    stack.push((target, 0));
+                }
+            } else {
+                order.push(*node);
+                stack.pop();
+            }
+        }
+    }
+    let mut reverse = vec![Vec::new(); count];
+    for (from, edges) in call_graph.iter().enumerate() {
+        for edge in edges {
+            if edge.target < count {
+                reverse[edge.target].push(from);
+            }
+        }
+    }
+    visited.fill(false);
+    let mut components = Vec::new();
+    for root in order.into_iter().rev() {
+        if visited[root] {
+            continue;
+        }
+        visited[root] = true;
+        let mut component = Vec::new();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            component.push(node);
+            for target in &reverse[node] {
+                if !visited[*target] {
+                    visited[*target] = true;
+                    stack.push(*target);
+                }
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+    components
+}
+
+fn check_recursive_region_block(
+    checker: &Checker,
+    function: &TFunction,
+    block: &TBlock,
+    call_graph: &[Vec<TCallEdge>],
+    component_of: &[usize],
+    cyclic_component: &[bool],
+    active_regions: &mut Vec<(String, Ty)>,
+) -> Result<(), CheckError> {
+    for statement in &block.statements {
+        match &statement.kind {
+            TStmtKind::Let {
+                name, ty, value, ..
+            } => {
+                let large = checker.type_size_checked(
+                    *ty,
+                    &mut vec![None; checker.types.len()],
+                    statement.span,
+                )? > 4_096;
+                if large {
+                    active_regions.push((name.clone(), *ty));
+                }
+                check_recursive_region_expr(
+                    checker,
+                    function,
+                    value,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    active_regions,
+                )?;
+            }
+            TStmtKind::Assign { place, value, .. } => {
+                check_recursive_region_place(
+                    checker,
+                    function,
+                    place,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    active_regions,
+                )?;
+                check_recursive_region_expr(
+                    checker,
+                    function,
+                    value,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    active_regions,
+                )?;
+            }
+            TStmtKind::Expr(value) | TStmtKind::Discard(value) => check_recursive_region_expr(
+                checker,
+                function,
+                value,
+                call_graph,
+                component_of,
+                cyclic_component,
+                active_regions,
+            )?,
+            TStmtKind::Return(value) => {
+                if let Some(value) = value {
+                    check_recursive_region_expr(
+                        checker,
+                        function,
+                        value,
+                        call_graph,
+                        component_of,
+                        cyclic_component,
+                        active_regions,
+                    )?;
+                }
+            }
+            TStmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                check_recursive_region_expr(
+                    checker,
+                    function,
+                    condition,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    active_regions,
+                )?;
+                check_recursive_region_block(
+                    checker,
+                    function,
+                    then_block,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    &mut active_regions.clone(),
+                )?;
+                if let Some(other) = else_block {
+                    check_recursive_region_block(
+                        checker,
+                        function,
+                        other,
+                        call_graph,
+                        component_of,
+                        cyclic_component,
+                        &mut active_regions.clone(),
+                    )?;
+                }
+            }
+            TStmtKind::For {
+                start, end, body, ..
+            } => {
+                check_recursive_region_expr(
+                    checker,
+                    function,
+                    start,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    active_regions,
+                )?;
+                check_recursive_region_expr(
+                    checker,
+                    function,
+                    end,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    active_regions,
+                )?;
+                check_recursive_region_block(
+                    checker,
+                    function,
+                    body,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    &mut active_regions.clone(),
+                )?;
+            }
+            TStmtKind::ForEach {
+                id,
+                collection,
+                source,
+                body,
+                ..
+            } => {
+                check_recursive_region_place(
+                    checker,
+                    function,
+                    source,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    active_regions,
+                )?;
+                check_recursive_region_expr(
+                    checker,
+                    function,
+                    collection,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    active_regions,
+                )?;
+                let element_ty = match &checker.types[collection.ty.0].kind {
+                    TTypeKind::Array { element, .. }
+                    | TTypeKind::List { element, .. }
+                    | TTypeKind::Queue { element, .. }
+                    | TTypeKind::Ring { element, .. }
+                    | TTypeKind::Grid { element, .. }
+                    | TTypeKind::Pool { element, .. }
+                    | TTypeKind::Map { value: element, .. }
+                    | TTypeKind::Set { key: element, .. } => Some(*element),
+                    _ => None,
+                };
+                let mut iteration_regions = active_regions.clone();
+                if let Some(element_ty) = element_ty {
+                    if checker.type_size_checked(
+                        element_ty,
+                        &mut vec![None; checker.types.len()],
+                        statement.span,
+                    )? > 4_096
+                    {
+                        iteration_regions.push((format!("loop value {id}"), element_ty));
+                    }
+                }
+                check_recursive_region_block(
+                    checker,
+                    function,
+                    body,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    &mut iteration_regions,
+                )?;
+            }
+            TStmtKind::Expect { kind, .. } => match kind {
+                TExpectKind::Bool(value) => check_recursive_region_expr(
+                    checker,
+                    function,
+                    value,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    active_regions,
+                )?,
+                TExpectKind::Compare { left, right, .. } => {
+                    check_recursive_region_expr(
+                        checker,
+                        function,
+                        left,
+                        call_graph,
+                        component_of,
+                        cyclic_component,
+                        active_regions,
+                    )?;
+                    check_recursive_region_expr(
+                        checker,
+                        function,
+                        right,
+                        call_graph,
+                        component_of,
+                        cyclic_component,
+                        active_regions,
+                    )?;
+                }
+            },
+            TStmtKind::Block(inner) => check_recursive_region_block(
+                checker,
+                function,
+                inner,
+                call_graph,
+                component_of,
+                cyclic_component,
+                &mut active_regions.clone(),
+            )?,
+            TStmtKind::Break | TStmtKind::Continue => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        check_recursive_region_expr(
+            checker,
+            function,
+            tail,
+            call_graph,
+            component_of,
+            cyclic_component,
+            active_regions,
+        )?;
+    }
+    Ok(())
+}
+
+fn check_recursive_region_expr(
+    checker: &Checker,
+    function: &TFunction,
+    expr: &TExpr,
+    call_graph: &[Vec<TCallEdge>],
+    component_of: &[usize],
+    cyclic_component: &[bool],
+    active_regions: &mut Vec<(String, Ty)>,
+) -> Result<(), CheckError> {
+    let recurse = |child: &TExpr, active: &mut Vec<(String, Ty)>| {
+        check_recursive_region_expr(
+            checker,
+            function,
+            child,
+            call_graph,
+            component_of,
+            cyclic_component,
+            active,
+        )
+    };
+    match &expr.kind {
+        TExprKind::Call { args, .. }
+        | TExprKind::Construct { args, .. }
+        | TExprKind::IndirectCall { args, .. } => {
+            if let TExprKind::IndirectCall { callee, .. } = &expr.kind {
+                recurse(callee, active_regions)?;
+            }
+            for arg in args {
+                recurse(arg, active_regions)?;
+            }
+        }
+        TExprKind::OptionalCall { receiver, args, .. } => {
+            recurse(receiver, active_regions)?;
+            for arg in args {
+                recurse(arg, active_regions)?;
+            }
+        }
+        TExprKind::Method { receiver, .. }
+        | TExprKind::OptionalToLong(receiver)
+        | TExprKind::Field { receiver, .. }
+        | TExprKind::ToLong(receiver)
+        | TExprKind::Convert {
+            value: receiver, ..
+        }
+        | TExprKind::Fit {
+            value: receiver, ..
+        }
+        | TExprKind::Try {
+            value: receiver, ..
+        }
+        | TExprKind::Cast {
+            value: receiver, ..
+        }
+        | TExprKind::Unary {
+            value: receiver, ..
+        } => recurse(receiver, active_regions)?,
+        TExprKind::Index {
+            receiver,
+            index,
+            grid,
+            ..
+        } => {
+            recurse(receiver, active_regions)?;
+            recurse(index, active_regions)?;
+            if let Some(grid) = grid {
+                recurse(&grid.x, active_regions)?;
+                recurse(&grid.y, active_regions)?;
+            }
+        }
+        TExprKind::Fill { value, .. } => recurse(value, active_regions)?,
+        TExprKind::CollectionOp { receiver, args, .. }
+        | TExprKind::PoolOp { receiver, args, .. }
+        | TExprKind::MapOp { receiver, args, .. }
+        | TExprKind::SetOp { receiver, args, .. } => {
+            recurse(receiver, active_regions)?;
+            for arg in args {
+                recurse(arg, active_regions)?;
+            }
+        }
+        TExprKind::StructConstruct { fields } => {
+            for (_, value) in fields {
+                recurse(value, active_regions)?;
+            }
+        }
+        TExprKind::Coalesce { option, fallback } => {
+            recurse(option, active_regions)?;
+            recurse(fallback, active_regions)?;
+        }
+        TExprKind::Match { scrutinee, arms } => {
+            recurse(scrutinee, active_regions)?;
+            for arm in arms {
+                check_recursive_region_block(
+                    checker,
+                    function,
+                    &arm.body,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    &mut active_regions.clone(),
+                )?;
+            }
+        }
+        TExprKind::Return(value) => {
+            if let Some(value) = value {
+                recurse(value, active_regions)?;
+            }
+        }
+        TExprKind::Binary { left, right, .. } => {
+            recurse(left, active_regions)?;
+            recurse(right, active_regions)?;
+        }
+        TExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            recurse(condition, active_regions)?;
+            check_recursive_region_block(
+                checker,
+                function,
+                then_block,
+                call_graph,
+                component_of,
+                cyclic_component,
+                &mut active_regions.clone(),
+            )?;
+            if let Some(other) = else_block {
+                check_recursive_region_block(
+                    checker,
+                    function,
+                    other,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    &mut active_regions.clone(),
+                )?;
+            }
+        }
+        TExprKind::Unit
+        | TExprKind::Integer(_)
+        | TExprKind::Bool(_)
+        | TExprKind::Local(_)
+        | TExprKind::Global(_)
+        | TExprKind::Constant(_)
+        | TExprKind::FunctionValue(_)
+        | TExprKind::LoopExit(_)
+        | TExprKind::EmptyArray
+        | TExprKind::EmptyList
+        | TExprKind::EmptyPool
+        | TExprKind::EmptyMap
+        | TExprKind::EmptySet
+        | TExprKind::EmptyGrid
+        | TExprKind::EmptyQueue
+        | TExprKind::EmptyRing => {}
+    }
+
+    let component = component_of[function.id];
+    let recursive_targets = call_graph[function.id]
+        .iter()
+        .filter(|edge| {
+            edge.span.file == expr.span.file
+                && edge.span.line == expr.span.line
+                && edge.span.col == expr.span.col
+                && component_of.get(edge.target) == Some(&component)
+                && cyclic_component[component]
+        })
+        .map(|edge| edge.target)
+        .collect::<Vec<_>>();
+    if recursive_targets.is_empty() {
+        return Ok(());
+    }
+    if let Some((name, _)) = active_regions.first() {
+        return Err(CheckError {
+            span: expr.span,
+            message: format!(
+                "large value '{name}' keeps a data-stack region alive across a recursive call; move it out of this cycle or end its scope before the call"
+            ),
+        });
+    }
+    if checker.type_size_checked(expr.ty, &mut vec![None; checker.types.len()], expr.span)? > 4_096
+        && matches!(
+            expr.kind,
+            TExprKind::Call { .. }
+                | TExprKind::IndirectCall { .. }
+                | TExprKind::OptionalCall { .. }
+        )
+    {
+        return Err(CheckError {
+            span: expr.span,
+            message: format!(
+                "recursive call's large result destination '{}' keeps a data-stack region alive across the cycle; return a small value or end the region before recursing",
+                checker.types[expr.ty.0].name
+            ),
+        });
+    }
+    let args = match &expr.kind {
+        TExprKind::Call { args, .. }
+        | TExprKind::Construct { args, .. }
+        | TExprKind::IndirectCall { args, .. }
+        | TExprKind::OptionalCall { args, .. } => args,
+        _ => return Ok(()),
+    };
+    for arg in args {
+        let is_large =
+            checker.type_size_checked(arg.ty, &mut vec![None; checker.types.len()], arg.span)?
+                > 4_096;
+        let gathered_element =
+            matches!(arg.kind, TExprKind::Field { .. } | TExprKind::Index { .. });
+        if is_large && (!region_expr_is_place(arg) || gathered_element) {
+            return Err(CheckError {
+                span: arg.span,
+                message: format!(
+                    "large temporary copy of argument '{}' would keep a data-stack region alive across a recursive call; pass a borrowed local or smaller value",
+                    checker.types[arg.ty.0].name
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn check_recursive_region_place(
+    checker: &Checker,
+    function: &TFunction,
+    place: &TPlace,
+    call_graph: &[Vec<TCallEdge>],
+    component_of: &[usize],
+    cyclic_component: &[bool],
+    active_regions: &mut Vec<(String, Ty)>,
+) -> Result<(), CheckError> {
+    for projection in &place.path {
+        if let TProjection::Index { index, grid, .. } = projection {
+            check_recursive_region_expr(
+                checker,
+                function,
+                index,
+                call_graph,
+                component_of,
+                cyclic_component,
+                active_regions,
+            )?;
+            if let Some(grid) = grid {
+                check_recursive_region_expr(
+                    checker,
+                    function,
+                    &grid.x,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    active_regions,
+                )?;
+                check_recursive_region_expr(
+                    checker,
+                    function,
+                    &grid.y,
+                    call_graph,
+                    component_of,
+                    cyclic_component,
+                    active_regions,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn region_expr_is_place(expr: &TExpr) -> bool {
+    match &expr.kind {
+        TExprKind::Local(_) | TExprKind::Global(_) => true,
+        TExprKind::Field { receiver, .. } | TExprKind::Index { receiver, .. } => {
+            region_expr_is_place(receiver)
+        }
+        _ => false,
     }
 }
 

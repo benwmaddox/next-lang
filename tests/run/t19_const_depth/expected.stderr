@@ -1,0 +1,1 @@
+main.nl:2:5: error: constant 'BAD' evaluation failed: compile-time function call depth limit of 10000 exceeded

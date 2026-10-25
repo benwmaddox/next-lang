@@ -199,6 +199,7 @@ pub struct TProgram {
     pub global_state_bytes: u64,
     pub job_headroom_bytes: u64,
     pub globals_budget_bytes: u64,
+    pub recursion_budget_bytes: u64,
     pub files: Vec<String>,
     pub call_graph: Vec<Vec<TCallEdge>>,
     pub function_type_targets: Vec<Vec<usize>>,
@@ -300,6 +301,7 @@ pub struct TFunction {
     pub body: TBlock,
     pub span: Span,
     pub is_test: bool,
+    pub recursive: bool,
 }
 
 #[derive(Clone, Debug)]

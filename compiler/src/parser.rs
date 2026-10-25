@@ -1,6 +1,9 @@
 use crate::ast::*;
 use crate::lexer::{Token, TokenKind};
 
+const EXPRESSION_NESTING_LIMIT: usize = 1000;
+const EXPRESSION_PARSER_STACK_LIMIT: usize = 2048;
+
 #[derive(Clone, Debug)]
 pub struct ParseError {
     pub span: Span,
@@ -13,6 +16,9 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> Result<Program, ParseError> {
         pos: 0,
         source,
         allow_struct_literals: true,
+        expression_depth: 0,
+        parenthesis_depth: 0,
+        block_depth: 0,
     }
     .program()
 }
@@ -22,6 +28,9 @@ struct Parser<'a> {
     pos: usize,
     source: &'a str,
     allow_struct_literals: bool,
+    expression_depth: usize,
+    parenthesis_depth: usize,
+    block_depth: usize,
 }
 
 impl Parser<'_> {
@@ -233,9 +242,15 @@ impl Parser<'_> {
     }
 
     fn function(&mut self) -> Result<Function, ParseError> {
-        let start = self
-            .expect_word("fn", "expected a function declaration starting with 'fn'")?
-            .span;
+        let recursive = self.word_is("recursive");
+        let start = if recursive {
+            let start = self.next().span;
+            self.expect_word("fn", "expected 'fn' after 'recursive'")?;
+            start
+        } else {
+            self.expect_word("fn", "expected a function declaration starting with 'fn'")?
+                .span
+        };
         let (name, _) = self.expect_ident("expected a function name after 'fn'")?;
         let generic_params = self.generic_params()?;
         self.expect(&TokenKind::LParen, "expected '(' after the function name")?;
@@ -281,6 +296,7 @@ impl Parser<'_> {
         let body = self.block()?;
         Ok(Function {
             name,
+            recursive,
             generic_params,
             params,
             result,
@@ -612,6 +628,13 @@ impl Parser<'_> {
     }
 
     fn block(&mut self) -> Result<Block, ParseError> {
+        if self.block_depth > EXPRESSION_NESTING_LIMIT {
+            return Err(ParseError {
+                span: self.peek().span,
+                message: format!("expression nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"),
+            });
+        }
+        self.block_depth += 1;
         let start = self
             .expect(&TokenKind::LBrace, "expected '{' to start a block")?
             .span;
@@ -644,14 +667,33 @@ impl Parser<'_> {
             }
         }
         self.expect(&TokenKind::RBrace, "expected '}' to close this block")?;
-        Ok(Block {
+        let block = Block {
             statements,
             tail,
             span: start,
-        })
+        };
+        self.block_depth -= 1;
+        Ok(block)
     }
 
     fn statement_candidate(&mut self) -> Result<Candidate, ParseError> {
+        if self.word_is("for")
+            || self.word_is("break")
+            || self.word_is("continue")
+            || self.word_is("expect")
+            || self.word_is("discard")
+            || self.at(&TokenKind::LBrace)
+            || self.word_is("let")
+            || self.word_is("var")
+            || self.word_is("return")
+        {
+            self.keyword_statement_candidate()
+        } else {
+            self.expression_statement_candidate()
+        }
+    }
+
+    fn keyword_statement_candidate(&mut self) -> Result<Candidate, ParseError> {
         if self.word_is("for") {
             return Ok(Candidate::Statement(self.for_statement()?));
         }
@@ -753,7 +795,18 @@ impl Parser<'_> {
             }));
         }
 
+        unreachable!("keyword statement dispatch did not match")
+    }
+
+    fn expression_statement_candidate(&mut self) -> Result<Candidate, ParseError> {
         let expression = self.expression(0)?;
+        self.finish_expression_statement_candidate(expression)
+    }
+
+    fn finish_expression_statement_candidate(
+        &mut self,
+        expression: Expr,
+    ) -> Result<Candidate, ParseError> {
         let assignment = match self.peek().kind {
             TokenKind::Eq => Some(AssignOp::Set),
             TokenKind::PlusEq => Some(AssignOp::Add),
@@ -883,6 +936,32 @@ impl Parser<'_> {
     }
 
     fn expression(&mut self, min_precedence: u8) -> Result<Expr, ParseError> {
+        if self.expression_depth >= EXPRESSION_PARSER_STACK_LIMIT {
+            return Err(ParseError {
+                span: self.peek().span,
+                message: format!("expression nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"),
+            });
+        }
+        let check_tree_depth = self.expression_depth == 0;
+        self.expression_depth += 1;
+        let parsed = self.expression_inner(min_precedence);
+        self.expression_depth -= 1;
+        if check_tree_depth {
+            if let Ok(expr) = &parsed {
+                if let Some(span) = expression_nesting_exceeded(expr, EXPRESSION_NESTING_LIMIT) {
+                    return Err(ParseError {
+                        span,
+                        message: format!(
+                            "expression nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"
+                        ),
+                    });
+                }
+            }
+        }
+        parsed
+    }
+
+    fn expression_inner(&mut self, min_precedence: u8) -> Result<Expr, ParseError> {
         let mut left = self.prefix()?;
         loop {
             let Some((op, precedence)) = binary_op(&self.peek().kind) else {
@@ -914,80 +993,103 @@ impl Parser<'_> {
         self.skip_newlines();
         let token = self.next().clone();
         let span = token.span;
-        let mut expr = match token.kind {
+        match token.kind {
+            TokenKind::Minus => self.prefix_negation_postfix(span),
+            TokenKind::Bang => self.prefix_not_postfix(span),
+            TokenKind::LParen => self.parenthesized_postfix(span),
+            TokenKind::Ident(name) if name == "if" => self.if_postfix(span),
+            TokenKind::Ident(name) if name == "match" => self.match_postfix(span),
+            TokenKind::Ident(name) if name == "return" => self.return_postfix(span),
+            kind => self.prefix_leaf_postfix(kind, span),
+        }
+    }
+
+    fn prefix_negation_postfix(&mut self, span: Span) -> Result<Expr, ParseError> {
+        let expr = self.prefix_negation(span)?;
+        self.postfix(expr)
+    }
+
+    fn prefix_not_postfix(&mut self, span: Span) -> Result<Expr, ParseError> {
+        let expr = self.prefix_not(span)?;
+        self.postfix(expr)
+    }
+
+    fn parenthesized_postfix(&mut self, span: Span) -> Result<Expr, ParseError> {
+        let expr = self.parenthesized_expression(span)?;
+        self.postfix(expr)
+    }
+
+    fn if_postfix(&mut self, span: Span) -> Result<Expr, ParseError> {
+        let expr = self.if_expression(span)?;
+        self.postfix(expr)
+    }
+
+    fn match_postfix(&mut self, span: Span) -> Result<Expr, ParseError> {
+        let expr = self.match_expression(span)?;
+        self.postfix(expr)
+    }
+
+    fn return_postfix(&mut self, span: Span) -> Result<Expr, ParseError> {
+        let expr = self.return_expression(span)?;
+        self.postfix(expr)
+    }
+
+    fn prefix_leaf_postfix(&mut self, kind: TokenKind, span: Span) -> Result<Expr, ParseError> {
+        let expr = self.prefix_leaf(kind, span)?;
+        self.postfix(expr)
+    }
+
+    fn prefix_negation(&mut self, span: Span) -> Result<Expr, ParseError> {
+        if let TokenKind::Number(raw) = self.peek().kind.clone() {
+            let _number_span = self.next().span;
+            self.integer(raw, span, true).map(|mut expr| {
+                expr.span = span;
+                expr
+            })
+        } else {
+            let value = self.expression(11)?;
+            Ok(Expr {
+                kind: ExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    operator_span: span,
+                    value: Box::new(value),
+                },
+                span,
+            })
+        }
+    }
+
+    fn prefix_not(&mut self, span: Span) -> Result<Expr, ParseError> {
+        let value = self.expression(11)?;
+        Ok(Expr {
+            kind: ExprKind::Unary {
+                op: UnaryOp::Not,
+                operator_span: span,
+                value: Box::new(value),
+            },
+            span,
+        })
+    }
+
+    fn return_expression(&mut self, span: Span) -> Result<Expr, ParseError> {
+        let value = if self.at(&TokenKind::Newline)
+            || self.at(&TokenKind::Semicolon)
+            || self.at(&TokenKind::RBrace)
+            || self.at(&TokenKind::Comma)
+        {
+            None
+        } else {
+            Some(Box::new(self.expression(0)?))
+        };
+        Ok(Expr {
+            kind: ExprKind::Return(value),
+            span,
+        })
+    }
+
+    fn prefix_leaf(&mut self, kind: TokenKind, span: Span) -> Result<Expr, ParseError> {
+        Ok(match kind {
             TokenKind::Number(raw) => self.integer(raw, span, false)?,
-            TokenKind::Minus => {
-                if let TokenKind::Number(raw) = self.peek().kind.clone() {
-                    let number_span = self.next().span;
-                    self.integer(raw, span, true).map(|mut e| {
-                        e.span = Span {
-                            file: span.file,
-                            line: span.line,
-                            col: span.col,
-                        };
-                        let _ = number_span;
-                        e
-                    })?
-                } else {
-                    let value = self.expression(11)?;
-                    Expr {
-                        kind: ExprKind::Unary {
-                            op: UnaryOp::Neg,
-                            operator_span: span,
-                            value: Box::new(value),
-                        },
-                        span,
-                    }
-                }
-            }
-            TokenKind::Bang => {
-                let value = self.expression(11)?;
-                Expr {
-                    kind: ExprKind::Unary {
-                        op: UnaryOp::Not,
-                        operator_span: span,
-                        value: Box::new(value),
-                    },
-                    span,
-                }
-            }
-            TokenKind::LParen => {
-                if self.take(&TokenKind::RParen) {
-                    Expr {
-                        kind: ExprKind::Unit,
-                        span,
-                    }
-                } else {
-                    let cast_name = match (&self.peek().kind, &self.peek_n(1).kind) {
-                        (TokenKind::Ident(name), TokenKind::RParen)
-                            if matches!(name.as_str(), "int" | "long" | "bool")
-                                || name.chars().next().is_some_and(char::is_uppercase) =>
-                        {
-                            Some(name.clone())
-                        }
-                        _ => None,
-                    };
-                    if let Some(name) = cast_name {
-                        let _ = name;
-                        let ty = self.type_name()?;
-                        self.expect(&TokenKind::RParen, "expected ')' after the cast type")?;
-                        self.skip_newlines();
-                        let value = self.prefix()?;
-                        Expr {
-                            kind: ExprKind::Cast {
-                                ty,
-                                cast_span: span,
-                                value: Box::new(value),
-                            },
-                            span,
-                        }
-                    } else {
-                        let inner = self.expression(0)?;
-                        self.expect(&TokenKind::RParen, "expected ')' after this expression")?;
-                        Expr { span, ..inner }
-                    }
-                }
-            }
             TokenKind::Ident(name) if name == "true" => Expr {
                 kind: ExprKind::Bool(true),
                 span,
@@ -1004,23 +1106,6 @@ impl Parser<'_> {
                             .to_owned(),
                 });
             }
-            TokenKind::Ident(name) if name == "if" => self.if_expression(span)?,
-            TokenKind::Ident(name) if name == "match" => self.match_expression(span)?,
-            TokenKind::Ident(name) if name == "return" => {
-                let value = if self.at(&TokenKind::Newline)
-                    || self.at(&TokenKind::Semicolon)
-                    || self.at(&TokenKind::RBrace)
-                    || self.at(&TokenKind::Comma)
-                {
-                    None
-                } else {
-                    Some(Box::new(self.expression(0)?))
-                };
-                Expr {
-                    kind: ExprKind::Return(value),
-                    span,
-                }
-            }
             TokenKind::Ident(name) if name == "break" || name == "continue" => Expr {
                 kind: ExprKind::LoopExit(name == "break"),
                 span,
@@ -1035,327 +1120,348 @@ impl Parser<'_> {
                     message: "expected a value, a function call, or an if expression".to_owned(),
                 });
             }
-        };
+        })
+    }
 
+    fn parenthesized_expression(&mut self, span: Span) -> Result<Expr, ParseError> {
+        if self.take(&TokenKind::RParen) {
+            return Ok(Expr {
+                kind: ExprKind::Unit,
+                span,
+            });
+        }
+        if matches!((&self.peek().kind, &self.peek_n(1).kind), (TokenKind::Ident(name), TokenKind::RParen)
+            if matches!(name.as_str(), "int" | "long" | "bool")
+                || name.chars().next().is_some_and(char::is_uppercase))
+        {
+            return self.cast_expression(span);
+        }
+        self.grouped_expression(span)
+    }
+
+    fn cast_expression(&mut self, span: Span) -> Result<Expr, ParseError> {
+        let ty = self.type_name()?;
+        self.expect(&TokenKind::RParen, "expected ')' after the cast type")?;
+        self.skip_newlines();
+        let value = self.prefix()?;
+        Ok(Expr {
+            kind: ExprKind::Cast {
+                ty,
+                cast_span: span,
+                value: Box::new(value),
+            },
+            span,
+        })
+    }
+
+    fn postfix(&mut self, mut expr: Expr) -> Result<Expr, ParseError> {
         loop {
-            if self.take(&TokenKind::LBracket) {
-                let index = self.expression(0)?;
-                let index_span = index.span;
-                let span = expr.span;
-                if self.take(&TokenKind::Comma) {
-                    self.skip_newlines();
-                    let y = self.expression(0)?;
-                    self.expect(&TokenKind::RBracket, "expected ']' after the grid indexes")?;
-                    expr = Expr {
-                        kind: ExprKind::GridIndex {
-                            receiver: Box::new(expr),
-                            x: Box::new(index),
-                            y: Box::new(y),
-                            x_span: index_span,
-                        },
-                        span,
-                    };
-                } else {
-                    self.expect(&TokenKind::RBracket, "expected ']' after the index")?;
-                    expr = Expr {
-                        kind: ExprKind::Index {
-                            receiver: Box::new(expr),
-                            index: Box::new(index),
-                            index_span,
-                        },
-                        span,
-                    };
-                }
-                continue;
+            if self.at(&TokenKind::LBracket) {
+                expr = self.postfix_index(expr)?;
+            } else if self.at(&TokenKind::LParen) {
+                expr = self.postfix_call(expr)?;
+            } else if self.allow_struct_literals
+                && self.at(&TokenKind::LBrace)
+                && self.can_start_struct_literal(&expr)
+            {
+                expr = self.postfix_struct_literal(expr)?;
+            } else if self.at(&TokenKind::Question) {
+                expr = self.postfix_try(expr)?;
+            } else if self.at(&TokenKind::QuestionDot) {
+                expr = self.postfix_optional_call(expr)?;
+            } else if self.at(&TokenKind::Dot) {
+                expr = self.postfix_dot(expr)?;
+            } else {
+                break;
             }
-            if self.take(&TokenKind::LParen) {
-                let args = self.arguments_after_lparen()?;
-                let old = expr;
-                expr = match old.kind {
-                    ExprKind::Name(name) => Expr {
-                        kind: ExprKind::Call {
-                            name,
-                            call_span: old.span,
-                            args,
-                        },
+        }
+        Ok(expr)
+    }
+
+    #[inline(never)]
+    fn postfix_index(&mut self, expr: Expr) -> Result<Expr, ParseError> {
+        self.expect(&TokenKind::LBracket, "expected '['")?;
+        let index = self.expression(0)?;
+        let index_span = index.span;
+        let span = expr.span;
+        if self.take(&TokenKind::Comma) {
+            self.skip_newlines();
+            let y = self.expression(0)?;
+            self.expect(&TokenKind::RBracket, "expected ']' after the grid indexes")?;
+            Ok(Expr {
+                kind: ExprKind::GridIndex {
+                    receiver: Box::new(expr),
+                    x: Box::new(index),
+                    y: Box::new(y),
+                    x_span: index_span,
+                },
+                span,
+            })
+        } else {
+            self.expect(&TokenKind::RBracket, "expected ']' after the index")?;
+            Ok(Expr {
+                kind: ExprKind::Index {
+                    receiver: Box::new(expr),
+                    index: Box::new(index),
+                    index_span,
+                },
+                span,
+            })
+        }
+    }
+
+    #[inline(never)]
+    fn postfix_call(&mut self, expr: Expr) -> Result<Expr, ParseError> {
+        self.expect(&TokenKind::LParen, "expected '('")?;
+        let args = self.arguments_after_lparen()?;
+        let old = expr;
+        Ok(match old.kind {
+            ExprKind::Name(name) => Expr {
+                kind: ExprKind::Call {
+                    name,
+                    call_span: old.span,
+                    args,
+                },
+                span: old.span,
+            },
+            ExprKind::QualifiedCase {
+                enum_name,
+                case_name,
+                case_span,
+                ..
+            } => Expr {
+                kind: ExprKind::QualifiedCase {
+                    enum_name,
+                    case_name,
+                    case_span,
+                    args,
+                },
+                span: old.span,
+            },
+            callee => Expr {
+                kind: ExprKind::IndirectCall {
+                    callee: Box::new(Expr {
+                        kind: callee,
                         span: old.span,
-                    },
-                    ExprKind::QualifiedCase {
+                    }),
+                    args,
+                },
+                span: old.span,
+            },
+        })
+    }
+
+    #[inline(never)]
+    fn can_start_struct_literal(&self, expr: &Expr) -> bool {
+        matches!(
+            &expr.kind,
+            ExprKind::Name(name)
+                if matches!(name.as_str(), "list" | "pool" | "map" | "set" | "queue" | "ring")
+                    || name.chars().next().is_some_and(char::is_uppercase)
+        )
+    }
+
+    #[inline(never)]
+    fn postfix_struct_literal(&mut self, expr: Expr) -> Result<Expr, ParseError> {
+        let name = match &expr.kind {
+            ExprKind::Name(name)
+                if matches!(
+                    name.as_str(),
+                    "list" | "pool" | "map" | "set" | "queue" | "ring"
+                ) || name.chars().next().is_some_and(char::is_uppercase) =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
+        };
+        let name = name.expect("struct literal start was validated");
+        if matches!(
+            name.as_str(),
+            "list" | "pool" | "map" | "set" | "queue" | "ring"
+        ) {
+            self.expect(&TokenKind::LBrace, "expected '{' after a collection name")?;
+            self.skip_separators();
+            if !self.at(&TokenKind::RBrace) {
+                let message = match name.as_str() {
+                    "list" => "list literals start empty; push values after construction",
+                    "pool" => "pool literals start empty; add values after construction",
+                    "map" => "map literals start empty; set values after construction",
+                    "set" => "set literals start empty; add values after construction",
+                    "queue" => "queue literals start empty; push values after construction",
+                    "ring" => "ring literals start empty; push values after construction",
+                    _ => unreachable!(),
+                };
+                return Err(self.error_here(message));
+            }
+            let kind = match name.as_str() {
+                "list" => ExprKind::ListLiteral,
+                "pool" => ExprKind::PoolLiteral,
+                "map" => ExprKind::MapLiteral,
+                "set" => ExprKind::SetLiteral,
+                "queue" => ExprKind::QueueLiteral,
+                "ring" => ExprKind::RingLiteral,
+                _ => unreachable!(),
+            };
+            self.expect(
+                &TokenKind::RBrace,
+                &format!("expected '}}' after the empty {name} literal"),
+            )?;
+            Ok(Expr {
+                kind,
+                span: expr.span,
+            })
+        } else {
+            let fields = self.struct_init_fields()?;
+            Ok(Expr {
+                kind: ExprKind::StructInit { name, fields },
+                span: expr.span,
+            })
+        }
+    }
+
+    #[inline(never)]
+    fn postfix_try(&mut self, expr: Expr) -> Result<Expr, ParseError> {
+        self.expect(&TokenKind::Question, "expected '?' after this expression")?;
+        let span = expr.span;
+        Ok(Expr {
+            kind: ExprKind::Try(Box::new(expr)),
+            span,
+        })
+    }
+
+    #[inline(never)]
+    fn postfix_optional_call(&mut self, expr: Expr) -> Result<Expr, ParseError> {
+        self.expect(&TokenKind::QuestionDot, "expected '?.'")?;
+        let (name, method_span) = self.expect_ident("expected a function name after '?.'")?;
+        self.expect(
+            &TokenKind::LParen,
+            "expected '(' after the optional call name",
+        )?;
+        let args = self.arguments_after_lparen()?;
+        let span = expr.span;
+        Ok(Expr {
+            kind: ExprKind::OptionalCall {
+                receiver: Box::new(expr),
+                name,
+                method_span,
+                args,
+            },
+            span,
+        })
+    }
+
+    #[inline(never)]
+    fn postfix_dot(&mut self, expr: Expr) -> Result<Expr, ParseError> {
+        self.expect(&TokenKind::Dot, "expected '.'")?;
+        let (method, method_span) = self.expect_ident("expected a method name after '.'")?;
+        let qualifier = match &expr.kind {
+            ExprKind::Name(name) => Some(name.clone()),
+            _ => None,
+        };
+        let is_type_qualifier = qualifier
+            .as_deref()
+            .and_then(|name| name.chars().next())
+            .is_some_and(char::is_uppercase);
+        if method == "fit" && self.take(&TokenKind::Lt) {
+            let ty = self.type_name()?;
+            self.expect_type_gt("expected '>' after the fit type")?;
+            self.expect(&TokenKind::LParen, "expected '()' after the fit type")?;
+            self.expect(&TokenKind::RParen, "fit takes no arguments")?;
+            let span = expr.span;
+            return Ok(Expr {
+                kind: ExprKind::Fit {
+                    value: Box::new(expr),
+                    ty,
+                    method_span,
+                },
+                span,
+            });
+        }
+        if self.take(&TokenKind::LParen) {
+            let args = self.arguments_after_lparen()?;
+            let span = expr.span;
+            let is_builtin_method = matches!(
+                method.as_str(),
+                "to_long"
+                    | "ok"
+                    | "unwrap"
+                    | "is_none"
+                    | "is_some"
+                    | "is_ok"
+                    | "is_err"
+                    | "len"
+                    | "count"
+                    | "peek"
+                    | "width"
+                    | "height"
+                    | "add"
+                    | "set"
+                    | "get"
+                    | "contains"
+                    | "push"
+                    | "pop"
+                    | "insert"
+                    | "remove"
+                    | "clear"
+            );
+            if let Some(enum_name) = qualifier.filter(|_| !is_builtin_method && is_type_qualifier) {
+                Ok(Expr {
+                    kind: ExprKind::QualifiedCase {
                         enum_name,
-                        case_name,
-                        case_span,
-                        ..
-                    } => Expr {
-                        kind: ExprKind::QualifiedCase {
-                            enum_name,
-                            case_name,
-                            case_span,
-                            args,
-                        },
-                        span: old.span,
+                        case_name: method,
+                        case_span: method_span,
+                        args,
                     },
-                    callee => Expr {
-                        kind: ExprKind::IndirectCall {
-                            callee: Box::new(Expr {
-                                kind: callee,
-                                span: old.span,
-                            }),
-                            args,
-                        },
-                        span: old.span,
-                    },
-                };
-                continue;
-            }
-            if self.allow_struct_literals && self.at(&TokenKind::LBrace) {
-                let name = match &expr.kind {
-                    ExprKind::Name(name)
-                        if matches!(
-                            name.as_str(),
-                            "list" | "pool" | "map" | "set" | "queue" | "ring"
-                        ) =>
-                    {
-                        Some(name.clone())
-                    }
-                    ExprKind::Name(name) if name.chars().next().is_some_and(char::is_uppercase) => {
-                        Some(name.clone())
-                    }
-                    _ => None,
-                };
-                if let Some(name) = name {
-                    if name == "list" {
-                        self.expect(&TokenKind::LBrace, "expected '{' after 'list'")?;
-                        self.skip_separators();
-                        if !self.at(&TokenKind::RBrace) {
-                            return Err(self.error_here(
-                                "list literals start empty; push values after construction",
-                            ));
-                        }
-                        self.expect(
-                            &TokenKind::RBrace,
-                            "expected '}' after the empty list literal",
-                        )?;
-                        expr = Expr {
-                            kind: ExprKind::ListLiteral,
-                            span: expr.span,
-                        };
-                    } else if name == "pool" {
-                        self.expect(&TokenKind::LBrace, "expected '{' after 'pool'")?;
-                        self.skip_separators();
-                        if !self.at(&TokenKind::RBrace) {
-                            return Err(self.error_here(
-                                "pool literals start empty; add values after construction",
-                            ));
-                        }
-                        self.expect(
-                            &TokenKind::RBrace,
-                            "expected '}' after the empty pool literal",
-                        )?;
-                        expr = Expr {
-                            kind: ExprKind::PoolLiteral,
-                            span: expr.span,
-                        };
-                    } else if name == "map" {
-                        self.expect(&TokenKind::LBrace, "expected '{' after 'map'")?;
-                        self.skip_separators();
-                        if !self.at(&TokenKind::RBrace) {
-                            return Err(self.error_here(
-                                "map literals start empty; set values after construction",
-                            ));
-                        }
-                        self.expect(
-                            &TokenKind::RBrace,
-                            "expected '}' after the empty map literal",
-                        )?;
-                        expr = Expr {
-                            kind: ExprKind::MapLiteral,
-                            span: expr.span,
-                        };
-                    } else if name == "set" {
-                        self.expect(&TokenKind::LBrace, "expected '{' after 'set'")?;
-                        self.skip_separators();
-                        if !self.at(&TokenKind::RBrace) {
-                            return Err(self.error_here(
-                                "set literals start empty; add values after construction",
-                            ));
-                        }
-                        self.expect(
-                            &TokenKind::RBrace,
-                            "expected '}' after the empty set literal",
-                        )?;
-                        expr = Expr {
-                            kind: ExprKind::SetLiteral,
-                            span: expr.span,
-                        };
-                    } else if name == "queue" {
-                        self.expect(&TokenKind::LBrace, "expected '{' after 'queue'")?;
-                        self.skip_separators();
-                        if !self.at(&TokenKind::RBrace) {
-                            return Err(self.error_here(
-                                "queue literals start empty; push values after construction",
-                            ));
-                        }
-                        self.expect(
-                            &TokenKind::RBrace,
-                            "expected '}' after the empty queue literal",
-                        )?;
-                        expr = Expr {
-                            kind: ExprKind::QueueLiteral,
-                            span: expr.span,
-                        };
-                    } else if name == "ring" {
-                        self.expect(&TokenKind::LBrace, "expected '{' after 'ring'")?;
-                        self.skip_separators();
-                        if !self.at(&TokenKind::RBrace) {
-                            return Err(self.error_here(
-                                "ring literals start empty; push values after construction",
-                            ));
-                        }
-                        self.expect(
-                            &TokenKind::RBrace,
-                            "expected '}' after the empty ring literal",
-                        )?;
-                        expr = Expr {
-                            kind: ExprKind::RingLiteral,
-                            span: expr.span,
-                        };
-                    } else {
-                        let fields = self.struct_init_fields()?;
-                        expr = Expr {
-                            kind: ExprKind::StructInit { name, fields },
-                            span: expr.span,
-                        };
-                    }
-                    continue;
-                }
-            }
-            if self.take(&TokenKind::Question) {
-                let span = expr.span;
-                expr = Expr {
-                    kind: ExprKind::Try(Box::new(expr)),
                     span,
-                };
-                continue;
-            }
-            if self.take(&TokenKind::QuestionDot) {
-                let (method, method_span) =
-                    self.expect_ident("expected a function name after '?.'")?;
-                self.expect(
-                    &TokenKind::LParen,
-                    "expected '(' after the optional call name",
-                )?;
-                let args = self.arguments_after_lparen()?;
-                let span = expr.span;
-                expr = Expr {
-                    kind: ExprKind::OptionalCall {
+                })
+            } else if method == "to_long" && args.is_empty() {
+                Ok(Expr {
+                    kind: ExprKind::ToLong {
+                        value: Box::new(expr),
+                        method_span,
+                    },
+                    span,
+                })
+            } else {
+                Ok(Expr {
+                    kind: ExprKind::MethodCall {
                         receiver: Box::new(expr),
                         name: method,
                         method_span,
                         args,
                     },
                     span,
-                };
-                continue;
+                })
             }
-            if self.take(&TokenKind::Dot) {
-                let (method, method_span) =
-                    self.expect_ident("expected a method name after '.'")?;
-                let qualifier = match &expr.kind {
-                    ExprKind::Name(name) => Some(name.clone()),
-                    _ => None,
-                };
-                let is_type_qualifier = qualifier
-                    .as_deref()
-                    .and_then(|name| name.chars().next())
-                    .is_some_and(char::is_uppercase);
-                if method == "fit" && self.take(&TokenKind::Lt) {
-                    let ty = self.type_name()?;
-                    self.expect_type_gt("expected '>' after the fit type")?;
-                    self.expect(&TokenKind::LParen, "expected '()' after the fit type")?;
-                    self.expect(&TokenKind::RParen, "fit takes no arguments")?;
-                    let span = expr.span;
-                    expr = Expr {
-                        kind: ExprKind::Fit {
-                            value: Box::new(expr),
-                            ty,
-                            method_span,
-                        },
-                        span,
-                    };
-                } else if self.take(&TokenKind::LParen) {
-                    let args = self.arguments_after_lparen()?;
-                    let span = expr.span;
-                    let is_builtin_method = matches!(
-                        method.as_str(),
-                        "to_long"
-                            | "ok"
-                            | "unwrap"
-                            | "is_none"
-                            | "is_some"
-                            | "is_ok"
-                            | "is_err"
-                            | "len"
-                            | "count"
-                            | "peek"
-                            | "width"
-                            | "height"
-                            | "add"
-                            | "set"
-                            | "get"
-                            | "contains"
-                            | "push"
-                            | "pop"
-                            | "insert"
-                            | "remove"
-                            | "clear"
-                    );
-                    if let Some(enum_name) =
-                        qualifier.filter(|_| !is_builtin_method && is_type_qualifier)
-                    {
-                        expr = Expr {
-                            kind: ExprKind::QualifiedCase {
-                                enum_name,
-                                case_name: method,
-                                case_span: method_span,
-                                args,
-                            },
-                            span,
-                        };
-                    } else if method == "to_long" && args.is_empty() {
-                        expr = Expr {
-                            kind: ExprKind::ToLong {
-                                value: Box::new(expr),
-                                method_span,
-                            },
-                            span,
-                        };
-                    } else {
-                        expr = Expr {
-                            kind: ExprKind::MethodCall {
-                                receiver: Box::new(expr),
-                                name: method,
-                                method_span,
-                                args,
-                            },
-                            span,
-                        };
-                    }
-                } else {
-                    let span = expr.span;
-                    expr = Expr {
-                        kind: ExprKind::Field {
-                            receiver: Box::new(expr),
-                            name: method,
-                            field_span: method_span,
-                        },
-                        span,
-                    };
-                }
-                continue;
-            }
-            break;
+        } else {
+            let span = expr.span;
+            Ok(Expr {
+                kind: ExprKind::Field {
+                    receiver: Box::new(expr),
+                    name: method,
+                    field_span: method_span,
+                },
+                span,
+            })
         }
-        Ok(expr)
+    }
+
+    fn grouped_expression(&mut self, span: Span) -> Result<Expr, ParseError> {
+        self.parenthesis_depth += 1;
+        if self.parenthesis_depth > EXPRESSION_NESTING_LIMIT {
+            self.parenthesis_depth -= 1;
+            return Err(ParseError {
+                span,
+                message: format!("expression nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"),
+            });
+        }
+        let parsed = (|| {
+            let inner = self.expression(0)?;
+            self.expect(&TokenKind::RParen, "expected ')' after this expression")?;
+            Ok(Expr { span, ..inner })
+        })();
+        self.parenthesis_depth -= 1;
+        parsed
     }
 
     fn arguments_after_lparen(&mut self) -> Result<Vec<Expr>, ParseError> {
@@ -1700,6 +1806,214 @@ impl Parser<'_> {
             message: message.to_owned(),
         }
     }
+}
+
+enum NestingTask<'a> {
+    Expr(&'a Expr, usize),
+    Block(&'a Block, usize),
+    Type(&'a TypeAst, usize),
+}
+
+fn expression_nesting_exceeded(root: &Expr, limit: usize) -> Option<Span> {
+    let root_depth = if matches!(&root.kind, ExprKind::Call { name, .. } if name == "print") {
+        0
+    } else {
+        1
+    };
+    let mut pending = vec![NestingTask::Expr(root, root_depth)];
+    while let Some(task) = pending.pop() {
+        match task {
+            NestingTask::Expr(expr, depth) => {
+                let has_nested_expression = matches!(
+                    &expr.kind,
+                    ExprKind::Call { .. }
+                        | ExprKind::IndirectCall { .. }
+                        | ExprKind::QualifiedCase { .. }
+                        | ExprKind::MethodCall { .. }
+                        | ExprKind::Index { .. }
+                        | ExprKind::OptionalCall { .. }
+                        | ExprKind::Field { .. }
+                        | ExprKind::StructInit { .. }
+                        | ExprKind::GridIndex { .. }
+                        | ExprKind::Fit { .. }
+                        | ExprKind::Try(_)
+                        | ExprKind::Return(_)
+                        | ExprKind::Match { .. }
+                        | ExprKind::ToLong { .. }
+                        | ExprKind::Cast { .. }
+                        | ExprKind::Unary { .. }
+                        | ExprKind::Binary { .. }
+                        | ExprKind::If { .. }
+                );
+                if has_nested_expression && depth > limit {
+                    return Some(expr.span);
+                }
+                let child_depth = depth + usize::from(has_nested_expression);
+                match &expr.kind {
+                    ExprKind::Call { args, .. } | ExprKind::QualifiedCase { args, .. } => {
+                        pending.extend(args.iter().map(|arg| NestingTask::Expr(arg, child_depth)));
+                    }
+                    ExprKind::IndirectCall { callee, args } => {
+                        pending.push(NestingTask::Expr(callee, child_depth));
+                        pending.extend(args.iter().map(|arg| NestingTask::Expr(arg, child_depth)));
+                    }
+                    ExprKind::MethodCall { receiver, args, .. }
+                    | ExprKind::OptionalCall { receiver, args, .. } => {
+                        pending.push(NestingTask::Expr(receiver, child_depth));
+                        pending.extend(args.iter().map(|arg| NestingTask::Expr(arg, child_depth)));
+                    }
+                    ExprKind::Index {
+                        receiver, index, ..
+                    } => {
+                        pending.push(NestingTask::Expr(receiver, child_depth));
+                        pending.push(NestingTask::Expr(index, child_depth));
+                    }
+                    ExprKind::Field { receiver, .. } => {
+                        pending.push(NestingTask::Expr(receiver, child_depth));
+                    }
+                    ExprKind::StructInit { fields, .. } => {
+                        pending.extend(
+                            fields
+                                .iter()
+                                .map(|field| NestingTask::Expr(&field.value, child_depth)),
+                        );
+                    }
+                    ExprKind::GridIndex { receiver, x, y, .. } => {
+                        pending.push(NestingTask::Expr(receiver, child_depth));
+                        pending.push(NestingTask::Expr(x, child_depth));
+                        pending.push(NestingTask::Expr(y, child_depth));
+                    }
+                    ExprKind::Fit { value, ty, .. } => {
+                        pending.push(NestingTask::Expr(value, child_depth));
+                        pending.push(NestingTask::Type(ty, child_depth));
+                    }
+                    ExprKind::Cast { value, ty, .. } => {
+                        pending.push(NestingTask::Expr(value, child_depth));
+                        pending.push(NestingTask::Type(ty, child_depth));
+                    }
+                    ExprKind::Try(value)
+                    | ExprKind::ToLong { value, .. }
+                    | ExprKind::Unary { value, .. } => {
+                        pending.push(NestingTask::Expr(value, child_depth));
+                    }
+                    ExprKind::Return(Some(value)) => {
+                        pending.push(NestingTask::Expr(value, child_depth));
+                    }
+                    ExprKind::Match { scrutinee, arms } => {
+                        pending.push(NestingTask::Expr(scrutinee, child_depth));
+                        pending.extend(arms.iter().map(|arm| NestingTask::Block(&arm.body, depth)));
+                    }
+                    ExprKind::Binary { left, right, .. } => {
+                        pending.push(NestingTask::Expr(left, child_depth));
+                        pending.push(NestingTask::Expr(right, child_depth));
+                    }
+                    ExprKind::If {
+                        condition,
+                        then_block,
+                        else_block,
+                    } => {
+                        pending.push(NestingTask::Expr(condition, child_depth));
+                        pending.push(NestingTask::Block(then_block, depth));
+                        if let Some(block) = else_block {
+                            pending.push(NestingTask::Block(block, depth));
+                        }
+                    }
+                    ExprKind::Unit
+                    | ExprKind::Integer { .. }
+                    | ExprKind::Bool(_)
+                    | ExprKind::Name(_)
+                    | ExprKind::ListLiteral
+                    | ExprKind::PoolLiteral
+                    | ExprKind::MapLiteral
+                    | ExprKind::SetLiteral
+                    | ExprKind::QueueLiteral
+                    | ExprKind::RingLiteral
+                    | ExprKind::Return(None)
+                    | ExprKind::LoopExit(_) => {}
+                }
+            }
+            NestingTask::Block(block, depth) => {
+                let child_depth = depth + 1;
+                if let Some(tail) = &block.tail {
+                    pending.push(NestingTask::Expr(tail, child_depth));
+                }
+                for statement in &block.statements {
+                    match &statement.kind {
+                        StmtKind::Let {
+                            value, annotation, ..
+                        } => {
+                            pending.push(NestingTask::Expr(value, child_depth));
+                            if let Some(ty) = annotation {
+                                pending.push(NestingTask::Type(ty, child_depth));
+                            }
+                        }
+                        StmtKind::Expr(value)
+                        | StmtKind::Discard(value)
+                        | StmtKind::Expect { value, .. } => {
+                            pending.push(NestingTask::Expr(value, child_depth));
+                        }
+                        StmtKind::Assign { target, value, .. } => {
+                            pending.push(NestingTask::Expr(target, child_depth));
+                            pending.push(NestingTask::Expr(value, child_depth));
+                        }
+                        StmtKind::Return(Some(value)) => {
+                            pending.push(NestingTask::Expr(value, child_depth));
+                        }
+                        StmtKind::For {
+                            start,
+                            end,
+                            body,
+                            annotation,
+                            ..
+                        } => {
+                            pending.push(NestingTask::Expr(start, child_depth));
+                            pending.push(NestingTask::Expr(end, child_depth));
+                            pending.push(NestingTask::Block(body, child_depth));
+                            if let Some(ty) = annotation {
+                                pending.push(NestingTask::Type(ty, child_depth));
+                            }
+                        }
+                        StmtKind::ForEach {
+                            collection, body, ..
+                        } => {
+                            pending.push(NestingTask::Expr(collection, child_depth));
+                            pending.push(NestingTask::Block(body, child_depth));
+                        }
+                        StmtKind::Block(block) => {
+                            pending.push(NestingTask::Block(block, child_depth));
+                        }
+                        StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
+                    }
+                }
+            }
+            NestingTask::Type(ty, depth) => {
+                let child_depth = depth + 1;
+                pending.extend(
+                    ty.args
+                        .iter()
+                        .map(|nested| NestingTask::Type(nested, child_depth)),
+                );
+                pending.extend(
+                    ty.const_args
+                        .iter()
+                        .chain(&ty.array_caps)
+                        .map(|expr| NestingTask::Expr(expr, child_depth)),
+                );
+                if let Some(function) = &ty.function {
+                    pending.extend(
+                        function
+                            .params
+                            .iter()
+                            .map(|param| NestingTask::Type(&param.ty, child_depth)),
+                    );
+                    if let Some(result) = &function.result {
+                        pending.push(NestingTask::Type(result, child_depth));
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 enum Candidate {

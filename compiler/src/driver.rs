@@ -9,6 +9,7 @@ use crate::emit::StackContract;
 use crate::{checker, emit, lexer, parser};
 
 static TEMP_ID: AtomicUsize = AtomicUsize::new(0);
+const COMPILER_STACK_SIZE: usize = 1024 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct CompileError {
@@ -34,6 +35,8 @@ pub struct CompileOutput {
     pub tests: Vec<String>,
     pub memory: MemoryReport,
     pub contracts: Vec<StackContract>,
+    call_graph: Vec<Vec<usize>>,
+    recursive_functions: Vec<bool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -87,6 +90,25 @@ pub fn compile_package(package: &Path) -> Result<CompileOutput, CompileError> {
 }
 
 fn compile_package_internal(
+    package: &Path,
+    require_main: bool,
+) -> Result<CompileOutput, PackageError> {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("nlc-compile".to_owned())
+            .stack_size(COMPILER_STACK_SIZE)
+            .spawn_scoped(scope, move || {
+                compile_package_on_worker(package, require_main)
+            })
+            .map_err(|error| {
+                PackageError::Tool(format!("could not start compiler thread: {error}"))
+            })?
+            .join()
+            .map_err(|_| PackageError::Tool("compiler thread panicked".to_owned()))?
+    })
+}
+
+fn compile_package_on_worker(
     package: &Path,
     require_main: bool,
 ) -> Result<CompileOutput, PackageError> {
@@ -151,6 +173,7 @@ fn compile_package_internal(
     })?;
     typed.job_headroom_bytes = memory_config.job_headroom_bytes;
     typed.globals_budget_bytes = memory_config.globals_budget_bytes;
+    typed.recursion_budget_bytes = memory_config.recursion_budget_bytes;
     let function_contracts = emit::stack_contracts(&typed);
     emit::apply_function_type_stack_contracts(&mut typed, &function_contracts);
     let contracts = emit::stack_contracts(&typed);
@@ -168,12 +191,24 @@ fn compile_package_internal(
         job_headroom_bytes: typed.job_headroom_bytes,
         globals_budget_bytes: typed.globals_budget_bytes,
     };
+    let call_graph = typed
+        .call_graph
+        .iter()
+        .map(|edges| edges.iter().map(|edge| edge.target).collect())
+        .collect();
+    let recursive_functions = typed
+        .functions
+        .iter()
+        .map(|function| function.recursive)
+        .collect();
     Ok(CompileOutput {
         llvm_ir: emit::emit(&typed),
         files,
         tests: typed.tests.iter().map(|test| test.name.clone()).collect(),
         memory,
         contracts,
+        call_graph,
+        recursive_functions,
     })
 }
 
@@ -186,9 +221,9 @@ pub fn build_package(package: &Path, output: &Path) -> Result<(), PackageError> 
     let temp = TempDir::new()
         .map_err(|e| PackageError::Tool(format!("cannot create temporary directory: {e}")))?;
     let ir = temp.path.join("module.ll");
-    fs::write(&ir, compiled.llvm_ir)
+    fs::write(&ir, &compiled.llvm_ir)
         .map_err(|e| PackageError::Tool(format!("cannot write generated LLVM IR: {e}")))?;
-    clang(&ir, output, false)
+    clang(&ir, output, false, &compiled)
 }
 
 pub fn run_package(package: &Path) -> Result<ExitStatus, PackageError> {
@@ -208,9 +243,9 @@ pub fn run_package_args(
     } else {
         "program"
     });
-    fs::write(&ir, compiled.llvm_ir)
+    fs::write(&ir, &compiled.llvm_ir)
         .map_err(|e| PackageError::Tool(format!("cannot write generated LLVM IR: {e}")))?;
-    clang(&ir, &binary, false)?;
+    clang(&ir, &binary, false, &compiled)?;
     Command::new(&binary)
         .args(args)
         .stdin(Stdio::inherit())
@@ -234,9 +269,9 @@ pub fn test_package(package: &Path) -> Result<u8, PackageError> {
     } else {
         "program"
     });
-    fs::write(&ir, compiled.llvm_ir)
+    fs::write(&ir, &compiled.llvm_ir)
         .map_err(|e| PackageError::Tool(format!("cannot write generated LLVM IR: {e}")))?;
-    clang(&ir, &binary, true)?;
+    clang(&ir, &binary, true, &compiled)?;
 
     let mut passed = 0usize;
     let mut failed = 0usize;
@@ -319,7 +354,12 @@ pub fn inspect_contracts(package: &Path) -> Result<(), PackageError> {
     Ok(())
 }
 
-fn clang(ir: &Path, output: &Path, test_build: bool) -> Result<(), PackageError> {
+fn clang(
+    ir: &Path,
+    output: &Path,
+    test_build: bool,
+    compiled: &CompileOutput,
+) -> Result<(), PackageError> {
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/nl_runtime.c");
     if !runtime.is_file() {
         return Err(PackageError::Tool(format!(
@@ -327,14 +367,70 @@ fn clang(ir: &Path, output: &Path, test_build: bool) -> Result<(), PackageError>
             runtime.display()
         )));
     }
+    let optimization = match std::env::var("NLC_OPT_LEVEL").as_deref() {
+        Ok("1") | Err(_) => "1",
+        Ok("3") => "3",
+        Ok(value) => {
+            return Err(PackageError::Tool(format!(
+                "NLC_OPT_LEVEL must be 1 or 3, got '{value}'"
+            )));
+        }
+    };
+    let source = fs::read_to_string(ir)
+        .map_err(|error| PackageError::Tool(format!("cannot read generated LLVM IR: {error}")))?;
+    if !source.contains("nlc.recursion.targets=") {
+        return run_clang(ir, output, &runtime, test_build, optimization, false);
+    }
+
+    let parent = ir.parent().unwrap_or_else(|| Path::new("."));
+    let probe = parent.join("nlc-recursion-frame-probe");
+    let patched_ir = parent.join("nlc-recursion-final.ll");
+    run_clang(ir, &probe, &runtime, test_build, optimization, true)?;
+    let mut frames = read_native_frame_sizes(&probe)?;
+    for _ in 0..3 {
+        let patched = patch_recursion_checks(&source, compiled, &frames)?;
+        fs::write(&patched_ir, patched).map_err(|error| {
+            PackageError::Tool(format!("cannot write recursion-checked LLVM IR: {error}"))
+        })?;
+        run_clang(
+            &patched_ir,
+            output,
+            &runtime,
+            test_build,
+            optimization,
+            true,
+        )?;
+        let final_frames = read_native_frame_sizes(output)?;
+        if final_frames == frames {
+            return Ok(());
+        }
+        frames = final_frames;
+    }
+    Err(PackageError::Tool(
+        "optimized native frame sizes did not stabilize after recursion checks were added"
+            .to_owned(),
+    ))
+}
+
+fn run_clang(
+    ir: &Path,
+    output: &Path,
+    runtime: &Path,
+    test_build: bool,
+    optimization: &str,
+    collect_stack_sizes: bool,
+) -> Result<(), PackageError> {
     let mut command = Command::new("clang");
-    command.arg("-O1");
+    command.arg(format!("-O{optimization}"));
+    if collect_stack_sizes {
+        command.arg("-fstack-size-section");
+    }
     if test_build {
         command.arg("-DNLC_TEST_BUILD=1");
     }
     let result = command
         .arg(ir)
-        .arg(&runtime)
+        .arg(runtime)
         .arg("-o")
         .arg(output)
         .output()
@@ -349,10 +445,273 @@ fn clang(ir: &Path, output: &Path, test_build: bool) -> Result<(), PackageError>
     Ok(())
 }
 
+fn patch_recursion_checks(
+    source: &str,
+    compiled: &CompileOutput,
+    frame_sizes: &std::collections::HashMap<usize, u64>,
+) -> Result<String, PackageError> {
+    let mut output = String::with_capacity(source.len());
+    let mut patched_count = 0usize;
+    for line in source.lines() {
+        let Some((instruction, comment)) = line.split_once("; nlc.recursion.targets=") else {
+            output.push_str(line);
+            output.push('\n');
+            continue;
+        };
+        let targets = comment
+            .split(',')
+            .filter(|target| !target.is_empty())
+            .map(|target| {
+                target.parse::<usize>().map_err(|error| {
+                    PackageError::Tool(format!("invalid recursive target in generated IR: {error}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if targets.is_empty() {
+            return Err(PackageError::Tool(
+                "generated recursion check has no possible target".to_owned(),
+            ));
+        }
+        let required = targets
+            .iter()
+            .map(|target| {
+                native_stack_requirement(
+                    *target,
+                    compiled,
+                    frame_sizes,
+                    &mut vec![None; compiled.call_graph.len()],
+                    &mut vec![false; compiled.call_graph.len()],
+                )
+            })
+            .max()
+            .unwrap_or(0);
+        let Some((before, after)) = instruction.split_once("i64 0") else {
+            return Err(PackageError::Tool(
+                "generated recursion check is missing its frame-size placeholder".to_owned(),
+            ));
+        };
+        output.push_str(before);
+        output.push_str(&format!("i64 {required}"));
+        output.push_str(after);
+        output.push_str("; nlc.recursion.targets=");
+        output.push_str(comment);
+        output.push('\n');
+        patched_count += 1;
+    }
+    if patched_count == 0 {
+        return Err(PackageError::Tool(
+            "recursive functions were found but no recursion checks were emitted".to_owned(),
+        ));
+    }
+    Ok(output)
+}
+
+fn native_stack_requirement(
+    function: usize,
+    compiled: &CompileOutput,
+    frame_sizes: &std::collections::HashMap<usize, u64>,
+    memo: &mut [Option<u64>],
+    visiting: &mut [bool],
+) -> u64 {
+    if let Some(requirement) = memo[function] {
+        return requirement;
+    }
+    if visiting[function] {
+        return u64::MAX;
+    }
+    visiting[function] = true;
+    let frame = frame_sizes.get(&function).copied().unwrap_or(u64::MAX);
+    let child = compiled.call_graph[function]
+        .iter()
+        .filter(|target| !compiled.recursive_functions[**target])
+        .map(|target| native_stack_requirement(*target, compiled, frame_sizes, memo, visiting))
+        .max()
+        .unwrap_or(0);
+    visiting[function] = false;
+    let total = frame
+        .saturating_add(128) // return address, alignment and outgoing call temporaries
+        .saturating_add(child)
+        .saturating_add(64 * 1024); // DESIGN's foreign-call margin, kept on every path
+    memo[function] = Some(total);
+    total
+}
+
+fn read_native_frame_sizes(
+    executable: &Path,
+) -> Result<std::collections::HashMap<usize, u64>, PackageError> {
+    let bytes = fs::read(executable).map_err(|error| {
+        PackageError::Tool(format!(
+            "cannot read optimized executable frame data: {error}"
+        ))
+    })?;
+    if bytes.get(0..4) != Some(b"\x7fELF") || bytes.get(4) != Some(&2) || bytes.get(5) != Some(&1) {
+        return Err(PackageError::Tool(
+            "recursion frame extraction currently requires a 64-bit little-endian ELF executable"
+                .to_owned(),
+        ));
+    }
+    let section_offset = read_u64(&bytes, 40)? as usize;
+    let section_entry_size = read_u16(&bytes, 58)? as usize;
+    let section_count = read_u16(&bytes, 60)? as usize;
+    let names_index = read_u16(&bytes, 62)? as usize;
+    if section_entry_size < 64 || names_index >= section_count {
+        return Err(PackageError::Tool("invalid ELF section table".to_owned()));
+    }
+    let mut sections = Vec::with_capacity(section_count);
+    for index in 0..section_count {
+        let offset = section_offset
+            .checked_add(index.saturating_mul(section_entry_size))
+            .ok_or_else(|| PackageError::Tool("ELF section table offset overflowed".to_owned()))?;
+        sections.push(ElfSection {
+            name_offset: read_u32(&bytes, offset)? as usize,
+            section_type: read_u32(&bytes, offset + 4)?,
+            offset: read_u64(&bytes, offset + 24)? as usize,
+            size: read_u64(&bytes, offset + 32)? as usize,
+            link: read_u32(&bytes, offset + 40)? as usize,
+            entry_size: read_u64(&bytes, offset + 56)? as usize,
+        });
+    }
+    let names = section_data(&bytes, &sections[names_index])?;
+    let stack_section = sections
+        .iter()
+        .find(|section| elf_string(names, section.name_offset) == Some(".stack_sizes"))
+        .ok_or_else(|| {
+            PackageError::Tool(
+                "clang did not emit the .stack_sizes section required for recursion".to_owned(),
+            )
+        })?;
+    let stack_data = section_data(&bytes, stack_section)?;
+    let mut sizes_by_address = std::collections::HashMap::<u64, u64>::new();
+    let mut cursor = 0usize;
+    while cursor < stack_data.len() {
+        let address = read_u64(stack_data, cursor)?;
+        cursor += 8;
+        let (size, used) = read_uleb128(stack_data, cursor)?;
+        cursor += used;
+        sizes_by_address.insert(address, size);
+    }
+    let symtab = sections
+        .iter()
+        .find(|section| section.section_type == 2)
+        .ok_or_else(|| {
+            PackageError::Tool("optimized executable has no ELF symbol table".to_owned())
+        })?;
+    let strings = sections.get(symtab.link).ok_or_else(|| {
+        PackageError::Tool("optimized executable has an invalid symbol string table".to_owned())
+    })?;
+    let string_data = section_data(&bytes, strings)?;
+    let entry_size = if symtab.entry_size >= 24 {
+        symtab.entry_size
+    } else {
+        24
+    };
+    let mut frame_sizes = std::collections::HashMap::new();
+    for offset in (0..symtab.size).step_by(entry_size) {
+        if offset + 24 > symtab.size {
+            break;
+        }
+        let symbol_offset = symtab.offset + offset;
+        let name_offset = read_u32(&bytes, symbol_offset)? as usize;
+        let info = *bytes
+            .get(symbol_offset + 4)
+            .ok_or_else(|| PackageError::Tool("truncated ELF symbol table".to_owned()))?;
+        if info & 0x0f != 2 {
+            continue;
+        }
+        let Some(name) = elf_string(string_data, name_offset) else {
+            continue;
+        };
+        let Some(id) = name
+            .strip_prefix("nl_fn_")
+            .and_then(|value| value.parse().ok())
+        else {
+            continue;
+        };
+        let address = read_u64(&bytes, symbol_offset + 8)?;
+        let size = sizes_by_address.get(&address).copied().ok_or_else(|| {
+            PackageError::Tool(format!(
+                "clang did not report a final stack size for generated function {name}"
+            ))
+        })?;
+        frame_sizes.insert(id, size);
+    }
+    Ok(frame_sizes)
+}
+
+#[derive(Clone, Copy)]
+struct ElfSection {
+    name_offset: usize,
+    section_type: u32,
+    offset: usize,
+    size: usize,
+    link: usize,
+    entry_size: usize,
+}
+
+fn section_data<'a>(bytes: &'a [u8], section: &ElfSection) -> Result<&'a [u8], PackageError> {
+    bytes
+        .get(section.offset..section.offset.saturating_add(section.size))
+        .ok_or_else(|| PackageError::Tool("ELF section extends past end of file".to_owned()))
+}
+
+fn elf_string(bytes: &[u8], offset: usize) -> Option<&str> {
+    let tail = bytes.get(offset..)?;
+    let end = tail.iter().position(|byte| *byte == 0)?;
+    std::str::from_utf8(&tail[..end]).ok()
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, PackageError> {
+    let value = bytes
+        .get(offset..offset.saturating_add(2))
+        .ok_or_else(|| PackageError::Tool("truncated ELF file".to_owned()))?;
+    Ok(u16::from_le_bytes([value[0], value[1]]))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, PackageError> {
+    let value = bytes
+        .get(offset..offset.saturating_add(4))
+        .ok_or_else(|| PackageError::Tool("truncated ELF file".to_owned()))?;
+    Ok(u32::from_le_bytes([value[0], value[1], value[2], value[3]]))
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, PackageError> {
+    let value = bytes
+        .get(offset..offset.saturating_add(8))
+        .ok_or_else(|| PackageError::Tool("truncated ELF file".to_owned()))?;
+    Ok(u64::from_le_bytes([
+        value[0], value[1], value[2], value[3], value[4], value[5], value[6], value[7],
+    ]))
+}
+
+fn read_uleb128(bytes: &[u8], offset: usize) -> Result<(u64, usize), PackageError> {
+    let mut value = 0u64;
+    let mut shift = 0u32;
+    for index in 0..10usize {
+        let byte = *bytes
+            .get(offset + index)
+            .ok_or_else(|| PackageError::Tool("truncated .stack_sizes entry".to_owned()))?;
+        let payload = (byte & 0x7f) as u64;
+        if shift >= 64 && payload != 0 {
+            return Err(PackageError::Tool(
+                "invalid .stack_sizes ULEB128 value".to_owned(),
+            ));
+        }
+        value |= payload.checked_shl(shift).unwrap_or(0);
+        if byte & 0x80 == 0 {
+            return Ok((value, index + 1));
+        }
+        shift += 7;
+    }
+    Err(PackageError::Tool(
+        "invalid .stack_sizes ULEB128 value".to_owned(),
+    ))
+}
+
 #[derive(Clone, Copy)]
 struct MemoryConfig {
     job_headroom_bytes: u64,
     globals_budget_bytes: u64,
+    recursion_budget_bytes: u64,
 }
 
 fn read_memory_config(package: &Path) -> Result<MemoryConfig, PackageError> {
@@ -363,6 +722,7 @@ fn read_memory_config(package: &Path) -> Result<MemoryConfig, PackageError> {
             return Ok(MemoryConfig {
                 job_headroom_bytes: 256 * 1024 * 1024,
                 globals_budget_bytes: 64 * 1024 * 1024,
+                recursion_budget_bytes: 0,
             });
         }
         Err(error) => {
@@ -375,6 +735,7 @@ fn read_memory_config(package: &Path) -> Result<MemoryConfig, PackageError> {
     let mut config = MemoryConfig {
         job_headroom_bytes: 256 * 1024 * 1024,
         globals_budget_bytes: 64 * 1024 * 1024,
+        recursion_budget_bytes: 0,
     };
     for (line_number, line) in contents.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
@@ -385,7 +746,7 @@ fn read_memory_config(package: &Path) -> Result<MemoryConfig, PackageError> {
             continue;
         };
         let key = key.trim();
-        if key != "job_headroom" && key != "globals_budget" {
+        if key != "job_headroom" && key != "globals_budget" && key != "recursion_budget" {
             continue;
         }
         let bytes = parse_manifest_memory(value.trim()).ok_or_else(|| {
@@ -399,6 +760,7 @@ fn read_memory_config(package: &Path) -> Result<MemoryConfig, PackageError> {
         match key {
             "job_headroom" => config.job_headroom_bytes = bytes,
             "globals_budget" => config.globals_budget_bytes = bytes,
+            "recursion_budget" => config.recursion_budget_bytes = bytes,
             _ => unreachable!(),
         }
     }
@@ -410,6 +772,10 @@ fn parse_manifest_memory(value: &str) -> Option<u64> {
     let value = value.trim();
     let (number, multiplier) = if let Some(number) = value.strip_suffix("GiB") {
         (number, 1024u64 * 1024 * 1024)
+    } else if let Some(number) = value.strip_suffix("KiB") {
+        (number, 1024u64)
+    } else if let Some(number) = value.strip_suffix("KB") {
+        (number, 1000u64)
     } else if let Some(number) = value.strip_suffix("GB") {
         (number, 1000u64 * 1000 * 1000)
     } else if let Some(number) = value.strip_suffix("MiB") {

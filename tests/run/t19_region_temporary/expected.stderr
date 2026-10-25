@@ -1,0 +1,1 @@
+main.nl:8:52: error: large temporary copy of argument 'Big' would keep a data-stack region alive across a recursive call; pass a borrowed local or smaller value

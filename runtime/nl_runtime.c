@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +10,7 @@
 #if defined(__linux__)
 #include <sys/mman.h>
 #include <sys/types.h>
+#include <pthread.h>
 #endif
 
 static const char **nl_files;
@@ -21,6 +23,9 @@ typedef struct {
     unsigned char *base;
     unsigned char *top;
     unsigned char *limit;
+    uintptr_t native_stack_limit;
+    uintptr_t native_stack_start;
+    uint64_t recursion_budget;
 } nl_data_stack_context;
 
 _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col);
@@ -46,7 +51,60 @@ static uint64_t nl_data_stack_reservation(void) {
     return UINT64_C(67108864);
 }
 
-void *nl_context_create(uint64_t requested_bytes) {
+static uintptr_t nl_current_stack_pointer(void) {
+#if defined(__x86_64__)
+    uintptr_t pointer;
+    __asm__ volatile("mov %%rsp, %0" : "=r"(pointer));
+    return pointer;
+#elif defined(__aarch64__)
+    uintptr_t pointer;
+    __asm__ volatile("mov %0, sp" : "=r"(pointer));
+    return pointer;
+#else
+    volatile unsigned char marker = 0;
+    return (uintptr_t)&marker;
+#endif
+}
+
+static void nl_native_stack_setup(nl_data_stack_context *context,
+                                  uint64_t requested_budget) {
+    uintptr_t stack_low = 0;
+    uint64_t stack_bytes = 0;
+    pthread_attr_t attributes;
+    if (pthread_getattr_np(pthread_self(), &attributes) != 0) {
+        nl_stack_startup_failure("could not determine the native stack bounds");
+    }
+    void *stack_address = NULL;
+    size_t stack_size = 0;
+    size_t guard_size = 0;
+    if (pthread_attr_getstack(&attributes, &stack_address, &stack_size) != 0 ||
+        !stack_address || stack_size == 0) {
+        pthread_attr_destroy(&attributes);
+        nl_stack_startup_failure("could not determine the native stack bounds");
+    }
+    stack_low = (uintptr_t)stack_address;
+    stack_bytes = (uint64_t)stack_size;
+    if (pthread_attr_getguardsize(&attributes, &guard_size) == 0 &&
+        guard_size < stack_size) {
+        /* Exclude any guard area from the native bytes available to jobs. */
+        stack_low += guard_size;
+        stack_bytes -= guard_size;
+    }
+    pthread_attr_destroy(&attributes);
+    uintptr_t current = nl_current_stack_pointer();
+    if (current < stack_low || current - stack_low > stack_bytes) {
+        nl_stack_startup_failure("current stack pointer is outside the reported native stack");
+    }
+    const uint64_t safety = UINT64_C(80) * 1024;
+    uint64_t default_budget = stack_bytes > safety ? stack_bytes - safety : stack_bytes / 2;
+    context->native_stack_limit = stack_low;
+    context->native_stack_start = current;
+    context->recursion_budget = requested_budget
+        ? (requested_budget < default_budget ? requested_budget : default_budget)
+        : default_budget;
+}
+
+void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_budget) {
 #if defined(__linux__)
     long page = sysconf(_SC_PAGESIZE);
     if (page <= 0) nl_stack_startup_failure("could not determine the system page size");
@@ -83,12 +141,38 @@ void *nl_context_create(uint64_t requested_bytes) {
     context->base = (unsigned char *)mapping;
     context->top = context->base;
     context->limit = context->base + bytes;
+    nl_native_stack_setup(context, requested_recursion_budget);
     return context;
 #else
     (void)requested_bytes;
+    (void)requested_recursion_budget;
     nl_stack_startup_failure("data stack reservation requires Linux in this build");
     return NULL;
 #endif
+}
+
+__attribute__((noinline)) void nl_recursion_check(void *opaque, uint64_t required,
+                                                  int32_t file_id, int32_t line,
+                                                  int32_t col) {
+    nl_data_stack_context *context = opaque;
+    if (!context) nl_stack_startup_failure("missing job context in recursion check");
+    uintptr_t stack_pointer = nl_current_stack_pointer();
+    const uint64_t reporting_margin = UINT64_C(16) * 1024;
+    const uint64_t helper_margin = 512;
+    if (required > UINT64_MAX - reporting_margin - helper_margin) {
+        nl_fail(19, file_id, line, col);
+    }
+    uint64_t needed = required + reporting_margin + helper_margin;
+    uint64_t remaining = stack_pointer > context->native_stack_limit
+        ? (uint64_t)(stack_pointer - context->native_stack_limit)
+        : 0;
+    uint64_t used = context->native_stack_start > stack_pointer
+        ? (uint64_t)(context->native_stack_start - stack_pointer)
+        : 0;
+    if (remaining < needed || used > context->recursion_budget ||
+        needed > context->recursion_budget - used) {
+        nl_fail(19, file_id, line, col);
+    }
 }
 
 void *nl_context_base(void *opaque) {
@@ -469,6 +553,7 @@ _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col)
         case 16: message = "index out of range"; break;
         case 17: message = "binary_search requires sorted input"; break;
         case 18: message = "data stack exhausted"; break;
+        case 19: message = "recursion budget exhausted"; break;
     }
     fprintf(stderr, "%s:%d:%d: %s\n", file, line, col, message);
     exit(nl_test_mode ? 70 : 1);

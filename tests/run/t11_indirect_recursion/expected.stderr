@@ -1,1 +1,1 @@
-main.nl:3:5: error: call cycle detected at 'recur'; recursion is opt-in with 'recursive' and is not supported yet
+main.nl:1:1: error: call cycle contains unmarked function(s) 'recur'; mark every function in the cycle 'recursive'

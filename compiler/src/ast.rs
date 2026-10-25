@@ -129,6 +129,7 @@ pub struct Test {
 #[derive(Clone, Debug)]
 pub struct Function {
     pub name: String,
+    pub recursive: bool,
     pub generic_params: Vec<String>,
     pub params: Vec<Param>,
     pub result: Option<TypeAst>,

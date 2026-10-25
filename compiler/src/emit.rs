@@ -10,6 +10,7 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare ptr @nl_context_base(ptr)\n");
     out.push_str("declare void @nl_context_destroy(ptr)\n");
     out.push_str("declare void @nl_context_set_top(ptr, ptr)\n");
+    out.push_str("declare void @nl_recursion_check(ptr, i64, i32, i32, i32)\n");
     out.push_str("declare ptr @nl_stack_alloc(ptr, ptr, i64, i64, i32, i32, i32)\n");
     out.push_str("declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)\n");
     out.push_str("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
@@ -321,7 +322,10 @@ pub fn emit(program: &TProgram) -> String {
     }
     let entry = program.functions.iter().find(|f| f.name == "main");
     out.push_str("define i32 @main(i32 %argc, ptr %argv) {\nentry:\n");
-    out.push_str("  %nl.ctx = call ptr @nl_context_create(i64 0)\n  %nl.top = call ptr @nl_context_base(ptr %nl.ctx)\n");
+    out.push_str(&format!(
+        "  %nl.ctx = call ptr @nl_context_create(i64 0, i64 {})\n  %nl.top = call ptr @nl_context_base(ptr %nl.ctx)\n",
+        program.recursion_budget_bytes
+    ));
     for (id, file) in program.files.iter().enumerate() {
         let len = file.len() + 1;
         out.push_str(&format!("  call void @nl_register_file(i32 {id}, ptr getelementptr inbounds ([{len} x i8], ptr @.nl.file.{id}, i64 0, i64 0))\n"));
@@ -348,6 +352,9 @@ pub fn emit(program: &TProgram) -> String {
     }
     if program.tests.is_empty() {
         if let Some(entry) = entry {
+            if entry.recursive {
+                out.push_str(&recursion_check_instruction(&[entry.id], entry.span));
+            }
             out.push_str(&format!(
                 "  call void @nl_fn_{}(ptr %nl.ctx, ptr %nl.top)\n",
                 entry.id
@@ -368,6 +375,9 @@ pub fn emit(program: &TProgram) -> String {
         }
         out.push_str(&format!("test.dispatch.{}:\n", program.tests.len()));
         if let Some(entry) = entry {
+            if entry.recursive {
+                out.push_str(&recursion_check_instruction(&[entry.id], entry.span));
+            }
             out.push_str(&format!(
                 "  call void @nl_fn_{}(ptr %nl.ctx, ptr %nl.top)\n",
                 entry.id
@@ -378,6 +388,23 @@ pub fn emit(program: &TProgram) -> String {
     }
     out.push_str("\n!0 = !{!\"branch_weights\", i32 1, i32 2000}\n");
     out
+}
+
+fn recursion_check_instruction(targets: &[usize], span: Span) -> String {
+    let mut targets = targets.to_vec();
+    targets.sort_unstable();
+    targets.dedup();
+    format!(
+        "  call void @nl_recursion_check(ptr %nl.ctx, i64 0, i32 {}, i32 {}, i32 {}) ; nlc.recursion.targets={}\n",
+        span.file,
+        span.line,
+        span.col,
+        targets
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -1067,6 +1094,7 @@ fn global_initializer_function(global: &TGlobal, value: &TExpr, id: usize) -> TF
         },
         span: global.span,
         is_test: false,
+        recursive: false,
     }
 }
 
@@ -5081,6 +5109,7 @@ impl<'a> FunctionEmitter<'a> {
         function_id: usize,
         args: &[TExpr],
         result_destination: Option<&str>,
+        call_span: Span,
     ) -> String {
         let function = self.program.functions[function_id].clone();
         let signature = lower_signature(&function, &self.program.types);
@@ -5104,6 +5133,9 @@ impl<'a> FunctionEmitter<'a> {
         }
         call_args.insert(1, format!("ptr {}", self.stack_top));
         let lowered = call_args.join(", ");
+        if self.program.functions[function_id].recursive {
+            self.emit_recursion_check(&[function_id], call_span);
+        }
         if signature.result == "void" {
             self.instruction(format!("call void @nl_fn_{function_id}({lowered})"));
             self.finish_call_argument_regions(&regions, &saved_top);
@@ -5136,6 +5168,7 @@ impl<'a> FunctionEmitter<'a> {
         params: &[TFunctionTypeParam],
         result_ty: Ty,
         result_destination: Option<&str>,
+        call_span: Span,
     ) -> String {
         let function_value = self.emit_expr(callee);
         if self.terminated {
@@ -5163,6 +5196,21 @@ impl<'a> FunctionEmitter<'a> {
         }
         call_args.insert(1, format!("ptr {}", self.stack_top));
         let lowered = call_args.join(", ");
+        let targets = self
+            .program
+            .call_graph
+            .get(self.function.id)
+            .into_iter()
+            .flatten()
+            .filter(|edge| {
+                edge.span.file == call_span.file
+                    && edge.span.line == call_span.line
+                    && edge.span.col == call_span.col
+                    && self.program.functions[edge.target].recursive
+            })
+            .map(|edge| edge.target)
+            .collect::<Vec<_>>();
+        self.emit_recursion_check(&targets, call_span);
         if large_result {
             self.instruction(format!("call void {function_value}({lowered})"));
             self.finish_call_argument_regions(&regions, &saved_top);
@@ -5189,6 +5237,16 @@ impl<'a> FunctionEmitter<'a> {
             ));
             self.finish_call_argument_regions(&regions, &saved_top);
             value
+        }
+    }
+
+    fn emit_recursion_check(&mut self, targets: &[usize], span: Span) {
+        if !targets.is_empty() {
+            self.lines.push(
+                recursion_check_instruction(targets, span)
+                    .trim_end()
+                    .to_owned(),
+            );
         }
     }
 
@@ -5301,7 +5359,7 @@ impl<'a> FunctionEmitter<'a> {
                 args,
                 ..
             } => {
-                self.emit_direct_call(*function_id, args, Some(destination));
+                self.emit_direct_call(*function_id, args, Some(destination), expr.span);
             }
             TExprKind::IndirectCall {
                 callee,
@@ -5309,7 +5367,14 @@ impl<'a> FunctionEmitter<'a> {
                 params,
                 ..
             } => {
-                self.emit_indirect_call(callee, args, params, expr.ty, Some(destination));
+                self.emit_indirect_call(
+                    callee,
+                    args,
+                    params,
+                    expr.ty,
+                    Some(destination),
+                    expr.span,
+                );
             }
             TExprKind::StructConstruct { fields } => {
                 self.instruction(format!(
@@ -7015,6 +7080,9 @@ impl<'a> FunctionEmitter<'a> {
         }
         lowered_args.insert(1, format!("ptr {}", self.stack_top));
         let call_args = lowered_args.join(", ");
+        if target.recursive {
+            self.emit_recursion_check(&[function_id], expr.span);
+        }
         let function_result = if signature.result == "void" {
             self.instruction(format!("call void @nl_fn_{function_id}({call_args})"));
             if let Some(pointer) = result_storage {
@@ -7167,6 +7235,9 @@ impl<'a> FunctionEmitter<'a> {
 
         lowered_args.insert(1, format!("ptr {}", self.stack_top));
         let call_args = lowered_args.join(", ");
+        if self.program.functions[function_id].recursive {
+            self.emit_recursion_check(&[function_id], expr.span);
+        }
         if signature.result_destination {
             self.instruction(format!("call void @nl_fn_{function_id}({call_args})"));
         } else if signature.result != "void" {
@@ -8184,6 +8255,7 @@ impl<'a> FunctionEmitter<'a> {
         callback: Option<(Ty, Ty, &str, &str)>,
         left: &str,
         right: &str,
+        call_span: Span,
     ) -> String {
         if let Some((callback_ty, context_ty, function_value, context_value)) = callback {
             let TTypeKind::Function { params, .. } = &self.program.types[callback_ty.0].kind else {
@@ -8203,6 +8275,16 @@ impl<'a> FunctionEmitter<'a> {
                 self.lltype(element_ty),
                 self.lltype(element_ty)
             );
+            let targets = self
+                .program
+                .function_type_targets
+                .get(callback_ty.0)
+                .into_iter()
+                .flatten()
+                .filter(|target| self.program.functions[**target].recursive)
+                .copied()
+                .collect::<Vec<_>>();
+            self.emit_recursion_check(&targets, call_span);
             let result = self.temp();
             self.instruction(format!(
                 "{result} = call i1 {function_value}(ptr %nl.ctx, ptr {}, {args})",
@@ -8350,6 +8432,7 @@ impl<'a> FunctionEmitter<'a> {
                 }),
             &key_value,
             &previous_value,
+            expr.span,
         );
         self.terminate(format!(
             "br i1 {should_shift}, label %{insertion_shift}, label %{insertion_store}"
@@ -8490,6 +8573,7 @@ impl<'a> FunctionEmitter<'a> {
                 }),
             &right_value,
             &left_value,
+            expr.span,
         );
         self.terminate(format!(
             "br i1 {right_before_left}, label %{choose_right}, label %{choose_left}"
@@ -8804,6 +8888,137 @@ impl<'a> FunctionEmitter<'a> {
             return String::new();
         }
         match &expr.kind {
+            TExprKind::Call {
+                target: CallTarget::Function(function_id),
+                args,
+                ..
+            } => self.emit_direct_call(*function_id, args, None, expr.span),
+            TExprKind::Call {
+                target,
+                args,
+                effect,
+            } => self.emit_call_expr(expr, target, args, effect),
+            TExprKind::Binary {
+                op,
+                operator_span,
+                left,
+                right,
+            } => {
+                if matches!(op, BinaryOp::And | BinaryOp::Or) {
+                    return self.emit_short_circuit(*op, left, right);
+                }
+                let lhs = self.emit_expr(left);
+                if self.terminated {
+                    return String::new();
+                }
+                let rhs = self.emit_expr(right);
+                if self.terminated {
+                    return String::new();
+                }
+                self.emit_binary(*op, left.ty, &lhs, &rhs, *operator_span)
+            }
+            TExprKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => self.emit_if(
+                condition,
+                then_block,
+                else_block.as_ref(),
+                expr.ty,
+                true,
+                expr.span,
+            ),
+            _ => self.emit_expr_inner(expr),
+        }
+    }
+
+    #[inline(never)]
+    fn emit_call_expr(
+        &mut self,
+        expr: &TExpr,
+        target: &CallTarget,
+        args: &[TExpr],
+        effect: &Effect,
+    ) -> String {
+        match target {
+            CallTarget::Function(_) => {
+                unreachable!("direct calls use the small emitter path")
+            }
+            CallTarget::Print => {
+                debug_assert_eq!(*effect, Effect::Observable);
+                let arg = &args[0];
+                let value = self.emit_expr(arg);
+                if self.terminated {
+                    return String::new();
+                }
+                let ty = base_type(arg.ty, &self.program.types);
+                if matches!(ty, Ty::Int | Ty::Long | Ty::Bool) {
+                    let name = match ty {
+                        Ty::Int => "nl_print_int",
+                        Ty::Long => "nl_print_long",
+                        Ty::Bool => "nl_print_bool",
+                        _ => unreachable!(),
+                    };
+                    self.instruction(format!("call void @{name}({} {value})", self.lltype(ty)));
+                } else {
+                    self.emit_print_value(arg.ty, &value);
+                    self.instruction("call void @nl_print_newline()");
+                }
+                String::new()
+            }
+            CallTarget::Min | CallTarget::Max => {
+                let left = self.emit_expr(&args[0]);
+                if self.terminated {
+                    return String::new();
+                }
+                let right = self.emit_expr(&args[1]);
+                if self.terminated {
+                    return String::new();
+                }
+                let ty = base_type(args[0].ty, &self.program.types);
+                let test = self.temp();
+                self.instruction(format!(
+                    "{test} = icmp {} {} {left}, {right}",
+                    if matches!(target, CallTarget::Min) {
+                        "slt"
+                    } else {
+                        "sgt"
+                    },
+                    self.lltype(ty)
+                ));
+                let result = self.temp();
+                self.instruction(format!(
+                    "{result} = select i1 {test}, {} {left}, {} {right}",
+                    self.lltype(ty),
+                    self.lltype(ty)
+                ));
+                result
+            }
+            CallTarget::Sort { capacity, is_list } => {
+                debug_assert_eq!(*effect, Effect::None);
+                self.emit_sort(expr, args, *capacity, *is_list);
+                String::new()
+            }
+            CallTarget::SortBy {
+                capacity, is_list, ..
+            } => {
+                debug_assert_eq!(*effect, Effect::None);
+                self.emit_sort(expr, args, *capacity, *is_list);
+                String::new()
+            }
+            CallTarget::BinarySearch { capacity, is_list } => {
+                debug_assert_eq!(*effect, Effect::None);
+                self.emit_binary_search(expr, args, *capacity, *is_list)
+            }
+        }
+    }
+
+    fn emit_expr_inner(&mut self, expr: &TExpr) -> String {
+        if self.terminated {
+            return String::new();
+        }
+        match &expr.kind {
             TExprKind::Unit => String::new(),
             TExprKind::Integer(value) => value.to_string(),
             TExprKind::Bool(value) => if *value { "true" } else { "false" }.to_owned(),
@@ -8854,88 +9069,13 @@ impl<'a> FunctionEmitter<'a> {
                 }
             }
             TExprKind::FunctionValue(id) => format!("@nl_fn_{id}"),
-            TExprKind::Call {
-                target,
-                args,
-                effect,
-            } => match target {
-                CallTarget::Print => {
-                    debug_assert_eq!(*effect, Effect::Observable);
-                    let arg = &args[0];
-                    let value = self.emit_expr(arg);
-                    if self.terminated {
-                        return String::new();
-                    }
-                    let ty = base_type(arg.ty, &self.program.types);
-                    if matches!(ty, Ty::Int | Ty::Long | Ty::Bool) {
-                        let name = match ty {
-                            Ty::Int => "nl_print_int",
-                            Ty::Long => "nl_print_long",
-                            Ty::Bool => "nl_print_bool",
-                            _ => unreachable!(),
-                        };
-                        self.instruction(format!("call void @{name}({} {value})", self.lltype(ty)));
-                    } else {
-                        self.emit_print_value(arg.ty, &value);
-                        self.instruction("call void @nl_print_newline()");
-                    }
-                    String::new()
-                }
-                CallTarget::Function(id) => {
-                    debug_assert_eq!(*effect, Effect::None);
-                    self.emit_direct_call(*id, args, None)
-                }
-                CallTarget::Min | CallTarget::Max => {
-                    let left = self.emit_expr(&args[0]);
-                    if self.terminated {
-                        return String::new();
-                    }
-                    let right = self.emit_expr(&args[1]);
-                    if self.terminated {
-                        return String::new();
-                    }
-                    let ty = base_type(args[0].ty, &self.program.types);
-                    let test = self.temp();
-                    self.instruction(format!(
-                        "{test} = icmp {} {} {left}, {right}",
-                        if matches!(target, CallTarget::Min) {
-                            "slt"
-                        } else {
-                            "sgt"
-                        },
-                        self.lltype(ty)
-                    ));
-                    let result = self.temp();
-                    self.instruction(format!(
-                        "{result} = select i1 {test}, {} {left}, {} {right}",
-                        self.lltype(ty),
-                        self.lltype(ty)
-                    ));
-                    result
-                }
-                CallTarget::Sort { capacity, is_list } => {
-                    debug_assert_eq!(*effect, Effect::None);
-                    self.emit_sort(expr, args, *capacity, *is_list);
-                    String::new()
-                }
-                CallTarget::SortBy {
-                    capacity, is_list, ..
-                } => {
-                    debug_assert_eq!(*effect, Effect::None);
-                    self.emit_sort(expr, args, *capacity, *is_list);
-                    String::new()
-                }
-                CallTarget::BinarySearch { capacity, is_list } => {
-                    debug_assert_eq!(*effect, Effect::None);
-                    self.emit_binary_search(expr, args, *capacity, *is_list)
-                }
-            },
+            TExprKind::Call { .. } => unreachable!("calls use the split emitter path"),
             TExprKind::IndirectCall {
                 callee,
                 args,
                 params,
                 ..
-            } => self.emit_indirect_call(callee, args, params, expr.ty, None),
+            } => self.emit_indirect_call(callee, args, params, expr.ty, None, expr.span),
             TExprKind::Construct { case_index, args } => {
                 self.emit_construct(expr.ty, *case_index, args)
             }
@@ -9190,31 +9330,9 @@ impl<'a> FunctionEmitter<'a> {
                     }
                 }
             }
-            TExprKind::Binary {
-                op,
-                operator_span,
-                left,
-                right,
-            } => {
-                if matches!(op, BinaryOp::And | BinaryOp::Or) {
-                    return self.emit_short_circuit(*op, left, right);
-                }
-                let lhs = self.emit_expr(left);
-                let rhs = self.emit_expr(right);
-                self.emit_binary(*op, left.ty, &lhs, &rhs, *operator_span)
+            TExprKind::Binary { .. } | TExprKind::If { .. } => {
+                unreachable!("binary and if expressions use the split emitter path")
             }
-            TExprKind::If {
-                condition,
-                then_block,
-                else_block,
-            } => self.emit_if(
-                condition,
-                then_block,
-                else_block.as_ref(),
-                expr.ty,
-                true,
-                expr.span,
-            ),
         }
     }
 

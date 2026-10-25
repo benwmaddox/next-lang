@@ -4,8 +4,18 @@ use crate::typed::*;
 use std::collections::HashMap;
 
 const STEP_LIMIT: u64 = 10_000_000;
+const CALL_DEPTH_LIMIT: usize = 10_000;
 
 pub fn evaluate_constants(
+    declarations: &[TConstExpr],
+    functions: &[TFunction],
+    call_graph: &[Vec<TCallEdge>],
+    types: &[TType],
+) -> Result<Vec<TConstant>, CheckError> {
+    evaluate_constants_inner(declarations, functions, call_graph, types)
+}
+
+fn evaluate_constants_inner(
     declarations: &[TConstExpr],
     functions: &[TFunction],
     call_graph: &[Vec<TCallEdge>],
@@ -49,11 +59,12 @@ pub fn evaluate_constants(
         constant_values: None,
         views: HashMap::new(),
         steps: 0,
+        call_depth: 0,
     };
     for declaration in declarations {
         evaluator.eval_constant(declaration.id, declaration.span)?;
     }
-    Ok(declarations
+    let result = Ok(declarations
         .iter()
         .map(|declaration| TConstant {
             id: declaration.id,
@@ -64,10 +75,22 @@ pub fn evaluate_constants(
                 .expect("every constant was evaluated"),
             span: declaration.span,
         })
-        .collect())
+        .collect());
+    result
 }
 
 pub fn evaluate_expression(
+    name: &str,
+    expr: &TExpr,
+    functions: &[TFunction],
+    call_graph: &[Vec<TCallEdge>],
+    types: &[TType],
+    constants: &[TConstant],
+) -> Result<ConstValue, CheckError> {
+    evaluate_expression_inner(name, expr, functions, call_graph, types, constants)
+}
+
+fn evaluate_expression_inner(
     name: &str,
     expr: &TExpr,
     functions: &[TFunction],
@@ -102,6 +125,7 @@ pub fn evaluate_expression(
         constant_values: Some(&values),
         views: HashMap::new(),
         steps: 0,
+        call_depth: 0,
     };
     match evaluator.eval_expr(expr, &mut Vec::new()) {
         Ok(Outcome::Value(value)) => Ok(value),
@@ -614,64 +638,72 @@ fn function_cacheability_problem(
     types: &[TType],
     memo: &mut [Option<Option<(String, Vec<String>)>>],
 ) -> Option<(String, Vec<String>)> {
-    if let Some(cached) = &memo[id] {
-        return cached.clone();
-    }
-    let function = &functions[id];
-    if function
-        .params
-        .iter()
-        .any(|param| param.mode == ParamMode::Write)
-    {
-        let problem = Some((
-            "cacheable functions cannot have write parameters".to_owned(),
-            vec![function.name.clone(), "write parameter".to_owned()],
-        ));
-        memo[id] = Some(problem.clone());
-        return problem;
-    }
-    if block_reads_global(&function.body) {
-        let problem = Some((
-            "cacheable functions cannot read global state".to_owned(),
-            vec![function.name.clone(), "global read".to_owned()],
-        ));
-        memo[id] = Some(problem.clone());
-        return problem;
-    }
-    let mut calls = Vec::new();
-    let mut effects = Vec::<(Span, &'static str)>::new();
-    collect_calls_block(&function.body, &mut calls, &mut effects);
-    if !effects.is_empty() {
-        let problem = Some((
-            "compile-time evaluation cannot reach an effect".to_owned(),
-            vec![function.name.clone(), effects[0].1.to_owned()],
-        ));
-        memo[id] = Some(problem.clone());
-        return problem;
-    }
-    for edge in &call_graph[id] {
-        if let Some((reason, mut chain)) =
-            function_cacheability_problem(edge.target, functions, call_graph, types, memo)
+    let _ = (types, memo);
+    let mut pending = vec![id];
+    let mut predecessor = vec![None; functions.len()];
+    let mut seen = vec![false; functions.len()];
+    seen[id] = true;
+    while let Some(current) = pending.pop() {
+        let function = &functions[current];
+        let problem = if function
+            .params
+            .iter()
+            .any(|param| param.mode == ParamMode::Write)
         {
-            chain.insert(0, function.name.clone());
-            let problem = Some((reason, chain));
-            memo[id] = Some(problem.clone());
-            return problem;
+            Some((
+                "cacheable functions cannot have write parameters".to_owned(),
+                "write parameter".to_owned(),
+            ))
+        } else if block_reads_global(&function.body) {
+            Some((
+                "cacheable functions cannot read global state".to_owned(),
+                "global read".to_owned(),
+            ))
+        } else {
+            let mut calls = Vec::new();
+            let mut effects = Vec::<(Span, &'static str)>::new();
+            collect_calls_block(&function.body, &mut calls, &mut effects);
+            effects.first().map(|(_, effect)| {
+                (
+                    "compile-time evaluation cannot reach an effect".to_owned(),
+                    (*effect).to_owned(),
+                )
+            })
+        };
+        if let Some((reason, detail)) = problem {
+            let mut chain = vec![detail];
+            let mut cursor = current;
+            let mut path = vec![current];
+            while let Some(previous) = predecessor[cursor] {
+                path.push(previous);
+                cursor = previous;
+            }
+            path.reverse();
+            let mut names = path
+                .into_iter()
+                .map(|function| functions[function].name.clone())
+                .collect::<Vec<_>>();
+            names.append(&mut chain);
+            return Some((reason, names));
+        }
+        let mut targets = call_graph[current]
+            .iter()
+            .map(|edge| edge.target)
+            .collect::<Vec<_>>();
+        let mut calls = Vec::new();
+        let mut effects = Vec::<(Span, &'static str)>::new();
+        collect_calls_block(&function.body, &mut calls, &mut effects);
+        targets.extend(calls.into_iter().map(|(target, _)| target));
+        targets.sort_unstable();
+        targets.dedup();
+        for target in targets {
+            if target < functions.len() && !seen[target] {
+                seen[target] = true;
+                predecessor[target] = Some(current);
+                pending.push(target);
+            }
         }
     }
-    // The typed call graph records user calls. This scan also catches an optional call if
-    // a future checker path forgets to add its edge.
-    for (target, _) in calls {
-        if let Some((reason, mut chain)) =
-            function_cacheability_problem(target, functions, call_graph, types, memo)
-        {
-            chain.insert(0, function.name.clone());
-            let problem = Some((reason, chain));
-            memo[id] = Some(problem.clone());
-            return problem;
-        }
-    }
-    memo[id] = Some(None);
     None
 }
 
@@ -871,6 +903,7 @@ struct EvalFailure {
     message: String,
     chain: Vec<String>,
     step_limit: bool,
+    call_depth_limit: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -900,6 +933,7 @@ struct Evaluator<'a> {
     constant_values: Option<&'a [ConstValue]>,
     views: HashMap<usize, TPlace>,
     steps: u64,
+    call_depth: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -1549,6 +1583,15 @@ impl Evaluator<'_> {
                         ),
                     });
                 }
+                if failure.call_depth_limit {
+                    return Err(CheckError {
+                        span: failure.span,
+                        message: format!(
+                            "constant '{}' evaluation failed: {}",
+                            declaration.name, failure.message
+                        ),
+                    });
+                }
                 let mut chain = vec![format!("constant {}", declaration.name)];
                 chain.extend(failure.chain);
                 return Err(CheckError {
@@ -1574,6 +1617,7 @@ impl Evaluator<'_> {
                 message: "compile-time step limit reached".to_owned(),
                 chain: Vec::new(),
                 step_limit: true,
+                call_depth_limit: false,
             });
         }
         self.steps += 1;
@@ -1586,10 +1630,11 @@ impl Evaluator<'_> {
             message: message.into(),
             chain: Vec::new(),
             step_limit: false,
+            call_depth_limit: false,
         }
     }
 
-    fn eval_block(
+    fn eval_statements(
         &mut self,
         block: &TBlock,
         locals: &mut Vec<Option<ConstValue>>,
@@ -1959,6 +2004,18 @@ impl Evaluator<'_> {
                 },
             }
         }
+        Ok(Outcome::Value(ConstValue::Unit))
+    }
+
+    fn eval_block(
+        &mut self,
+        block: &TBlock,
+        locals: &mut Vec<Option<ConstValue>>,
+    ) -> Result<Outcome, EvalFailure> {
+        match self.eval_statements(block, locals)? {
+            Outcome::Value(_) => {}
+            flow => return Ok(flow),
+        }
         if let Some(tail) = &block.tail {
             self.eval_expr(tail, locals)
         } else {
@@ -1966,59 +2023,13 @@ impl Evaluator<'_> {
         }
     }
 
-    fn eval_expr(
+    #[inline(never)]
+    fn eval_call_expr(
         &mut self,
         expr: &TExpr,
         locals: &mut Vec<Option<ConstValue>>,
     ) -> Result<Outcome, EvalFailure> {
-        self.step(expr.span)?;
         let value = match &expr.kind {
-            TExprKind::Unit => ConstValue::Unit,
-            TExprKind::Integer(value) => ConstValue::Integer(*value),
-            TExprKind::Bool(value) => ConstValue::Bool(*value),
-            TExprKind::FunctionValue(id) => ConstValue::Function(*id),
-            TExprKind::Local(id) => {
-                if let Some(view) = self.views.get(id).cloned() {
-                    let (root, path) = self.resolve_place_indices(&view, locals)?;
-                    self.get_resolved_place(locals, root, &path)
-                        .ok_or_else(|| {
-                            self.failure(
-                                expr.span,
-                                "constant evaluator could not read a collection view",
-                            )
-                        })?
-                } else {
-                    get_local(locals, *id).ok_or_else(|| {
-                        self.failure(expr.span, "constant evaluator could not read a local")
-                    })?
-                }
-            }
-            TExprKind::Constant(id) => {
-                if let Some(constants) = self.constant_values {
-                    return constants
-                        .get(*id)
-                        .cloned()
-                        .map(Outcome::Value)
-                        .ok_or_else(|| {
-                            self.failure(expr.span, "constant reference was out of range")
-                        });
-                }
-                return self
-                    .eval_constant(*id, expr.span)
-                    .map(Outcome::Value)
-                    .map_err(|error| EvalFailure {
-                        span: error.span,
-                        message: error.message,
-                        chain: Vec::new(),
-                        step_limit: false,
-                    });
-            }
-            TExprKind::Global(_) => {
-                return Err(self.failure(
-                    expr.span,
-                    "compile-time evaluation cannot read global state",
-                ));
-            }
             TExprKind::Call { target, args, .. } => match target {
                 CallTarget::Function(id) => {
                     let mut values = Vec::with_capacity(args.len());
@@ -2116,134 +2127,18 @@ impl Evaluator<'_> {
                     payload,
                 }
             }
-            TExprKind::Method { kind, receiver } => {
-                let receiver = value_or_flow!(self.eval_expr(receiver, locals));
-                self.eval_method(*kind, receiver, expr.span)?
-            }
-            TExprKind::OptionalCall {
-                receiver,
-                function_id,
-                args,
-                wraps_result,
-            } => {
-                let receiver = value_or_flow!(self.eval_expr(receiver, locals));
-                match receiver {
-                    ConstValue::Enum {
-                        case_index: 0,
-                        mut payload,
-                    } => {
-                        let mut values = vec![payload.remove(0)];
-                        for arg in args {
-                            values.push(value_or_flow!(self.eval_expr(arg, locals)));
-                        }
-                        let result = self.call_function(*function_id, values, expr.span)?;
-                        if *wraps_result {
-                            ConstValue::Enum {
-                                case_index: 0,
-                                payload: vec![result],
-                            }
-                        } else {
-                            result
-                        }
-                    }
-                    ConstValue::Enum { case_index: 1, .. } => ConstValue::Enum {
-                        case_index: 1,
-                        payload: Vec::new(),
-                    },
-                    _ => {
-                        return Err(
-                            self.failure(expr.span, "optional call receiver was not an Option")
-                        );
-                    }
-                }
-            }
-            TExprKind::OptionalToLong(receiver) => {
-                match value_or_flow!(self.eval_expr(receiver, locals)) {
-                    ConstValue::Enum {
-                        case_index: 0,
-                        payload,
-                    } => ConstValue::Enum {
-                        case_index: 0,
-                        payload: vec![ConstValue::Integer(as_integer(&payload[0]))],
-                    },
-                    ConstValue::Enum { case_index: 1, .. } => ConstValue::Enum {
-                        case_index: 1,
-                        payload: Vec::new(),
-                    },
-                    _ => {
-                        return Err(self
-                            .failure(expr.span, "optional conversion receiver was not an Option"));
-                    }
-                }
-            }
-            TExprKind::Field {
-                receiver,
-                field_index,
-            } => match value_or_flow!(self.eval_expr(receiver, locals)) {
-                ConstValue::Struct(fields) => fields
-                    .get(*field_index)
-                    .cloned()
-                    .ok_or_else(|| self.failure(expr.span, "struct field index was invalid"))?,
-                _ => return Err(self.failure(expr.span, "field access receiver was not a struct")),
-            },
-            TExprKind::Index {
-                receiver,
-                index,
-                grid,
-                ..
-            } => {
-                let collection = value_or_flow!(self.eval_expr(receiver, locals));
-                if let Some(grid) = grid {
-                    let x = as_integer(&value_or_flow!(self.eval_expr(&grid.x, locals)));
-                    if x < 0 || x >= grid.width as i128 {
-                        return Err(self.failure(grid.x.span, "index out of range"));
-                    }
-                    let y = as_integer(&value_or_flow!(self.eval_expr(&grid.y, locals)));
-                    if y < 0 || y >= grid.height as i128 {
-                        return Err(self.failure(grid.y.span, "index out of range"));
-                    }
-                    let flat = usize::try_from(y)
-                        .ok()
-                        .and_then(|row| row.checked_mul(grid.width))
-                        .and_then(|row| usize::try_from(x).ok().and_then(|x| row.checked_add(x)))
-                        .ok_or_else(|| self.failure(grid.y.span, "index out of range"))?;
-                    return match collection {
-                        ConstValue::Grid(values) => values
-                            .get(flat)
-                            .cloned()
-                            .map(Outcome::Value)
-                            .ok_or_else(|| self.failure(expr.span, "index out of range")),
-                        _ => Err(self.failure(expr.span, "index receiver was not a grid")),
-                    };
-                }
-                let index_value = as_integer(&value_or_flow!(self.eval_expr(index, locals)));
-                if index_value < 0 {
-                    return Err(self.failure(index.span, "index out of range"));
-                }
-                let index_value = usize::try_from(index_value)
-                    .map_err(|_| self.failure(index.span, "index out of range"))?;
-                match collection {
-                    ConstValue::Array(values)
-                    | ConstValue::List(values)
-                    | ConstValue::Queue(values)
-                    | ConstValue::Ring(values) => values
-                        .get(index_value)
-                        .cloned()
-                        .ok_or_else(|| self.failure(index.span, "index out of range"))?,
-                    _ => return Err(self.failure(expr.span, "index receiver was not a collection")),
-                }
-            }
-            TExprKind::Fill { value, capacity } => {
-                let item = value_or_flow!(self.eval_expr(value, locals));
-                let items = vec![item; *capacity];
-                match self.types[expr.ty.0].kind {
-                    TTypeKind::Array { .. } => ConstValue::Array(items),
-                    TTypeKind::Grid { .. } => ConstValue::Grid(items),
-                    _ => {
-                        return Err(self.failure(expr.span, "fill target was not an array or grid"));
-                    }
-                }
-            }
+            _ => unreachable!("eval_call_expr called for another expression kind"),
+        };
+        Ok(Outcome::Value(value))
+    }
+
+    #[inline(never)]
+    fn eval_collection_expr(
+        &mut self,
+        expr: &TExpr,
+        locals: &mut Vec<Option<ConstValue>>,
+    ) -> Result<Outcome, EvalFailure> {
+        let value = match &expr.kind {
             TExprKind::EmptyArray => ConstValue::Array(Vec::new()),
             TExprKind::EmptyGrid => ConstValue::Grid(Vec::new()),
             TExprKind::EmptyList => ConstValue::List(Vec::new()),
@@ -2513,6 +2408,158 @@ impl Evaluator<'_> {
                 }
                 ConstValue::Struct(values)
             }
+            _ => unreachable!("eval_collection_expr called for another expression kind"),
+        };
+        Ok(Outcome::Value(value))
+    }
+
+    #[inline(never)]
+    fn eval_access_expr(
+        &mut self,
+        expr: &TExpr,
+        locals: &mut Vec<Option<ConstValue>>,
+    ) -> Result<Outcome, EvalFailure> {
+        let value = match &expr.kind {
+            TExprKind::Method { kind, receiver } => {
+                let receiver = value_or_flow!(self.eval_expr(receiver, locals));
+                self.eval_method(*kind, receiver, expr.span)?
+            }
+            TExprKind::OptionalCall {
+                receiver,
+                function_id,
+                args,
+                wraps_result,
+            } => {
+                let receiver = value_or_flow!(self.eval_expr(receiver, locals));
+                match receiver {
+                    ConstValue::Enum {
+                        case_index: 0,
+                        mut payload,
+                    } => {
+                        let mut values = vec![payload.remove(0)];
+                        for arg in args {
+                            values.push(value_or_flow!(self.eval_expr(arg, locals)));
+                        }
+                        let result = self.call_function(*function_id, values, expr.span)?;
+                        if *wraps_result {
+                            ConstValue::Enum {
+                                case_index: 0,
+                                payload: vec![result],
+                            }
+                        } else {
+                            result
+                        }
+                    }
+                    ConstValue::Enum { case_index: 1, .. } => ConstValue::Enum {
+                        case_index: 1,
+                        payload: Vec::new(),
+                    },
+                    _ => {
+                        return Err(
+                            self.failure(expr.span, "optional call receiver was not an Option")
+                        );
+                    }
+                }
+            }
+            TExprKind::OptionalToLong(receiver) => {
+                match value_or_flow!(self.eval_expr(receiver, locals)) {
+                    ConstValue::Enum {
+                        case_index: 0,
+                        payload,
+                    } => ConstValue::Enum {
+                        case_index: 0,
+                        payload: vec![ConstValue::Integer(as_integer(&payload[0]))],
+                    },
+                    ConstValue::Enum { case_index: 1, .. } => ConstValue::Enum {
+                        case_index: 1,
+                        payload: Vec::new(),
+                    },
+                    _ => {
+                        return Err(self
+                            .failure(expr.span, "optional conversion receiver was not an Option"));
+                    }
+                }
+            }
+            TExprKind::Field {
+                receiver,
+                field_index,
+            } => match value_or_flow!(self.eval_expr(receiver, locals)) {
+                ConstValue::Struct(fields) => fields
+                    .get(*field_index)
+                    .cloned()
+                    .ok_or_else(|| self.failure(expr.span, "struct field index was invalid"))?,
+                _ => return Err(self.failure(expr.span, "field access receiver was not a struct")),
+            },
+            TExprKind::Index {
+                receiver,
+                index,
+                grid,
+                ..
+            } => {
+                let collection = value_or_flow!(self.eval_expr(receiver, locals));
+                if let Some(grid) = grid {
+                    let x = as_integer(&value_or_flow!(self.eval_expr(&grid.x, locals)));
+                    if x < 0 || x >= grid.width as i128 {
+                        return Err(self.failure(grid.x.span, "index out of range"));
+                    }
+                    let y = as_integer(&value_or_flow!(self.eval_expr(&grid.y, locals)));
+                    if y < 0 || y >= grid.height as i128 {
+                        return Err(self.failure(grid.y.span, "index out of range"));
+                    }
+                    let flat = usize::try_from(y)
+                        .ok()
+                        .and_then(|row| row.checked_mul(grid.width))
+                        .and_then(|row| usize::try_from(x).ok().and_then(|x| row.checked_add(x)))
+                        .ok_or_else(|| self.failure(grid.y.span, "index out of range"))?;
+                    return match collection {
+                        ConstValue::Grid(values) => values
+                            .get(flat)
+                            .cloned()
+                            .map(Outcome::Value)
+                            .ok_or_else(|| self.failure(expr.span, "index out of range")),
+                        _ => Err(self.failure(expr.span, "index receiver was not a grid")),
+                    };
+                }
+                let index_value = as_integer(&value_or_flow!(self.eval_expr(index, locals)));
+                if index_value < 0 {
+                    return Err(self.failure(index.span, "index out of range"));
+                }
+                let index_value = usize::try_from(index_value)
+                    .map_err(|_| self.failure(index.span, "index out of range"))?;
+                match collection {
+                    ConstValue::Array(values)
+                    | ConstValue::List(values)
+                    | ConstValue::Queue(values)
+                    | ConstValue::Ring(values) => values
+                        .get(index_value)
+                        .cloned()
+                        .ok_or_else(|| self.failure(index.span, "index out of range"))?,
+                    _ => return Err(self.failure(expr.span, "index receiver was not a collection")),
+                }
+            }
+            TExprKind::Fill { value, capacity } => {
+                let item = value_or_flow!(self.eval_expr(value, locals));
+                let items = vec![item; *capacity];
+                match self.types[expr.ty.0].kind {
+                    TTypeKind::Array { .. } => ConstValue::Array(items),
+                    TTypeKind::Grid { .. } => ConstValue::Grid(items),
+                    _ => {
+                        return Err(self.failure(expr.span, "fill target was not an array or grid"));
+                    }
+                }
+            }
+            _ => unreachable!("eval_access_expr called for another expression kind"),
+        };
+        Ok(Outcome::Value(value))
+    }
+
+    #[inline(never)]
+    fn eval_misc_expr(
+        &mut self,
+        expr: &TExpr,
+        locals: &mut Vec<Option<ConstValue>>,
+    ) -> Result<Outcome, EvalFailure> {
+        let value = match &expr.kind {
             TExprKind::Convert {
                 value,
                 min,
@@ -2654,48 +2701,160 @@ impl Evaluator<'_> {
                     }
                 }
             }
+            _ => unreachable!("eval_misc_expr called for another expression kind"),
+        };
+        Ok(Outcome::Value(value))
+    }
+
+    fn eval_expr(
+        &mut self,
+        expr: &TExpr,
+        locals: &mut Vec<Option<ConstValue>>,
+    ) -> Result<Outcome, EvalFailure> {
+        self.step(expr.span)?;
+        let value = match &expr.kind {
+            TExprKind::Unit => ConstValue::Unit,
+            TExprKind::Integer(value) => ConstValue::Integer(*value),
+            TExprKind::Bool(value) => ConstValue::Bool(*value),
+            TExprKind::FunctionValue(id) => ConstValue::Function(*id),
+            TExprKind::Local(id) => {
+                if let Some(view) = self.views.get(id).cloned() {
+                    let (root, path) = self.resolve_place_indices(&view, locals)?;
+                    self.get_resolved_place(locals, root, &path)
+                        .ok_or_else(|| {
+                            self.failure(
+                                expr.span,
+                                "constant evaluator could not read a collection view",
+                            )
+                        })?
+                } else {
+                    get_local(locals, *id).ok_or_else(|| {
+                        self.failure(expr.span, "constant evaluator could not read a local")
+                    })?
+                }
+            }
+            TExprKind::Constant(id) => {
+                if let Some(constants) = self.constant_values {
+                    return constants
+                        .get(*id)
+                        .cloned()
+                        .map(Outcome::Value)
+                        .ok_or_else(|| {
+                            self.failure(expr.span, "constant reference was out of range")
+                        });
+                }
+                return self
+                    .eval_constant(*id, expr.span)
+                    .map(Outcome::Value)
+                    .map_err(|error| EvalFailure {
+                        span: error.span,
+                        message: error.message,
+                        chain: Vec::new(),
+                        step_limit: false,
+                        call_depth_limit: false,
+                    });
+            }
+            TExprKind::Global(_) => {
+                return Err(self.failure(
+                    expr.span,
+                    "compile-time evaluation cannot read global state",
+                ));
+            }
+            TExprKind::Call { .. }
+            | TExprKind::IndirectCall { .. }
+            | TExprKind::Construct { .. } => return self.eval_call_expr(expr, locals),
+            TExprKind::Method { .. }
+            | TExprKind::OptionalCall { .. }
+            | TExprKind::OptionalToLong(_)
+            | TExprKind::Field { .. }
+            | TExprKind::Index { .. }
+            | TExprKind::Fill { .. } => return self.eval_access_expr(expr, locals),
+            TExprKind::EmptyArray
+            | TExprKind::EmptyGrid
+            | TExprKind::EmptyList
+            | TExprKind::EmptyQueue
+            | TExprKind::EmptyRing
+            | TExprKind::EmptyPool
+            | TExprKind::EmptyMap
+            | TExprKind::EmptySet
+            | TExprKind::CollectionOp { .. }
+            | TExprKind::PoolOp { .. }
+            | TExprKind::MapOp { .. }
+            | TExprKind::SetOp { .. }
+            | TExprKind::StructConstruct { .. } => return self.eval_collection_expr(expr, locals),
+            TExprKind::Convert { .. }
+            | TExprKind::Fit { .. }
+            | TExprKind::Try { .. }
+            | TExprKind::Coalesce { .. }
+            | TExprKind::Match { .. }
+            | TExprKind::Return(_)
+            | TExprKind::LoopExit(_)
+            | TExprKind::ToLong(_)
+            | TExprKind::Cast { .. }
+            | TExprKind::Unary { .. } => return self.eval_misc_expr(expr, locals),
             TExprKind::Binary {
                 op,
                 operator_span,
                 left,
                 right,
-            } => {
-                let left = value_or_flow!(self.eval_expr(left, locals));
-                if *op == BinaryOp::And && !as_bool(&left) {
-                    return Ok(Outcome::Value(ConstValue::Bool(false)));
-                }
-                if *op == BinaryOp::Or && as_bool(&left) {
-                    return Ok(Outcome::Value(ConstValue::Bool(true)));
-                }
-                if *op == BinaryOp::Coalesce {
-                    return match left {
-                        ConstValue::Enum {
-                            case_index: 0,
-                            payload,
-                        } => Ok(Outcome::Value(payload[0].clone())),
-                        ConstValue::Enum { case_index: 1, .. } => self.eval_expr(right, locals),
-                        _ => Err(self.failure(*operator_span, "'??' operand was not an Option")),
-                    };
-                }
-                let right = value_or_flow!(self.eval_expr(right, locals));
-                self.eval_binary(*op, expr.ty, left, right, *operator_span)?
-            }
+            } => return self.eval_binary_expr(expr, locals, *op, *operator_span, left, right),
             TExprKind::If {
                 condition,
                 then_block,
                 else_block,
-            } => {
-                let condition = value_or_flow!(self.eval_expr(condition, locals));
-                if as_bool(&condition) {
-                    return self.eval_block(then_block, locals);
-                }
-                if let Some(other) = else_block {
-                    return self.eval_block(other, locals);
-                }
-                ConstValue::Unit
-            }
+            } => return self.eval_if_expr(locals, condition, then_block, else_block.as_ref()),
         };
         Ok(Outcome::Value(value))
+    }
+
+    #[inline(never)]
+    fn eval_binary_expr(
+        &mut self,
+        expr: &TExpr,
+        locals: &mut Vec<Option<ConstValue>>,
+        op: BinaryOp,
+        operator_span: Span,
+        left: &TExpr,
+        right: &TExpr,
+    ) -> Result<Outcome, EvalFailure> {
+        let left = value_or_flow!(self.eval_expr(left, locals));
+        if op == BinaryOp::And && !as_bool(&left) {
+            return Ok(Outcome::Value(ConstValue::Bool(false)));
+        }
+        if op == BinaryOp::Or && as_bool(&left) {
+            return Ok(Outcome::Value(ConstValue::Bool(true)));
+        }
+        if op == BinaryOp::Coalesce {
+            return match left {
+                ConstValue::Enum {
+                    case_index: 0,
+                    payload,
+                } => Ok(Outcome::Value(payload[0].clone())),
+                ConstValue::Enum { case_index: 1, .. } => self.eval_expr(right, locals),
+                _ => Err(self.failure(operator_span, "'??' operand was not an Option")),
+            };
+        }
+        let right = value_or_flow!(self.eval_expr(right, locals));
+        self.eval_binary(op, expr.ty, left, right, operator_span)
+            .map(Outcome::Value)
+    }
+
+    #[inline(never)]
+    fn eval_if_expr(
+        &mut self,
+        locals: &mut Vec<Option<ConstValue>>,
+        condition: &TExpr,
+        then_block: &TBlock,
+        else_block: Option<&TBlock>,
+    ) -> Result<Outcome, EvalFailure> {
+        let condition = value_or_flow!(self.eval_expr(condition, locals));
+        if as_bool(&condition) {
+            return self.eval_block(then_block, locals);
+        }
+        if let Some(other) = else_block {
+            return self.eval_block(other, locals);
+        }
+        Ok(Outcome::Value(ConstValue::Unit))
     }
 
     fn call_function(
@@ -2704,8 +2863,22 @@ impl Evaluator<'_> {
         args: Vec<ConstValue>,
         call_span: Span,
     ) -> Result<ConstValue, EvalFailure> {
+        if self.call_depth >= CALL_DEPTH_LIMIT {
+            return Err(EvalFailure {
+                span: call_span,
+                message: format!(
+                    "compile-time function call depth limit of {CALL_DEPTH_LIMIT} exceeded"
+                ),
+                chain: Vec::new(),
+                step_limit: false,
+                call_depth_limit: true,
+            });
+        }
+        self.step(call_span)?;
+        self.call_depth += 1;
         let function = self.functions[id].clone();
         if function.is_test || function.params.len() != args.len() {
+            self.call_depth -= 1;
             return Err(self.failure(
                 call_span,
                 "invalid function call during constant evaluation",
@@ -2714,6 +2887,7 @@ impl Evaluator<'_> {
         let mut locals = Vec::new();
         for (param, value) in function.params.iter().zip(args) {
             if param.mode == ParamMode::Write {
+                self.call_depth -= 1;
                 return Err(self.failure(
                     call_span,
                     "write parameters cannot be evaluated at compile time",
@@ -2724,9 +2898,12 @@ impl Evaluator<'_> {
         let saved_views = std::mem::take(&mut self.views);
         let outcome = self.eval_block(&function.body, &mut locals);
         self.views = saved_views;
+        self.call_depth -= 1;
         outcome
             .map_err(|mut failure| {
-                failure.chain.insert(0, function.name.clone());
+                if !failure.call_depth_limit {
+                    failure.chain.insert(0, function.name.clone());
+                }
                 failure
             })
             .and_then(|outcome| match outcome {
@@ -3145,6 +3322,7 @@ mod pool_tests {
             constant_values: None,
             views: HashMap::new(),
             steps: 0,
+            call_depth: 0,
         }
     }
 
