@@ -755,6 +755,102 @@ pub fn inspect_stacks(package: &Path) -> Result<(), PackageError> {
             None => println!("  native stack worst case: unbounded"),
         }
 
+        if let Some(reported) = entry.required_bytes {
+            let chain = entry
+                .critical_path
+                .iter()
+                .filter_map(|id| compiled.contracts.get(*id))
+                .map(|contract| contract.function.as_str())
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            println!("  data stack critical path: {chain}");
+
+            let mut attributed = 0u64;
+            for function_id in &entry.critical_path {
+                let Some(function_contract) = compiled.contracts.get(*function_id) else {
+                    return Err(PackageError::Tool(
+                        "data-stack critical path references a missing function".to_owned(),
+                    ));
+                };
+                let local_regions = function_contract
+                    .local_regions
+                    .iter()
+                    .try_fold(0u64, |sum, region| sum.checked_add(region.bytes))
+                    .ok_or_else(|| {
+                        PackageError::Tool(
+                            "data-stack critical path region total overflowed".to_owned(),
+                        )
+                    })?;
+                if local_regions != function_contract.local_requirement {
+                    return Err(PackageError::Tool(format!(
+                        "data-stack attribution for '{}' lists {local_regions} local bytes, but the contract requires {}",
+                        function_contract.function, function_contract.local_requirement
+                    )));
+                }
+                for region in &function_contract.local_regions {
+                    let line = format_span(&compiled.files, region.span);
+                    println!(
+                        "  critical path contribution: {line} {}.{} ({} bytes)",
+                        function_contract.function, region.name, region.bytes
+                    );
+                    attributed = attributed.checked_add(region.bytes).ok_or_else(|| {
+                        PackageError::Tool("data-stack attribution total overflowed".to_owned())
+                    })?;
+                }
+
+                let copy_down_bytes = function_contract
+                    .copy_down_sites
+                    .iter()
+                    .try_fold(0u64, |sum, site| sum.checked_add(site.bytes / 2))
+                    .ok_or_else(|| {
+                        PackageError::Tool("data-stack copy-down attribution overflowed".to_owned())
+                    })?;
+                if copy_down_bytes > function_contract.temporary_requirement {
+                    return Err(PackageError::Tool(format!(
+                        "data-stack attribution for '{}' lists more copy-down bytes than its temporary requirement",
+                        function_contract.function
+                    )));
+                }
+                for site in &function_contract.copy_down_sites {
+                    let line = format_span(&compiled.files, site.span);
+                    println!(
+                        "  critical path contribution: {line} {} copy-down temporary for {} ({} bytes)",
+                        function_contract.function,
+                        site.name,
+                        site.bytes / 2
+                    );
+                    attributed = attributed.checked_add(site.bytes / 2).ok_or_else(|| {
+                        PackageError::Tool("data-stack attribution total overflowed".to_owned())
+                    })?;
+                }
+                let other_temporaries = function_contract.temporary_requirement - copy_down_bytes;
+                if other_temporaries > 0 {
+                    println!(
+                        "  critical path contribution: {} call/expression scratch ({} bytes)",
+                        function_contract.function, other_temporaries
+                    );
+                    attributed = attributed.checked_add(other_temporaries).ok_or_else(|| {
+                        PackageError::Tool("data-stack attribution total overflowed".to_owned())
+                    })?;
+                }
+            }
+            println!(
+                "  critical path contribution: data-stack helper margin ({} bytes)",
+                emit::DATA_STACK_HELPER_MARGIN
+            );
+            attributed = attributed
+                .checked_add(emit::DATA_STACK_HELPER_MARGIN)
+                .ok_or_else(|| {
+                    PackageError::Tool("data-stack attribution total overflowed".to_owned())
+                })?;
+            if attributed != reported {
+                return Err(PackageError::Tool(format!(
+                    "data-stack critical path sums to {attributed} bytes, but the reported worst case is {reported} bytes"
+                )));
+            }
+            println!("  data stack critical path sum: {attributed} bytes");
+        }
+
         let reachable = reachable_functions(&compiled.call_graph, entry.function_id);
         let mut source_lines = Vec::new();
         for function_id in &reachable {

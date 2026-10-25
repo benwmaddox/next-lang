@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -186,6 +187,130 @@ fn worked_reservation_is_small_and_reports_loop_growth() {
     );
     assert!(stdout.contains("growth per iteration 80 bytes"), "{stdout}");
     assert!(stdout.contains("data region: main.nl:"), "{stdout}");
+}
+
+#[test]
+fn selfhost_stack_bound_has_an_exact_attributed_path() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler crate has a workspace root");
+    let package = root.join("selfhost");
+    let output = Command::new(env!("CARGO_BIN_EXE_nlc"))
+        .arg("inspect")
+        .arg("stacks")
+        .arg(&package)
+        .output()
+        .expect("inspect the self-hosted parser stack bound");
+    assert!(
+        output.status.success(),
+        "inspect stacks failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parse_bytes = |prefix: &str| -> u64 {
+        stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .and_then(|remainder| remainder.split_whitespace().next())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("missing byte count for {prefix} in:\n{stdout}"))
+    };
+    let worst_case = parse_bytes("  data stack worst case: ");
+    let attributed = parse_bytes("  data stack critical path sum: ");
+    assert_eq!(attributed, worst_case, "{stdout}");
+    assert!(worst_case < 1_000_000_000, "{stdout}");
+    assert!(
+        stdout.contains("data stack critical path: main ->"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("main.nl:64 main.tables (616907937 bytes)"),
+        "{stdout}"
+    );
+    for line in [68, 72, 103, 128, 175] {
+        assert!(
+            !stdout.contains(&format!("dump.nl:{line} copy-down temporary for buffer")),
+            "empty buffer reset at dump.nl:{line} was reported as a copy-down:\n{stdout}"
+        );
+    }
+
+    let compiled = compile_package(&package).expect("self-hosted parser compiles");
+    for function in ["dump_number", "dump_json_byte", "dump_binary_op"] {
+        let contract = compiled
+            .contracts
+            .iter()
+            .find(|contract| contract.function == function)
+            .unwrap_or_else(|| panic!("missing stack contract for {function}"));
+        assert!(
+            contract.byte_requirement < 1024,
+            "{function} still stages a bounded byte literal as a large collection: {} bytes",
+            contract.byte_requirement
+        );
+    }
+    let token_dump = compiled
+        .contracts
+        .iter()
+        .find(|contract| contract.function == "output_token_dump")
+        .expect("token dump has a stack contract");
+    assert!(
+        token_dump.copy_down_sites.is_empty(),
+        "empty buffer resets do not need copy-down storage"
+    );
+
+    let decoded_dump = compiled
+        .llvm_ir
+        .split("; function dump_quoted_decoded_token\n")
+        .nth(1)
+        .expect("decoded token dump helper is emitted")
+        .split("}\n")
+        .next()
+        .expect("decoded token dump helper has a body");
+    let hidden_result_allocations = decoded_dump
+        .lines()
+        .filter(|line| {
+            line.contains("call ptr @nl_stack_alloc")
+                && line.contains("i64 16777232")
+                && line.contains("i32 4, i32 415,")
+        })
+        .count();
+    assert_eq!(
+        hidden_result_allocations, 0,
+        "the decoder result should be built directly in the local value destination"
+    );
+}
+
+#[test]
+fn match_arm_iteration_regions_are_in_the_stack_contract() {
+    let package =
+        std::env::temp_dir().join(format!("next-lang-stack-match-{}", std::process::id()));
+    fs::create_dir_all(&package).expect("create the temporary package");
+    fs::write(
+        package.join("main.nl"),
+        "struct Row { payload: Bytes max 4096 }\n\
+         fn main() {\n\
+             var rows: list<Row, 1> = list {}\n\
+             match true {\n\
+                 true => { for row in rows { print(row.payload.count()) } },\n\
+                 false => {}\n\
+             }\n\
+         }\n",
+    )
+    .expect("write the temporary program");
+
+    let compiled = compile_package(&package).expect("nested match and iteration program compiles");
+    let main = compiled
+        .contracts
+        .iter()
+        .find(|contract| contract.function == "main")
+        .expect("main has a stack contract");
+    let iteration = main
+        .local_regions
+        .iter()
+        .find(|region| region.name == "iteration element")
+        .expect("the match arm's large iteration element is attributed");
+    assert!(main.local_requirement >= iteration.bytes);
+
+    fs::remove_dir_all(package).expect("remove the temporary package");
 }
 
 #[test]

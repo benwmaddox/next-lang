@@ -256,7 +256,7 @@ fn dump_push(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: byte) 
     ok(())
 }
 
-fn dump_bytes(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: Bytes max 67108864) -> Result<(), IoError> {
+fn dump_bytes(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: Bytes max 64) -> Result<(), IoError> {
     for index in 0L..value.count() { dump_push(out, buffer, value[index])? }
     ok(())
 }
@@ -267,7 +267,9 @@ fn dump_ascii(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: Ascii
 }
 
 fn dump_number(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: long) -> Result<(), IoError> {
-    dump_bytes(out, buffer, str(value).bytes())
+    let digits = str(value)
+    for index in 0L..digits.len() { dump_push(out, buffer, digits.bytes()[index])? }
+    ok(())
 }
 
 fn dump_json_byte(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: byte) -> Result<(), IoError> {
@@ -280,7 +282,9 @@ fn dump_json_byte(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: b
     else if value < 32 {
         dump_bytes(out, buffer, b"\\u00")?
         if value < 16 { dump_push(out, buffer, 48)? }
-        dump_bytes(out, buffer, str_hex(value).bytes())
+        let digits = str_hex(value)
+        for index in 0L..digits.len() { dump_push(out, buffer, digits.bytes()[index])? }
+        ok(())
     } else {
         dump_push(out, buffer, value)
     }
@@ -289,7 +293,9 @@ fn dump_json_byte(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: b
 fn dump_invalid_byte(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: byte) -> Result<(), IoError> {
     dump_bytes(out, buffer, b"\\u00")?
     if value < 16 { dump_push(out, buffer, 48)? }
-    dump_bytes(out, buffer, str_hex(value).bytes())
+    let digits = str_hex(value)
+    for index in 0L..digits.len() { dump_push(out, buffer, digits.bytes()[index])? }
+    ok(())
 }
 
 fn utf8_sequence_valid(value: Bytes max 67108864, start: long, width: long) -> bool {
@@ -780,7 +786,8 @@ fn dump_node_fields(
         else { dump_bytes(out, buffer, b"continue")? }
     } else if node.kind == NodeKind.Unary {
         dump_bytes(out, buffer, b" op=")?
-        dump_bytes(out, buffer, if node.flags == 0L { b"neg" } else { b"not" })?
+        if node.flags == 0L { dump_bytes(out, buffer, b"neg")? }
+        else { dump_bytes(out, buffer, b"not")? }
     } else if node.kind == NodeKind.Binary {
         dump_bytes(out, buffer, b" op=")?
         dump_binary_op(out, buffer, node.flags)?

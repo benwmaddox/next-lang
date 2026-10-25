@@ -727,9 +727,13 @@ fn recursion_check_instruction(targets: &[usize], span: Span) -> String {
 pub struct StackContract {
     pub function: String,
     pub byte_requirement: u64,
+    pub local_requirement: u64,
+    pub temporary_requirement: u64,
+    pub critical_path: Vec<usize>,
     pub parameters: Vec<String>,
     pub result_placement: String,
     pub span: Span,
+    pub local_regions: Vec<StackRegion>,
     pub reserved_regions: Vec<StackRegion>,
     pub loops: Vec<StackLoop>,
     pub copy_down_sites: Vec<StackCopyDown>,
@@ -760,6 +764,7 @@ pub struct StackCopyDown {
 pub struct EntryStackReservation {
     pub name: String,
     pub function_id: usize,
+    pub critical_path: Vec<usize>,
     pub required_bytes: Option<u64>,
     pub reservation_bytes: u64,
     pub recursive: bool,
@@ -824,6 +829,199 @@ fn static_ascii_length(expr: &TExpr, types: &[TType]) -> Option<usize> {
     }
 }
 
+fn visit_expr_blocks(expr: &TExpr, visitor: &mut impl FnMut(&TBlock)) {
+    match &expr.kind {
+        TExprKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            visit_expr_blocks(condition, visitor);
+            visitor(then_block);
+            if let Some(other) = else_block {
+                visitor(other);
+            }
+        }
+        TExprKind::Match { scrutinee, arms } => {
+            visit_expr_blocks(scrutinee, visitor);
+            for arm in arms {
+                visitor(&arm.body);
+            }
+        }
+        TExprKind::Call { args, .. }
+        | TExprKind::Construct { args, .. }
+        | TExprKind::CollectionLiteral(args) => {
+            for arg in args {
+                visit_expr_blocks(arg, visitor);
+            }
+        }
+        TExprKind::IndirectCall { callee, args, .. } => {
+            visit_expr_blocks(callee, visitor);
+            for arg in args {
+                visit_expr_blocks(arg, visitor);
+            }
+        }
+        TExprKind::OptionalCall { receiver, args, .. } => {
+            visit_expr_blocks(receiver, visitor);
+            for arg in args {
+                visit_expr_blocks(arg, visitor);
+            }
+        }
+        TExprKind::StructConstruct { fields } => {
+            for (_, value) in fields {
+                visit_expr_blocks(value, visitor);
+            }
+        }
+        TExprKind::Method { receiver, .. }
+        | TExprKind::AsciiUpper(receiver)
+        | TExprKind::TextUpper(receiver)
+        | TExprKind::BytesValidateUtf8(receiver)
+        | TExprKind::AsciiCast(receiver)
+        | TExprKind::BytesView(receiver)
+        | TExprKind::Take(receiver)
+        | TExprKind::Field { receiver, .. }
+        | TExprKind::OptionalToLong(receiver)
+        | TExprKind::ToLong(receiver) => visit_expr_blocks(receiver, visitor),
+        TExprKind::AsciiFormat { value, .. }
+        | TExprKind::ParseInteger {
+            receiver: value, ..
+        }
+        | TExprKind::AsciiFit { value, .. }
+        | TExprKind::TextConvert { value, .. }
+        | TExprKind::Fill { value, .. }
+        | TExprKind::Convert { value, .. }
+        | TExprKind::Fit { value, .. }
+        | TExprKind::Try { value, .. }
+        | TExprKind::Cast { value, .. }
+        | TExprKind::Unary { value, .. } => visit_expr_blocks(value, visitor),
+        TExprKind::AsciiPad { value, width, .. }
+        | TExprKind::AsciiZeroPad { value, width }
+        | TExprKind::Coalesce {
+            option: value,
+            fallback: width,
+        }
+        | TExprKind::Binary {
+            left: value,
+            right: width,
+            ..
+        } => {
+            visit_expr_blocks(value, visitor);
+            visit_expr_blocks(width, visitor);
+        }
+        TExprKind::AsciiTryAppend { receiver, argument }
+        | TExprKind::TextTryAppend { receiver, argument }
+        | TExprKind::BytesTryAppend { receiver, argument } => {
+            visit_expr_blocks(receiver, visitor);
+            visit_expr_blocks(argument, visitor);
+        }
+        TExprKind::BytesPush { receiver, byte, .. } => {
+            visit_expr_blocks(receiver, visitor);
+            visit_expr_blocks(byte, visitor);
+        }
+        TExprKind::TextSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::AsciiSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::BytesSlice {
+            receiver,
+            start,
+            end,
+        } => {
+            visit_expr_blocks(receiver, visitor);
+            visit_expr_blocks(start, visitor);
+            visit_expr_blocks(end, visitor);
+        }
+        TExprKind::Index {
+            receiver,
+            index,
+            grid,
+            ..
+        } => {
+            visit_expr_blocks(receiver, visitor);
+            visit_expr_blocks(index, visitor);
+            if let Some(grid) = grid {
+                visit_expr_blocks(&grid.x, visitor);
+                visit_expr_blocks(&grid.y, visitor);
+            }
+        }
+        TExprKind::BytesIndex {
+            receiver, index, ..
+        } => {
+            visit_expr_blocks(receiver, visitor);
+            visit_expr_blocks(index, visitor);
+        }
+        TExprKind::CollectionOp { receiver, args, .. }
+        | TExprKind::PoolOp { receiver, args, .. }
+        | TExprKind::MapOp { receiver, args, .. }
+        | TExprKind::SetOp { receiver, args, .. } => {
+            visit_expr_blocks(receiver, visitor);
+            for arg in args {
+                visit_expr_blocks(arg, visitor);
+            }
+        }
+        TExprKind::Return(value) => {
+            if let Some(value) = value {
+                visit_expr_blocks(value, visitor);
+            }
+        }
+        TExprKind::Unit
+        | TExprKind::Integer(_)
+        | TExprKind::Bool(_)
+        | TExprKind::ByteString(_)
+        | TExprKind::Local(_)
+        | TExprKind::Global(_)
+        | TExprKind::Constant(_)
+        | TExprKind::FunctionValue(_)
+        | TExprKind::AsciiEmpty
+        | TExprKind::TextEmpty
+        | TExprKind::BytesEmpty
+        | TExprKind::EmptyArray
+        | TExprKind::EmptyGrid
+        | TExprKind::EmptyList
+        | TExprKind::EmptyPool
+        | TExprKind::EmptyMap
+        | TExprKind::EmptySet
+        | TExprKind::EmptyQueue
+        | TExprKind::EmptyRing
+        | TExprKind::LoopExit(_) => {}
+    }
+}
+
+fn visit_stmt_exprs(stmt: &TStmt, visitor: &mut impl FnMut(&TExpr)) {
+    match &stmt.kind {
+        TStmtKind::Let { value, .. }
+        | TStmtKind::Assign { value, .. }
+        | TStmtKind::Expr(value)
+        | TStmtKind::Discard(value) => visitor(value),
+        TStmtKind::Return(value) => {
+            if let Some(value) = value {
+                visitor(value);
+            }
+        }
+        TStmtKind::If { condition, .. } => visitor(condition),
+        TStmtKind::For { start, end, .. } => {
+            visitor(start);
+            visitor(end);
+        }
+        TStmtKind::ForEach { collection, .. } => visitor(collection),
+        TStmtKind::Expect { kind, .. } => match kind {
+            TExpectKind::Bool(value) => visitor(value),
+            TExpectKind::Compare { left, right, .. } => {
+                visitor(left);
+                visitor(right);
+            }
+            TExpectKind::StackPeak { .. } => {}
+        },
+        TStmtKind::Block(_) | TStmtKind::Break | TStmtKind::Continue => {}
+    }
+}
+
 pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
     fn large_local_bytes(
         block: &TBlock,
@@ -833,6 +1031,16 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
     ) -> u64 {
         let mut total = 0u64;
         for statement in &block.statements {
+            visit_stmt_exprs(statement, &mut |expr| {
+                visit_expr_blocks(expr, &mut |nested| {
+                    total = total.saturating_add(large_local_bytes(
+                        nested,
+                        types,
+                        growing_ascii,
+                        forwarded_return,
+                    ));
+                });
+            });
             match &statement.kind {
                 TStmtKind::Let { id, ty, value, .. }
                     if is_large_type(*ty, types) && Some(*id) != forwarded_return =>
@@ -903,6 +1111,16 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 }
                 _ => {}
             }
+        }
+        if let Some(tail) = &block.tail {
+            visit_expr_blocks(tail, &mut |nested| {
+                total = total.saturating_add(large_local_bytes(
+                    nested,
+                    types,
+                    growing_ascii,
+                    forwarded_return,
+                ));
+            });
         }
         total
     }
@@ -1026,25 +1244,20 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 if matches!(target, CallTarget::Function(_)) && is_large_type(expr.ty, types) {
                     own = own.saturating_add(stack_storage_size(expr.ty, types) as u64);
                 }
-                // Large pointer arguments can need both a source temporary and a
-                // by-pointer staging destination. A large struct collection element
-                // also needs lane gathering, so count those even when they are places.
+                // Non-place large arguments can need a source temporary and a
+                // by-pointer staging destination. Place arguments are passed by
+                // pointer; SoA element gathers are counted by their Index expression.
                 own = own.saturating_add(
                     args.iter()
                         .filter(|arg| {
-                            is_large_type(arg.ty, types)
-                                && (matches!(types[arg.ty.0].kind, TTypeKind::Struct(_))
-                                    || !expr_is_place_for_contract(arg))
+                            is_large_type(arg.ty, types) && !expr_is_place_for_contract(arg)
                         })
                         .map(|arg| {
-                            let bytes = stack_storage_size(arg.ty, types) as u64;
-                            if matches!(types[arg.ty.0].kind, TTypeKind::Struct(_))
-                                && expr_is_place_for_contract(arg)
-                            {
-                                bytes
-                            } else {
-                                bytes.saturating_mul(2)
-                            }
+                            static_byte_string_storage_size(arg, types)
+                                .map(|bytes| bytes as u64)
+                                .unwrap_or_else(|| {
+                                    (stack_storage_size(arg.ty, types) as u64).saturating_mul(2)
+                                })
                         })
                         .sum::<u64>(),
                 );
@@ -1073,19 +1286,14 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 own = own.saturating_add(
                     args.iter()
                         .filter(|arg| {
-                            is_large_type(arg.ty, types)
-                                && (matches!(types[arg.ty.0].kind, TTypeKind::Struct(_))
-                                    || !expr_is_place_for_contract(arg))
+                            is_large_type(arg.ty, types) && !expr_is_place_for_contract(arg)
                         })
                         .map(|arg| {
-                            let bytes = stack_storage_size(arg.ty, types) as u64;
-                            if matches!(types[arg.ty.0].kind, TTypeKind::Struct(_))
-                                && expr_is_place_for_contract(arg)
-                            {
-                                bytes
-                            } else {
-                                bytes.saturating_mul(2)
-                            }
+                            static_byte_string_storage_size(arg, types)
+                                .map(|bytes| bytes as u64)
+                                .unwrap_or_else(|| {
+                                    (stack_storage_size(arg.ty, types) as u64).saturating_mul(2)
+                                })
                         })
                         .sum::<u64>(),
                 );
@@ -1221,19 +1429,14 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 own = own.saturating_add(
                     args.iter()
                         .filter(|arg| {
-                            is_large_type(arg.ty, types)
-                                && (matches!(types[arg.ty.0].kind, TTypeKind::Struct(_))
-                                    || !expr_is_place_for_contract(arg))
+                            is_large_type(arg.ty, types) && !expr_is_place_for_contract(arg)
                         })
                         .map(|arg| {
-                            let bytes = stack_storage_size(arg.ty, types) as u64;
-                            if matches!(types[arg.ty.0].kind, TTypeKind::Struct(_))
-                                && expr_is_place_for_contract(arg)
-                            {
-                                bytes
-                            } else {
-                                bytes.saturating_mul(2)
-                            }
+                            static_byte_string_storage_size(arg, types)
+                                .map(|bytes| bytes as u64)
+                                .unwrap_or_else(|| {
+                                    (stack_storage_size(arg.ty, types) as u64).saturating_mul(2)
+                                })
                         })
                         .sum::<u64>(),
                 );
@@ -1414,9 +1617,16 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     ..
                 } => {
                     total = total.saturating_add(expression_scratch(value, types));
-                    if *op != AssignOp::Add && is_growing_payload(place.ty, types) {
+                    if *op != AssignOp::Add
+                        && is_growing_payload(place.ty, types)
+                        && !matches!(
+                            value.kind,
+                            TExprKind::AsciiEmpty | TExprKind::TextEmpty | TExprKind::BytesEmpty
+                        )
+                    {
                         // Copy-down keeps the old builder in its live region while
-                        // the replacement is built above it.
+                        // the replacement is built above it. Empty resets only write
+                        // the empty header and do not need replacement storage.
                         total = total.saturating_add(stack_storage_size(*ty, types) as u64);
                     }
                 }
@@ -1506,31 +1716,41 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
         program: &TProgram,
         bases: &[u64],
         memo: &mut [Option<u64>],
+        memo_paths: &mut [Option<Vec<usize>>],
         visiting: &mut [bool],
-    ) -> u64 {
+    ) -> (u64, Vec<usize>) {
         if let Some(value) = memo[id] {
-            return value;
+            return (value, memo_paths[id].clone().unwrap_or_default());
         }
         if visiting[id] {
             // T19 permits cycles only when every function in the cycle is
             // marked recursive and proves that no data-stack region is live
             // across its recursive call. Count one traversal of that cycle;
             // deeper native recursion therefore does not multiply data use.
-            return 0;
+            return (0, Vec::new());
         }
         visiting[id] = true;
-        let child = program.call_graph[id]
-            .iter()
-            .map(|edge| requirement(edge.target, program, bases, memo, visiting))
-            .max()
-            .unwrap_or(0);
+        let mut child = 0u64;
+        let mut child_path = Vec::new();
+        for edge in &program.call_graph[id] {
+            let (candidate, candidate_path) =
+                requirement(edge.target, program, bases, memo, memo_paths, visiting);
+            if candidate >= child {
+                child = candidate;
+                child_path = candidate_path;
+            }
+        }
         visiting[id] = false;
         let total = bases[id].saturating_add(child);
+        let mut path = Vec::with_capacity(child_path.len() + 1);
+        path.push(id);
+        path.extend(child_path);
         memo[id] = Some(total);
-        total
+        memo_paths[id] = Some(path.clone());
+        (total, path)
     }
 
-    let bases = program
+    let local_requirements = program
         .functions
         .iter()
         .map(|function| {
@@ -1543,10 +1763,20 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     returned_ascii_builder_local(function, &program.types, &growing_ascii)
                 }),
             )
-            .saturating_add(block_scratch(&function.body, &program.types))
         })
         .collect::<Vec<_>>();
+    let temporary_requirements = program
+        .functions
+        .iter()
+        .map(|function| block_scratch(&function.body, &program.types))
+        .collect::<Vec<_>>();
+    let bases = local_requirements
+        .iter()
+        .zip(&temporary_requirements)
+        .map(|(locals, temporaries)| locals.saturating_add(*temporaries))
+        .collect::<Vec<_>>();
     let mut memo = vec![None; program.functions.len()];
+    let mut memo_paths = vec![None; program.functions.len()];
     let mut visiting = vec![false; program.functions.len()];
     program
         .functions
@@ -1601,14 +1831,26 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
             } else {
                 "value".to_owned()
             };
-            let (reserved_regions, loops, copy_down_sites) =
+            let (local_regions, reserved_regions, loops, copy_down_sites) =
                 function_stack_details(function, program);
+            let (byte_requirement, critical_path) = requirement(
+                id,
+                program,
+                &bases,
+                &mut memo,
+                &mut memo_paths,
+                &mut visiting,
+            );
             StackContract {
                 function: function.name.clone(),
-                byte_requirement: requirement(id, program, &bases, &mut memo, &mut visiting),
+                byte_requirement,
+                local_requirement: local_requirements[id],
+                temporary_requirement: temporary_requirements[id],
+                critical_path,
                 parameters,
                 result_placement,
                 span: function.span,
+                local_regions,
                 reserved_regions,
                 loops,
                 copy_down_sites,
@@ -1724,36 +1966,82 @@ fn expr_growth(expr: &TExpr, types: &[TType]) -> u64 {
 fn function_stack_details(
     function: &TFunction,
     program: &TProgram,
-) -> (Vec<StackRegion>, Vec<StackLoop>, Vec<StackCopyDown>) {
-    let returned_builder = returned_ascii_builder_local(
-        function,
-        &program.types,
-        &growing_ascii_locals(function, program),
-    );
+) -> (
+    Vec<StackRegion>,
+    Vec<StackRegion>,
+    Vec<StackLoop>,
+    Vec<StackCopyDown>,
+) {
+    let growing_ascii = growing_ascii_locals(function, program);
+    let forwarded_return = returned_lazy_local(function, &program.types)
+        .or_else(|| returned_ascii_builder_local(function, &program.types, &growing_ascii));
     fn walk(
         block: &TBlock,
         types: &[TType],
+        growing_ascii: &std::collections::HashSet<usize>,
         names: &mut HashMap<usize, String>,
-        regions: &mut Vec<StackRegion>,
+        local_regions: &mut Vec<StackRegion>,
+        reserved_regions: &mut Vec<StackRegion>,
         loops: &mut Vec<StackLoop>,
         copy_down_sites: &mut Vec<StackCopyDown>,
-        returned_builder: Option<usize>,
+        forwarded_return: Option<usize>,
     ) {
         for statement in &block.statements {
+            visit_stmt_exprs(statement, &mut |expr| {
+                visit_expr_blocks(expr, &mut |nested| {
+                    walk(
+                        nested,
+                        types,
+                        growing_ascii,
+                        names,
+                        local_regions,
+                        reserved_regions,
+                        loops,
+                        copy_down_sites,
+                        forwarded_return,
+                    );
+                });
+            });
             match &statement.kind {
-                TStmtKind::Let { id, name, ty, .. } => {
+                TStmtKind::Let {
+                    id,
+                    name,
+                    ty,
+                    value,
+                    ..
+                } => {
                     names.insert(*id, name.clone());
-                    let bytes = stack_storage_size(*ty, types) as u64;
-                    if is_large_type(*ty, types) && Some(*id) != returned_builder {
-                        regions.push(StackRegion {
+                    let bytes = if matches!(types[ty.0].kind, TTypeKind::Ascii { .. })
+                        && !growing_ascii.contains(id)
+                    {
+                        static_ascii_length(value, types)
+                            .map(|length| 16usize.saturating_add(length))
+                            .unwrap_or_else(|| stack_storage_size(*ty, types))
+                    } else {
+                        stack_storage_size(*ty, types)
+                    } as u64;
+                    if is_large_type(*ty, types) && Some(*id) != forwarded_return {
+                        let region = StackRegion {
                             name: name.clone(),
                             bytes,
                             span: statement.span,
-                        });
+                        };
+                        local_regions.push(region.clone());
+                        reserved_regions.push(region);
                     }
                 }
-                TStmtKind::Assign { place, ty, op, .. }
-                    if *op != AssignOp::Add && is_growing_payload(place.ty, types) =>
+                TStmtKind::Assign {
+                    place,
+                    ty,
+                    op,
+                    value,
+                    ..
+                } if *op != AssignOp::Add
+                    && is_growing_payload(place.ty, types)
+                    && !matches!(
+                        value.kind,
+                        TExprKind::AsciiEmpty | TExprKind::TextEmpty | TExprKind::BytesEmpty
+                    ) =>
                 {
                     let bytes = (stack_storage_size(*ty, types) as u64).saturating_mul(2);
                     let name = names
@@ -1761,7 +2049,7 @@ fn function_stack_details(
                         .cloned()
                         .unwrap_or_else(|| format!("local {}", place.root));
                     if bytes / 2 > 64 * 1024 {
-                        regions.push(StackRegion {
+                        reserved_regions.push(StackRegion {
                             name: format!("copy-down temporary for {name}"),
                             bytes: bytes / 2,
                             span: statement.span,
@@ -1781,21 +2069,25 @@ fn function_stack_details(
                     walk(
                         then_block,
                         types,
+                        growing_ascii,
                         names,
-                        regions,
+                        local_regions,
+                        reserved_regions,
                         loops,
                         copy_down_sites,
-                        returned_builder,
+                        forwarded_return,
                     );
                     if let Some(other) = else_block {
                         walk(
                             other,
                             types,
+                            growing_ascii,
                             names,
-                            regions,
+                            local_regions,
+                            reserved_regions,
                             loops,
                             copy_down_sites,
-                            returned_builder,
+                            forwarded_return,
                         );
                     }
                 }
@@ -1814,16 +2106,38 @@ fn function_stack_details(
                     walk(
                         body,
                         types,
+                        growing_ascii,
                         names,
-                        regions,
+                        local_regions,
+                        reserved_regions,
                         loops,
                         copy_down_sites,
-                        returned_builder,
+                        forwarded_return,
                     );
                 }
                 TStmtKind::ForEach {
                     collection, body, ..
                 } => {
+                    let element_ty = match &types[collection.ty.0].kind {
+                        TTypeKind::Array { element, .. }
+                        | TTypeKind::List { element, .. }
+                        | TTypeKind::Queue { element, .. }
+                        | TTypeKind::Ring { element, .. }
+                        | TTypeKind::Grid { element, .. }
+                        | TTypeKind::Pool { element, .. }
+                        | TTypeKind::Map { value: element, .. }
+                        | TTypeKind::Set { key: element, .. } => Some(*element),
+                        _ => None,
+                    };
+                    if let Some(element_ty) = element_ty.filter(|ty| is_large_type(*ty, types)) {
+                        let region = StackRegion {
+                            name: "iteration element".to_owned(),
+                            bytes: stack_storage_size(element_ty, types) as u64,
+                            span: statement.span,
+                        };
+                        local_regions.push(region.clone());
+                        reserved_regions.push(region);
+                    }
                     loops.push(StackLoop {
                         growth_bytes_per_iteration: block_growth_per_iteration(body, types),
                         iteration_limit: collection_iteration_bound(collection.ty, types),
@@ -1832,26 +2146,45 @@ fn function_stack_details(
                     walk(
                         body,
                         types,
+                        growing_ascii,
                         names,
-                        regions,
+                        local_regions,
+                        reserved_regions,
                         loops,
                         copy_down_sites,
-                        returned_builder,
+                        forwarded_return,
                     );
                 }
                 TStmtKind::Block(inner) => {
                     walk(
                         inner,
                         types,
+                        growing_ascii,
                         names,
-                        regions,
+                        local_regions,
+                        reserved_regions,
                         loops,
                         copy_down_sites,
-                        returned_builder,
+                        forwarded_return,
                     );
                 }
                 _ => {}
             }
+        }
+        if let Some(tail) = &block.tail {
+            visit_expr_blocks(tail, &mut |nested| {
+                walk(
+                    nested,
+                    types,
+                    growing_ascii,
+                    names,
+                    local_regions,
+                    reserved_regions,
+                    loops,
+                    copy_down_sites,
+                    forwarded_return,
+                );
+            });
         }
     }
 
@@ -1860,26 +2193,29 @@ fn function_stack_details(
         .iter()
         .map(|param| (param.id, param.name.clone()))
         .collect::<HashMap<_, _>>();
-    let mut regions = Vec::new();
+    let mut local_regions = Vec::new();
+    let mut reserved_regions = Vec::new();
     let mut loops = Vec::new();
     let mut copy_down_sites = Vec::new();
     walk(
         &function.body,
         &program.types,
+        &growing_ascii,
         &mut names,
-        &mut regions,
+        &mut local_regions,
+        &mut reserved_regions,
         &mut loops,
         &mut copy_down_sites,
-        returned_builder,
+        forwarded_return,
     );
-    (regions, loops, copy_down_sites)
+    (local_regions, reserved_regions, loops, copy_down_sites)
 }
 
 pub fn entry_stack_reservations(
     program: &TProgram,
     contracts: &[StackContract],
 ) -> Vec<EntryStackReservation> {
-    let global_initializer_requirement = program
+    let global_initializer = program
         .globals
         .iter()
         .filter_map(|global| match global.initializer {
@@ -1892,19 +2228,23 @@ pub fn entry_stack_reservations(
                 ..
             } => contracts
                 .get(*id)
-                .map(|contract| contract.byte_requirement)
-                .unwrap_or(u64::MAX),
-            TExprKind::IndirectCall { callee, .. } => match &program.types[callee.ty.0].kind {
-                TTypeKind::Function {
-                    data_stack_requirement,
-                    ..
-                } => *data_stack_requirement,
-                _ => 0,
-            },
-            _ => 0,
+                .map_or((u64::MAX, Vec::new()), |contract| {
+                    (contract.byte_requirement, contract.critical_path.clone())
+                }),
+            TExprKind::IndirectCall { callee, .. } => program
+                .function_type_targets
+                .get(callee.ty.0)
+                .into_iter()
+                .flatten()
+                .filter_map(|target| contracts.get(*target))
+                .max_by_key(|contract| contract.byte_requirement)
+                .map_or((0, Vec::new()), |contract| {
+                    (contract.byte_requirement, contract.critical_path.clone())
+                }),
+            _ => (0, Vec::new()),
         })
-        .max()
-        .unwrap_or(0);
+        .max_by_key(|(bytes, _)| *bytes)
+        .unwrap_or((0, Vec::new()));
 
     let mut entries = Vec::new();
     let recursive_reachable = {
@@ -1954,7 +2294,17 @@ pub fn entry_stack_reservations(
                 .get(function_id)
                 .map(|contract| contract.byte_requirement)
                 .unwrap_or(u64::MAX);
-            let bound = function_requirement.max(global_initializer_requirement);
+            let (bound, critical_path) = if global_initializer.0 > function_requirement {
+                (global_initializer.0, global_initializer.1.clone())
+            } else {
+                (
+                    function_requirement,
+                    contracts
+                        .get(function_id)
+                        .map(|contract| contract.critical_path.clone())
+                        .unwrap_or_default(),
+                )
+            };
             let raw_bound = (bound != u64::MAX).then_some(bound);
             let required = raw_bound.and_then(|bytes| bytes.checked_add(DATA_STACK_HELPER_MARGIN));
             let reservation = data_stack_reservation(raw_bound);
@@ -1962,6 +2312,7 @@ pub fn entry_stack_reservations(
             EntryStackReservation {
                 name,
                 function_id,
+                critical_path,
                 required_bytes: required,
                 reservation_bytes: reservation,
                 recursive,
@@ -2725,6 +3076,27 @@ fn stack_storage_size(ty: Ty, types: &[TType]) -> usize {
         types,
         &mut vec![false; types.len()],
     ))
+}
+
+fn static_byte_string_storage_size(expr: &TExpr, types: &[TType]) -> Option<usize> {
+    let TExprKind::ByteString(bytes) = &expr.kind else {
+        return None;
+    };
+    match &types.get(expr.ty.0)?.kind {
+        TTypeKind::Ascii { .. } | TTypeKind::Bytes { .. } => {
+            type_size(expr.ty, types, &mut vec![None; types.len()]).checked_add(bytes.len())
+        }
+        TTypeKind::Text { .. } => {
+            type_size(expr.ty, types, &mut vec![None; types.len()]).checked_add(bytes.len())
+        }
+        TTypeKind::List { element, .. } if types.get(element.0)?.name == "byte" => 8usize
+            .checked_add(bytes.len().checked_mul(type_size(
+                *element,
+                types,
+                &mut vec![None; types.len()],
+            ))?),
+        _ => None,
+    }
 }
 
 fn local_root(expr: &TExpr) -> Option<usize> {
@@ -8527,7 +8899,13 @@ impl<'a> FunctionEmitter<'a> {
                     self.emit_place_pointer(&place)
                 }
             } else {
-                let pointer = self.entry_alloca(param_ty);
+                let pointer = if let Some(bytes) =
+                    static_byte_string_storage_size(arg, &self.program.types)
+                {
+                    self.entry_alloca_raw(&format!("[{bytes} x i8]"))
+                } else {
+                    self.entry_alloca(param_ty)
+                };
                 self.emit_expr_to(&pointer, arg);
                 if self.terminated {
                     return None;
@@ -12245,7 +12623,19 @@ impl<'a> FunctionEmitter<'a> {
             self.emit_text_to(destination, expr);
             return;
         }
-        if self.ascii_max(expr.ty).is_some() {
+        // A Bytes-returning call can build its growing payload directly in the
+        // destination. Streaming it through a temporary descriptor would keep
+        // both the hidden call result and the destination live at once.
+        let direct_bytes_result =
+            matches!(self.program.types[expr.ty.0].kind, TTypeKind::Bytes { .. })
+                && matches!(
+                    &expr.kind,
+                    TExprKind::Call {
+                        target: CallTarget::Function(_) | CallTarget::FsJoin,
+                        ..
+                    } | TExprKind::IndirectCall { .. }
+                );
+        if self.ascii_max(expr.ty).is_some() && !direct_bytes_result {
             self.emit_ascii_to(destination, expr);
             return;
         }
@@ -17634,6 +18024,10 @@ impl<'a> FunctionEmitter<'a> {
         } else if self.ascii_max(expr.ty).is_some() {
             let pointer = if Self::expr_place(expr).is_some() {
                 self.emit_expr_storage(expr)
+            } else if let Some(bytes) = static_byte_string_storage_size(expr, &self.program.types) {
+                let pointer = self.entry_alloca_raw(&format!("[{bytes} x i8]"));
+                self.emit_expr_to(&pointer, expr);
+                pointer
             } else {
                 let pointer = self.entry_alloca(expr.ty);
                 self.emit_expr_to(&pointer, expr);
@@ -17644,7 +18038,15 @@ impl<'a> FunctionEmitter<'a> {
             let TTypeKind::List { capacity, .. } = self.program.types[expr.ty.0].kind else {
                 unreachable!("checker validates I/O byte arguments")
             };
-            (self.emit_expr_storage(expr), 0, capacity)
+            let pointer =
+                if let Some(bytes) = static_byte_string_storage_size(expr, &self.program.types) {
+                    let pointer = self.entry_alloca_raw(&format!("[{bytes} x i8]"));
+                    self.emit_expr_to(&pointer, expr);
+                    pointer
+                } else {
+                    self.emit_expr_storage(expr)
+                };
+            (pointer, 0, capacity)
         }
     }
 
@@ -17841,10 +18243,15 @@ impl<'a> FunctionEmitter<'a> {
                         self.instruction(format!("call void @nl_fs_list(ptr {fs}, ptr {path}, i32 {path_is_arg}, i64 {path_capacity}, ptr {output}, i64 {capacity}, ptr {result_storage})"));
                     }
                     CallTarget::FsListWithExtension => {
-                        let extension = self.emit_expr(&args[2]);
+                        let (extension_storage, _, _) = self.emit_io_bytes_argument(&args[2]);
                         if self.terminated {
                             return String::new();
                         }
+                        let extension = self.temp();
+                        self.instruction(format!(
+                            "{extension} = load {}, ptr {extension_storage}, align 1",
+                            self.lltype(args[2].ty)
+                        ));
                         let extension_data = self.ascii_field(&extension, args[2].ty, 0);
                         let extension_length = self.ascii_field(&extension, args[2].ty, 1);
                         let output = self.emit_expr_storage(&args[3]);
