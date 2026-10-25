@@ -1,0 +1,65 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 9 1 4 "read_file"
+LParen 12 1 1 13 "("
+RParen 13 1 1 14 ")"
+LBrace 15 1 1 16 "{"
+Newline 16 1 1 17 "\n"
+Ident 21 3 2 5 "var"
+Ident 25 6 2 9 "buffer"
+Colon 31 1 2 15 ":"
+Ident 33 4 2 17 "list"
+Lt 37 1 2 21 "<"
+Ident 38 4 2 22 "byte"
+Comma 42 1 2 26 ","
+Number 44 1 2 28 "8"
+Gt 45 1 2 29 ">"
+Eq 47 1 2 31 "="
+Ident 49 4 2 33 "list"
+LBrace 54 1 2 38 "{"
+RBrace 55 1 2 39 "}"
+Newline 56 1 2 40 "\n"
+Ident 61 7 3 5 "discard"
+Ident 69 2 3 13 "fs"
+Dot 71 1 3 15 "."
+Ident 72 4 3 16 "read"
+LParen 76 1 3 20 "("
+String 77 6 3 21 "\"file\""
+Comma 83 1 3 27 ","
+Ident 85 6 3 29 "buffer"
+RParen 91 1 3 35 ")"
+Newline 92 1 3 36 "\n"
+RBrace 93 1 4 1 "}"
+Newline 94 1 4 2 "\n"
+Ident 96 2 6 1 "fn"
+Ident 99 4 6 4 "main"
+LParen 103 1 6 8 "("
+RParen 104 1 6 9 ")"
+LBrace 106 1 6 11 "{"
+Newline 107 1 6 12 "\n"
+Ident 112 9 7 5 "read_file"
+LParen 121 1 7 14 "("
+RParen 122 1 7 15 ")"
+Newline 123 1 7 16 "\n"
+RBrace 124 1 8 1 "}"
+Newline 125 1 8 2 "\n"
+Eof 126 0 9 1 ""
+== tree ==
+file "main.nl"
+Program 0..126
+  Function 0..94 name="read_file" recursive=false generics=[]
+    Block 15..94
+      Let 21..56 mutable=true name="buffer"
+        Annotation 33..46 name="list" range=none policy=checked
+          TypeArgument 38..42 name="byte" range=none policy=checked
+          Integer 44..45 magnitude=8 negative=false long_suffix=false
+        ListLiteral 49..56
+      Discard 61..92
+        MethodCall 69..92 name="read"
+          Name 69..71 name="fs"
+          ByteString 77..83 value="file"
+          Name 85..91 name="buffer"
+  Function 96..125 name="main" recursive=false generics=[]
+    Block 106..125
+      Call 112..123 name="read_file"

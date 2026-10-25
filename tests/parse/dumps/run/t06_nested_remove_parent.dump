@@ -1,0 +1,95 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 4 1 8 "Unit"
+LBrace 12 1 1 13 "{"
+Ident 14 9 1 15 "inventory"
+Colon 23 1 1 24 ":"
+Ident 25 4 1 26 "list"
+Lt 29 1 1 30 "<"
+Ident 30 4 1 31 "long"
+Comma 34 1 1 35 ","
+Number 36 1 1 37 "2"
+Gt 37 1 1 38 ">"
+Eq 39 1 1 40 "="
+Ident 41 4 1 42 "list"
+LBrace 46 1 1 47 "{"
+RBrace 47 1 1 48 "}"
+RBrace 49 1 1 50 "}"
+Newline 50 1 1 51 "\n"
+Ident 51 2 2 1 "fn"
+Ident 54 4 2 4 "main"
+LParen 58 1 2 8 "("
+RParen 59 1 2 9 ")"
+LBrace 61 1 2 11 "{"
+Ident 63 3 2 13 "var"
+Ident 67 5 2 17 "units"
+Colon 72 1 2 22 ":"
+Ident 74 4 2 24 "list"
+Lt 78 1 2 28 "<"
+Ident 79 4 2 29 "Unit"
+Comma 83 1 2 33 ","
+Number 85 1 2 35 "2"
+Gt 86 1 2 36 ">"
+Eq 88 1 2 38 "="
+Ident 90 4 2 40 "list"
+LBrace 95 1 2 45 "{"
+RBrace 96 1 2 46 "}"
+Semicolon 97 1 2 47 ";"
+Ident 99 7 2 49 "discard"
+Ident 107 5 2 57 "units"
+Dot 112 1 2 62 "."
+Ident 113 4 2 63 "push"
+LParen 117 1 2 67 "("
+Ident 118 4 2 68 "Unit"
+LBrace 123 1 2 73 "{"
+RBrace 124 1 2 74 "}"
+RParen 125 1 2 75 ")"
+Semicolon 126 1 2 76 ";"
+Ident 128 3 2 78 "for"
+Ident 132 4 2 82 "item"
+Ident 137 2 2 87 "in"
+Ident 140 5 2 90 "units"
+LBracket 145 1 2 95 "["
+Number 146 2 2 96 "0L"
+RBracket 148 1 2 98 "]"
+Dot 149 1 2 99 "."
+Ident 150 9 2 100 "inventory"
+LBrace 160 1 2 110 "{"
+Ident 162 5 2 112 "units"
+Dot 167 1 2 117 "."
+Ident 168 3 2 118 "pop"
+LParen 171 1 2 121 "("
+RParen 172 1 2 122 ")"
+RBrace 174 1 2 124 "}"
+RBrace 176 1 2 126 "}"
+Newline 177 1 2 127 "\n"
+Eof 178 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..178
+  Struct 0..50 name="Unit" generics=[]
+    StructField 14..48 name="inventory"
+      FieldType 25..38 name="list" range=none policy=checked
+        TypeArgument 30..34 name="long" range=none policy=checked
+        Integer 36..37 magnitude=2 negative=false long_suffix=false
+      ListLiteral 41..48
+  Function 51..177 name="main" recursive=false generics=[]
+    Block 61..177
+      Let 63..97 mutable=true name="units"
+        Annotation 74..87 name="list" range=none policy=checked
+          TypeArgument 79..83 name="Unit" range=none policy=checked
+          Integer 85..86 magnitude=2 negative=false long_suffix=false
+        ListLiteral 90..97
+      Discard 99..126
+        MethodCall 107..126 name="push"
+          Name 107..112 name="units"
+          StructInit 118..125 name="Unit"
+      ForEach 128..175 name="item" indexes=[]
+        Field 140..159 name="inventory"
+          Index 140..149
+            Name 140..145 name="units"
+            Integer 146..148 magnitude=0 negative=false long_suffix=true
+        Block 160..175
+          MethodCall 162..173 name="pop"
+            Name 162..167 name="units"

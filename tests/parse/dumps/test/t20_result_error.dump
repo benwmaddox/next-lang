@@ -1,0 +1,56 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "test"
+String 5 38 1 6 "\"an error result fails with its value\""
+LParen 44 1 1 45 "("
+Ident 45 3 1 46 "env"
+Colon 48 1 1 49 ":"
+Ident 50 3 1 51 "Env"
+RParen 53 1 1 54 ")"
+LBrace 55 1 1 56 "{"
+Newline 56 1 1 57 "\n"
+Ident 61 3 2 5 "var"
+Ident 65 5 2 9 "bytes"
+Colon 70 1 2 14 ":"
+Ident 72 4 2 16 "list"
+Lt 76 1 2 20 "<"
+Ident 77 4 2 21 "byte"
+Comma 81 1 2 25 ","
+Number 83 1 2 27 "1"
+Gt 84 1 2 28 ">"
+Eq 86 1 2 30 "="
+Ident 88 4 2 32 "list"
+LBrace 93 1 2 37 "{"
+RBrace 94 1 2 38 "}"
+Newline 95 1 2 39 "\n"
+Ident 100 3 3 5 "env"
+Dot 103 1 3 8 "."
+Ident 104 2 3 9 "fs"
+Dot 106 1 3 11 "."
+Ident 107 4 3 12 "read"
+LParen 111 1 3 16 "("
+String 112 9 3 17 "\"missing\""
+Comma 121 1 3 26 ","
+Ident 123 5 3 28 "bytes"
+RParen 128 1 3 33 ")"
+Newline 129 1 3 34 "\n"
+RBrace 130 1 4 1 "}"
+Newline 131 1 4 2 "\n"
+Eof 132 0 5 1 ""
+== tree ==
+file "main.nl"
+Program 0..132
+  Test 0..131 name="an error result fails with its value"
+    Parameter 45..53 name="env" mode=read
+      ParameterType 50..53 name="Env" range=none policy=checked
+    Block 55..131
+      Let 61..95 mutable=true name="bytes"
+        Annotation 72..85 name="list" range=none policy=checked
+          TypeArgument 77..81 name="byte" range=none policy=checked
+          Integer 83..84 magnitude=1 negative=false long_suffix=false
+        ListLiteral 88..95
+      MethodCall 100..129 name="read"
+        Field 100..106 name="fs"
+          Name 100..103 name="env"
+        ByteString 112..121 value="missing"
+        Name 123..128 name="bytes"

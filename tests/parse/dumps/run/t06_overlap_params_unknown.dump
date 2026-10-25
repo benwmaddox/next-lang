@@ -1,0 +1,87 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "both"
+LParen 7 1 1 8 "("
+Ident 8 4 1 9 "left"
+Colon 12 1 1 13 ":"
+Ident 14 5 1 15 "write"
+Ident 20 4 1 21 "long"
+Comma 24 1 1 25 ","
+Ident 26 5 1 27 "right"
+Colon 31 1 1 32 ":"
+Ident 33 5 1 34 "write"
+Ident 39 4 1 40 "long"
+RParen 43 1 1 44 ")"
+LBrace 45 1 1 46 "{"
+RBrace 46 1 1 47 "}"
+Newline 47 1 1 48 "\n"
+Ident 48 2 2 1 "fn"
+Ident 51 4 2 4 "pass"
+LParen 55 1 2 8 "("
+Ident 56 6 2 9 "values"
+Colon 62 1 2 15 ":"
+Ident 64 5 2 17 "write"
+Ident 70 4 2 23 "long"
+LBracket 74 1 2 27 "["
+Number 75 1 2 28 "3"
+RBracket 76 1 2 29 "]"
+Comma 77 1 2 30 ","
+Ident 79 5 2 32 "first"
+Colon 84 1 2 37 ":"
+Ident 86 4 2 39 "long"
+Comma 90 1 2 43 ","
+Ident 92 6 2 45 "second"
+Colon 98 1 2 51 ":"
+Ident 100 4 2 53 "long"
+RParen 104 1 2 57 ")"
+LBrace 106 1 2 59 "{"
+Ident 108 4 2 61 "both"
+LParen 112 1 2 65 "("
+Ident 113 6 2 66 "values"
+LBracket 119 1 2 72 "["
+Ident 120 5 2 73 "first"
+RBracket 125 1 2 78 "]"
+Comma 126 1 2 79 ","
+Ident 128 6 2 81 "values"
+LBracket 134 1 2 87 "["
+Ident 135 6 2 88 "second"
+RBracket 141 1 2 94 "]"
+RParen 142 1 2 95 ")"
+RBrace 144 1 2 97 "}"
+Newline 145 1 2 98 "\n"
+Ident 146 2 3 1 "fn"
+Ident 149 4 3 4 "main"
+LParen 153 1 3 8 "("
+RParen 154 1 3 9 ")"
+LBrace 156 1 3 11 "{"
+RBrace 157 1 3 12 "}"
+Newline 158 1 3 13 "\n"
+Eof 159 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..159
+  Function 0..47 name="both" recursive=false generics=[]
+    Parameter 8..24 name="left" mode=write
+      ParameterType 20..24 name="long" range=none policy=checked
+    Parameter 26..43 name="right" mode=write
+      ParameterType 39..43 name="long" range=none policy=checked
+    Block 45..47
+  Function 48..145 name="pass" recursive=false generics=[]
+    Parameter 56..77 name="values" mode=write
+      ParameterType 70..77 name="long" range=none policy=checked
+        Integer 75..76 magnitude=3 negative=false long_suffix=false
+    Parameter 79..90 name="first" mode=read
+      ParameterType 86..90 name="long" range=none policy=checked
+    Parameter 92..104 name="second" mode=read
+      ParameterType 100..104 name="long" range=none policy=checked
+    Block 106..145
+      Call 108..143 name="both"
+        Index 113..126
+          Name 113..119 name="values"
+          Name 120..125 name="first"
+        Index 128..142
+          Name 128..134 name="values"
+          Name 135..141 name="second"
+  Function 146..158 name="main" recursive=false generics=[]
+    Block 156..158

@@ -1,0 +1,102 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "global"
+Ident 7 3 1 8 "app"
+Colon 10 1 1 11 ":"
+Ident 12 3 1 13 "int"
+Eq 16 1 1 17 "="
+Number 18 1 1 19 "0"
+Newline 19 1 1 20 "\n"
+Ident 21 2 3 1 "fn"
+Ident 24 4 3 4 "less"
+LParen 28 1 3 8 "("
+Ident 29 3 3 9 "ctx"
+Colon 32 1 3 12 ":"
+Ident 34 3 3 14 "int"
+Comma 37 1 3 17 ","
+Ident 39 1 3 19 "a"
+Colon 40 1 3 20 ":"
+Ident 42 3 3 22 "int"
+Comma 45 1 3 25 ","
+Ident 47 1 3 27 "b"
+Colon 48 1 3 28 ":"
+Ident 50 3 3 30 "int"
+RParen 53 1 3 33 ")"
+Arrow 55 2 3 35 "->"
+Ident 58 4 3 38 "bool"
+LBrace 63 1 3 43 "{"
+Newline 64 1 3 44 "\n"
+Ident 69 3 4 5 "app"
+Eq 73 1 4 9 "="
+Number 75 1 4 11 "1"
+Newline 76 1 4 12 "\n"
+Ident 81 1 5 5 "a"
+Lt 83 1 5 7 "<"
+Ident 85 1 5 9 "b"
+Newline 86 1 5 10 "\n"
+RBrace 87 1 6 1 "}"
+Newline 88 1 6 2 "\n"
+Ident 90 2 8 1 "fn"
+Ident 93 4 8 4 "main"
+LParen 97 1 8 8 "("
+RParen 98 1 8 9 ")"
+LBrace 100 1 8 11 "{"
+Newline 101 1 8 12 "\n"
+Ident 106 3 9 5 "var"
+Ident 110 6 9 9 "values"
+Colon 116 1 9 15 ":"
+Ident 118 4 9 17 "list"
+Lt 122 1 9 21 "<"
+Ident 123 3 9 22 "int"
+Comma 126 1 9 25 ","
+Number 128 1 9 27 "2"
+Gt 129 1 9 28 ">"
+Eq 131 1 9 30 "="
+Ident 133 4 9 32 "list"
+LBrace 138 1 9 37 "{"
+RBrace 139 1 9 38 "}"
+Newline 140 1 9 39 "\n"
+Ident 145 7 10 5 "sort_by"
+LParen 152 1 10 12 "("
+Ident 153 6 10 13 "values"
+Comma 159 1 10 19 ","
+Number 161 1 10 21 "0"
+Comma 162 1 10 22 ","
+Ident 164 4 10 24 "less"
+RParen 168 1 10 28 ")"
+Newline 169 1 10 29 "\n"
+RBrace 170 1 11 1 "}"
+Newline 171 1 11 2 "\n"
+Eof 172 0 12 1 ""
+== tree ==
+file "main.nl"
+Program 0..172
+  Global 0..19 name="app" prefault=false
+    DeclaredType 12..15 name="int" range=none policy=checked
+    Integer 18..19 magnitude=0 negative=false long_suffix=false
+  Function 21..88 name="less" recursive=false generics=[]
+    Parameter 29..37 name="ctx" mode=read
+      ParameterType 34..37 name="int" range=none policy=checked
+    Parameter 39..45 name="a" mode=read
+      ParameterType 42..45 name="int" range=none policy=checked
+    Parameter 47..53 name="b" mode=read
+      ParameterType 50..53 name="int" range=none policy=checked
+    ResultType 58..62 name="bool" range=none policy=checked
+    Block 63..88
+      Assign 69..76 op==
+        Name 69..72 name="app"
+        Integer 75..76 magnitude=1 negative=false long_suffix=false
+      Binary 81..86 op=lt
+        Name 81..82 name="a"
+        Name 85..86 name="b"
+  Function 90..171 name="main" recursive=false generics=[]
+    Block 100..171
+      Let 106..140 mutable=true name="values"
+        Annotation 118..130 name="list" range=none policy=checked
+          TypeArgument 123..126 name="int" range=none policy=checked
+          Integer 128..129 magnitude=2 negative=false long_suffix=false
+        ListLiteral 133..140
+      Call 145..169 name="sort_by"
+        Name 153..159 name="values"
+        Integer 161..162 magnitude=0 negative=false long_suffix=false
+        Name 164..168 name="less"

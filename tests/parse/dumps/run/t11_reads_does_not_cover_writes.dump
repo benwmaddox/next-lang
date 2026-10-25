@@ -1,0 +1,114 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 5 1 8 "State"
+LBrace 13 1 1 14 "{"
+Ident 15 5 1 16 "score"
+Colon 20 1 1 21 ":"
+Ident 22 3 1 23 "int"
+RBrace 26 1 1 27 "}"
+Newline 27 1 1 28 "\n"
+Ident 28 6 2 1 "global"
+Ident 35 3 2 8 "app"
+Colon 38 1 2 11 ":"
+Ident 40 5 2 13 "State"
+Eq 46 1 2 19 "="
+Ident 48 5 2 21 "State"
+LBrace 54 1 2 27 "{"
+Ident 56 5 2 29 "score"
+Colon 61 1 2 34 ":"
+Number 63 1 2 36 "0"
+RBrace 65 1 2 38 "}"
+Newline 66 1 2 39 "\n"
+Ident 68 2 4 1 "fn"
+Ident 71 6 4 4 "update"
+LParen 77 1 4 10 "("
+Ident 78 5 4 11 "value"
+Colon 83 1 4 16 ":"
+Ident 85 3 4 18 "int"
+RParen 88 1 4 21 ")"
+Arrow 90 2 4 23 "->"
+Ident 93 3 4 26 "int"
+LBrace 97 1 4 30 "{"
+Newline 98 1 4 31 "\n"
+Ident 103 3 5 5 "app"
+Dot 106 1 5 8 "."
+Ident 107 5 5 9 "score"
+PlusEq 113 2 5 15 "+="
+Ident 116 5 5 18 "value"
+Newline 121 1 5 23 "\n"
+Ident 126 3 6 5 "app"
+Dot 129 1 6 8 "."
+Ident 130 5 6 9 "score"
+Newline 135 1 6 14 "\n"
+RBrace 136 1 7 1 "}"
+Newline 137 1 7 2 "\n"
+Ident 139 2 9 1 "fn"
+Ident 142 4 9 4 "main"
+LParen 146 1 9 8 "("
+RParen 147 1 9 9 ")"
+LBrace 149 1 9 11 "{"
+Newline 150 1 9 12 "\n"
+Ident 155 3 10 5 "let"
+Ident 159 8 10 9 "callback"
+Colon 167 1 10 17 ":"
+Ident 169 2 10 19 "fn"
+LParen 171 1 10 21 "("
+Ident 172 3 10 22 "int"
+RParen 175 1 10 25 ")"
+Arrow 177 2 10 27 "->"
+Ident 180 3 10 30 "int"
+Ident 184 7 10 34 "effects"
+Ident 192 5 10 42 "reads"
+Ident 198 3 10 48 "app"
+Dot 201 1 10 51 "."
+Ident 202 5 10 52 "score"
+Eq 208 1 10 58 "="
+Ident 210 6 10 60 "update"
+Newline 216 1 10 66 "\n"
+Ident 221 5 11 5 "print"
+LParen 226 1 11 10 "("
+Ident 227 8 11 11 "callback"
+LParen 235 1 11 19 "("
+Number 236 1 11 20 "2"
+RParen 237 1 11 21 ")"
+RParen 238 1 11 22 ")"
+Newline 239 1 11 23 "\n"
+RBrace 240 1 12 1 "}"
+Newline 241 1 12 2 "\n"
+Eof 242 0 13 1 ""
+== tree ==
+file "main.nl"
+Program 0..242
+  Struct 0..27 name="State" generics=[]
+    StructField 15..25 name="score"
+      FieldType 22..25 name="int" range=none policy=checked
+  Global 28..66 name="app" prefault=false
+    DeclaredType 40..45 name="State" range=none policy=checked
+    StructInit 48..66 name="State"
+      InitializerField 56..64 name="score"
+        Integer 63..64 magnitude=0 negative=false long_suffix=false
+  Function 68..137 name="update" recursive=false generics=[]
+    Parameter 78..88 name="value" mode=read
+      ParameterType 85..88 name="int" range=none policy=checked
+    ResultType 93..96 name="int" range=none policy=checked
+    Block 97..137
+      Assign 103..121 op=+=
+        Field 103..112 name="score"
+          Name 103..106 name="app"
+        Name 116..121 name="value"
+      Field 126..135 name="score"
+        Name 126..129 name="app"
+  Function 139..241 name="main" recursive=false generics=[]
+    Block 149..241
+      Let 155..216 mutable=false name="callback"
+        Annotation 169..207 name="fn" range=none policy=checked
+          FunctionType 169..207
+            FunctionTypeParameter 172..175 mode=read
+              ParameterType 172..175 name="int" range=none policy=checked
+            ResultType 180..183 name="int" range=none policy=checked
+            Effect 192..207 kind=reads path="app.score"
+        Name 210..216 name="update"
+      Call 221..239 name="print"
+        Call 227..238 name="callback"
+          Integer 236..237 magnitude=2 negative=false long_suffix=false

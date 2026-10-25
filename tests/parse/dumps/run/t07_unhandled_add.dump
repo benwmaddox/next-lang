@@ -1,0 +1,77 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 4 1 8 "Item"
+LBrace 12 1 1 13 "{"
+Ident 14 5 1 15 "value"
+Colon 19 1 1 20 ":"
+Ident 21 3 1 22 "int"
+RBrace 25 1 1 26 "}"
+Newline 26 1 1 27 "\n"
+Ident 28 2 3 1 "fn"
+Ident 31 4 3 4 "main"
+LParen 35 1 3 8 "("
+RParen 36 1 3 9 ")"
+LBrace 38 1 3 11 "{"
+Newline 39 1 3 12 "\n"
+Ident 44 3 4 5 "var"
+Ident 48 5 4 9 "items"
+Colon 53 1 4 14 ":"
+Ident 55 4 4 16 "pool"
+Lt 59 1 4 20 "<"
+Ident 60 4 4 21 "Item"
+Comma 64 1 4 25 ","
+Number 66 1 4 27 "2"
+Gt 67 1 4 28 ">"
+Eq 69 1 4 30 "="
+Ident 71 4 4 32 "pool"
+LBrace 76 1 4 37 "{"
+RBrace 77 1 4 38 "}"
+Newline 78 1 4 39 "\n"
+Ident 83 3 5 5 "for"
+Ident 87 5 5 9 "index"
+Ident 93 2 5 15 "in"
+Number 96 1 5 18 "0"
+Range 97 2 5 19 ".."
+Number 99 1 5 21 "3"
+LBrace 101 1 5 23 "{"
+Newline 102 1 5 24 "\n"
+Ident 111 5 6 9 "items"
+Dot 116 1 6 14 "."
+Ident 117 3 6 15 "add"
+LParen 120 1 6 18 "("
+Ident 121 4 6 19 "Item"
+LBrace 126 1 6 24 "{"
+Ident 128 5 6 26 "value"
+Colon 133 1 6 31 ":"
+Ident 135 5 6 33 "index"
+RBrace 141 1 6 39 "}"
+RParen 142 1 6 40 ")"
+Newline 143 1 6 41 "\n"
+RBrace 148 1 7 5 "}"
+Newline 149 1 7 6 "\n"
+RBrace 150 1 8 1 "}"
+Newline 151 1 8 2 "\n"
+Eof 152 0 9 1 ""
+== tree ==
+file "main.nl"
+Program 0..152
+  Struct 0..26 name="Item" generics=[]
+    StructField 14..24 name="value"
+      FieldType 21..24 name="int" range=none policy=checked
+  Function 28..151 name="main" recursive=false generics=[]
+    Block 38..151
+      Let 44..78 mutable=true name="items"
+        Annotation 55..68 name="pool" range=none policy=checked
+          TypeArgument 60..64 name="Item" range=none policy=checked
+          Integer 66..67 magnitude=2 negative=false long_suffix=false
+        PoolLiteral 71..78
+      For 83..149 name="index" inclusive=false
+        Integer 96..97 magnitude=0 negative=false long_suffix=false
+        Integer 99..100 magnitude=3 negative=false long_suffix=false
+        Block 101..149
+          MethodCall 111..143 name="add"
+            Name 111..116 name="items"
+            StructInit 121..142 name="Item"
+              InitializerField 128..140 name="value"
+                Name 135..140 name="index"

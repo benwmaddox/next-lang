@@ -1,0 +1,41 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 3 1 4 "bad"
+LParen 6 1 1 7 "("
+Ident 7 1 1 8 "x"
+Colon 8 1 1 9 ":"
+Ident 10 3 1 11 "int"
+RParen 13 1 1 14 ")"
+LBrace 15 1 1 16 "{"
+Ident 17 1 1 18 "x"
+Eq 19 1 1 20 "="
+Number 21 1 1 22 "2"
+RBrace 23 1 1 24 "}"
+Newline 24 1 1 25 "\n"
+Ident 25 2 2 1 "fn"
+Ident 28 4 2 4 "main"
+LParen 32 1 2 8 "("
+RParen 33 1 2 9 ")"
+LBrace 35 1 2 11 "{"
+Ident 37 3 2 13 "bad"
+LParen 40 1 2 16 "("
+Number 41 1 2 17 "1"
+RParen 42 1 2 18 ")"
+RBrace 44 1 2 20 "}"
+Newline 45 1 2 21 "\n"
+Eof 46 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..46
+  Function 0..24 name="bad" recursive=false generics=[]
+    Parameter 7..13 name="x" mode=read
+      ParameterType 10..13 name="int" range=none policy=checked
+    Block 15..24
+      Assign 17..22 op==
+        Name 17..18 name="x"
+        Integer 21..22 magnitude=2 negative=false long_suffix=false
+  Function 25..45 name="main" recursive=false generics=[]
+    Block 35..45
+      Call 37..43 name="bad"
+        Integer 41..42 magnitude=1 negative=false long_suffix=false

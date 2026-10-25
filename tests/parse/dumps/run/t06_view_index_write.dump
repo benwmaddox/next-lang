@@ -1,0 +1,65 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "var"
+Ident 20 6 2 9 "values"
+Colon 26 1 2 15 ":"
+Ident 28 4 2 17 "list"
+Lt 32 1 2 21 "<"
+Ident 33 4 2 22 "long"
+Comma 37 1 2 26 ","
+Number 39 1 2 28 "2"
+Gt 40 1 2 29 ">"
+Eq 42 1 2 31 "="
+Ident 44 4 2 33 "list"
+LBrace 49 1 2 38 "{"
+RBrace 50 1 2 39 "}"
+Newline 51 1 2 40 "\n"
+Ident 56 7 3 5 "discard"
+Ident 64 6 3 13 "values"
+Dot 70 1 3 19 "."
+Ident 71 4 3 20 "push"
+LParen 75 1 3 24 "("
+Number 76 2 3 25 "1L"
+RParen 78 1 3 27 ")"
+Newline 79 1 3 28 "\n"
+Ident 84 3 4 5 "for"
+Ident 88 4 4 9 "item"
+Comma 92 1 4 13 ","
+Ident 94 5 4 15 "index"
+Ident 100 2 4 21 "in"
+Ident 103 6 4 24 "values"
+LBrace 110 1 4 31 "{"
+Ident 112 5 4 33 "index"
+Eq 118 1 4 39 "="
+Number 120 2 4 41 "0L"
+RBrace 123 1 4 44 "}"
+Newline 124 1 4 45 "\n"
+RBrace 125 1 5 1 "}"
+Newline 126 1 5 2 "\n"
+Eof 127 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..127
+  Function 0..126 name="main" recursive=false generics=[]
+    Block 10..126
+      Let 16..51 mutable=true name="values"
+        Annotation 28..41 name="list" range=none policy=checked
+          TypeArgument 33..37 name="long" range=none policy=checked
+          Integer 39..40 magnitude=2 negative=false long_suffix=false
+        ListLiteral 44..51
+      Discard 56..79
+        MethodCall 64..79 name="push"
+          Name 64..70 name="values"
+          Integer 76..78 magnitude=1 negative=false long_suffix=true
+      ForEach 84..124 name="item" indexes=["index"]
+        Name 103..109 name="values"
+        Block 110..124
+          Assign 112..122 op==
+            Name 112..117 name="index"
+            Integer 120..122 magnitude=0 negative=false long_suffix=true

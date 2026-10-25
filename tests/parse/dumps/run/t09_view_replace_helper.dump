@@ -1,0 +1,98 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 7 1 4 "replace"
+LParen 10 1 1 11 "("
+Ident 11 6 1 12 "target"
+Colon 17 1 1 18 ":"
+Ident 19 5 1 20 "write"
+Ident 25 3 1 26 "int"
+RParen 28 1 1 29 ")"
+LBrace 30 1 1 31 "{"
+Newline 31 1 1 32 "\n"
+Ident 36 6 2 5 "target"
+Eq 43 1 2 12 "="
+Number 45 2 2 14 "20"
+Newline 47 1 2 16 "\n"
+RBrace 48 1 3 1 "}"
+Newline 49 1 3 2 "\n"
+Ident 51 2 5 1 "fn"
+Ident 54 4 5 4 "main"
+LParen 58 1 5 8 "("
+RParen 59 1 5 9 ")"
+LBrace 61 1 5 11 "{"
+Newline 62 1 5 12 "\n"
+Ident 67 3 6 5 "var"
+Ident 71 6 6 9 "values"
+Colon 77 1 6 15 ":"
+Ident 79 3 6 17 "map"
+Lt 82 1 6 20 "<"
+Ident 83 3 6 21 "int"
+Comma 86 1 6 24 ","
+Ident 88 3 6 26 "int"
+Comma 91 1 6 29 ","
+Number 93 1 6 31 "2"
+Gt 94 1 6 32 ">"
+Eq 96 1 6 34 "="
+Ident 98 3 6 36 "map"
+LBrace 102 1 6 40 "{"
+RBrace 103 1 6 41 "}"
+Newline 104 1 6 42 "\n"
+Ident 109 6 7 5 "values"
+Dot 115 1 7 11 "."
+Ident 116 3 7 12 "set"
+LParen 119 1 7 15 "("
+Number 120 1 7 16 "1"
+Comma 121 1 7 17 ","
+Number 123 2 7 19 "10"
+RParen 125 1 7 21 ")"
+Dot 126 1 7 22 "."
+Ident 127 6 7 23 "unwrap"
+LParen 133 1 7 29 "("
+RParen 134 1 7 30 ")"
+Newline 135 1 7 31 "\n"
+Ident 140 3 8 5 "for"
+Ident 144 5 8 9 "value"
+Comma 149 1 8 14 ","
+Ident 151 3 8 16 "key"
+Ident 155 2 8 20 "in"
+Ident 158 6 8 23 "values"
+LBrace 165 1 8 30 "{"
+Ident 167 7 8 32 "replace"
+LParen 174 1 8 39 "("
+Ident 175 5 8 40 "value"
+RParen 180 1 8 45 ")"
+RBrace 182 1 8 47 "}"
+Newline 183 1 8 48 "\n"
+RBrace 184 1 9 1 "}"
+Newline 185 1 9 2 "\n"
+Eof 186 0 10 1 ""
+== tree ==
+file "main.nl"
+Program 0..186
+  Function 0..49 name="replace" recursive=false generics=[]
+    Parameter 11..28 name="target" mode=write
+      ParameterType 25..28 name="int" range=none policy=checked
+    Block 30..49
+      Assign 36..47 op==
+        Name 36..42 name="target"
+        Integer 45..47 magnitude=20 negative=false long_suffix=false
+  Function 51..185 name="main" recursive=false generics=[]
+    Block 61..185
+      Let 67..104 mutable=true name="values"
+        Annotation 79..95 name="map" range=none policy=checked
+          TypeArgument 83..86 name="int" range=none policy=checked
+          TypeArgument 88..91 name="int" range=none policy=checked
+          Integer 93..94 magnitude=2 negative=false long_suffix=false
+        MapLiteral 98..104
+      ExpressionStatement 109..135
+        MethodCall 109..135 name="unwrap"
+          MethodCall 109..126 name="set"
+            Name 109..115 name="values"
+            Integer 120..121 magnitude=1 negative=false long_suffix=false
+            Integer 123..125 magnitude=10 negative=false long_suffix=false
+      ForEach 140..183 name="value" indexes=["key"]
+        Name 158..164 name="values"
+        Block 165..183
+          Call 167..181 name="replace"
+            Name 175..180 name="value"

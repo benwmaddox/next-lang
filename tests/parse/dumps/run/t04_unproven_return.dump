@@ -1,0 +1,54 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "type"
+Ident 5 5 1 6 "Small"
+Eq 11 1 1 12 "="
+Ident 13 3 1 14 "int"
+Number 17 1 1 18 "0"
+RangeInclusive 18 3 1 19 "..="
+Number 21 2 1 22 "10"
+Newline 23 1 1 24 "\n"
+Ident 24 2 2 1 "fn"
+Ident 27 4 2 4 "make"
+LParen 31 1 2 8 "("
+Ident 32 1 2 9 "x"
+Colon 33 1 2 10 ":"
+Ident 35 3 2 12 "int"
+RParen 38 1 2 15 ")"
+Arrow 40 2 2 17 "->"
+Ident 43 5 2 20 "Small"
+LBrace 49 1 2 26 "{"
+Ident 51 1 2 28 "x"
+RBrace 53 1 2 30 "}"
+Newline 54 1 2 31 "\n"
+Ident 55 2 3 1 "fn"
+Ident 58 4 3 4 "main"
+LParen 62 1 3 8 "("
+RParen 63 1 3 9 ")"
+LBrace 65 1 3 11 "{"
+Ident 67 5 3 13 "print"
+LParen 72 1 3 18 "("
+Ident 73 4 3 19 "make"
+LParen 77 1 3 23 "("
+Number 78 2 3 24 "20"
+RParen 80 1 3 26 ")"
+RParen 81 1 3 27 ")"
+RBrace 83 1 3 29 "}"
+Newline 84 1 3 30 "\n"
+Eof 85 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..85
+  TypeAlias 0..23 name="Small"
+    AliasedType 13..23 name="int" range=0..=10 policy=checked
+  Function 24..54 name="make" recursive=false generics=[]
+    Parameter 32..38 name="x" mode=read
+      ParameterType 35..38 name="int" range=none policy=checked
+    ResultType 43..48 name="Small" range=none policy=checked
+    Block 49..54
+      Name 51..52 name="x"
+  Function 55..84 name="main" recursive=false generics=[]
+    Block 65..84
+      Call 67..82 name="print"
+        Call 73..81 name="make"
+          Integer 78..80 magnitude=20 negative=false long_suffix=false

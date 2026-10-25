@@ -1,0 +1,83 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 4 1 8 "Rock"
+LBrace 12 1 1 13 "{"
+Ident 14 5 1 15 "value"
+Colon 19 1 1 20 ":"
+Ident 21 3 1 22 "int"
+RBrace 25 1 1 26 "}"
+Newline 26 1 1 27 "\n"
+Ident 27 6 2 1 "struct"
+Ident 34 5 2 8 "State"
+LBrace 40 1 2 14 "{"
+Ident 42 5 2 16 "nodes"
+Colon 47 1 2 21 ":"
+Ident 49 4 2 23 "pool"
+Lt 53 1 2 27 "<"
+Ident 54 4 2 28 "Rock"
+Comma 58 1 2 32 ","
+Number 60 1 2 34 "1"
+Gt 61 1 2 35 ">"
+Comma 62 1 2 36 ","
+Ident 64 5 2 38 "value"
+Colon 69 1 2 43 ":"
+Ident 71 3 2 45 "int"
+RBrace 75 1 2 49 "}"
+Newline 76 1 2 50 "\n"
+Ident 78 2 4 1 "fn"
+Ident 81 4 4 4 "main"
+LParen 85 1 4 8 "("
+RParen 86 1 4 9 ")"
+LBrace 88 1 4 11 "{"
+Newline 89 1 4 12 "\n"
+Ident 94 3 5 5 "var"
+Ident 98 5 5 9 "state"
+Colon 103 1 5 14 ":"
+Ident 105 5 5 16 "State"
+Eq 111 1 5 22 "="
+Ident 113 5 5 24 "State"
+LBrace 119 1 5 30 "{"
+Ident 121 5 5 32 "nodes"
+Colon 126 1 5 37 ":"
+Ident 128 4 5 39 "pool"
+LBrace 133 1 5 44 "{"
+RBrace 134 1 5 45 "}"
+Comma 135 1 5 46 ","
+Ident 137 5 5 48 "value"
+Colon 142 1 5 53 ":"
+Number 144 1 5 55 "0"
+RBrace 146 1 5 57 "}"
+Newline 147 1 5 58 "\n"
+Ident 152 3 6 5 "let"
+Ident 156 4 6 9 "copy"
+Eq 161 1 6 14 "="
+Ident 163 5 6 16 "state"
+Newline 168 1 6 21 "\n"
+RBrace 169 1 7 1 "}"
+Newline 170 1 7 2 "\n"
+Eof 171 0 8 1 ""
+== tree ==
+file "main.nl"
+Program 0..171
+  Struct 0..26 name="Rock" generics=[]
+    StructField 14..24 name="value"
+      FieldType 21..24 name="int" range=none policy=checked
+  Struct 27..76 name="State" generics=[]
+    StructField 42..62 name="nodes"
+      FieldType 49..62 name="pool" range=none policy=checked
+        TypeArgument 54..58 name="Rock" range=none policy=checked
+        Integer 60..61 magnitude=1 negative=false long_suffix=false
+    StructField 64..74 name="value"
+      FieldType 71..74 name="int" range=none policy=checked
+  Function 78..170 name="main" recursive=false generics=[]
+    Block 88..170
+      Let 94..147 mutable=true name="state"
+        Annotation 105..110 name="State" range=none policy=checked
+        StructInit 113..147 name="State"
+          InitializerField 121..135 name="nodes"
+            PoolLiteral 128..135
+          InitializerField 137..145 name="value"
+            Integer 144..145 magnitude=0 negative=false long_suffix=false
+      Let 152..168 mutable=false name="copy"
+        Name 163..168 name="state"

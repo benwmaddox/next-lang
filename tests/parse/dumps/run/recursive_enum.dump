@@ -1,0 +1,31 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "enum"
+Ident 5 4 1 6 "Node"
+LBrace 10 1 1 11 "{"
+Ident 12 4 1 13 "Next"
+LParen 16 1 1 17 "("
+Ident 17 6 1 18 "Option"
+Lt 23 1 1 24 "<"
+Ident 24 4 1 25 "Node"
+Gt 28 1 1 29 ">"
+RParen 29 1 1 30 ")"
+RBrace 31 1 1 32 "}"
+Newline 32 1 1 33 "\n"
+Ident 33 2 2 1 "fn"
+Ident 36 4 2 4 "main"
+LParen 40 1 2 8 "("
+RParen 41 1 2 9 ")"
+LBrace 43 1 2 11 "{"
+RBrace 44 1 2 12 "}"
+Newline 45 1 2 13 "\n"
+Eof 46 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..46
+  Enum 0..32 name="Node"
+    EnumCase 12..30 name="Next"
+      PayloadType 17..29 name="Option" range=none policy=checked
+        TypeArgument 24..28 name="Node" range=none policy=checked
+  Function 33..45 name="main" recursive=false generics=[]
+    Block 43..45

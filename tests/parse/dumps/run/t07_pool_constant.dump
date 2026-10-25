@@ -1,0 +1,45 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 4 1 8 "Rock"
+LBrace 12 1 1 13 "{"
+Ident 14 5 1 15 "value"
+Colon 19 1 1 20 ":"
+Ident 21 3 1 22 "int"
+RBrace 25 1 1 26 "}"
+Newline 26 1 1 27 "\n"
+Ident 28 5 3 1 "const"
+Ident 34 7 3 7 "STORAGE"
+Colon 41 1 3 14 ":"
+Ident 43 4 3 16 "pool"
+Lt 47 1 3 20 "<"
+Ident 48 4 3 21 "Rock"
+Comma 52 1 3 25 ","
+Number 54 1 3 27 "2"
+Gt 55 1 3 28 ">"
+Eq 57 1 3 30 "="
+Ident 59 4 3 32 "pool"
+LBrace 64 1 3 37 "{"
+RBrace 65 1 3 38 "}"
+Newline 66 1 3 39 "\n"
+Ident 68 2 5 1 "fn"
+Ident 71 4 5 4 "main"
+LParen 75 1 5 8 "("
+RParen 76 1 5 9 ")"
+LBrace 78 1 5 11 "{"
+RBrace 79 1 5 12 "}"
+Newline 80 1 5 13 "\n"
+Eof 81 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..81
+  Struct 0..26 name="Rock" generics=[]
+    StructField 14..24 name="value"
+      FieldType 21..24 name="int" range=none policy=checked
+  Const 28..66 name="STORAGE"
+    DeclaredType 43..56 name="pool" range=none policy=checked
+      TypeArgument 48..52 name="Rock" range=none policy=checked
+      Integer 54..55 magnitude=2 negative=false long_suffix=false
+    PoolLiteral 59..66
+  Function 68..80 name="main" recursive=false generics=[]
+    Block 78..80

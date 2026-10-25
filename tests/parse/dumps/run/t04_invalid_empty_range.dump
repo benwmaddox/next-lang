@@ -1,0 +1,25 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "type"
+Ident 5 3 1 6 "Bad"
+Eq 9 1 1 10 "="
+Ident 11 3 1 12 "int"
+Number 15 1 1 16 "2"
+Range 16 2 1 17 ".."
+Number 18 1 1 19 "2"
+Newline 19 1 1 20 "\n"
+Ident 20 2 2 1 "fn"
+Ident 23 4 2 4 "main"
+LParen 27 1 2 8 "("
+RParen 28 1 2 9 ")"
+LBrace 30 1 2 11 "{"
+RBrace 31 1 2 12 "}"
+Newline 32 1 2 13 "\n"
+Eof 33 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..33
+  TypeAlias 0..19 name="Bad"
+    AliasedType 11..19 name="int" range=2..2 policy=checked
+  Function 20..32 name="main" recursive=false generics=[]
+    Block 30..32

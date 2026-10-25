@@ -1,0 +1,130 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 4 1 8 "Node"
+Lt 11 1 1 12 "<"
+Ident 12 1 1 13 "P"
+Gt 13 1 1 14 ">"
+LBrace 15 1 1 16 "{"
+Ident 17 6 1 18 "parent"
+Colon 23 1 1 24 ":"
+Ident 25 6 1 26 "Option"
+Lt 31 1 1 32 "<"
+Ident 32 2 1 33 "Id"
+Lt 34 1 1 35 "<"
+Ident 35 1 1 36 "P"
+Shr 36 2 1 37 ">>"
+Comma 38 1 1 39 ","
+Ident 40 5 1 41 "value"
+Colon 45 1 1 46 ":"
+Ident 47 3 1 48 "int"
+RBrace 51 1 1 52 "}"
+Newline 52 1 1 53 "\n"
+Ident 53 6 2 1 "struct"
+Ident 60 3 2 8 "App"
+Lt 63 1 2 11 "<"
+Ident 64 1 2 12 "P"
+Gt 65 1 2 13 ">"
+LBrace 67 1 2 15 "{"
+Ident 69 5 2 17 "nodes"
+Colon 74 1 2 22 ":"
+Ident 76 4 2 24 "pool"
+Lt 80 1 2 28 "<"
+Ident 81 4 2 29 "Node"
+Lt 85 1 2 33 "<"
+Ident 86 1 2 34 "P"
+Gt 87 1 2 35 ">"
+Comma 88 1 2 36 ","
+Number 90 1 2 38 "2"
+Comma 91 1 2 39 ","
+Ident 93 1 2 41 "P"
+Gt 94 1 2 42 ">"
+Comma 95 1 2 43 ","
+Ident 97 5 2 45 "score"
+Colon 102 1 2 50 ":"
+Ident 104 3 2 52 "int"
+RBrace 108 1 2 56 "}"
+Newline 109 1 2 57 "\n"
+Ident 110 6 3 1 "global"
+Ident 117 3 3 8 "app"
+Colon 120 1 3 11 ":"
+Ident 122 3 3 13 "App"
+Lt 125 1 3 16 "<"
+Ident 126 3 3 17 "app"
+Dot 129 1 3 20 "."
+Ident 130 5 3 21 "nodes"
+Gt 135 1 3 26 ">"
+Eq 137 1 3 28 "="
+Ident 139 3 3 30 "App"
+LBrace 143 1 3 34 "{"
+Ident 145 5 3 36 "nodes"
+Colon 150 1 3 41 ":"
+Ident 152 4 3 43 "pool"
+LBrace 157 1 3 48 "{"
+RBrace 158 1 3 49 "}"
+Comma 159 1 3 50 ","
+Ident 161 5 3 52 "score"
+Colon 166 1 3 57 ":"
+Number 168 1 3 59 "5"
+RBrace 170 1 3 61 "}"
+Newline 171 1 3 62 "\n"
+Ident 173 2 5 1 "fn"
+Ident 176 4 5 4 "main"
+LParen 180 1 5 8 "("
+RParen 181 1 5 9 ")"
+LBrace 183 1 5 11 "{"
+Newline 184 1 5 12 "\n"
+Ident 189 3 6 5 "app"
+Eq 193 1 6 9 "="
+Ident 195 3 6 11 "App"
+LBrace 199 1 6 15 "{"
+Ident 201 5 6 17 "nodes"
+Colon 206 1 6 22 ":"
+Ident 208 4 6 24 "pool"
+LBrace 213 1 6 29 "{"
+RBrace 214 1 6 30 "}"
+Comma 215 1 6 31 ","
+Ident 217 5 6 33 "score"
+Colon 222 1 6 38 ":"
+Number 224 1 6 40 "0"
+RBrace 226 1 6 42 "}"
+Newline 227 1 6 43 "\n"
+RBrace 228 1 7 1 "}"
+Newline 229 1 7 2 "\n"
+Eof 230 0 8 1 ""
+== tree ==
+file "main.nl"
+Program 0..230
+  Struct 0..52 name="Node" generics=["P"]
+    StructField 17..38 name="parent"
+      FieldType 25..38 name="Option" range=none policy=checked
+        TypeArgument 32..37 name="Id" range=none policy=checked
+          TypeArgument 35..36 name="P" range=none policy=checked
+    StructField 40..50 name="value"
+      FieldType 47..50 name="int" range=none policy=checked
+  Struct 53..109 name="App" generics=["P"]
+    StructField 69..95 name="nodes"
+      FieldType 76..95 name="pool" range=none policy=checked
+        TypeArgument 81..88 name="Node" range=none policy=checked
+          TypeArgument 86..87 name="P" range=none policy=checked
+        Integer 90..91 magnitude=2 negative=false long_suffix=false
+        TypeArgument 93..94 name="P" range=none policy=checked
+    StructField 97..107 name="score"
+      FieldType 104..107 name="int" range=none policy=checked
+  Global 110..171 name="app" prefault=false
+    DeclaredType 122..136 name="App" range=none policy=checked
+      TypeArgument 126..135 name="app.nodes" range=none policy=checked
+    StructInit 139..171 name="App"
+      InitializerField 145..159 name="nodes"
+        PoolLiteral 152..159
+      InitializerField 161..169 name="score"
+        Integer 168..169 magnitude=5 negative=false long_suffix=false
+  Function 173..229 name="main" recursive=false generics=[]
+    Block 183..229
+      Assign 189..227 op==
+        Name 189..192 name="app"
+        StructInit 195..227 name="App"
+          InitializerField 201..215 name="nodes"
+            PoolLiteral 208..215
+          InitializerField 217..225 name="score"
+            Integer 224..225 magnitude=0 negative=false long_suffix=false

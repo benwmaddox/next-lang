@@ -1,0 +1,34 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "global"
+Ident 7 5 1 8 "value"
+Colon 12 1 1 13 ":"
+Ident 14 3 1 15 "int"
+Ident 18 8 1 19 "prefault"
+Eq 27 1 1 28 "="
+Number 29 1 1 30 "7"
+Newline 30 1 1 31 "\n"
+Ident 32 2 3 1 "fn"
+Ident 35 4 3 4 "main"
+LParen 39 1 3 8 "("
+RParen 40 1 3 9 ")"
+LBrace 42 1 3 11 "{"
+Newline 43 1 3 12 "\n"
+Ident 48 5 4 5 "print"
+LParen 53 1 4 10 "("
+Ident 54 5 4 11 "value"
+RParen 59 1 4 16 ")"
+Newline 60 1 4 17 "\n"
+RBrace 61 1 5 1 "}"
+Newline 62 1 5 2 "\n"
+Eof 63 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..63
+  Global 0..30 name="value" prefault=true
+    DeclaredType 14..17 name="int" range=none policy=checked
+    Integer 29..30 magnitude=7 negative=false long_suffix=false
+  Function 32..62 name="main" recursive=false generics=[]
+    Block 42..62
+      Call 48..60 name="print"
+        Name 54..59 name="value"

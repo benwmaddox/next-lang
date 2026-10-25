@@ -1,0 +1,140 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 3 1 8 "Big"
+LBrace 11 1 1 12 "{"
+Ident 13 4 1 14 "data"
+Colon 17 1 1 18 ":"
+Ident 19 3 1 20 "int"
+LBracket 22 1 1 23 "["
+Number 23 4 1 24 "2048"
+RBracket 27 1 1 28 "]"
+RBrace 29 1 1 30 "}"
+Newline 30 1 1 31 "\n"
+Ident 32 2 3 1 "fn"
+Ident 35 8 3 4 "make_big"
+LParen 43 1 3 12 "("
+RParen 44 1 3 13 ")"
+Arrow 46 2 3 15 "->"
+Ident 49 3 3 18 "Big"
+LBrace 53 1 3 22 "{"
+Newline 54 1 3 23 "\n"
+Ident 59 3 4 5 "Big"
+LBrace 63 1 4 9 "{"
+Ident 65 4 4 11 "data"
+Colon 69 1 4 15 ":"
+Ident 71 4 4 17 "fill"
+LParen 75 1 4 21 "("
+Number 76 1 4 22 "1"
+RParen 77 1 4 23 ")"
+RBrace 79 1 4 25 "}"
+Newline 80 1 4 26 "\n"
+RBrace 81 1 5 1 "}"
+Newline 82 1 5 2 "\n"
+Ident 84 9 7 1 "recursive"
+Ident 94 2 7 11 "fn"
+Ident 97 4 7 14 "walk"
+LParen 101 1 7 18 "("
+Ident 102 1 7 19 "n"
+Colon 103 1 7 20 ":"
+Ident 105 3 7 22 "int"
+Comma 108 1 7 25 ","
+Ident 110 5 7 27 "value"
+Colon 115 1 7 32 ":"
+Ident 117 3 7 34 "Big"
+RParen 120 1 7 37 ")"
+Arrow 122 2 7 39 "->"
+Ident 125 3 7 42 "int"
+LBrace 129 1 7 46 "{"
+Newline 130 1 7 47 "\n"
+Ident 135 2 8 5 "if"
+Ident 138 1 8 8 "n"
+EqEq 140 2 8 10 "=="
+Number 143 1 8 13 "0"
+LBrace 145 1 8 15 "{"
+Ident 147 5 8 17 "value"
+Dot 152 1 8 22 "."
+Ident 153 4 8 23 "data"
+LBracket 157 1 8 27 "["
+Number 158 1 8 28 "0"
+RBracket 159 1 8 29 "]"
+RBrace 161 1 8 31 "}"
+Ident 163 4 8 33 "else"
+LBrace 168 1 8 38 "{"
+Ident 170 4 8 40 "walk"
+LParen 174 1 8 44 "("
+Ident 175 1 8 45 "n"
+Minus 177 1 8 47 "-"
+Number 179 1 8 49 "1"
+Comma 180 1 8 50 ","
+Ident 182 8 8 52 "make_big"
+LParen 190 1 8 60 "("
+RParen 191 1 8 61 ")"
+RParen 192 1 8 62 ")"
+RBrace 194 1 8 64 "}"
+Newline 195 1 8 65 "\n"
+RBrace 196 1 9 1 "}"
+Newline 197 1 9 2 "\n"
+Ident 199 2 11 1 "fn"
+Ident 202 4 11 4 "main"
+LParen 206 1 11 8 "("
+RParen 207 1 11 9 ")"
+LBrace 209 1 11 11 "{"
+Newline 210 1 11 12 "\n"
+Ident 215 5 12 5 "print"
+LParen 220 1 12 10 "("
+Ident 221 4 12 11 "walk"
+LParen 225 1 12 15 "("
+Number 226 1 12 16 "1"
+Comma 227 1 12 17 ","
+Ident 229 8 12 19 "make_big"
+LParen 237 1 12 27 "("
+RParen 238 1 12 28 ")"
+RParen 239 1 12 29 ")"
+RParen 240 1 12 30 ")"
+Newline 241 1 12 31 "\n"
+RBrace 242 1 13 1 "}"
+Newline 243 1 13 2 "\n"
+Eof 244 0 14 1 ""
+== tree ==
+file "main.nl"
+Program 0..244
+  Struct 0..30 name="Big" generics=[]
+    StructField 13..28 name="data"
+      FieldType 19..28 name="int" range=none policy=checked
+        Integer 23..27 magnitude=2048 negative=false long_suffix=false
+  Function 32..82 name="make_big" recursive=false generics=[]
+    ResultType 49..52 name="Big" range=none policy=checked
+    Block 53..82
+      StructInit 59..80 name="Big"
+        InitializerField 65..78 name="data"
+          Call 71..78 name="fill"
+            Integer 76..77 magnitude=1 negative=false long_suffix=false
+  Function 84..197 name="walk" recursive=true generics=[]
+    Parameter 102..108 name="n" mode=read
+      ParameterType 105..108 name="int" range=none policy=checked
+    Parameter 110..120 name="value" mode=read
+      ParameterType 117..120 name="Big" range=none policy=checked
+    ResultType 125..128 name="int" range=none policy=checked
+    Block 129..197
+      If 135..195
+        Binary 138..144 op=eq
+          Name 138..139 name="n"
+          Integer 143..144 magnitude=0 negative=false long_suffix=false
+        Block 145..162
+          Index 147..160
+            Field 147..157 name="data"
+              Name 147..152 name="value"
+            Integer 158..159 magnitude=0 negative=false long_suffix=false
+        Block 168..195
+          Call 170..193 name="walk"
+            Binary 175..180 op=sub
+              Name 175..176 name="n"
+              Integer 179..180 magnitude=1 negative=false long_suffix=false
+            Call 182..192 name="make_big"
+  Function 199..243 name="main" recursive=false generics=[]
+    Block 209..243
+      Call 215..241 name="print"
+        Call 221..240 name="walk"
+          Integer 226..227 magnitude=1 negative=false long_suffix=false
+          Call 229..239 name="make_big"

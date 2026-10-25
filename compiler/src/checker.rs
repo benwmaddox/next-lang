@@ -1284,17 +1284,17 @@ impl Checker {
         let mut effect_path_spans = Vec::new();
         for effect in &function.effects {
             match effect {
-                FunctionEffectAst::Out => effects.out = true,
-                FunctionEffectAst::Env => effects.env = true,
-                FunctionEffectAst::FsRead => effects.fs_read = true,
-                FunctionEffectAst::FsWrite => effects.fs_write = true,
-                FunctionEffectAst::Reads { path, span } => {
+                FunctionEffectAst::Out { .. } => effects.out = true,
+                FunctionEffectAst::Env { .. } => effects.env = true,
+                FunctionEffectAst::FsRead { .. } => effects.fs_read = true,
+                FunctionEffectAst::FsWrite { .. } => effects.fs_write = true,
+                FunctionEffectAst::Reads { path, span, .. } => {
                     if !effects.reads.contains(path) {
                         effects.reads.push(path.clone());
                     }
                     effect_path_spans.push((path.clone(), *span));
                 }
-                FunctionEffectAst::Writes { path, span } => {
+                FunctionEffectAst::Writes { path, span, .. } => {
                     if !effects.writes.contains(path) {
                         effects.writes.push(path.clone());
                     }
@@ -2571,7 +2571,13 @@ impl Checker {
                 return Ok(());
             }
             return Err(CheckError {
-                span: Span { file: 0, line: 1, col: 1 },
+                span: Span {
+                    file: 0,
+                    line: 1,
+                    col: 1,
+                    start_offset: 0,
+                    end_offset: 0,
+                },
                 message: "package must define 'fn main()'; add an entry point that takes no arguments and returns ()".to_owned(),
             });
         };
@@ -7104,7 +7110,12 @@ impl Checker {
                 }
                 let checked = self.check_binary_expr(*op, left, right, expected, *operator_span);
                 self.suppress_function_value_effect_check = saved_suppression;
-                self.finish_expr_allow_never(expr, checked?, expected)
+                // The AST span covers the full binary construct. Keep the
+                // operator as the diagnostic/runtime anchor, as it was before
+                // spans were widened for the syntax tree.
+                let mut checked = self.finish_expr_allow_never(expr, checked?, expected)?;
+                checked.span = *operator_span;
+                Ok(checked)
             }
             ExprKind::If {
                 condition,
@@ -8662,6 +8673,7 @@ impl Checker {
                     name,
                     name_span,
                     bindings,
+                    ..
                 } => {
                     if !sum {
                         return Err(CheckError {

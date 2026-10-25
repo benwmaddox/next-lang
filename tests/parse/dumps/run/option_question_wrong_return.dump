@@ -1,0 +1,63 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 3 1 4 "get"
+LParen 6 1 1 7 "("
+RParen 7 1 1 8 ")"
+Arrow 9 2 1 10 "->"
+Ident 12 6 1 13 "Option"
+Lt 18 1 1 19 "<"
+Ident 19 3 1 20 "int"
+Gt 22 1 1 23 ">"
+LBrace 24 1 1 25 "{"
+Ident 26 4 1 27 "some"
+LParen 30 1 1 31 "("
+Number 31 1 1 32 "1"
+RParen 32 1 1 33 ")"
+RBrace 34 1 1 35 "}"
+Newline 35 1 1 36 "\n"
+Ident 36 2 2 1 "fn"
+Ident 39 3 2 4 "bad"
+LParen 42 1 2 7 "("
+RParen 43 1 2 8 ")"
+Arrow 45 2 2 10 "->"
+Ident 48 3 2 13 "int"
+LBrace 52 1 2 17 "{"
+Ident 54 3 2 19 "get"
+LParen 57 1 2 22 "("
+RParen 58 1 2 23 ")"
+Question 59 1 2 24 "?"
+RBrace 61 1 2 26 "}"
+Newline 62 1 2 27 "\n"
+Ident 63 2 3 1 "fn"
+Ident 66 4 3 4 "main"
+LParen 70 1 3 8 "("
+RParen 71 1 3 9 ")"
+LBrace 73 1 3 11 "{"
+Ident 75 5 3 13 "print"
+LParen 80 1 3 18 "("
+Ident 81 3 3 19 "bad"
+LParen 84 1 3 22 "("
+RParen 85 1 3 23 ")"
+RParen 86 1 3 24 ")"
+RBrace 88 1 3 26 "}"
+Newline 89 1 3 27 "\n"
+Eof 90 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..90
+  Function 0..35 name="get" recursive=false generics=[]
+    ResultType 12..23 name="Option" range=none policy=checked
+      TypeArgument 19..22 name="int" range=none policy=checked
+    Block 24..35
+      Call 26..33 name="some"
+        Integer 31..32 magnitude=1 negative=false long_suffix=false
+  Function 36..62 name="bad" recursive=false generics=[]
+    ResultType 48..51 name="int" range=none policy=checked
+    Block 52..62
+      Try 54..60
+        Call 54..59 name="get"
+  Function 63..89 name="main" recursive=false generics=[]
+    Block 73..89
+      Call 75..87 name="print"
+        Call 81..86 name="bad"

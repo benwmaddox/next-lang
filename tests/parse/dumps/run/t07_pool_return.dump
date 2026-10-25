@@ -1,0 +1,103 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 4 1 8 "Rock"
+LBrace 12 1 1 13 "{"
+Ident 14 5 1 15 "value"
+Colon 19 1 1 20 ":"
+Ident 21 3 1 22 "int"
+RBrace 25 1 1 26 "}"
+Newline 26 1 1 27 "\n"
+Ident 28 2 3 1 "fn"
+Ident 31 9 3 4 "copy_pool"
+Lt 40 1 3 13 "<"
+Ident 41 1 3 14 "P"
+Comma 42 1 3 15 ","
+Ident 44 1 3 17 "N"
+Gt 45 1 3 18 ">"
+LParen 46 1 3 19 "("
+Ident 47 6 3 20 "source"
+Colon 53 1 3 26 ":"
+Ident 55 4 3 28 "pool"
+Lt 59 1 3 32 "<"
+Ident 60 4 3 33 "Rock"
+Comma 64 1 3 37 ","
+Ident 66 1 3 39 "N"
+Comma 67 1 3 40 ","
+Ident 69 1 3 42 "P"
+Gt 70 1 3 43 ">"
+RParen 71 1 3 44 ")"
+Arrow 73 2 3 46 "->"
+Ident 76 4 3 49 "pool"
+Lt 80 1 3 53 "<"
+Ident 81 4 3 54 "Rock"
+Comma 85 1 3 58 ","
+Ident 87 1 3 60 "N"
+Comma 88 1 3 61 ","
+Ident 90 1 3 63 "P"
+Gt 91 1 3 64 ">"
+LBrace 93 1 3 66 "{"
+Newline 94 1 3 67 "\n"
+Ident 99 6 4 5 "source"
+Newline 105 1 4 11 "\n"
+RBrace 106 1 5 1 "}"
+Newline 107 1 5 2 "\n"
+Ident 109 2 7 1 "fn"
+Ident 112 4 7 4 "main"
+LParen 116 1 7 8 "("
+RParen 117 1 7 9 ")"
+LBrace 119 1 7 11 "{"
+Newline 120 1 7 12 "\n"
+Ident 125 3 8 5 "var"
+Ident 129 5 8 9 "rocks"
+Colon 134 1 8 14 ":"
+Ident 136 4 8 16 "pool"
+Lt 140 1 8 20 "<"
+Ident 141 4 8 21 "Rock"
+Comma 145 1 8 25 ","
+Number 147 1 8 27 "1"
+Gt 148 1 8 28 ">"
+Eq 150 1 8 30 "="
+Ident 152 4 8 32 "pool"
+LBrace 157 1 8 37 "{"
+RBrace 158 1 8 38 "}"
+Newline 159 1 8 39 "\n"
+Ident 164 3 9 5 "let"
+Ident 168 4 9 9 "copy"
+Eq 173 1 9 14 "="
+Ident 175 9 9 16 "copy_pool"
+LParen 184 1 9 25 "("
+Ident 185 5 9 26 "rocks"
+RParen 190 1 9 31 ")"
+Newline 191 1 9 32 "\n"
+RBrace 192 1 10 1 "}"
+Newline 193 1 10 2 "\n"
+Eof 194 0 11 1 ""
+== tree ==
+file "main.nl"
+Program 0..194
+  Struct 0..26 name="Rock" generics=[]
+    StructField 14..24 name="value"
+      FieldType 21..24 name="int" range=none policy=checked
+  Function 28..107 name="copy_pool" recursive=false generics=["P","N"]
+    Parameter 47..71 name="source" mode=read
+      ParameterType 55..71 name="pool" range=none policy=checked
+        TypeArgument 60..64 name="Rock" range=none policy=checked
+        Name 66..67 name="N"
+        TypeArgument 69..70 name="P" range=none policy=checked
+    ResultType 76..92 name="pool" range=none policy=checked
+      TypeArgument 81..85 name="Rock" range=none policy=checked
+      Name 87..88 name="N"
+      TypeArgument 90..91 name="P" range=none policy=checked
+    Block 93..107
+      Name 99..105 name="source"
+  Function 109..193 name="main" recursive=false generics=[]
+    Block 119..193
+      Let 125..159 mutable=true name="rocks"
+        Annotation 136..149 name="pool" range=none policy=checked
+          TypeArgument 141..145 name="Rock" range=none policy=checked
+          Integer 147..148 magnitude=1 negative=false long_suffix=false
+        PoolLiteral 152..159
+      Let 164..191 mutable=false name="copy"
+        Call 175..191 name="copy_pool"
+          Name 185..190 name="rocks"

@@ -1,0 +1,70 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "var"
+Ident 20 6 2 9 "values"
+Colon 26 1 2 15 ":"
+Ident 28 3 2 17 "set"
+Lt 31 1 2 20 "<"
+Ident 32 3 2 21 "int"
+Comma 35 1 2 24 ","
+Number 37 1 2 26 "2"
+Gt 38 1 2 27 ">"
+Eq 40 1 2 29 "="
+Ident 42 3 2 31 "set"
+LBrace 46 1 2 35 "{"
+RBrace 47 1 2 36 "}"
+Newline 48 1 2 37 "\n"
+Ident 53 6 3 5 "values"
+Dot 59 1 3 11 "."
+Ident 60 3 3 12 "add"
+LParen 63 1 3 15 "("
+Number 64 1 3 16 "1"
+RParen 65 1 3 17 ")"
+Dot 66 1 3 18 "."
+Ident 67 6 3 19 "unwrap"
+LParen 73 1 3 25 "("
+RParen 74 1 3 26 ")"
+Newline 75 1 3 27 "\n"
+Ident 80 3 4 5 "for"
+Ident 84 3 4 9 "key"
+Ident 88 2 4 13 "in"
+Ident 91 6 4 16 "values"
+LBrace 98 1 4 23 "{"
+Ident 100 6 4 25 "values"
+Dot 106 1 4 31 "."
+Ident 107 6 4 32 "remove"
+LParen 113 1 4 38 "("
+Ident 114 3 4 39 "key"
+RParen 117 1 4 42 ")"
+RBrace 119 1 4 44 "}"
+Newline 120 1 4 45 "\n"
+RBrace 121 1 5 1 "}"
+Newline 122 1 5 2 "\n"
+Eof 123 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..123
+  Function 0..122 name="main" recursive=false generics=[]
+    Block 10..122
+      Let 16..48 mutable=true name="values"
+        Annotation 28..39 name="set" range=none policy=checked
+          TypeArgument 32..35 name="int" range=none policy=checked
+          Integer 37..38 magnitude=2 negative=false long_suffix=false
+        SetLiteral 42..48
+      ExpressionStatement 53..75
+        MethodCall 53..75 name="unwrap"
+          MethodCall 53..66 name="add"
+            Name 53..59 name="values"
+            Integer 64..65 magnitude=1 negative=false long_suffix=false
+      ForEach 80..120 name="key" indexes=[]
+        Name 91..97 name="values"
+        Block 98..120
+          MethodCall 100..118 name="remove"
+            Name 100..106 name="values"
+            Name 114..117 name="key"

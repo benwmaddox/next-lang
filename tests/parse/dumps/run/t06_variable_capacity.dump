@@ -1,0 +1,39 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Ident 12 3 1 13 "let"
+Ident 16 4 1 17 "size"
+Eq 21 1 1 22 "="
+Number 23 1 1 24 "2"
+Semicolon 24 1 1 25 ";"
+Ident 26 3 1 27 "let"
+Ident 30 6 1 31 "values"
+Colon 36 1 1 37 ":"
+Ident 38 4 1 39 "long"
+LBracket 42 1 1 43 "["
+Ident 43 4 1 44 "size"
+RBracket 47 1 1 48 "]"
+Eq 49 1 1 50 "="
+Ident 51 4 1 52 "fill"
+LParen 55 1 1 56 "("
+Number 56 2 1 57 "0L"
+RParen 58 1 1 59 ")"
+RBrace 60 1 1 61 "}"
+Newline 61 1 1 62 "\n"
+Eof 62 0 2 1 ""
+== tree ==
+file "main.nl"
+Program 0..62
+  Function 0..61 name="main" recursive=false generics=[]
+    Block 10..61
+      Let 12..24 mutable=false name="size"
+        Integer 23..24 magnitude=2 negative=false long_suffix=false
+      Let 26..59 mutable=false name="values"
+        Annotation 38..48 name="long" range=none policy=checked
+          Name 43..47 name="size"
+        Call 51..59 name="fill"
+          Integer 56..58 magnitude=0 negative=false long_suffix=true

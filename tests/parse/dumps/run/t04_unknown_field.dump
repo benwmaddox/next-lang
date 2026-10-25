@@ -1,0 +1,46 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 4 1 8 "Pair"
+LBrace 12 1 1 13 "{"
+Ident 14 1 1 15 "x"
+Colon 15 1 1 16 ":"
+Ident 17 3 1 18 "int"
+RBrace 21 1 1 22 "}"
+Newline 22 1 1 23 "\n"
+Ident 23 2 2 1 "fn"
+Ident 26 4 2 4 "main"
+LParen 30 1 2 8 "("
+RParen 31 1 2 9 ")"
+LBrace 33 1 2 11 "{"
+Ident 35 3 2 13 "let"
+Ident 39 1 2 17 "p"
+Eq 41 1 2 19 "="
+Ident 43 4 2 21 "Pair"
+LBrace 48 1 2 26 "{"
+Ident 50 1 2 28 "z"
+Colon 51 1 2 29 ":"
+Number 53 1 2 31 "1"
+RBrace 55 1 2 33 "}"
+Semicolon 56 1 2 34 ";"
+Ident 58 5 2 36 "print"
+LParen 63 1 2 41 "("
+Ident 64 1 2 42 "p"
+RParen 65 1 2 43 ")"
+RBrace 67 1 2 45 "}"
+Newline 68 1 2 46 "\n"
+Eof 69 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..69
+  Struct 0..22 name="Pair" generics=[]
+    StructField 14..20 name="x"
+      FieldType 17..20 name="int" range=none policy=checked
+  Function 23..68 name="main" recursive=false generics=[]
+    Block 33..68
+      Let 35..56 mutable=false name="p"
+        StructInit 43..56 name="Pair"
+          InitializerField 50..54 name="z"
+            Integer 53..54 magnitude=1 negative=false long_suffix=false
+      Call 58..66 name="print"
+        Name 64..65 name="p"

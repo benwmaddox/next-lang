@@ -1,0 +1,519 @@
+== tokens ==
+file "a-tests.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 5 1 4 "three"
+LParen 8 1 1 9 "("
+RParen 9 1 1 10 ")"
+Arrow 11 2 1 12 "->"
+Ident 14 3 1 15 "int"
+LBrace 18 1 1 19 "{"
+Newline 19 1 1 20 "\n"
+Ident 24 6 2 5 "return"
+Number 31 1 2 12 "3"
+Newline 32 1 2 13 "\n"
+RBrace 33 1 3 1 "}"
+Newline 34 1 3 2 "\n"
+Ident 36 2 5 1 "fn"
+Ident 39 10 5 4 "left_value"
+LParen 49 1 5 14 "("
+RParen 50 1 5 15 ")"
+Arrow 52 2 5 17 "->"
+Ident 55 3 5 20 "int"
+LBrace 59 1 5 24 "{"
+Newline 60 1 5 25 "\n"
+Ident 65 5 6 5 "print"
+LParen 70 1 6 10 "("
+Number 71 1 6 11 "1"
+RParen 72 1 6 12 ")"
+Newline 73 1 6 13 "\n"
+Ident 78 6 7 5 "return"
+Number 85 1 7 12 "7"
+Newline 86 1 7 13 "\n"
+RBrace 87 1 8 1 "}"
+Newline 88 1 8 2 "\n"
+Ident 90 2 10 1 "fn"
+Ident 93 11 10 4 "right_value"
+LParen 104 1 10 15 "("
+RParen 105 1 10 16 ")"
+Arrow 107 2 10 18 "->"
+Ident 110 3 10 21 "int"
+LBrace 114 1 10 25 "{"
+Newline 115 1 10 26 "\n"
+Ident 120 5 11 5 "print"
+LParen 125 1 11 10 "("
+Number 126 1 11 11 "2"
+RParen 127 1 11 12 ")"
+Newline 128 1 11 13 "\n"
+Ident 133 6 12 5 "return"
+Number 140 1 12 12 "7"
+Newline 141 1 12 13 "\n"
+RBrace 142 1 13 1 "}"
+Newline 143 1 13 2 "\n"
+Ident 145 2 15 1 "fn"
+Ident 148 7 15 4 "skipped"
+LParen 155 1 15 11 "("
+RParen 156 1 15 12 ")"
+Arrow 158 2 15 14 "->"
+Ident 161 4 15 17 "bool"
+LBrace 166 1 15 22 "{"
+Newline 167 1 15 23 "\n"
+Ident 172 5 16 5 "print"
+LParen 177 1 16 10 "("
+Number 178 2 16 11 "99"
+RParen 180 1 16 13 ")"
+Newline 181 1 16 14 "\n"
+Ident 186 6 17 5 "return"
+Ident 193 5 17 12 "false"
+Newline 198 1 17 17 "\n"
+RBrace 199 1 18 1 "}"
+Newline 200 1 18 2 "\n"
+Ident 202 2 20 1 "fn"
+Ident 205 4 20 4 "main"
+LParen 209 1 20 8 "("
+RParen 210 1 20 9 ")"
+LBrace 212 1 20 11 "{"
+Newline 213 1 20 12 "\n"
+Ident 218 5 21 5 "print"
+LParen 223 1 21 10 "("
+Number 224 3 21 11 "777"
+RParen 227 1 21 14 ")"
+Newline 228 1 21 15 "\n"
+RBrace 229 1 22 1 "}"
+Newline 230 1 22 2 "\n"
+Ident 232 4 24 1 "test"
+String 237 34 24 6 "\"z from alphabetically first file\""
+LBrace 272 1 24 41 "{"
+Newline 273 1 24 42 "\n"
+Ident 278 6 25 5 "expect"
+Ident 285 5 25 12 "three"
+LParen 290 1 25 17 "("
+RParen 291 1 25 18 ")"
+EqEq 293 2 25 20 "=="
+Number 296 1 25 23 "3"
+Newline 297 1 25 24 "\n"
+RBrace 298 1 26 1 "}"
+Newline 299 1 26 2 "\n"
+Ident 301 4 28 1 "test"
+String 306 34 28 6 "\"expect values and stop this test\""
+LBrace 341 1 28 41 "{"
+Newline 342 1 28 42 "\n"
+Ident 347 6 29 5 "expect"
+LParen 354 1 29 12 "("
+Ident 355 5 29 13 "three"
+LParen 360 1 29 18 "("
+RParen 361 1 29 19 ")"
+EqEq 363 2 29 21 "=="
+Number 366 1 29 24 "4"
+RParen 367 1 29 25 ")"
+Newline 368 1 29 26 "\n"
+Ident 373 5 30 5 "print"
+LParen 378 1 30 10 "("
+Number 379 3 30 11 "999"
+RParen 382 1 30 14 ")"
+Newline 383 1 30 15 "\n"
+RBrace 384 1 31 1 "}"
+Newline 385 1 31 2 "\n"
+Ident 387 4 33 1 "test"
+String 392 26 33 6 "\"all comparisons and bool\""
+LBrace 419 1 33 33 "{"
+Newline 420 1 33 34 "\n"
+Ident 425 6 34 5 "expect"
+Number 432 1 34 12 "2"
+EqEq 434 2 34 14 "=="
+Number 437 1 34 17 "2"
+Newline 438 1 34 18 "\n"
+Ident 443 6 35 5 "expect"
+Number 450 1 35 12 "2"
+BangEq 452 2 35 14 "!="
+Number 455 1 35 17 "3"
+Newline 456 1 35 18 "\n"
+Ident 461 6 36 5 "expect"
+Number 468 1 36 12 "2"
+Lt 470 1 36 14 "<"
+Number 472 1 36 16 "3"
+Newline 473 1 36 17 "\n"
+Ident 478 6 37 5 "expect"
+Number 485 1 37 12 "2"
+Le 487 2 37 14 "<="
+Number 490 1 37 17 "2"
+Newline 491 1 37 18 "\n"
+Ident 496 6 38 5 "expect"
+Number 503 1 38 12 "3"
+Gt 505 1 38 14 ">"
+Number 507 1 38 16 "2"
+Newline 508 1 38 17 "\n"
+Ident 513 6 39 5 "expect"
+Number 520 1 39 12 "3"
+Ge 522 2 39 14 ">="
+Number 525 1 39 17 "3"
+Newline 526 1 39 18 "\n"
+Ident 531 6 40 5 "expect"
+Ident 538 4 40 12 "true"
+Newline 542 1 40 16 "\n"
+Ident 547 3 41 5 "var"
+Ident 551 3 41 9 "sum"
+Eq 555 1 41 13 "="
+Number 557 1 41 15 "0"
+Newline 558 1 41 16 "\n"
+Ident 563 3 42 5 "for"
+Ident 567 1 42 9 "i"
+Ident 569 2 42 11 "in"
+Number 572 1 42 14 "0"
+Range 573 2 42 15 ".."
+Number 575 1 42 17 "2"
+LBrace 577 1 42 19 "{"
+Ident 579 3 42 21 "sum"
+PlusEq 583 2 42 25 "+="
+Ident 586 1 42 28 "i"
+RBrace 588 1 42 30 "}"
+Newline 589 1 42 31 "\n"
+LBrace 594 1 43 5 "{"
+Newline 595 1 43 6 "\n"
+Ident 604 6 44 9 "expect"
+Ident 611 3 44 16 "sum"
+EqEq 615 2 44 20 "=="
+Number 618 1 44 23 "1"
+Newline 619 1 44 24 "\n"
+RBrace 624 1 45 5 "}"
+Newline 625 1 45 6 "\n"
+Ident 630 2 46 5 "if"
+Ident 633 4 46 8 "true"
+LBrace 638 1 46 13 "{"
+Newline 639 1 46 14 "\n"
+Ident 648 6 47 9 "expect"
+Ident 655 3 47 16 "sum"
+EqEq 659 2 47 20 "=="
+Number 662 1 47 23 "1"
+Newline 663 1 47 24 "\n"
+RBrace 668 1 48 5 "}"
+Ident 670 4 48 7 "else"
+LBrace 675 1 48 12 "{"
+Newline 676 1 48 13 "\n"
+Ident 685 6 49 9 "expect"
+Ident 692 5 49 16 "false"
+Newline 697 1 49 21 "\n"
+RBrace 702 1 50 5 "}"
+Newline 703 1 50 6 "\n"
+Ident 708 3 51 5 "var"
+Ident 712 7 51 9 "between"
+Eq 720 1 51 17 "="
+Number 722 1 51 19 "0"
+Newline 723 1 51 20 "\n"
+Ident 728 6 52 5 "expect"
+Ident 735 4 52 12 "true"
+Newline 739 1 52 16 "\n"
+Ident 744 7 53 5 "between"
+PlusEq 752 2 53 13 "+="
+Number 755 1 53 16 "1"
+Newline 756 1 53 17 "\n"
+Ident 761 6 54 5 "expect"
+Ident 768 7 54 12 "between"
+EqEq 776 2 54 20 "=="
+Number 779 1 54 23 "1"
+Newline 780 1 54 24 "\n"
+RBrace 781 1 55 1 "}"
+Newline 782 1 55 2 "\n"
+Ident 784 4 57 1 "test"
+String 789 33 57 6 "\"short circuit and operand order\""
+LBrace 823 1 57 40 "{"
+Newline 824 1 57 41 "\n"
+Ident 829 6 58 5 "expect"
+Bang 836 1 58 12 "!"
+LParen 837 1 58 13 "("
+Ident 838 5 58 14 "false"
+AndAnd 844 2 58 20 "&&"
+Ident 847 7 58 23 "skipped"
+LParen 854 1 58 30 "("
+RParen 855 1 58 31 ")"
+RParen 856 1 58 32 ")"
+Newline 857 1 58 33 "\n"
+Ident 862 6 59 5 "expect"
+Ident 869 4 59 12 "true"
+OrOr 874 2 59 17 "||"
+Ident 877 7 59 20 "skipped"
+LParen 884 1 59 27 "("
+RParen 885 1 59 28 ")"
+Newline 886 1 59 29 "\n"
+Ident 891 6 60 5 "expect"
+Ident 898 10 60 12 "left_value"
+LParen 908 1 60 22 "("
+RParen 909 1 60 23 ")"
+EqEq 911 2 60 25 "=="
+Ident 914 11 60 28 "right_value"
+LParen 925 1 60 39 "("
+RParen 926 1 60 40 ")"
+Newline 927 1 60 41 "\n"
+RBrace 928 1 61 1 "}"
+Newline 929 1 61 2 "\n"
+Ident 931 4 63 1 "test"
+String 936 25 63 6 "\"captured print and call\""
+LBrace 962 1 63 32 "{"
+Newline 963 1 63 33 "\n"
+Ident 968 5 64 5 "print"
+LParen 973 1 64 10 "("
+Number 974 2 64 11 "55"
+RParen 976 1 64 13 ")"
+Newline 977 1 64 14 "\n"
+Ident 982 6 65 5 "expect"
+Ident 989 5 65 12 "three"
+LParen 994 1 65 17 "("
+RParen 995 1 65 18 ")"
+EqEq 997 2 65 20 "=="
+Number 1000 1 65 23 "3"
+Newline 1001 1 65 24 "\n"
+RBrace 1002 1 66 1 "}"
+Newline 1003 1 66 2 "\n"
+Ident 1005 4 68 1 "test"
+String 1010 24 68 6 "\"bool comparison values\""
+LBrace 1035 1 68 31 "{"
+Newline 1036 1 68 32 "\n"
+Ident 1041 6 69 5 "expect"
+Ident 1048 4 69 12 "true"
+EqEq 1053 2 69 17 "=="
+Ident 1056 5 69 20 "false"
+Newline 1061 1 69 25 "\n"
+RBrace 1062 1 70 1 "}"
+Newline 1063 1 70 2 "\n"
+Ident 1065 4 72 1 "test"
+String 1070 20 72 6 "\"plain bool failure\""
+LBrace 1091 1 72 27 "{"
+Newline 1092 1 72 28 "\n"
+Ident 1097 6 73 5 "expect"
+Ident 1104 5 73 12 "false"
+Newline 1109 1 73 17 "\n"
+RBrace 1110 1 74 1 "}"
+Newline 1111 1 74 2 "\n"
+Ident 1113 4 76 1 "test"
+String 1118 31 76 6 "\"multiline source is preserved\""
+LBrace 1150 1 76 38 "{"
+Newline 1151 1 76 39 "\n"
+Ident 1156 6 77 5 "expect"
+LParen 1163 1 77 12 "("
+Ident 1173 5 78 9 "three"
+LParen 1178 1 78 14 "("
+RParen 1179 1 78 15 ")"
+EqEq 1189 2 79 9 "=="
+Number 1192 1 79 12 "4"
+RParen 1198 1 80 5 ")"
+Newline 1199 1 80 6 "\n"
+RBrace 1200 1 81 1 "}"
+Newline 1201 1 81 2 "\n"
+Eof 1202 0 82 1 ""
+file "z-tests.nl"
+Ident 0 4 1 1 "test"
+String 5 19 1 6 "\"a from later file\""
+LBrace 25 1 1 26 "{"
+Newline 26 1 1 27 "\n"
+Ident 31 6 2 5 "expect"
+Ident 38 4 2 12 "true"
+Newline 42 1 2 16 "\n"
+RBrace 43 1 3 1 "}"
+Newline 44 1 3 2 "\n"
+Ident 46 4 5 1 "test"
+String 51 30 5 6 "\"runtime overflow is isolated\""
+LBrace 82 1 5 37 "{"
+Newline 83 1 5 38 "\n"
+Ident 88 3 6 5 "let"
+Ident 92 7 6 9 "too_big"
+Eq 100 1 6 17 "="
+Number 102 10 6 19 "2147483647"
+Plus 113 1 6 30 "+"
+Number 115 1 6 32 "1"
+Newline 116 1 6 33 "\n"
+Ident 121 5 7 5 "print"
+LParen 126 1 7 10 "("
+Ident 127 7 7 11 "too_big"
+RParen 134 1 7 18 ")"
+Newline 135 1 7 19 "\n"
+RBrace 136 1 8 1 "}"
+Newline 137 1 8 2 "\n"
+Ident 139 4 10 1 "test"
+String 144 23 10 6 "\"later test still runs\""
+LBrace 168 1 10 30 "{"
+Newline 169 1 10 31 "\n"
+Ident 174 5 11 5 "print"
+LParen 179 1 11 10 "("
+Number 180 2 11 11 "66"
+RParen 182 1 11 13 ")"
+Newline 183 1 11 14 "\n"
+Ident 188 6 12 5 "expect"
+Ident 195 4 12 12 "true"
+Newline 199 1 12 16 "\n"
+RBrace 200 1 13 1 "}"
+Newline 201 1 13 2 "\n"
+Eof 202 0 14 1 ""
+== tree ==
+file "a-tests.nl"
+Program 0..1202
+  Function 0..34 name="three" recursive=false generics=[]
+    ResultType 14..17 name="int" range=none policy=checked
+    Block 18..34
+      ReturnStatement 24..32
+        Integer 31..32 magnitude=3 negative=false long_suffix=false
+  Function 36..88 name="left_value" recursive=false generics=[]
+    ResultType 55..58 name="int" range=none policy=checked
+    Block 59..88
+      ExpressionStatement 65..73
+        Call 65..73 name="print"
+          Integer 71..72 magnitude=1 negative=false long_suffix=false
+      ReturnStatement 78..86
+        Integer 85..86 magnitude=7 negative=false long_suffix=false
+  Function 90..143 name="right_value" recursive=false generics=[]
+    ResultType 110..113 name="int" range=none policy=checked
+    Block 114..143
+      ExpressionStatement 120..128
+        Call 120..128 name="print"
+          Integer 126..127 magnitude=2 negative=false long_suffix=false
+      ReturnStatement 133..141
+        Integer 140..141 magnitude=7 negative=false long_suffix=false
+  Function 145..200 name="skipped" recursive=false generics=[]
+    ResultType 161..165 name="bool" range=none policy=checked
+    Block 166..200
+      ExpressionStatement 172..181
+        Call 172..181 name="print"
+          Integer 178..180 magnitude=99 negative=false long_suffix=false
+      ReturnStatement 186..198
+        Bool 193..198 value=false
+  Function 202..230 name="main" recursive=false generics=[]
+    Block 212..230
+      Call 218..228 name="print"
+        Integer 224..227 magnitude=777 negative=false long_suffix=false
+  Test 232..299 name="z from alphabetically first file"
+    Block 272..299
+      Expect 278..297 source="expect three() == 3"
+        Binary 285..297 op=eq
+          Call 285..292 name="three"
+          Integer 296..297 magnitude=3 negative=false long_suffix=false
+  Test 301..385 name="expect values and stop this test"
+    Block 341..385
+      Expect 347..368 source="expect (three() == 4)"
+        Binary 354..368 op=eq
+          Call 355..362 name="three"
+          Integer 366..367 magnitude=4 negative=false long_suffix=false
+      Call 373..383 name="print"
+        Integer 379..382 magnitude=999 negative=false long_suffix=false
+  Test 387..782 name="all comparisons and bool"
+    Block 419..782
+      Expect 425..438 source="expect 2 == 2"
+        Binary 432..438 op=eq
+          Integer 432..433 magnitude=2 negative=false long_suffix=false
+          Integer 437..438 magnitude=2 negative=false long_suffix=false
+      Expect 443..456 source="expect 2 != 3"
+        Binary 450..456 op=ne
+          Integer 450..451 magnitude=2 negative=false long_suffix=false
+          Integer 455..456 magnitude=3 negative=false long_suffix=false
+      Expect 461..473 source="expect 2 < 3"
+        Binary 468..473 op=lt
+          Integer 468..469 magnitude=2 negative=false long_suffix=false
+          Integer 472..473 magnitude=3 negative=false long_suffix=false
+      Expect 478..491 source="expect 2 <= 2"
+        Binary 485..491 op=le
+          Integer 485..486 magnitude=2 negative=false long_suffix=false
+          Integer 490..491 magnitude=2 negative=false long_suffix=false
+      Expect 496..508 source="expect 3 > 2"
+        Binary 503..508 op=gt
+          Integer 503..504 magnitude=3 negative=false long_suffix=false
+          Integer 507..508 magnitude=2 negative=false long_suffix=false
+      Expect 513..526 source="expect 3 >= 3"
+        Binary 520..526 op=ge
+          Integer 520..521 magnitude=3 negative=false long_suffix=false
+          Integer 525..526 magnitude=3 negative=false long_suffix=false
+      Expect 531..542 source="expect true"
+        Bool 538..542 value=true
+      Let 547..558 mutable=true name="sum"
+        Integer 557..558 magnitude=0 negative=false long_suffix=false
+      For 563..589 name="i" inclusive=false
+        Integer 572..573 magnitude=0 negative=false long_suffix=false
+        Integer 575..576 magnitude=2 negative=false long_suffix=false
+        Block 577..589
+          Assign 579..587 op=+=
+            Name 579..582 name="sum"
+            Name 586..587 name="i"
+      Block 594..625
+        Expect 604..619 source="expect sum == 1"
+          Binary 611..619 op=eq
+            Name 611..614 name="sum"
+            Integer 618..619 magnitude=1 negative=false long_suffix=false
+      ExpressionStatement 630..703
+        If 630..703
+          Bool 633..637 value=true
+          Block 638..669
+            Expect 648..663 source="expect sum == 1"
+              Binary 655..663 op=eq
+                Name 655..658 name="sum"
+                Integer 662..663 magnitude=1 negative=false long_suffix=false
+          Block 675..703
+            Expect 685..697 source="expect false"
+              Bool 692..697 value=false
+      Let 708..723 mutable=true name="between"
+        Integer 722..723 magnitude=0 negative=false long_suffix=false
+      Expect 728..739 source="expect true"
+        Bool 735..739 value=true
+      Assign 744..756 op=+=
+        Name 744..751 name="between"
+        Integer 755..756 magnitude=1 negative=false long_suffix=false
+      Expect 761..780 source="expect between == 1"
+        Binary 768..780 op=eq
+          Name 768..775 name="between"
+          Integer 779..780 magnitude=1 negative=false long_suffix=false
+  Test 784..929 name="short circuit and operand order"
+    Block 823..929
+      Expect 829..857 source="expect !(false && skipped())"
+        Unary 836..857 op=not
+          Binary 837..857 op=and
+            Bool 838..843 value=false
+            Call 847..856 name="skipped"
+      Expect 862..886 source="expect true || skipped()"
+        Binary 869..886 op=or
+          Bool 869..873 value=true
+          Call 877..886 name="skipped"
+      Expect 891..927 source="expect left_value() == right_value()"
+        Binary 898..927 op=eq
+          Call 898..910 name="left_value"
+          Call 914..927 name="right_value"
+  Test 931..1003 name="captured print and call"
+    Block 962..1003
+      ExpressionStatement 968..977
+        Call 968..977 name="print"
+          Integer 974..976 magnitude=55 negative=false long_suffix=false
+      Expect 982..1001 source="expect three() == 3"
+        Binary 989..1001 op=eq
+          Call 989..996 name="three"
+          Integer 1000..1001 magnitude=3 negative=false long_suffix=false
+  Test 1005..1063 name="bool comparison values"
+    Block 1035..1063
+      Expect 1041..1061 source="expect true == false"
+        Binary 1048..1061 op=eq
+          Bool 1048..1052 value=true
+          Bool 1056..1061 value=false
+  Test 1065..1111 name="plain bool failure"
+    Block 1091..1111
+      Expect 1097..1109 source="expect false"
+        Bool 1104..1109 value=false
+  Test 1113..1201 name="multiline source is preserved"
+    Block 1150..1201
+      Expect 1156..1199 source="expect (\n        three()\n        == 4\n    )"
+        Binary 1163..1199 op=eq
+          Call 1173..1180 name="three"
+          Integer 1192..1193 magnitude=4 negative=false long_suffix=false
+file "z-tests.nl"
+Program 0..202
+  Test 0..44 name="a from later file"
+    Block 25..44
+      Expect 31..42 source="expect true"
+        Bool 38..42 value=true
+  Test 46..137 name="runtime overflow is isolated"
+    Block 82..137
+      Let 88..116 mutable=false name="too_big"
+        Binary 102..116 op=add
+          Integer 102..112 magnitude=2147483647 negative=false long_suffix=false
+          Integer 115..116 magnitude=1 negative=false long_suffix=false
+      Call 121..135 name="print"
+        Name 127..134 name="too_big"
+  Test 139..201 name="later test still runs"
+    Block 168..201
+      ExpressionStatement 174..183
+        Call 174..183 name="print"
+          Integer 180..182 magnitude=66 negative=false long_suffix=false
+      Expect 188..199 source="expect true"
+        Bool 195..199 value=true

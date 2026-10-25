@@ -1,0 +1,111 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "type"
+Ident 5 5 1 6 "Small"
+Eq 11 1 1 12 "="
+Ident 13 3 1 14 "int"
+Number 17 1 1 18 "0"
+RangeInclusive 18 3 1 19 "..="
+Number 21 2 1 22 "10"
+Newline 23 1 1 24 "\n"
+Ident 24 2 2 1 "fn"
+Ident 27 7 2 4 "unknown"
+LParen 34 1 2 11 "("
+RParen 35 1 2 12 ")"
+Arrow 37 2 2 14 "->"
+Ident 40 3 2 17 "int"
+LBrace 44 1 2 21 "{"
+Number 46 2 2 23 "20"
+RBrace 49 1 2 26 "}"
+Newline 50 1 2 27 "\n"
+Ident 51 2 3 1 "fn"
+Ident 54 5 3 4 "stale"
+LParen 59 1 3 9 "("
+Ident 60 1 3 10 "x"
+Colon 61 1 3 11 ":"
+Ident 63 3 3 13 "int"
+RParen 66 1 3 16 ")"
+Arrow 68 2 3 18 "->"
+Ident 71 5 3 21 "Small"
+LBrace 77 1 3 27 "{"
+Newline 78 1 3 28 "\n"
+Ident 83 3 4 5 "var"
+Ident 87 1 4 9 "y"
+Eq 89 1 4 11 "="
+Ident 91 1 4 13 "x"
+Newline 92 1 4 14 "\n"
+Ident 97 2 5 5 "if"
+Ident 100 1 5 8 "y"
+Ge 102 2 5 10 ">="
+Number 105 1 5 13 "0"
+AndAnd 107 2 5 15 "&&"
+Ident 110 1 5 18 "y"
+Le 112 2 5 20 "<="
+Number 115 2 5 23 "10"
+LBrace 118 1 5 26 "{"
+Ident 120 1 5 28 "y"
+Eq 122 1 5 30 "="
+Ident 124 7 5 32 "unknown"
+LParen 131 1 5 39 "("
+RParen 132 1 5 40 ")"
+Semicolon 133 1 5 41 ";"
+Ident 135 1 5 43 "y"
+RBrace 137 1 5 45 "}"
+Ident 139 4 5 47 "else"
+LBrace 144 1 5 52 "{"
+Number 146 1 5 54 "0"
+RBrace 148 1 5 56 "}"
+Newline 149 1 5 57 "\n"
+RBrace 150 1 6 1 "}"
+Newline 151 1 6 2 "\n"
+Ident 152 2 7 1 "fn"
+Ident 155 4 7 4 "main"
+LParen 159 1 7 8 "("
+RParen 160 1 7 9 ")"
+LBrace 162 1 7 11 "{"
+Ident 164 5 7 13 "print"
+LParen 169 1 7 18 "("
+Ident 170 5 7 19 "stale"
+LParen 175 1 7 24 "("
+Number 176 1 7 25 "5"
+RParen 177 1 7 26 ")"
+RParen 178 1 7 27 ")"
+RBrace 180 1 7 29 "}"
+Newline 181 1 7 30 "\n"
+Eof 182 0 8 1 ""
+== tree ==
+file "main.nl"
+Program 0..182
+  TypeAlias 0..23 name="Small"
+    AliasedType 13..23 name="int" range=0..=10 policy=checked
+  Function 24..50 name="unknown" recursive=false generics=[]
+    ResultType 40..43 name="int" range=none policy=checked
+    Block 44..50
+      Integer 46..48 magnitude=20 negative=false long_suffix=false
+  Function 51..151 name="stale" recursive=false generics=[]
+    Parameter 60..66 name="x" mode=read
+      ParameterType 63..66 name="int" range=none policy=checked
+    ResultType 71..76 name="Small" range=none policy=checked
+    Block 77..151
+      Let 83..92 mutable=true name="y"
+        Name 91..92 name="x"
+      If 97..149
+        Binary 100..117 op=and
+          Binary 100..106 op=ge
+            Name 100..101 name="y"
+            Integer 105..106 magnitude=0 negative=false long_suffix=false
+          Binary 110..117 op=le
+            Name 110..111 name="y"
+            Integer 115..117 magnitude=10 negative=false long_suffix=false
+        Block 118..138
+          Assign 120..133 op==
+            Name 120..121 name="y"
+            Call 124..133 name="unknown"
+          Name 135..136 name="y"
+        Block 144..149
+          Integer 146..147 magnitude=0 negative=false long_suffix=false
+  Function 152..181 name="main" recursive=false generics=[]
+    Block 162..181
+      Call 164..179 name="print"
+        Call 170..178 name="stale"
+          Integer 176..177 magnitude=5 negative=false long_suffix=false

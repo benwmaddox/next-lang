@@ -1,5 +1,8 @@
 use crate::ast::Span;
 
+pub const MAX_TOKENS_PER_FILE: usize = 1_000_000;
+pub const MAX_DELIMITER_NESTING: usize = 2_048;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TokenKind {
     Ident(String),
@@ -85,12 +88,18 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             continue;
         }
         if b == b'\n' {
-            let span = Span { file, line, col };
+            let span = Span {
+                file,
+                line,
+                col,
+                start_offset: pos,
+                end_offset: pos + 1,
+            };
             pos += 1;
             line += 1;
             col = 1;
             if delimiters.is_empty() {
-                push_newline(&mut out, span, pos - 1);
+                push_newline(&mut out, span, pos - 1)?;
             }
             continue;
         }
@@ -101,19 +110,31 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             }
             continue;
         }
-        let span = Span { file, line, col };
+        let span = Span {
+            file,
+            line,
+            col,
+            start_offset: pos,
+            end_offset: pos,
+        };
         if is_ident_start(b) {
             let start = pos;
             while pos < bytes.len() && is_ident_continue(bytes[pos]) {
                 pos += 1;
                 col += 1;
             }
-            out.push(Token {
-                kind: TokenKind::Ident(source[start..pos].to_owned()),
-                span,
-                start_offset: start,
-                end_offset: pos,
-            });
+            push_token(
+                &mut out,
+                Token {
+                    kind: TokenKind::Ident(source[start..pos].to_owned()),
+                    span: Span {
+                        end_offset: pos,
+                        ..span
+                    },
+                    start_offset: start,
+                    end_offset: pos,
+                },
+            )?;
             continue;
         }
         if b.is_ascii_digit() {
@@ -124,12 +145,18 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
                 pos += 1;
                 col += 1;
             }
-            out.push(Token {
-                kind: TokenKind::Number(source[start..pos].to_owned()),
-                span,
-                start_offset: start,
-                end_offset: pos,
-            });
+            push_token(
+                &mut out,
+                Token {
+                    kind: TokenKind::Number(source[start..pos].to_owned()),
+                    span: Span {
+                        end_offset: pos,
+                        ..span
+                    },
+                    start_offset: start,
+                    end_offset: pos,
+                },
+            )?;
             continue;
         }
 
@@ -191,12 +218,18 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
                     message: "unclosed string literal; add a closing quote".to_owned(),
                 });
             }
-            out.push(Token {
-                kind: TokenKind::String(value),
-                span,
-                start_offset: start,
-                end_offset: pos,
-            });
+            push_token(
+                &mut out,
+                Token {
+                    kind: TokenKind::String(value),
+                    span: Span {
+                        end_offset: pos,
+                        ..span
+                    },
+                    start_offset: start,
+                    end_offset: pos,
+                },
+            )?;
             continue;
         }
 
@@ -217,6 +250,12 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             ),
         })?;
         if matches!(kind, TokenKind::LParen | TokenKind::LBracket) {
+            if delimiters.len() >= MAX_DELIMITER_NESTING {
+                return Err(LexError {
+                    span,
+                    message: format!("delimiter nesting limit of {MAX_DELIMITER_NESTING} exceeded"),
+                });
+            }
             delimiters.push((
                 if kind == TokenKind::LParen {
                     b'('
@@ -242,16 +281,28 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
         let start_offset = pos;
         pos += width;
         col += width;
-        out.push(Token {
-            kind,
-            span,
-            start_offset,
-            end_offset: pos,
-        });
+        push_token(
+            &mut out,
+            Token {
+                kind,
+                span: Span {
+                    end_offset: pos,
+                    ..span
+                },
+                start_offset,
+                end_offset: pos,
+            },
+        )?;
     }
     if let Some((open, _)) = delimiters.last() {
         return Err(LexError {
-            span: Span { file, line, col },
+            span: Span {
+                file,
+                line,
+                col,
+                start_offset: pos,
+                end_offset: pos,
+            },
             message: if *open == b'(' {
                 "unclosed '('; add a matching ')'".to_owned()
             } else {
@@ -259,27 +310,56 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             },
         });
     }
-    out.push(Token {
-        kind: TokenKind::Eof,
-        span: Span { file, line, col },
+    let span = Span {
+        file,
+        line,
+        col,
         start_offset: pos,
         end_offset: pos,
-    });
+    };
+    push_token(
+        &mut out,
+        Token {
+            kind: TokenKind::Eof,
+            span,
+            start_offset: pos,
+            end_offset: pos,
+        },
+    )?;
     Ok(out)
 }
 
-fn push_newline(out: &mut Vec<Token>, span: Span, offset: usize) {
+fn push_token(out: &mut Vec<Token>, token: Token) -> Result<(), LexError> {
+    if out.len() >= MAX_TOKENS_PER_FILE {
+        return Err(LexError {
+            span: token.span,
+            message: format!("token limit of {MAX_TOKENS_PER_FILE} per file exceeded"),
+        });
+    }
+    out.push(token);
+    Ok(())
+}
+
+fn push_newline(out: &mut Vec<Token>, span: Span, offset: usize) -> Result<(), LexError> {
     if !matches!(
         out.last().map(|t| &t.kind),
         Some(TokenKind::Newline | TokenKind::Semicolon)
     ) {
-        out.push(Token {
-            kind: TokenKind::Newline,
-            span,
-            start_offset: offset,
-            end_offset: offset + 1,
-        });
+        push_token(
+            out,
+            Token {
+                kind: TokenKind::Newline,
+                span: Span {
+                    start_offset: offset,
+                    end_offset: offset + 1,
+                    ..span
+                },
+                start_offset: offset,
+                end_offset: offset + 1,
+            },
+        )?;
     }
+    Ok(())
 }
 
 fn is_ident_start(b: u8) -> bool {

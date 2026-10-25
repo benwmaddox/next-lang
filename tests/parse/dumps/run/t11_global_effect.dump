@@ -1,0 +1,139 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "global"
+Ident 7 3 1 8 "app"
+Colon 10 1 1 11 ":"
+Ident 12 3 1 13 "int"
+Eq 16 1 1 17 "="
+Number 18 1 1 19 "0"
+Newline 19 1 1 20 "\n"
+Ident 21 2 3 1 "fn"
+Ident 24 7 3 4 "compare"
+LParen 31 1 3 11 "("
+Ident 32 4 3 12 "left"
+Colon 36 1 3 16 ":"
+Ident 38 3 3 18 "int"
+Comma 41 1 3 21 ","
+Ident 43 5 3 23 "right"
+Colon 48 1 3 28 ":"
+Ident 50 3 3 30 "int"
+RParen 53 1 3 33 ")"
+Arrow 55 2 3 35 "->"
+Ident 58 4 3 38 "bool"
+LBrace 63 1 3 43 "{"
+Newline 64 1 3 44 "\n"
+Ident 69 3 4 5 "app"
+Eq 73 1 4 9 "="
+Number 75 1 4 11 "1"
+Newline 76 1 4 12 "\n"
+Ident 81 4 5 5 "left"
+Lt 86 1 5 10 "<"
+Ident 88 5 5 12 "right"
+Newline 93 1 5 17 "\n"
+RBrace 94 1 6 1 "}"
+Newline 95 1 6 2 "\n"
+Ident 97 2 8 1 "fn"
+Ident 100 14 8 4 "use_comparator"
+LParen 114 1 8 18 "("
+Ident 115 8 8 19 "callback"
+Colon 123 1 8 27 ":"
+Ident 125 2 8 29 "fn"
+LParen 127 1 8 31 "("
+Ident 128 3 8 32 "int"
+Comma 131 1 8 35 ","
+Ident 133 3 8 37 "int"
+RParen 136 1 8 40 ")"
+Arrow 138 2 8 42 "->"
+Ident 141 4 8 45 "bool"
+RParen 145 1 8 49 ")"
+Arrow 147 2 8 51 "->"
+Ident 150 4 8 54 "bool"
+LBrace 155 1 8 59 "{"
+Newline 156 1 8 60 "\n"
+Ident 161 8 9 5 "callback"
+LParen 169 1 9 13 "("
+Number 170 1 9 14 "1"
+Comma 171 1 9 15 ","
+Number 173 1 9 17 "2"
+RParen 174 1 9 18 ")"
+Newline 175 1 9 19 "\n"
+RBrace 176 1 10 1 "}"
+Newline 177 1 10 2 "\n"
+Ident 179 2 12 1 "fn"
+Ident 182 4 12 4 "main"
+LParen 186 1 12 8 "("
+RParen 187 1 12 9 ")"
+LBrace 189 1 12 11 "{"
+Newline 190 1 12 12 "\n"
+Ident 195 3 13 5 "let"
+Ident 199 10 13 9 "comparator"
+Colon 209 1 13 19 ":"
+Ident 211 2 13 21 "fn"
+LParen 213 1 13 23 "("
+Ident 214 3 13 24 "int"
+Comma 217 1 13 27 ","
+Ident 219 3 13 29 "int"
+RParen 222 1 13 32 ")"
+Arrow 224 2 13 34 "->"
+Ident 227 4 13 37 "bool"
+Eq 232 1 13 42 "="
+Ident 234 7 13 44 "compare"
+Newline 241 1 13 51 "\n"
+Ident 246 5 14 5 "print"
+LParen 251 1 14 10 "("
+Ident 252 14 14 11 "use_comparator"
+LParen 266 1 14 25 "("
+Ident 267 10 14 26 "comparator"
+RParen 277 1 14 36 ")"
+RParen 278 1 14 37 ")"
+Newline 279 1 14 38 "\n"
+RBrace 280 1 15 1 "}"
+Newline 281 1 15 2 "\n"
+Eof 282 0 16 1 ""
+== tree ==
+file "main.nl"
+Program 0..282
+  Global 0..19 name="app" prefault=false
+    DeclaredType 12..15 name="int" range=none policy=checked
+    Integer 18..19 magnitude=0 negative=false long_suffix=false
+  Function 21..95 name="compare" recursive=false generics=[]
+    Parameter 32..41 name="left" mode=read
+      ParameterType 38..41 name="int" range=none policy=checked
+    Parameter 43..53 name="right" mode=read
+      ParameterType 50..53 name="int" range=none policy=checked
+    ResultType 58..62 name="bool" range=none policy=checked
+    Block 63..95
+      Assign 69..76 op==
+        Name 69..72 name="app"
+        Integer 75..76 magnitude=1 negative=false long_suffix=false
+      Binary 81..93 op=lt
+        Name 81..85 name="left"
+        Name 88..93 name="right"
+  Function 97..177 name="use_comparator" recursive=false generics=[]
+    Parameter 115..145 name="callback" mode=read
+      ParameterType 125..145 name="fn" range=none policy=checked
+        FunctionType 125..145
+          FunctionTypeParameter 128..131 mode=read
+            ParameterType 128..131 name="int" range=none policy=checked
+          FunctionTypeParameter 133..136 mode=read
+            ParameterType 133..136 name="int" range=none policy=checked
+          ResultType 141..145 name="bool" range=none policy=checked
+    ResultType 150..154 name="bool" range=none policy=checked
+    Block 155..177
+      Call 161..175 name="callback"
+        Integer 170..171 magnitude=1 negative=false long_suffix=false
+        Integer 173..174 magnitude=2 negative=false long_suffix=false
+  Function 179..281 name="main" recursive=false generics=[]
+    Block 189..281
+      Let 195..241 mutable=false name="comparator"
+        Annotation 211..231 name="fn" range=none policy=checked
+          FunctionType 211..231
+            FunctionTypeParameter 214..217 mode=read
+              ParameterType 214..217 name="int" range=none policy=checked
+            FunctionTypeParameter 219..222 mode=read
+              ParameterType 219..222 name="int" range=none policy=checked
+            ResultType 227..231 name="bool" range=none policy=checked
+        Name 234..241 name="compare"
+      Call 246..279 name="print"
+        Call 252..278 name="use_comparator"
+          Name 267..277 name="comparator"

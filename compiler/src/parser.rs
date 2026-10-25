@@ -1,5 +1,6 @@
 use crate::ast::*;
 use crate::lexer::{Token, TokenKind};
+use std::collections::HashSet;
 
 const EXPRESSION_NESTING_LIMIT: usize = 1000;
 const EXPRESSION_PARSER_STACK_LIMIT: usize = 2048;
@@ -19,6 +20,7 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> Result<Program, ParseError> {
         expression_depth: 0,
         parenthesis_depth: 0,
         block_depth: 0,
+        type_depth: 0,
     }
     .program()
 }
@@ -31,6 +33,7 @@ struct Parser<'a> {
     expression_depth: usize,
     parenthesis_depth: usize,
     block_depth: usize,
+    type_depth: usize,
 }
 
 impl Parser<'_> {
@@ -45,19 +48,33 @@ impl Parser<'_> {
         self.skip_separators();
         while !self.at(&TokenKind::Eof) {
             if self.word_is("enum") {
-                enums.push(self.enum_decl()?);
+                let mut item = self.enum_decl()?;
+                item.span.end_offset = self.last_consumed_end();
+                enums.push(item);
             } else if self.word_is("struct") {
-                structs.push(self.struct_decl()?);
+                let mut item = self.struct_decl()?;
+                item.span.end_offset = self.last_consumed_end();
+                structs.push(item);
             } else if self.word_is("type") {
-                aliases.push(self.type_alias_decl()?);
+                let mut item = self.type_alias_decl()?;
+                item.span.end_offset = self.last_consumed_end();
+                aliases.push(item);
             } else if self.word_is("const") {
-                constants.push(self.const_decl()?);
+                let mut item = self.const_decl()?;
+                item.span.end_offset = self.last_consumed_end();
+                constants.push(item);
             } else if self.word_is("global") {
-                globals.push(self.global_decl()?);
+                let mut item = self.global_decl()?;
+                item.span.end_offset = self.last_consumed_end();
+                globals.push(item);
             } else if self.word_is("test") {
-                tests.push(self.test()?);
+                let mut item = self.test()?;
+                item.span.end_offset = self.last_consumed_end();
+                tests.push(item);
             } else {
-                functions.push(self.function()?);
+                let mut item = self.function()?;
+                item.span.end_offset = self.last_consumed_end();
+                functions.push(item);
             }
             self.require_separator_or_eof()?;
             self.skip_separators();
@@ -89,6 +106,10 @@ impl Parser<'_> {
                 Some(self.expression(0)?)
             } else {
                 None
+            };
+            let field_span = Span {
+                end_offset: self.last_consumed_end(),
+                ..field_span
             };
             fields.push(StructFieldDecl {
                 name: field_name,
@@ -164,6 +185,7 @@ impl Parser<'_> {
             name,
             ty,
             value,
+            prefault,
             span: start,
         })
     }
@@ -195,6 +217,10 @@ impl Parser<'_> {
                 }
                 self.expect(&TokenKind::RParen, "expected ')' after enum payload types")?;
             }
+            let case_span = Span {
+                end_offset: self.last_consumed_end(),
+                ..case_span
+            };
             cases.push(EnumCase {
                 name: case_name,
                 payload,
@@ -252,12 +278,14 @@ impl Parser<'_> {
                         ParamMode::Read
                     };
                     let ty = self.type_name()?;
-                    params.push(Param {
+                    let mut param = Param {
                         name: param_name,
                         mode,
                         ty,
                         span: pspan,
-                    });
+                    };
+                    param.span.end_offset = self.last_consumed_end();
+                    params.push(param);
                     self.skip_newlines();
                     if !self.take(&TokenKind::Comma) {
                         break;
@@ -307,12 +335,14 @@ impl Parser<'_> {
                     ParamMode::Read
                 };
                 let ty = self.type_name()?;
-                params.push(Param {
+                let mut param = Param {
                     name: param_name,
                     mode,
                     ty,
                     span: pspan,
-                });
+                };
+                param.span.end_offset = self.last_consumed_end();
+                params.push(param);
                 self.skip_newlines();
                 if !self.take(&TokenKind::Comma) {
                     break;
@@ -345,6 +375,21 @@ impl Parser<'_> {
     }
 
     fn type_name(&mut self) -> Result<TypeAst, ParseError> {
+        if self.type_depth >= EXPRESSION_NESTING_LIMIT {
+            return Err(ParseError {
+                span: self.peek().span,
+                message: format!("type nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"),
+            });
+        }
+        self.type_depth += 1;
+        let parsed = self.type_name_inner();
+        self.type_depth -= 1;
+        let mut ty = parsed?;
+        ty.span.end_offset = self.last_consumed_end();
+        Ok(ty)
+    }
+
+    fn type_name_inner(&mut self) -> Result<TypeAst, ParseError> {
         if self.word_is("fn") {
             let function = self.function_type()?;
             let span = function.span;
@@ -503,6 +548,12 @@ impl Parser<'_> {
     }
 
     fn function_type(&mut self) -> Result<FunctionTypeAst, ParseError> {
+        let mut ty = self.function_type_inner()?;
+        ty.span.end_offset = self.last_consumed_end();
+        Ok(ty)
+    }
+
+    fn function_type_inner(&mut self) -> Result<FunctionTypeAst, ParseError> {
         let start = self.expect_word("fn", "expected 'fn'")?.span;
         if self.take(&TokenKind::Lt) {
             return Err(ParseError {
@@ -516,6 +567,7 @@ impl Parser<'_> {
         if !self.at(&TokenKind::RParen) {
             loop {
                 self.skip_newlines();
+                let param_start = self.peek().span;
                 let mode = if self.word_is("write") {
                     self.next();
                     ParamMode::Write
@@ -523,7 +575,14 @@ impl Parser<'_> {
                     ParamMode::Read
                 };
                 let ty = self.type_name()?;
-                params.push(FunctionTypeParamAst { mode, ty });
+                params.push(FunctionTypeParamAst {
+                    mode,
+                    ty,
+                    span: Span {
+                        end_offset: self.last_consumed_end(),
+                        ..param_start
+                    },
+                });
                 self.skip_newlines();
                 if !self.take(&TokenKind::Comma) {
                     break;
@@ -552,15 +611,19 @@ impl Parser<'_> {
                 let (effect, effect_span) =
                     self.expect_ident("expected an effect after 'effects'")?;
                 match effect.as_str() {
-                    "out" => effects.push(FunctionEffectAst::Out),
-                    "env" => effects.push(FunctionEffectAst::Env),
+                    "out" => effects.push(FunctionEffectAst::Out { span: effect_span }),
+                    "env" => effects.push(FunctionEffectAst::Env { span: effect_span }),
                     "fs" => {
                         self.expect(&TokenKind::Dot, "expected '.read' or '.write' after 'fs'")?;
                         let (operation, operation_span) =
                             self.expect_ident("expected 'read' or 'write' after 'fs.'")?;
+                        let node_span = Span {
+                            end_offset: operation_span.end_offset,
+                            ..effect_span
+                        };
                         match operation.as_str() {
-                            "read" => effects.push(FunctionEffectAst::FsRead),
-                            "write" => effects.push(FunctionEffectAst::FsWrite),
+                            "read" => effects.push(FunctionEffectAst::FsRead { span: node_span }),
+                            "write" => effects.push(FunctionEffectAst::FsWrite { span: node_span }),
                             _ => {
                                 return Err(ParseError {
                                     span: operation_span,
@@ -582,15 +645,21 @@ impl Parser<'_> {
                             path.push('.');
                             path.push_str(&part);
                         }
+                        let node_span = Span {
+                            end_offset: self.last_consumed_end(),
+                            ..effect_span
+                        };
                         effects.push(if effect == "reads" {
                             FunctionEffectAst::Reads {
                                 path,
                                 span: root_span,
+                                node_span,
                             }
                         } else {
                             FunctionEffectAst::Writes {
                                 path,
                                 span: root_span,
+                                node_span,
                             }
                         });
                     }
@@ -630,9 +699,10 @@ impl Parser<'_> {
             return Ok(Vec::new());
         }
         let mut params = Vec::new();
+        let mut seen = HashSet::new();
         loop {
             let (name, span) = self.expect_ident("expected a generic parameter name")?;
-            if params.contains(&name) {
+            if !seen.insert(name.clone()) {
                 return Err(ParseError {
                     span,
                     message: format!("generic parameter '{}' is repeated", name),
@@ -684,7 +754,7 @@ impl Parser<'_> {
     }
 
     fn block(&mut self) -> Result<Block, ParseError> {
-        if self.block_depth > EXPRESSION_NESTING_LIMIT {
+        if self.block_depth >= EXPRESSION_NESTING_LIMIT {
             return Err(ParseError {
                 span: self.peek().span,
                 message: format!("expression nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"),
@@ -722,17 +792,28 @@ impl Parser<'_> {
                 return Err(self.error_here("expected a newline or ';' between statements"));
             }
         }
-        self.expect(&TokenKind::RBrace, "expected '}' to close this block")?;
+        let close = self.expect(&TokenKind::RBrace, "expected '}' to close this block")?;
         let block = Block {
             statements,
             tail,
-            span: start,
+            span: Span {
+                end_offset: close.end_offset,
+                ..start
+            },
         };
         self.block_depth -= 1;
         Ok(block)
     }
 
     fn statement_candidate(&mut self) -> Result<Candidate, ParseError> {
+        let mut candidate = self.statement_candidate_inner()?;
+        if let Candidate::Statement(stmt) = &mut candidate {
+            stmt.span.end_offset = self.last_consumed_end();
+        }
+        Ok(candidate)
+    }
+
+    fn statement_candidate_inner(&mut self) -> Result<Candidate, ParseError> {
         if self.word_is("for")
             || self.word_is("break")
             || self.word_is("continue")
@@ -812,13 +893,14 @@ impl Parser<'_> {
                     || self.at(&TokenKind::Semicolon)
                     || self.at(&TokenKind::RBrace))
             {
+                let span = self.empty_span_at(annotation.as_ref().unwrap().span.end_offset);
                 Expr {
                     kind: ExprKind::Call {
                         name: "default".to_owned(),
                         call_span: start,
                         args: Vec::new(),
                     },
-                    span: start,
+                    span,
                 }
             } else {
                 return Err(self.error_here(
@@ -874,7 +956,7 @@ impl Parser<'_> {
             _ => None,
         };
         if let Some(op) = assignment {
-            let span = expression.span;
+            let span = expression_diagnostic_span(&expression);
             let target = match &expression.kind {
                 ExprKind::Name(_)
                 | ExprKind::Field { .. }
@@ -1014,7 +1096,10 @@ impl Parser<'_> {
                 }
             }
         }
-        parsed
+        parsed.map(|mut expr| {
+            expr.span.end_offset = self.last_consumed_end();
+            expr
+        })
     }
 
     fn expression_inner(&mut self, min_precedence: u8) -> Result<Expr, ParseError> {
@@ -1032,6 +1117,10 @@ impl Parser<'_> {
             } else {
                 precedence + 1
             })?;
+            let span = Span {
+                end_offset: right.span.end_offset,
+                ..left.span
+            };
             left = Expr {
                 kind: ExprKind::Binary {
                     op,
@@ -1039,7 +1128,7 @@ impl Parser<'_> {
                     left: Box::new(left),
                     right: Box::new(right),
                 },
-                span: op_span,
+                span,
             };
         }
         Ok(left)
@@ -1062,12 +1151,16 @@ impl Parser<'_> {
                     && self.peek().span.line == span.line
                     && self.peek().span.col == span.col + 1 =>
             {
-                let TokenKind::String(value) = self.next().kind.clone() else {
+                let string = self.next().clone();
+                let TokenKind::String(value) = string.kind else {
                     unreachable!()
                 };
                 self.postfix(Expr {
                     kind: ExprKind::ByteString(value.into_bytes()),
-                    span,
+                    span: Span {
+                        end_offset: string.end_offset,
+                        ..span
+                    },
                 })
             }
             kind => self.prefix_leaf_postfix(kind, span),
@@ -1111,33 +1204,45 @@ impl Parser<'_> {
 
     fn prefix_negation(&mut self, span: Span) -> Result<Expr, ParseError> {
         if let TokenKind::Number(raw) = self.peek().kind.clone() {
-            let _number_span = self.next().span;
-            self.integer(raw, span, true).map(|mut expr| {
-                expr.span = span;
-                expr
-            })
+            let number_span = self.next().span;
+            self.integer(
+                raw,
+                Span {
+                    end_offset: number_span.end_offset,
+                    ..span
+                },
+                true,
+            )
         } else {
             let value = self.expression(11)?;
+            let node_span = Span {
+                end_offset: value.span.end_offset,
+                ..span
+            };
             Ok(Expr {
                 kind: ExprKind::Unary {
                     op: UnaryOp::Neg,
                     operator_span: span,
                     value: Box::new(value),
                 },
-                span,
+                span: node_span,
             })
         }
     }
 
     fn prefix_not(&mut self, span: Span) -> Result<Expr, ParseError> {
         let value = self.expression(11)?;
+        let node_span = Span {
+            end_offset: value.span.end_offset,
+            ..span
+        };
         Ok(Expr {
             kind: ExprKind::Unary {
                 op: UnaryOp::Not,
                 operator_span: span,
                 value: Box::new(value),
             },
-            span,
+            span: node_span,
         })
     }
 
@@ -1151,9 +1256,15 @@ impl Parser<'_> {
         } else {
             Some(Box::new(self.expression(0)?))
         };
+        let node_span = Span {
+            end_offset: value
+                .as_ref()
+                .map_or(span.end_offset, |value| value.span.end_offset),
+            ..span
+        };
         Ok(Expr {
             kind: ExprKind::Return(value),
-            span,
+            span: node_span,
         })
     }
 
@@ -1199,9 +1310,13 @@ impl Parser<'_> {
 
     fn parenthesized_expression(&mut self, span: Span) -> Result<Expr, ParseError> {
         if self.take(&TokenKind::RParen) {
+            let close = self.tokens[self.pos - 1].span;
             return Ok(Expr {
                 kind: ExprKind::Unit,
-                span,
+                span: Span {
+                    end_offset: close.end_offset,
+                    ..span
+                },
             });
         }
         if matches!((&self.peek().kind, &self.peek_n(1).kind), (TokenKind::Ident(name), TokenKind::RParen)
@@ -1218,13 +1333,17 @@ impl Parser<'_> {
         self.expect(&TokenKind::RParen, "expected ')' after the cast type")?;
         self.skip_newlines();
         let value = self.prefix()?;
+        let node_span = Span {
+            end_offset: value.span.end_offset,
+            ..span
+        };
         Ok(Expr {
             kind: ExprKind::Cast {
                 ty,
                 cast_span: span,
                 value: Box::new(value),
             },
-            span,
+            span: node_span,
         })
     }
 
@@ -1257,11 +1376,11 @@ impl Parser<'_> {
         self.expect(&TokenKind::LBracket, "expected '['")?;
         let index = self.expression(0)?;
         let index_span = index.span;
-        let span = expr.span;
+        let start = expr.span;
         if self.take(&TokenKind::Comma) {
             self.skip_newlines();
             let y = self.expression(0)?;
-            self.expect(&TokenKind::RBracket, "expected ']' after the grid indexes")?;
+            let close = self.expect(&TokenKind::RBracket, "expected ']' after the grid indexes")?;
             Ok(Expr {
                 kind: ExprKind::GridIndex {
                     receiver: Box::new(expr),
@@ -1269,17 +1388,23 @@ impl Parser<'_> {
                     y: Box::new(y),
                     x_span: index_span,
                 },
-                span,
+                span: Span {
+                    end_offset: close.end_offset,
+                    ..start
+                },
             })
         } else {
-            self.expect(&TokenKind::RBracket, "expected ']' after the index")?;
+            let close = self.expect(&TokenKind::RBracket, "expected ']' after the index")?;
             Ok(Expr {
                 kind: ExprKind::Index {
                     receiver: Box::new(expr),
                     index: Box::new(index),
                     index_span,
                 },
-                span,
+                span: Span {
+                    end_offset: close.end_offset,
+                    ..start
+                },
             })
         }
     }
@@ -1289,6 +1414,10 @@ impl Parser<'_> {
         self.expect(&TokenKind::LParen, "expected '('")?;
         let args = self.arguments_after_lparen()?;
         let old = expr;
+        let span = Span {
+            end_offset: self.last_consumed_end(),
+            ..old.span
+        };
         Ok(match old.kind {
             ExprKind::Name(name) => Expr {
                 kind: ExprKind::Call {
@@ -1296,7 +1425,7 @@ impl Parser<'_> {
                     call_span: old.span,
                     args,
                 },
-                span: old.span,
+                span,
             },
             ExprKind::QualifiedCase {
                 enum_name,
@@ -1310,7 +1439,7 @@ impl Parser<'_> {
                     case_span,
                     args,
                 },
-                span: old.span,
+                span,
             },
             callee => Expr {
                 kind: ExprKind::IndirectCall {
@@ -1320,7 +1449,7 @@ impl Parser<'_> {
                     }),
                     args,
                 },
-                span: old.span,
+                span,
             },
         })
     }
@@ -1382,21 +1511,30 @@ impl Parser<'_> {
             )?;
             Ok(Expr {
                 kind,
-                span: expr.span,
+                span: Span {
+                    end_offset: self.last_consumed_end(),
+                    ..expr.span
+                },
             })
         } else {
             let fields = self.struct_init_fields()?;
             Ok(Expr {
                 kind: ExprKind::StructInit { name, fields },
-                span: expr.span,
+                span: Span {
+                    end_offset: self.last_consumed_end(),
+                    ..expr.span
+                },
             })
         }
     }
 
     #[inline(never)]
     fn postfix_try(&mut self, expr: Expr) -> Result<Expr, ParseError> {
-        self.expect(&TokenKind::Question, "expected '?' after this expression")?;
-        let span = expr.span;
+        let question = self.expect(&TokenKind::Question, "expected '?' after this expression")?;
+        let span = Span {
+            end_offset: question.end_offset,
+            ..expr.span
+        };
         Ok(Expr {
             kind: ExprKind::Try(Box::new(expr)),
             span,
@@ -1405,14 +1543,17 @@ impl Parser<'_> {
 
     #[inline(never)]
     fn postfix_optional_call(&mut self, expr: Expr) -> Result<Expr, ParseError> {
-        self.expect(&TokenKind::QuestionDot, "expected '?.'")?;
+        let _optional_dot = self.expect(&TokenKind::QuestionDot, "expected '?.'")?;
         let (name, method_span) = self.expect_ident("expected a function name after '?.'")?;
         self.expect(
             &TokenKind::LParen,
             "expected '(' after the optional call name",
         )?;
         let args = self.arguments_after_lparen()?;
-        let span = expr.span;
+        let span = Span {
+            end_offset: self.last_consumed_end(),
+            ..expr.span
+        };
         Ok(Expr {
             kind: ExprKind::OptionalCall {
                 receiver: Box::new(expr),
@@ -1441,7 +1582,10 @@ impl Parser<'_> {
             self.expect_type_gt("expected '>' after the fit type")?;
             self.expect(&TokenKind::LParen, "expected '()' after the fit type")?;
             self.expect(&TokenKind::RParen, "fit takes no arguments")?;
-            let span = expr.span;
+            let span = Span {
+                end_offset: self.last_consumed_end(),
+                ..expr.span
+            };
             return Ok(Expr {
                 kind: ExprKind::Fit {
                     value: Box::new(expr),
@@ -1453,7 +1597,10 @@ impl Parser<'_> {
         }
         if self.take(&TokenKind::LParen) {
             let args = self.arguments_after_lparen()?;
-            let span = expr.span;
+            let span = Span {
+                end_offset: self.last_consumed_end(),
+                ..expr.span
+            };
             let is_builtin_method = matches!(
                 method.as_str(),
                 "to_long"
@@ -1508,7 +1655,10 @@ impl Parser<'_> {
                 })
             }
         } else {
-            let span = expr.span;
+            let span = Span {
+                end_offset: method_span.end_offset,
+                ..expr.span
+            };
             Ok(Expr {
                 kind: ExprKind::Field {
                     receiver: Box::new(expr),
@@ -1531,8 +1681,14 @@ impl Parser<'_> {
         }
         let parsed = (|| {
             let inner = self.expression(0)?;
-            self.expect(&TokenKind::RParen, "expected ')' after this expression")?;
-            Ok(Expr { span, ..inner })
+            let close = self.expect(&TokenKind::RParen, "expected ')' after this expression")?;
+            Ok(Expr {
+                span: Span {
+                    end_offset: close.end_offset,
+                    ..span
+                },
+                ..inner
+            })
         })();
         self.parenthesis_depth -= 1;
         parsed
@@ -1572,6 +1728,10 @@ impl Parser<'_> {
                     span,
                 }
             };
+            let span = Span {
+                end_offset: value.span.end_offset.max(span.end_offset),
+                ..span
+            };
             fields.push(StructInitField { name, value, span });
             let separated = self.skip_separators() > 0;
             if self.take(&TokenKind::Comma) {
@@ -1596,6 +1756,10 @@ impl Parser<'_> {
         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
             let arm_span = self.peek().span;
             let pattern = self.pattern()?;
+            let pattern_span = Span {
+                end_offset: self.last_consumed_end(),
+                ..arm_span
+            };
             self.expect(
                 &TokenKind::FatArrow,
                 "expected '=>' after the match pattern",
@@ -1607,14 +1771,18 @@ impl Parser<'_> {
                 let value = self.expression(0)?;
                 Block {
                     statements: Vec::new(),
+                    span: value.span,
                     tail: Some(Box::new(value)),
-                    span: arm_span,
                 }
             };
             arms.push(MatchArm {
                 pattern,
                 body,
-                span: arm_span,
+                pattern_span,
+                span: Span {
+                    end_offset: self.last_consumed_end(),
+                    ..arm_span
+                },
             });
             let separated = self.skip_separators() > 0;
             if self.take(&TokenKind::Comma) {
@@ -1623,13 +1791,16 @@ impl Parser<'_> {
                 return Err(self.error_here("expected a comma or newline between match arms"));
             }
         }
-        self.expect(&TokenKind::RBrace, "expected '}' to close the match")?;
+        let close = self.expect(&TokenKind::RBrace, "expected '}' to close the match")?;
         Ok(Expr {
             kind: ExprKind::Match {
                 scrutinee: Box::new(scrutinee),
                 arms,
             },
-            span,
+            span: Span {
+                end_offset: close.end_offset,
+                ..span
+            },
         })
     }
 
@@ -1639,8 +1810,10 @@ impl Parser<'_> {
             TokenKind::Number(raw) => Ok(Pattern::Integer(self.integer(raw, token.span, false)?)),
             TokenKind::Minus => {
                 if let TokenKind::Number(raw) = self.peek().kind.clone() {
-                    self.next();
-                    Ok(Pattern::Integer(self.integer(raw, token.span, true)?))
+                    let number = self.next().clone();
+                    let mut value = self.integer(raw, token.span, true)?;
+                    value.span.end_offset = number.end_offset;
+                    Ok(Pattern::Integer(value))
                 } else {
                     Err(ParseError {
                         span: token.span,
@@ -1660,12 +1833,14 @@ impl Parser<'_> {
                     (None, first, token.span)
                 };
                 let mut bindings = Vec::new();
+                let mut binding_spans = Vec::new();
                 if self.take(&TokenKind::LParen) {
                     self.skip_newlines();
                     if !self.at(&TokenKind::RParen) {
                         loop {
                             let (binding, binding_span) = self
                                 .expect_ident("expected a payload name or '_' in this pattern")?;
+                            binding_spans.push(binding_span);
                             bindings.push(if binding == "_" {
                                 None
                             } else {
@@ -1688,6 +1863,7 @@ impl Parser<'_> {
                     name,
                     name_span,
                     bindings,
+                    binding_spans,
                 })
             }
             _ => Err(ParseError {
@@ -1711,10 +1887,11 @@ impl Parser<'_> {
             } else if self.word_is("if") {
                 let if_span = self.next().span;
                 let nested = self.if_expression(if_span)?;
+                let nested_span = nested.span;
                 Some(Block {
                     statements: Vec::new(),
                     tail: Some(Box::new(nested)),
-                    span: if_span,
+                    span: nested_span,
                 })
             } else {
                 return Err(self.error_here("expected a block or another 'if' after 'else'"));
@@ -1723,13 +1900,16 @@ impl Parser<'_> {
             self.pos = saved;
             None
         };
+        let end_offset = else_block
+            .as_ref()
+            .map_or(then_block.span.end_offset, |block| block.span.end_offset);
         Ok(Expr {
             kind: ExprKind::If {
                 condition: Box::new(condition),
                 then_block,
                 else_block,
             },
-            span,
+            span: Span { end_offset, ..span },
         })
     }
 
@@ -1866,6 +2046,27 @@ impl Parser<'_> {
         &self.tokens[i]
     }
 
+    fn last_consumed_end(&self) -> usize {
+        self.pos
+            .checked_sub(1)
+            .and_then(|index| self.tokens.get(index))
+            .map(|token| token.end_offset)
+            .unwrap_or(0)
+    }
+
+    fn empty_span_at(&self, offset: usize) -> Span {
+        let prefix = &self.source[..offset];
+        let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+        let col = prefix.rsplit('\n').next().map_or(1, |line| line.len() + 1);
+        Span {
+            line,
+            col,
+            start_offset: offset,
+            end_offset: offset,
+            ..self.peek().span
+        }
+    }
+
     fn peek(&self) -> &Token {
         self.peek_n(0)
     }
@@ -1886,6 +2087,15 @@ enum NestingTask<'a> {
     Expr(&'a Expr, usize),
     Block(&'a Block, usize),
     Type(&'a TypeAst, usize),
+}
+
+fn expression_diagnostic_span(expr: &Expr) -> Span {
+    match &expr.kind {
+        ExprKind::Unary { operator_span, .. } | ExprKind::Binary { operator_span, .. } => {
+            *operator_span
+        }
+        _ => expr.span,
+    }
 }
 
 fn expression_nesting_exceeded(root: &Expr, limit: usize) -> Option<Span> {
@@ -1920,7 +2130,7 @@ fn expression_nesting_exceeded(root: &Expr, limit: usize) -> Option<Span> {
                         | ExprKind::If { .. }
                 );
                 if has_nested_expression && depth > limit {
-                    return Some(expr.span);
+                    return Some(expression_diagnostic_span(expr));
                 }
                 let child_depth = depth + usize::from(has_nested_expression);
                 match &expr.kind {
@@ -2164,5 +2374,172 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn expression_spans_cover_operators_operands_and_delimiters() {
+        let source = "fn main() { print(-0x10 + 1_000L); print(!false) }";
+        let parsed = parse(lex(source, 0).unwrap(), source).unwrap();
+        let function = &parsed.functions[0];
+        assert_eq!(function.span.start_offset, 0);
+        assert_eq!(function.span.end_offset, source.len());
+        assert_eq!(function.body.span.start_offset, source.find('{').unwrap());
+        assert_eq!(function.body.span.end_offset, source.len());
+
+        let StmtKind::Expr(Expr {
+            kind: ExprKind::Call { args, .. },
+            span: call_span,
+        }) = &function.body.statements[0].kind
+        else {
+            panic!("expected the first print call to be a statement")
+        };
+        assert_eq!(
+            call_span.start_offset,
+            source.find("print").expect("print token")
+        );
+        assert_eq!(
+            call_span.end_offset,
+            source.find("1_000L").unwrap() + "1_000L)".len()
+        );
+        let ExprKind::Binary { left, right, .. } = &args[0].kind else {
+            panic!("expected a binary expression")
+        };
+        assert_eq!(
+            args[0].span.start_offset,
+            source.find("-0x10").expect("negative literal")
+        );
+        assert_eq!(
+            args[0].span.end_offset,
+            source.find("1_000L").unwrap() + "1_000L".len()
+        );
+        assert_eq!(left.span.start_offset, source.find("-0x10").unwrap());
+        assert_eq!(
+            left.span.end_offset,
+            source.find("-0x10").unwrap() + "-0x10".len()
+        );
+        assert_eq!(right.span.start_offset, source.find("1_000L").unwrap());
+        assert_eq!(
+            right.span.end_offset,
+            source.find("1_000L").unwrap() + "1_000L".len()
+        );
+
+        let Some(tail) = &function.body.tail else {
+            panic!("expected the final print call to be the block tail")
+        };
+        let ExprKind::Call { args, .. } = &tail.kind else {
+            panic!("expected the final expression to be a print call")
+        };
+        let ExprKind::Unary { value, .. } = &args[0].kind else {
+            panic!("expected a unary expression")
+        };
+        assert_eq!(
+            args[0].span.start_offset,
+            source.find("!false").expect("not expression")
+        );
+        assert_eq!(
+            args[0].span.end_offset,
+            source.find("!false").unwrap() + "!false".len()
+        );
+        assert!(args[0].span.start_offset <= value.span.start_offset);
+        assert!(value.span.end_offset <= args[0].span.end_offset);
+    }
+
+    #[test]
+    fn postfix_and_control_flow_spans_cover_their_complete_forms() {
+        let source = concat!(
+            "fn main() {\n",
+            "  value.field\n",
+            "  value[1]\n",
+            "  value[1, 2]\n",
+            "  value?\n",
+            "  value?.read(1)\n",
+            "  value.read(1)\n",
+            "  value.fit<int>()\n",
+            "  (int)value\n",
+            "  Point { x: 1 }\n",
+            "  if true { 1 } else { 2 }\n",
+            "  match true { true => 1, false => 2 }\n",
+            "}\n",
+        );
+        let parsed = parse(lex(source, 0).unwrap(), source).unwrap();
+        let body = &parsed.functions[0].body;
+        let mut expressions = body
+            .statements
+            .iter()
+            .map(|statement| match &statement.kind {
+                StmtKind::Expr(expr) => expr,
+                _ => panic!("expected expression statement"),
+            })
+            .collect::<Vec<_>>();
+        expressions.push(body.tail.as_deref().expect("match expression tail"));
+
+        let expected = [
+            "value.field",
+            "value[1]",
+            "value[1, 2]",
+            "value?",
+            "value?.read(1)",
+            "value.read(1)",
+            "value.fit<int>()",
+            "(int)value",
+            "Point { x: 1 }",
+            "if true { 1 } else { 2 }",
+            "match true { true => 1, false => 2 }",
+        ];
+        assert_eq!(expressions.len(), expected.len());
+        for (expr, expected) in expressions.iter().zip(expected) {
+            let actual = &source[expr.span.start_offset..expr.span.end_offset];
+            assert_eq!(actual, expected, "wrong span for {expected}");
+        }
+    }
+
+    #[test]
+    fn declaration_and_statement_spans_cover_their_complete_forms() {
+        let source = concat!(
+            "enum E { A }\n",
+            "struct S { x: int }\n",
+            "type T = int\n",
+            "const C: int = 1\n",
+            "global G: int = 2\n",
+            "fn f(a: int) -> int { let x: int = a; return x }\n",
+            "test \"t\" { let x: int }\n",
+        );
+        let parsed = parse(lex(source, 0).unwrap(), source).unwrap();
+        let text = |span: Span| &source[span.start_offset..span.end_offset];
+        assert_eq!(text(parsed.enums[0].span), "enum E { A }");
+        assert_eq!(text(parsed.enums[0].cases[0].span), "A");
+        assert_eq!(text(parsed.structs[0].span), "struct S { x: int }");
+        assert_eq!(text(parsed.structs[0].fields[0].span), "x: int");
+        assert_eq!(text(parsed.aliases[0].span), "type T = int");
+        assert_eq!(text(parsed.constants[0].span), "const C: int = 1");
+        assert_eq!(text(parsed.globals[0].span), "global G: int = 2");
+        assert_eq!(
+            text(parsed.functions[0].span),
+            "fn f(a: int) -> int { let x: int = a; return x }"
+        );
+        assert_eq!(text(parsed.functions[0].params[0].span), "a: int");
+        assert_eq!(
+            text(parsed.functions[0].body.span),
+            "{ let x: int = a; return x }"
+        );
+        assert_eq!(
+            text(parsed.functions[0].body.statements[0].span),
+            "let x: int = a"
+        );
+        assert_eq!(
+            text(parsed.functions[0].body.statements[1].span),
+            "return x"
+        );
+        assert_eq!(text(parsed.tests[0].span), "test \"t\" { let x: int }");
+
+        let StmtKind::Let {
+            annotation, value, ..
+        } = &parsed.tests[0].body.statements[0].kind
+        else {
+            panic!("expected typed let with an implicit default")
+        };
+        let annotation = annotation.as_ref().unwrap();
+        assert_eq!(value.span.start_offset, annotation.span.end_offset);
+        assert_eq!(value.span.end_offset, annotation.span.end_offset);
     }
 }

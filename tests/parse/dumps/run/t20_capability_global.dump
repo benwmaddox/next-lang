@@ -1,0 +1,25 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "global"
+Ident 7 5 1 8 "saved"
+Colon 12 1 1 13 ":"
+Ident 14 2 1 15 "Fs"
+Eq 17 1 1 18 "="
+Number 19 1 1 20 "0"
+Newline 20 1 1 21 "\n"
+Ident 22 2 3 1 "fn"
+Ident 25 4 3 4 "main"
+LParen 29 1 3 8 "("
+RParen 30 1 3 9 ")"
+LBrace 32 1 3 11 "{"
+RBrace 33 1 3 12 "}"
+Newline 34 1 3 13 "\n"
+Eof 35 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..35
+  Global 0..20 name="saved" prefault=false
+    DeclaredType 14..16 name="Fs" range=none policy=checked
+    Integer 19..20 magnitude=0 negative=false long_suffix=false
+  Function 22..34 name="main" recursive=false generics=[]
+    Block 32..34

@@ -1,0 +1,115 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 5 1 8 "State"
+LBrace 13 1 1 14 "{"
+Ident 15 6 1 16 "values"
+Colon 21 1 1 22 ":"
+Ident 23 4 1 24 "list"
+Lt 27 1 1 28 "<"
+Ident 28 4 1 29 "long"
+Comma 32 1 1 33 ","
+Number 34 1 1 35 "2"
+Gt 35 1 1 36 ">"
+RBrace 37 1 1 38 "}"
+Newline 38 1 1 39 "\n"
+Ident 39 6 2 1 "global"
+Ident 46 3 2 8 "app"
+Colon 49 1 2 11 ":"
+Ident 51 5 2 13 "State"
+Eq 57 1 2 19 "="
+Ident 59 5 2 21 "State"
+LBrace 65 1 2 27 "{"
+RBrace 66 1 2 28 "}"
+Newline 67 1 2 29 "\n"
+Ident 69 2 4 1 "fn"
+Ident 72 7 4 4 "compare"
+LParen 79 1 4 11 "("
+Ident 80 3 4 12 "ctx"
+Colon 83 1 4 15 ":"
+Ident 85 4 4 17 "long"
+Comma 89 1 4 21 ","
+Ident 91 4 4 23 "left"
+Colon 95 1 4 27 ":"
+Ident 97 4 4 29 "long"
+Comma 101 1 4 33 ","
+Ident 103 5 4 35 "right"
+Colon 108 1 4 40 ":"
+Ident 110 4 4 42 "long"
+RParen 114 1 4 46 ")"
+Arrow 116 2 4 48 "->"
+Ident 119 4 4 51 "bool"
+LBrace 124 1 4 56 "{"
+Newline 125 1 4 57 "\n"
+Ident 130 3 5 5 "app"
+Dot 133 1 5 8 "."
+Ident 134 6 5 9 "values"
+Dot 140 1 5 15 "."
+Ident 141 5 5 16 "count"
+LParen 146 1 5 21 "("
+RParen 147 1 5 22 ")"
+Gt 149 1 5 24 ">"
+Number 151 1 5 26 "0"
+AndAnd 153 2 5 28 "&&"
+Ident 156 4 5 31 "left"
+Lt 161 1 5 36 "<"
+Ident 163 5 5 38 "right"
+Newline 168 1 5 43 "\n"
+RBrace 169 1 6 1 "}"
+Newline 170 1 6 2 "\n"
+Ident 172 2 8 1 "fn"
+Ident 175 4 8 4 "main"
+LParen 179 1 8 8 "("
+RParen 180 1 8 9 ")"
+LBrace 182 1 8 11 "{"
+Newline 183 1 8 12 "\n"
+Ident 188 7 9 5 "sort_by"
+LParen 195 1 9 12 "("
+Ident 196 3 9 13 "app"
+Dot 199 1 9 16 "."
+Ident 200 6 9 17 "values"
+Comma 206 1 9 23 ","
+Number 208 2 9 25 "0L"
+Comma 210 1 9 27 ","
+Ident 212 7 9 29 "compare"
+RParen 219 1 9 36 ")"
+Newline 220 1 9 37 "\n"
+RBrace 221 1 10 1 "}"
+Newline 222 1 10 2 "\n"
+Eof 223 0 11 1 ""
+== tree ==
+file "main.nl"
+Program 0..223
+  Struct 0..38 name="State" generics=[]
+    StructField 15..36 name="values"
+      FieldType 23..36 name="list" range=none policy=checked
+        TypeArgument 28..32 name="long" range=none policy=checked
+        Integer 34..35 magnitude=2 negative=false long_suffix=false
+  Global 39..67 name="app" prefault=false
+    DeclaredType 51..56 name="State" range=none policy=checked
+    StructInit 59..67 name="State"
+  Function 69..170 name="compare" recursive=false generics=[]
+    Parameter 80..89 name="ctx" mode=read
+      ParameterType 85..89 name="long" range=none policy=checked
+    Parameter 91..101 name="left" mode=read
+      ParameterType 97..101 name="long" range=none policy=checked
+    Parameter 103..114 name="right" mode=read
+      ParameterType 110..114 name="long" range=none policy=checked
+    ResultType 119..123 name="bool" range=none policy=checked
+    Block 124..170
+      Binary 130..168 op=and
+        Binary 130..152 op=gt
+          MethodCall 130..148 name="count"
+            Field 130..140 name="values"
+              Name 130..133 name="app"
+          Integer 151..152 magnitude=0 negative=false long_suffix=false
+        Binary 156..168 op=lt
+          Name 156..160 name="left"
+          Name 163..168 name="right"
+  Function 172..222 name="main" recursive=false generics=[]
+    Block 182..222
+      Call 188..220 name="sort_by"
+        Field 196..206 name="values"
+          Name 196..199 name="app"
+        Integer 208..210 magnitude=0 negative=false long_suffix=true
+        Name 212..219 name="compare"

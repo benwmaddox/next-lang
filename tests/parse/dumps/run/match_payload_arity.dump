@@ -1,0 +1,70 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "enum"
+Ident 5 5 1 6 "Shape"
+LBrace 11 1 1 12 "{"
+Ident 13 6 1 14 "Circle"
+LParen 19 1 1 20 "("
+Ident 20 3 1 21 "int"
+RParen 23 1 1 24 ")"
+Comma 24 1 1 25 ","
+Ident 26 5 1 27 "Empty"
+RBrace 32 1 1 33 "}"
+Newline 33 1 1 34 "\n"
+Ident 34 2 2 1 "fn"
+Ident 37 4 2 4 "main"
+LParen 41 1 2 8 "("
+RParen 42 1 2 9 ")"
+LBrace 44 1 2 11 "{"
+Newline 45 1 2 12 "\n"
+Ident 50 3 3 5 "let"
+Ident 54 5 3 9 "shape"
+Eq 60 1 3 15 "="
+Ident 62 5 3 17 "Shape"
+Dot 67 1 3 22 "."
+Ident 68 6 3 23 "Circle"
+LParen 74 1 3 29 "("
+Number 75 1 3 30 "2"
+RParen 76 1 3 31 ")"
+Newline 77 1 3 32 "\n"
+Ident 82 5 4 5 "print"
+LParen 87 1 4 10 "("
+Ident 88 5 4 11 "match"
+Ident 94 5 4 17 "shape"
+LBrace 100 1 4 23 "{"
+Ident 102 6 4 25 "Circle"
+FatArrow 109 2 4 32 "=>"
+Number 112 1 4 35 "0"
+Comma 113 1 4 36 ","
+Ident 115 5 4 38 "Empty"
+FatArrow 121 2 4 44 "=>"
+Number 124 1 4 47 "1"
+RBrace 126 1 4 49 "}"
+RParen 127 1 4 50 ")"
+Newline 128 1 4 51 "\n"
+RBrace 129 1 5 1 "}"
+Newline 130 1 5 2 "\n"
+Eof 131 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..131
+  Enum 0..33 name="Shape"
+    EnumCase 13..24 name="Circle"
+      PayloadType 20..23 name="int" range=none policy=checked
+    EnumCase 26..31 name="Empty"
+  Function 34..130 name="main" recursive=false generics=[]
+    Block 44..130
+      Let 50..77 mutable=false name="shape"
+        QualifiedCase 62..77 enum="Shape" case="Circle"
+          Integer 75..76 magnitude=2 negative=false long_suffix=false
+      Call 82..128 name="print"
+        Match 88..127
+          Name 94..99 name="shape"
+          MatchArm 102..113
+            CasePattern 102..108 name="Circle"
+            Block 112..113
+              Integer 112..113 magnitude=0 negative=false long_suffix=false
+          MatchArm 115..125
+            CasePattern 115..120 name="Empty"
+            Block 124..125
+              Integer 124..125 magnitude=1 negative=false long_suffix=false

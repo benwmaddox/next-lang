@@ -1,0 +1,115 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "less"
+LParen 7 1 1 8 "("
+Ident 8 3 1 9 "ctx"
+Colon 11 1 1 12 ":"
+Ident 13 3 1 14 "int"
+Comma 16 1 1 17 ","
+Ident 18 1 1 19 "a"
+Colon 19 1 1 20 ":"
+Ident 21 3 1 22 "int"
+Comma 24 1 1 25 ","
+Ident 26 1 1 27 "b"
+Colon 27 1 1 28 ":"
+Ident 29 3 1 30 "int"
+RParen 32 1 1 33 ")"
+Arrow 34 2 1 35 "->"
+Ident 37 4 1 38 "bool"
+LBrace 42 1 1 43 "{"
+Newline 43 1 1 44 "\n"
+Ident 48 1 2 5 "a"
+Lt 50 1 2 7 "<"
+Ident 52 1 2 9 "b"
+Newline 53 1 2 10 "\n"
+RBrace 54 1 3 1 "}"
+Newline 55 1 3 2 "\n"
+Ident 57 2 5 1 "fn"
+Ident 60 4 5 4 "main"
+LParen 64 1 5 8 "("
+RParen 65 1 5 9 ")"
+LBrace 67 1 5 11 "{"
+Newline 68 1 5 12 "\n"
+Ident 73 3 6 5 "let"
+Ident 77 8 6 9 "callback"
+Colon 85 1 6 17 ":"
+Ident 87 2 6 19 "fn"
+LParen 89 1 6 21 "("
+Ident 90 3 6 22 "int"
+Comma 93 1 6 25 ","
+Ident 95 3 6 27 "int"
+Comma 98 1 6 30 ","
+Ident 100 3 6 32 "int"
+RParen 103 1 6 35 ")"
+Arrow 105 2 6 37 "->"
+Ident 108 4 6 40 "bool"
+Ident 113 7 6 45 "effects"
+Ident 121 3 6 53 "out"
+Eq 125 1 6 57 "="
+Ident 127 4 6 59 "less"
+Newline 131 1 6 63 "\n"
+Ident 136 3 7 5 "var"
+Ident 140 6 7 9 "values"
+Colon 146 1 7 15 ":"
+Ident 148 4 7 17 "list"
+Lt 152 1 7 21 "<"
+Ident 153 3 7 22 "int"
+Comma 156 1 7 25 ","
+Number 158 1 7 27 "2"
+Gt 159 1 7 28 ">"
+Eq 161 1 7 30 "="
+Ident 163 4 7 32 "list"
+LBrace 168 1 7 37 "{"
+RBrace 169 1 7 38 "}"
+Newline 170 1 7 39 "\n"
+Ident 175 7 8 5 "sort_by"
+LParen 182 1 8 12 "("
+Ident 183 6 8 13 "values"
+Comma 189 1 8 19 ","
+Number 191 1 8 21 "0"
+Comma 192 1 8 22 ","
+Ident 194 8 8 24 "callback"
+RParen 202 1 8 32 ")"
+Newline 203 1 8 33 "\n"
+RBrace 204 1 9 1 "}"
+Newline 205 1 9 2 "\n"
+Eof 206 0 10 1 ""
+== tree ==
+file "main.nl"
+Program 0..206
+  Function 0..55 name="less" recursive=false generics=[]
+    Parameter 8..16 name="ctx" mode=read
+      ParameterType 13..16 name="int" range=none policy=checked
+    Parameter 18..24 name="a" mode=read
+      ParameterType 21..24 name="int" range=none policy=checked
+    Parameter 26..32 name="b" mode=read
+      ParameterType 29..32 name="int" range=none policy=checked
+    ResultType 37..41 name="bool" range=none policy=checked
+    Block 42..55
+      Binary 48..53 op=lt
+        Name 48..49 name="a"
+        Name 52..53 name="b"
+  Function 57..205 name="main" recursive=false generics=[]
+    Block 67..205
+      Let 73..131 mutable=false name="callback"
+        Annotation 87..124 name="fn" range=none policy=checked
+          FunctionType 87..124
+            FunctionTypeParameter 90..93 mode=read
+              ParameterType 90..93 name="int" range=none policy=checked
+            FunctionTypeParameter 95..98 mode=read
+              ParameterType 95..98 name="int" range=none policy=checked
+            FunctionTypeParameter 100..103 mode=read
+              ParameterType 100..103 name="int" range=none policy=checked
+            ResultType 108..112 name="bool" range=none policy=checked
+            Effect 121..124 kind=out
+        Name 127..131 name="less"
+      Let 136..170 mutable=true name="values"
+        Annotation 148..160 name="list" range=none policy=checked
+          TypeArgument 153..156 name="int" range=none policy=checked
+          Integer 158..159 magnitude=2 negative=false long_suffix=false
+        ListLiteral 163..170
+      Call 175..203 name="sort_by"
+        Name 183..189 name="values"
+        Integer 191..192 magnitude=0 negative=false long_suffix=false
+        Name 194..202 name="callback"

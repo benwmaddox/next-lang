@@ -1,0 +1,52 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "test"
+String 5 24 1 6 "\"no propagation in test\""
+LBrace 30 1 1 31 "{"
+Newline 31 1 1 32 "\n"
+Ident 36 3 2 5 "let"
+Ident 40 5 2 9 "value"
+Colon 45 1 2 14 ":"
+Ident 47 6 2 16 "Option"
+Lt 53 1 2 22 "<"
+Ident 54 3 2 23 "int"
+Gt 57 1 2 26 ">"
+Eq 59 1 2 28 "="
+Ident 61 4 2 30 "some"
+LParen 65 1 2 34 "("
+Number 66 1 2 35 "1"
+RParen 67 1 2 36 ")"
+Newline 68 1 2 37 "\n"
+Ident 73 6 3 5 "expect"
+Ident 80 5 3 12 "value"
+Question 85 1 3 17 "?"
+EqEq 87 2 3 19 "=="
+Number 90 1 3 22 "1"
+Newline 91 1 3 23 "\n"
+RBrace 92 1 4 1 "}"
+Newline 93 1 4 2 "\n"
+Ident 94 2 5 1 "fn"
+Ident 97 4 5 4 "main"
+LParen 101 1 5 8 "("
+RParen 102 1 5 9 ")"
+LBrace 104 1 5 11 "{"
+RBrace 105 1 5 12 "}"
+Newline 106 1 5 13 "\n"
+Eof 107 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..107
+  Test 0..93 name="no propagation in test"
+    Block 30..93
+      Let 36..68 mutable=false name="value"
+        Annotation 47..58 name="Option" range=none policy=checked
+          TypeArgument 54..57 name="int" range=none policy=checked
+        Call 61..68 name="some"
+          Integer 66..67 magnitude=1 negative=false long_suffix=false
+      Expect 73..91 source="expect value? == 1"
+        Binary 80..91 op=eq
+          Try 80..86
+            Name 80..85 name="value"
+          Integer 90..91 magnitude=1 negative=false long_suffix=false
+  Function 94..106 name="main" recursive=false generics=[]
+    Block 104..106

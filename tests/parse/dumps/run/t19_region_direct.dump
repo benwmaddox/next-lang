@@ -1,0 +1,106 @@
+== tokens ==
+file "main.nl"
+Ident 0 9 1 1 "recursive"
+Ident 10 2 1 11 "fn"
+Ident 13 4 1 14 "walk"
+LParen 17 1 1 18 "("
+Ident 18 1 1 19 "n"
+Colon 19 1 1 20 ":"
+Ident 21 3 1 22 "int"
+RParen 24 1 1 25 ")"
+Arrow 26 2 1 27 "->"
+Ident 29 3 1 30 "int"
+LBrace 33 1 1 34 "{"
+Newline 34 1 1 35 "\n"
+Ident 39 3 2 5 "var"
+Ident 43 7 2 9 "scratch"
+Colon 50 1 2 16 ":"
+Ident 52 3 2 18 "int"
+LBracket 55 1 2 21 "["
+Number 56 4 2 22 "2048"
+RBracket 60 1 2 26 "]"
+Eq 62 1 2 28 "="
+Ident 64 4 2 30 "fill"
+LParen 68 1 2 34 "("
+Ident 69 1 2 35 "n"
+RParen 70 1 2 36 ")"
+Newline 71 1 2 37 "\n"
+Ident 76 2 3 5 "if"
+Ident 79 1 3 8 "n"
+EqEq 81 2 3 10 "=="
+Number 84 1 3 13 "0"
+LBrace 86 1 3 15 "{"
+Ident 88 7 3 17 "scratch"
+LBracket 95 1 3 24 "["
+Number 96 1 3 25 "0"
+RBracket 97 1 3 26 "]"
+RBrace 99 1 3 28 "}"
+Ident 101 4 3 30 "else"
+LBrace 106 1 3 35 "{"
+Ident 108 4 3 37 "walk"
+LParen 112 1 3 41 "("
+Ident 113 1 3 42 "n"
+Minus 115 1 3 44 "-"
+Number 117 1 3 46 "1"
+RParen 118 1 3 47 ")"
+Plus 120 1 3 49 "+"
+Ident 122 7 3 51 "scratch"
+LBracket 129 1 3 58 "["
+Number 130 1 3 59 "0"
+RBracket 131 1 3 60 "]"
+RBrace 133 1 3 62 "}"
+Newline 134 1 3 63 "\n"
+RBrace 135 1 4 1 "}"
+Newline 136 1 4 2 "\n"
+Ident 138 2 6 1 "fn"
+Ident 141 4 6 4 "main"
+LParen 145 1 6 8 "("
+RParen 146 1 6 9 ")"
+LBrace 148 1 6 11 "{"
+Newline 149 1 6 12 "\n"
+Ident 154 5 7 5 "print"
+LParen 159 1 7 10 "("
+Ident 160 4 7 11 "walk"
+LParen 164 1 7 15 "("
+Number 165 1 7 16 "2"
+RParen 166 1 7 17 ")"
+RParen 167 1 7 18 ")"
+Newline 168 1 7 19 "\n"
+RBrace 169 1 8 1 "}"
+Newline 170 1 8 2 "\n"
+Eof 171 0 9 1 ""
+== tree ==
+file "main.nl"
+Program 0..171
+  Function 0..136 name="walk" recursive=true generics=[]
+    Parameter 18..24 name="n" mode=read
+      ParameterType 21..24 name="int" range=none policy=checked
+    ResultType 29..32 name="int" range=none policy=checked
+    Block 33..136
+      Let 39..71 mutable=true name="scratch"
+        Annotation 52..61 name="int" range=none policy=checked
+          Integer 56..60 magnitude=2048 negative=false long_suffix=false
+        Call 64..71 name="fill"
+          Name 69..70 name="n"
+      If 76..134
+        Binary 79..85 op=eq
+          Name 79..80 name="n"
+          Integer 84..85 magnitude=0 negative=false long_suffix=false
+        Block 86..100
+          Index 88..98
+            Name 88..95 name="scratch"
+            Integer 96..97 magnitude=0 negative=false long_suffix=false
+        Block 106..134
+          Binary 108..132 op=add
+            Call 108..119 name="walk"
+              Binary 113..118 op=sub
+                Name 113..114 name="n"
+                Integer 117..118 magnitude=1 negative=false long_suffix=false
+            Index 122..132
+              Name 122..129 name="scratch"
+              Integer 130..131 magnitude=0 negative=false long_suffix=false
+  Function 138..170 name="main" recursive=false generics=[]
+    Block 148..170
+      Call 154..168 name="print"
+        Call 160..167 name="walk"
+          Integer 165..166 magnitude=2 negative=false long_suffix=false

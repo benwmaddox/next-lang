@@ -1,0 +1,427 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "type"
+Ident 5 4 1 6 "Size"
+Eq 10 1 1 11 "="
+Ident 12 3 1 13 "int"
+Number 16 1 1 17 "1"
+RangeInclusive 17 3 1 18 "..="
+Number 20 1 1 21 "3"
+Newline 21 1 1 22 "\n"
+Ident 23 2 3 1 "fn"
+Ident 26 7 3 4 "smaller"
+LParen 33 1 3 11 "("
+Ident 34 1 3 12 "r"
+Colon 35 1 3 13 ":"
+Ident 37 4 3 15 "Size"
+RParen 41 1 3 19 ")"
+Arrow 43 2 3 21 "->"
+Ident 46 4 3 24 "Size"
+LBrace 51 1 3 29 "{"
+Newline 52 1 3 30 "\n"
+Ident 57 2 4 5 "if"
+Ident 60 1 4 8 "r"
+EqEq 62 2 4 10 "=="
+Number 65 1 4 13 "1"
+LBrace 67 1 4 15 "{"
+Ident 69 6 4 17 "return"
+Number 76 1 4 24 "1"
+RBrace 78 1 4 26 "}"
+Newline 79 1 4 27 "\n"
+Ident 84 1 5 5 "r"
+Minus 86 1 5 7 "-"
+Number 88 1 5 9 "1"
+Newline 89 1 5 10 "\n"
+RBrace 90 1 6 1 "}"
+Newline 91 1 6 2 "\n"
+Ident 93 2 8 1 "fn"
+Ident 96 7 8 4 "not_one"
+LParen 103 1 8 11 "("
+Ident 104 1 8 12 "r"
+Colon 105 1 8 13 ":"
+Ident 107 4 8 15 "Size"
+RParen 111 1 8 19 ")"
+Arrow 113 2 8 21 "->"
+Ident 116 4 8 24 "Size"
+LBrace 121 1 8 29 "{"
+Newline 122 1 8 30 "\n"
+Ident 127 2 9 5 "if"
+Ident 130 1 9 8 "r"
+BangEq 132 2 9 10 "!="
+Number 135 1 9 13 "1"
+LBrace 137 1 9 15 "{"
+Ident 139 6 9 17 "return"
+Ident 146 1 9 24 "r"
+Minus 148 1 9 26 "-"
+Number 150 1 9 28 "1"
+RBrace 152 1 9 30 "}"
+Newline 153 1 9 31 "\n"
+Ident 158 1 10 5 "r"
+Newline 159 1 10 6 "\n"
+RBrace 160 1 11 1 "}"
+Newline 161 1 11 2 "\n"
+Ident 163 2 13 1 "fn"
+Ident 166 14 13 4 "upper_endpoint"
+LParen 180 1 13 18 "("
+Ident 181 1 13 19 "r"
+Colon 182 1 13 20 ":"
+Ident 184 4 13 22 "Size"
+RParen 188 1 13 26 ")"
+Arrow 190 2 13 28 "->"
+Ident 193 4 13 31 "Size"
+LBrace 198 1 13 36 "{"
+Newline 199 1 13 37 "\n"
+Ident 204 2 14 5 "if"
+Ident 207 1 14 8 "r"
+EqEq 209 2 14 10 "=="
+Number 212 1 14 13 "3"
+LBrace 214 1 14 15 "{"
+Ident 216 6 14 17 "return"
+Ident 223 1 14 24 "r"
+Minus 225 1 14 26 "-"
+Number 227 1 14 28 "2"
+RBrace 229 1 14 30 "}"
+Newline 230 1 14 31 "\n"
+Ident 235 1 15 5 "r"
+Plus 237 1 15 7 "+"
+Number 239 1 15 9 "1"
+Newline 240 1 15 10 "\n"
+RBrace 241 1 16 1 "}"
+Newline 242 1 16 2 "\n"
+Ident 244 2 18 1 "fn"
+Ident 247 11 18 4 "conjunction"
+LParen 258 1 18 15 "("
+Ident 259 1 18 16 "r"
+Colon 260 1 18 17 ":"
+Ident 262 4 18 19 "Size"
+RParen 266 1 18 23 ")"
+Arrow 268 2 18 25 "->"
+Ident 271 4 18 28 "Size"
+LBrace 276 1 18 33 "{"
+Newline 277 1 18 34 "\n"
+Ident 282 2 19 5 "if"
+Ident 285 1 19 8 "r"
+EqEq 287 2 19 10 "=="
+Number 290 1 19 13 "1"
+AndAnd 292 2 19 15 "&&"
+Ident 295 1 19 18 "r"
+Ge 297 2 19 20 ">="
+Number 300 1 19 23 "1"
+LBrace 302 1 19 25 "{"
+Ident 304 6 19 27 "return"
+Number 311 1 19 34 "2"
+Minus 313 1 19 36 "-"
+Ident 315 1 19 38 "r"
+RBrace 317 1 19 40 "}"
+Newline 318 1 19 41 "\n"
+Ident 323 1 20 5 "r"
+Newline 324 1 20 6 "\n"
+RBrace 325 1 21 1 "}"
+Newline 326 1 21 2 "\n"
+Ident 328 2 23 1 "fn"
+Ident 331 11 23 4 "disjunction"
+LParen 342 1 23 15 "("
+Ident 343 1 23 16 "r"
+Colon 344 1 23 17 ":"
+Ident 346 4 23 19 "Size"
+RParen 350 1 23 23 ")"
+Arrow 352 2 23 25 "->"
+Ident 355 4 23 28 "Size"
+LBrace 360 1 23 33 "{"
+Newline 361 1 23 34 "\n"
+Ident 366 2 24 5 "if"
+Ident 369 1 24 8 "r"
+EqEq 371 2 24 10 "=="
+Number 374 1 24 13 "1"
+OrOr 376 2 24 15 "||"
+Ident 379 1 24 18 "r"
+Lt 381 1 24 20 "<"
+Number 383 1 24 22 "1"
+LBrace 385 1 24 24 "{"
+Ident 387 6 24 26 "return"
+Number 394 1 24 33 "1"
+RBrace 396 1 24 35 "}"
+Newline 397 1 24 36 "\n"
+Ident 402 1 25 5 "r"
+Minus 404 1 25 7 "-"
+Number 406 1 25 9 "1"
+Newline 407 1 25 10 "\n"
+RBrace 408 1 26 1 "}"
+Newline 409 1 26 2 "\n"
+Ident 411 2 28 1 "fn"
+Ident 414 18 28 4 "loop_with_continue"
+LParen 432 1 28 22 "("
+RParen 433 1 28 23 ")"
+Arrow 435 2 28 25 "->"
+Ident 438 4 28 28 "Size"
+LBrace 443 1 28 33 "{"
+Newline 444 1 28 34 "\n"
+Ident 449 3 29 5 "var"
+Ident 453 6 29 9 "result"
+Colon 459 1 29 15 ":"
+Ident 461 4 29 17 "Size"
+Eq 466 1 29 22 "="
+Number 468 1 29 24 "1"
+Newline 469 1 29 25 "\n"
+Ident 474 3 30 5 "for"
+Ident 478 1 30 9 "r"
+Ident 480 2 30 11 "in"
+Number 483 1 30 14 "1"
+RangeInclusive 484 3 30 15 "..="
+Number 487 1 30 18 "3"
+LBrace 489 1 30 20 "{"
+Newline 490 1 30 21 "\n"
+Ident 499 2 31 9 "if"
+Ident 502 1 31 12 "r"
+EqEq 504 2 31 14 "=="
+Number 507 1 31 17 "1"
+LBrace 509 1 31 19 "{"
+Ident 511 8 31 21 "continue"
+RBrace 520 1 31 30 "}"
+Newline 521 1 31 31 "\n"
+Ident 530 6 32 9 "result"
+Eq 537 1 32 16 "="
+Ident 539 1 32 18 "r"
+Minus 541 1 32 20 "-"
+Number 543 1 32 22 "1"
+Newline 544 1 32 23 "\n"
+RBrace 549 1 33 5 "}"
+Newline 550 1 33 6 "\n"
+Ident 555 6 34 5 "result"
+Newline 561 1 34 11 "\n"
+RBrace 562 1 35 1 "}"
+Newline 563 1 35 2 "\n"
+Ident 565 2 37 1 "fn"
+Ident 568 4 37 4 "main"
+LParen 572 1 37 8 "("
+RParen 573 1 37 9 ")"
+LBrace 575 1 37 11 "{"
+Newline 576 1 37 12 "\n"
+Ident 581 5 38 5 "print"
+LParen 586 1 38 10 "("
+Ident 587 7 38 11 "smaller"
+LParen 594 1 38 18 "("
+Number 595 1 38 19 "1"
+RParen 596 1 38 20 ")"
+RParen 597 1 38 21 ")"
+Newline 598 1 38 22 "\n"
+Ident 603 5 39 5 "print"
+LParen 608 1 39 10 "("
+Ident 609 7 39 11 "smaller"
+LParen 616 1 39 18 "("
+Number 617 1 39 19 "3"
+RParen 618 1 39 20 ")"
+RParen 619 1 39 21 ")"
+Newline 620 1 39 22 "\n"
+Ident 625 5 40 5 "print"
+LParen 630 1 40 10 "("
+Ident 631 7 40 11 "not_one"
+LParen 638 1 40 18 "("
+Number 639 1 40 19 "1"
+RParen 640 1 40 20 ")"
+RParen 641 1 40 21 ")"
+Newline 642 1 40 22 "\n"
+Ident 647 5 41 5 "print"
+LParen 652 1 41 10 "("
+Ident 653 7 41 11 "not_one"
+LParen 660 1 41 18 "("
+Number 661 1 41 19 "2"
+RParen 662 1 41 20 ")"
+RParen 663 1 41 21 ")"
+Newline 664 1 41 22 "\n"
+Ident 669 5 42 5 "print"
+LParen 674 1 42 10 "("
+Ident 675 14 42 11 "upper_endpoint"
+LParen 689 1 42 25 "("
+Number 690 1 42 26 "2"
+RParen 691 1 42 27 ")"
+RParen 692 1 42 28 ")"
+Newline 693 1 42 29 "\n"
+Ident 698 5 43 5 "print"
+LParen 703 1 43 10 "("
+Ident 704 14 43 11 "upper_endpoint"
+LParen 718 1 43 25 "("
+Number 719 1 43 26 "3"
+RParen 720 1 43 27 ")"
+RParen 721 1 43 28 ")"
+Newline 722 1 43 29 "\n"
+Ident 727 5 44 5 "print"
+LParen 732 1 44 10 "("
+Ident 733 11 44 11 "conjunction"
+LParen 744 1 44 22 "("
+Number 745 1 44 23 "1"
+RParen 746 1 44 24 ")"
+RParen 747 1 44 25 ")"
+Newline 748 1 44 26 "\n"
+Ident 753 5 45 5 "print"
+LParen 758 1 45 10 "("
+Ident 759 11 45 11 "disjunction"
+LParen 770 1 45 22 "("
+Number 771 1 45 23 "3"
+RParen 772 1 45 24 ")"
+RParen 773 1 45 25 ")"
+Newline 774 1 45 26 "\n"
+Ident 779 5 46 5 "print"
+LParen 784 1 46 10 "("
+Ident 785 18 46 11 "loop_with_continue"
+LParen 803 1 46 29 "("
+RParen 804 1 46 30 ")"
+RParen 805 1 46 31 ")"
+Newline 806 1 46 32 "\n"
+RBrace 807 1 47 1 "}"
+Newline 808 1 47 2 "\n"
+Eof 809 0 48 1 ""
+== tree ==
+file "main.nl"
+Program 0..809
+  TypeAlias 0..21 name="Size"
+    AliasedType 12..21 name="int" range=1..=3 policy=checked
+  Function 23..91 name="smaller" recursive=false generics=[]
+    Parameter 34..41 name="r" mode=read
+      ParameterType 37..41 name="Size" range=none policy=checked
+    ResultType 46..50 name="Size" range=none policy=checked
+    Block 51..91
+      ExpressionStatement 57..79
+        If 57..79
+          Binary 60..66 op=eq
+            Name 60..61 name="r"
+            Integer 65..66 magnitude=1 negative=false long_suffix=false
+          Block 67..79
+            ReturnStatement 69..77
+              Integer 76..77 magnitude=1 negative=false long_suffix=false
+      Binary 84..89 op=sub
+        Name 84..85 name="r"
+        Integer 88..89 magnitude=1 negative=false long_suffix=false
+  Function 93..161 name="not_one" recursive=false generics=[]
+    Parameter 104..111 name="r" mode=read
+      ParameterType 107..111 name="Size" range=none policy=checked
+    ResultType 116..120 name="Size" range=none policy=checked
+    Block 121..161
+      ExpressionStatement 127..153
+        If 127..153
+          Binary 130..136 op=ne
+            Name 130..131 name="r"
+            Integer 135..136 magnitude=1 negative=false long_suffix=false
+          Block 137..153
+            ReturnStatement 139..151
+              Binary 146..151 op=sub
+                Name 146..147 name="r"
+                Integer 150..151 magnitude=1 negative=false long_suffix=false
+      Name 158..159 name="r"
+  Function 163..242 name="upper_endpoint" recursive=false generics=[]
+    Parameter 181..188 name="r" mode=read
+      ParameterType 184..188 name="Size" range=none policy=checked
+    ResultType 193..197 name="Size" range=none policy=checked
+    Block 198..242
+      ExpressionStatement 204..230
+        If 204..230
+          Binary 207..213 op=eq
+            Name 207..208 name="r"
+            Integer 212..213 magnitude=3 negative=false long_suffix=false
+          Block 214..230
+            ReturnStatement 216..228
+              Binary 223..228 op=sub
+                Name 223..224 name="r"
+                Integer 227..228 magnitude=2 negative=false long_suffix=false
+      Binary 235..240 op=add
+        Name 235..236 name="r"
+        Integer 239..240 magnitude=1 negative=false long_suffix=false
+  Function 244..326 name="conjunction" recursive=false generics=[]
+    Parameter 259..266 name="r" mode=read
+      ParameterType 262..266 name="Size" range=none policy=checked
+    ResultType 271..275 name="Size" range=none policy=checked
+    Block 276..326
+      ExpressionStatement 282..318
+        If 282..318
+          Binary 285..301 op=and
+            Binary 285..291 op=eq
+              Name 285..286 name="r"
+              Integer 290..291 magnitude=1 negative=false long_suffix=false
+            Binary 295..301 op=ge
+              Name 295..296 name="r"
+              Integer 300..301 magnitude=1 negative=false long_suffix=false
+          Block 302..318
+            ReturnStatement 304..316
+              Binary 311..316 op=sub
+                Integer 311..312 magnitude=2 negative=false long_suffix=false
+                Name 315..316 name="r"
+      Name 323..324 name="r"
+  Function 328..409 name="disjunction" recursive=false generics=[]
+    Parameter 343..350 name="r" mode=read
+      ParameterType 346..350 name="Size" range=none policy=checked
+    ResultType 355..359 name="Size" range=none policy=checked
+    Block 360..409
+      ExpressionStatement 366..397
+        If 366..397
+          Binary 369..384 op=or
+            Binary 369..375 op=eq
+              Name 369..370 name="r"
+              Integer 374..375 magnitude=1 negative=false long_suffix=false
+            Binary 379..384 op=lt
+              Name 379..380 name="r"
+              Integer 383..384 magnitude=1 negative=false long_suffix=false
+          Block 385..397
+            ReturnStatement 387..395
+              Integer 394..395 magnitude=1 negative=false long_suffix=false
+      Binary 402..407 op=sub
+        Name 402..403 name="r"
+        Integer 406..407 magnitude=1 negative=false long_suffix=false
+  Function 411..563 name="loop_with_continue" recursive=false generics=[]
+    ResultType 438..442 name="Size" range=none policy=checked
+    Block 443..563
+      Let 449..469 mutable=true name="result"
+        Annotation 461..465 name="Size" range=none policy=checked
+        Integer 468..469 magnitude=1 negative=false long_suffix=false
+      For 474..550 name="r" inclusive=true
+        Integer 483..484 magnitude=1 negative=false long_suffix=false
+        Integer 487..488 magnitude=3 negative=false long_suffix=false
+        Block 489..550
+          ExpressionStatement 499..521
+            If 499..521
+              Binary 502..508 op=eq
+                Name 502..503 name="r"
+                Integer 507..508 magnitude=1 negative=false long_suffix=false
+              Block 509..521
+                ContinueStatement 511..519
+          Assign 530..544 op==
+            Name 530..536 name="result"
+            Binary 539..544 op=sub
+              Name 539..540 name="r"
+              Integer 543..544 magnitude=1 negative=false long_suffix=false
+      Name 555..561 name="result"
+  Function 565..808 name="main" recursive=false generics=[]
+    Block 575..808
+      ExpressionStatement 581..598
+        Call 581..598 name="print"
+          Call 587..597 name="smaller"
+            Integer 595..596 magnitude=1 negative=false long_suffix=false
+      ExpressionStatement 603..620
+        Call 603..620 name="print"
+          Call 609..619 name="smaller"
+            Integer 617..618 magnitude=3 negative=false long_suffix=false
+      ExpressionStatement 625..642
+        Call 625..642 name="print"
+          Call 631..641 name="not_one"
+            Integer 639..640 magnitude=1 negative=false long_suffix=false
+      ExpressionStatement 647..664
+        Call 647..664 name="print"
+          Call 653..663 name="not_one"
+            Integer 661..662 magnitude=2 negative=false long_suffix=false
+      ExpressionStatement 669..693
+        Call 669..693 name="print"
+          Call 675..692 name="upper_endpoint"
+            Integer 690..691 magnitude=2 negative=false long_suffix=false
+      ExpressionStatement 698..722
+        Call 698..722 name="print"
+          Call 704..721 name="upper_endpoint"
+            Integer 719..720 magnitude=3 negative=false long_suffix=false
+      ExpressionStatement 727..748
+        Call 727..748 name="print"
+          Call 733..747 name="conjunction"
+            Integer 745..746 magnitude=1 negative=false long_suffix=false
+      ExpressionStatement 753..774
+        Call 753..774 name="print"
+          Call 759..773 name="disjunction"
+            Integer 771..772 magnitude=3 negative=false long_suffix=false
+      Call 779..806 name="print"
+        Call 785..805 name="loop_with_continue"

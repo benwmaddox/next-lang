@@ -1,0 +1,117 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 9 1 4 "increment"
+LParen 12 1 1 13 "("
+Ident 13 5 1 14 "value"
+Colon 18 1 1 19 ":"
+Ident 20 5 1 21 "write"
+Ident 26 3 1 27 "int"
+RParen 29 1 1 30 ")"
+LBrace 31 1 1 32 "{"
+Newline 32 1 1 33 "\n"
+Ident 37 5 2 5 "value"
+PlusEq 43 2 2 11 "+="
+Number 46 1 2 14 "1"
+Newline 47 1 2 15 "\n"
+RBrace 48 1 3 1 "}"
+Newline 49 1 3 2 "\n"
+Ident 51 2 5 1 "fn"
+Ident 54 5 5 4 "apply"
+LParen 59 1 5 9 "("
+Ident 60 8 5 10 "callback"
+Colon 68 1 5 18 ":"
+Ident 70 2 5 20 "fn"
+LParen 72 1 5 22 "("
+Ident 73 5 5 23 "write"
+Ident 79 3 5 29 "int"
+RParen 82 1 5 32 ")"
+Comma 83 1 5 33 ","
+Ident 85 5 5 35 "value"
+Colon 90 1 5 40 ":"
+Ident 92 5 5 42 "write"
+Ident 98 3 5 48 "int"
+RParen 101 1 5 51 ")"
+LBrace 103 1 5 53 "{"
+Newline 104 1 5 54 "\n"
+Ident 109 8 6 5 "callback"
+LParen 117 1 6 13 "("
+Ident 118 5 6 14 "value"
+RParen 123 1 6 19 ")"
+Newline 124 1 6 20 "\n"
+RBrace 125 1 7 1 "}"
+Newline 126 1 7 2 "\n"
+Ident 128 2 9 1 "fn"
+Ident 131 4 9 4 "main"
+LParen 135 1 9 8 "("
+RParen 136 1 9 9 ")"
+LBrace 138 1 9 11 "{"
+Newline 139 1 9 12 "\n"
+Ident 144 3 10 5 "let"
+Ident 148 8 10 9 "callback"
+Colon 156 1 10 17 ":"
+Ident 158 2 10 19 "fn"
+LParen 160 1 10 21 "("
+Ident 161 5 10 22 "write"
+Ident 167 3 10 28 "int"
+RParen 170 1 10 31 ")"
+Eq 172 1 10 33 "="
+Ident 174 9 10 35 "increment"
+Newline 183 1 10 44 "\n"
+Ident 188 3 11 5 "var"
+Ident 192 5 11 9 "value"
+Eq 198 1 11 15 "="
+Number 200 2 11 17 "40"
+Newline 202 1 11 19 "\n"
+Ident 207 5 12 5 "apply"
+LParen 212 1 12 10 "("
+Ident 213 8 12 11 "callback"
+Comma 221 1 12 19 ","
+Ident 223 5 12 21 "value"
+RParen 228 1 12 26 ")"
+Newline 229 1 12 27 "\n"
+Ident 234 5 13 5 "print"
+LParen 239 1 13 10 "("
+Ident 240 5 13 11 "value"
+RParen 245 1 13 16 ")"
+Newline 246 1 13 17 "\n"
+RBrace 247 1 14 1 "}"
+Newline 248 1 14 2 "\n"
+Eof 249 0 15 1 ""
+== tree ==
+file "main.nl"
+Program 0..249
+  Function 0..49 name="increment" recursive=false generics=[]
+    Parameter 13..29 name="value" mode=write
+      ParameterType 26..29 name="int" range=none policy=checked
+    Block 31..49
+      Assign 37..47 op=+=
+        Name 37..42 name="value"
+        Integer 46..47 magnitude=1 negative=false long_suffix=false
+  Function 51..126 name="apply" recursive=false generics=[]
+    Parameter 60..83 name="callback" mode=read
+      ParameterType 70..83 name="fn" range=none policy=checked
+        FunctionType 70..83
+          FunctionTypeParameter 73..82 mode=write
+            ParameterType 79..82 name="int" range=none policy=checked
+    Parameter 85..101 name="value" mode=write
+      ParameterType 98..101 name="int" range=none policy=checked
+    Block 103..126
+      Call 109..124 name="callback"
+        Name 118..123 name="value"
+  Function 128..248 name="main" recursive=false generics=[]
+    Block 138..248
+      Let 144..183 mutable=false name="callback"
+        Annotation 158..171 name="fn" range=none policy=checked
+          FunctionType 158..171
+            FunctionTypeParameter 161..170 mode=write
+              ParameterType 167..170 name="int" range=none policy=checked
+        Name 174..183 name="increment"
+      Let 188..202 mutable=true name="value"
+        Integer 200..202 magnitude=40 negative=false long_suffix=false
+      ExpressionStatement 207..229
+        Call 207..229 name="apply"
+          Name 213..221 name="callback"
+          Name 223..228 name="value"
+      Call 234..246 name="print"
+        Name 240..245 name="value"

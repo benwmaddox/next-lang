@@ -1,0 +1,64 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 4 1 8 "Rock"
+LBrace 12 1 1 13 "{"
+Ident 14 5 1 15 "value"
+Colon 19 1 1 20 ":"
+Ident 21 3 1 22 "int"
+RBrace 25 1 1 26 "}"
+Newline 26 1 1 27 "\n"
+Ident 27 6 2 1 "struct"
+Ident 34 3 2 8 "Row"
+LBrace 38 1 2 12 "{"
+Ident 40 4 2 14 "rock"
+Colon 44 1 2 18 ":"
+Ident 46 4 2 20 "pool"
+Lt 50 1 2 24 "<"
+Ident 51 4 2 25 "Rock"
+Comma 55 1 2 29 ","
+Number 57 1 2 31 "1"
+Gt 58 1 2 32 ">"
+RBrace 60 1 2 34 "}"
+Newline 61 1 2 35 "\n"
+Ident 63 2 4 1 "fn"
+Ident 66 4 4 4 "main"
+LParen 70 1 4 8 "("
+RParen 71 1 4 9 ")"
+LBrace 73 1 4 11 "{"
+Newline 74 1 4 12 "\n"
+Ident 79 3 5 5 "var"
+Ident 83 4 5 9 "rows"
+Colon 87 1 5 13 ":"
+Ident 89 4 5 15 "list"
+Lt 93 1 5 19 "<"
+Ident 94 3 5 20 "Row"
+Comma 97 1 5 23 ","
+Number 99 1 5 25 "2"
+Gt 100 1 5 26 ">"
+Eq 102 1 5 28 "="
+Ident 104 4 5 30 "list"
+LBrace 109 1 5 35 "{"
+RBrace 110 1 5 36 "}"
+Newline 111 1 5 37 "\n"
+RBrace 112 1 6 1 "}"
+Newline 113 1 6 2 "\n"
+Eof 114 0 7 1 ""
+== tree ==
+file "main.nl"
+Program 0..114
+  Struct 0..26 name="Rock" generics=[]
+    StructField 14..24 name="value"
+      FieldType 21..24 name="int" range=none policy=checked
+  Struct 27..61 name="Row" generics=[]
+    StructField 40..59 name="rock"
+      FieldType 46..59 name="pool" range=none policy=checked
+        TypeArgument 51..55 name="Rock" range=none policy=checked
+        Integer 57..58 magnitude=1 negative=false long_suffix=false
+  Function 63..113 name="main" recursive=false generics=[]
+    Block 73..113
+      Let 79..111 mutable=true name="rows"
+        Annotation 89..101 name="list" range=none policy=checked
+          TypeArgument 94..97 name="Row" range=none policy=checked
+          Integer 99..100 magnitude=2 negative=false long_suffix=false
+        ListLiteral 104..111

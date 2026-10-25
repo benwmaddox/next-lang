@@ -1,0 +1,42 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "for"
+Ident 20 1 2 9 "i"
+Ident 22 2 2 11 "in"
+Number 25 1 2 14 "0"
+Range 26 2 2 15 ".."
+Number 28 1 2 17 "1"
+LBrace 30 1 2 19 "{"
+Ident 32 5 2 21 "print"
+LParen 37 1 2 26 "("
+Ident 38 1 2 27 "i"
+RParen 39 1 2 28 ")"
+RBrace 41 1 2 30 "}"
+Newline 42 1 2 31 "\n"
+Ident 47 5 3 5 "print"
+LParen 52 1 3 10 "("
+Ident 53 1 3 11 "i"
+RParen 54 1 3 12 ")"
+Newline 55 1 3 13 "\n"
+RBrace 56 1 4 1 "}"
+Newline 57 1 4 2 "\n"
+Eof 58 0 5 1 ""
+== tree ==
+file "main.nl"
+Program 0..58
+  Function 0..57 name="main" recursive=false generics=[]
+    Block 10..57
+      For 16..42 name="i" inclusive=false
+        Integer 25..26 magnitude=0 negative=false long_suffix=false
+        Integer 28..29 magnitude=1 negative=false long_suffix=false
+        Block 30..42
+          Call 32..40 name="print"
+            Name 38..39 name="i"
+      Call 47..55 name="print"
+        Name 53..54 name="i"

@@ -1,0 +1,42 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 5 2 5 "print"
+LParen 21 1 2 10 "("
+Ident 22 5 2 11 "match"
+Number 28 1 2 17 "1"
+LBrace 30 1 2 19 "{"
+Number 32 1 2 21 "0"
+FatArrow 34 2 2 23 "=>"
+Number 37 1 2 26 "0"
+Comma 38 1 2 27 ","
+Number 40 1 2 29 "1"
+FatArrow 42 2 2 31 "=>"
+Number 45 1 2 34 "1"
+RBrace 47 1 2 36 "}"
+RParen 48 1 2 37 ")"
+Newline 49 1 2 38 "\n"
+RBrace 50 1 3 1 "}"
+Newline 51 1 3 2 "\n"
+Eof 52 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..52
+  Function 0..51 name="main" recursive=false generics=[]
+    Block 10..51
+      Call 16..49 name="print"
+        Match 22..48
+          Integer 28..29 magnitude=1 negative=false long_suffix=false
+          MatchArm 32..38
+            Integer 32..33 magnitude=0 negative=false long_suffix=false
+            Block 37..38
+              Integer 37..38 magnitude=0 negative=false long_suffix=false
+          MatchArm 40..46
+            Integer 40..41 magnitude=1 negative=false long_suffix=false
+            Block 45..46
+              Integer 45..46 magnitude=1 negative=false long_suffix=false

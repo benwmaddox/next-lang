@@ -1,0 +1,77 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "type"
+Ident 5 4 1 6 "Size"
+Eq 10 1 1 11 "="
+Ident 12 3 1 13 "int"
+Number 16 1 1 17 "1"
+RangeInclusive 17 3 1 18 "..="
+Number 20 1 1 21 "3"
+Newline 21 1 1 22 "\n"
+Ident 23 2 3 1 "fn"
+Ident 26 8 3 4 "rejected"
+LParen 34 1 3 12 "("
+Ident 35 1 3 13 "r"
+Colon 36 1 3 14 ":"
+Ident 38 4 3 16 "Size"
+RParen 42 1 3 20 ")"
+Arrow 44 2 3 22 "->"
+Ident 47 4 3 25 "Size"
+LBrace 52 1 3 30 "{"
+Newline 53 1 3 31 "\n"
+Ident 58 2 4 5 "if"
+Ident 61 1 4 8 "r"
+EqEq 63 2 4 10 "=="
+Number 66 1 4 13 "2"
+LBrace 68 1 4 15 "{"
+Ident 70 6 4 17 "return"
+Number 77 1 4 24 "2"
+RBrace 79 1 4 26 "}"
+Newline 80 1 4 27 "\n"
+Ident 85 1 5 5 "r"
+Minus 87 1 5 7 "-"
+Number 89 1 5 9 "1"
+Newline 90 1 5 10 "\n"
+RBrace 91 1 6 1 "}"
+Newline 92 1 6 2 "\n"
+Ident 94 2 8 1 "fn"
+Ident 97 4 8 4 "main"
+LParen 101 1 8 8 "("
+RParen 102 1 8 9 ")"
+LBrace 104 1 8 11 "{"
+Ident 106 5 8 13 "print"
+LParen 111 1 8 18 "("
+Ident 112 8 8 19 "rejected"
+LParen 120 1 8 27 "("
+Number 121 1 8 28 "1"
+RParen 122 1 8 29 ")"
+RParen 123 1 8 30 ")"
+RBrace 125 1 8 32 "}"
+Newline 126 1 8 33 "\n"
+Eof 127 0 9 1 ""
+== tree ==
+file "main.nl"
+Program 0..127
+  TypeAlias 0..21 name="Size"
+    AliasedType 12..21 name="int" range=1..=3 policy=checked
+  Function 23..92 name="rejected" recursive=false generics=[]
+    Parameter 35..42 name="r" mode=read
+      ParameterType 38..42 name="Size" range=none policy=checked
+    ResultType 47..51 name="Size" range=none policy=checked
+    Block 52..92
+      ExpressionStatement 58..80
+        If 58..80
+          Binary 61..67 op=eq
+            Name 61..62 name="r"
+            Integer 66..67 magnitude=2 negative=false long_suffix=false
+          Block 68..80
+            ReturnStatement 70..78
+              Integer 77..78 magnitude=2 negative=false long_suffix=false
+      Binary 85..90 op=sub
+        Name 85..86 name="r"
+        Integer 89..90 magnitude=1 negative=false long_suffix=false
+  Function 94..126 name="main" recursive=false generics=[]
+    Block 104..126
+      Call 106..124 name="print"
+        Call 112..123 name="rejected"
+          Integer 121..122 magnitude=1 negative=false long_suffix=false

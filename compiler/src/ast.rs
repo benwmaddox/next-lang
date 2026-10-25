@@ -3,6 +3,10 @@ pub struct Span {
     pub file: usize,
     pub line: usize,
     pub col: usize,
+    /// Inclusive source byte offset. Token and parser spans use byte columns and offsets.
+    pub start_offset: usize,
+    /// Exclusive source byte offset.
+    pub end_offset: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -31,16 +35,33 @@ pub struct FunctionTypeAst {
 pub struct FunctionTypeParamAst {
     pub mode: ParamMode,
     pub ty: TypeAst,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
 pub enum FunctionEffectAst {
-    Out,
-    Env,
-    FsRead,
-    FsWrite,
-    Reads { path: String, span: Span },
-    Writes { path: String, span: Span },
+    Out {
+        span: Span,
+    },
+    Env {
+        span: Span,
+    },
+    FsRead {
+        span: Span,
+    },
+    FsWrite {
+        span: Span,
+    },
+    Reads {
+        path: String,
+        span: Span,
+        node_span: Span,
+    },
+    Writes {
+        path: String,
+        span: Span,
+        node_span: Span,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -74,6 +95,7 @@ pub struct GlobalDecl {
     pub name: String,
     pub ty: TypeAst,
     pub value: Expr,
+    pub prefault: bool,
     pub span: Span,
 }
 
@@ -340,6 +362,7 @@ pub struct StructInitField {
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Block,
+    pub pattern_span: Span,
     pub span: Span,
 }
 
@@ -353,6 +376,7 @@ pub enum Pattern {
         name: String,
         name_span: Span,
         bindings: Vec<Option<(String, Span)>>,
+        binding_spans: Vec<Span>,
     },
 }
 

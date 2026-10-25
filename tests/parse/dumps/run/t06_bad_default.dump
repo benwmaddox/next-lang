@@ -1,0 +1,47 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "type"
+Ident 5 5 1 6 "Small"
+Eq 11 1 1 12 "="
+Ident 13 3 1 14 "int"
+Number 17 1 1 18 "1"
+RangeInclusive 18 3 1 19 "..="
+Number 21 1 1 22 "3"
+Newline 22 1 1 23 "\n"
+Ident 23 6 2 1 "struct"
+Ident 30 8 2 8 "Required"
+LBrace 39 1 2 17 "{"
+Ident 41 5 2 19 "value"
+Colon 46 1 2 24 ":"
+Ident 48 5 2 26 "Small"
+RBrace 54 1 2 32 "}"
+Newline 55 1 2 33 "\n"
+Ident 56 2 3 1 "fn"
+Ident 59 4 3 4 "main"
+LParen 63 1 3 8 "("
+RParen 64 1 3 9 ")"
+LBrace 66 1 3 11 "{"
+Ident 68 3 3 13 "let"
+Ident 72 6 3 17 "values"
+Colon 78 1 3 23 ":"
+Ident 80 8 3 25 "Required"
+LBracket 88 1 3 33 "["
+Number 89 1 3 34 "2"
+RBracket 90 1 3 35 "]"
+RBrace 92 1 3 37 "}"
+Newline 93 1 3 38 "\n"
+Eof 94 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..94
+  TypeAlias 0..22 name="Small"
+    AliasedType 13..22 name="int" range=1..=3 policy=checked
+  Struct 23..55 name="Required" generics=[]
+    StructField 41..53 name="value"
+      FieldType 48..53 name="Small" range=none policy=checked
+  Function 56..93 name="main" recursive=false generics=[]
+    Block 66..93
+      Let 68..91 mutable=false name="values"
+        Annotation 80..91 name="Required" range=none policy=checked
+          Integer 89..90 magnitude=2 negative=false long_suffix=false
+        Call 91..91 name="default"

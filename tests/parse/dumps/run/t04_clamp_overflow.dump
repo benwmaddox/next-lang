@@ -1,0 +1,51 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "type"
+Ident 5 5 1 6 "Clamp"
+Eq 11 1 1 12 "="
+Ident 13 3 1 14 "int"
+Number 17 1 1 18 "0"
+RangeInclusive 18 3 1 19 "..="
+Number 21 3 1 22 "100"
+Ident 25 5 1 26 "clamp"
+Newline 30 1 1 31 "\n"
+Ident 31 2 2 1 "fn"
+Ident 34 4 2 4 "main"
+LParen 38 1 2 8 "("
+RParen 39 1 2 9 ")"
+LBrace 41 1 2 11 "{"
+Newline 42 1 2 12 "\n"
+Ident 47 3 3 5 "var"
+Ident 51 5 3 9 "value"
+Colon 56 1 3 14 ":"
+Ident 58 5 3 16 "Clamp"
+Eq 64 1 3 22 "="
+Number 66 3 3 24 "100"
+Newline 69 1 3 27 "\n"
+Ident 74 5 4 5 "value"
+PlusEq 80 2 4 11 "+="
+Number 83 10 4 14 "2147483647"
+Newline 93 1 4 24 "\n"
+Ident 98 5 5 5 "print"
+LParen 103 1 5 10 "("
+Ident 104 5 5 11 "value"
+RParen 109 1 5 16 ")"
+Newline 110 1 5 17 "\n"
+RBrace 111 1 6 1 "}"
+Newline 112 1 6 2 "\n"
+Eof 113 0 7 1 ""
+== tree ==
+file "main.nl"
+Program 0..113
+  TypeAlias 0..30 name="Clamp"
+    AliasedType 13..30 name="int" range=0..=100 policy=clamp
+  Function 31..112 name="main" recursive=false generics=[]
+    Block 41..112
+      Let 47..69 mutable=true name="value"
+        Annotation 58..63 name="Clamp" range=none policy=checked
+        Integer 66..69 magnitude=100 negative=false long_suffix=false
+      Assign 74..93 op=+=
+        Name 74..79 name="value"
+        Integer 83..93 magnitude=2147483647 negative=false long_suffix=false
+      Call 98..110 name="print"
+        Name 104..109 name="value"

@@ -1,0 +1,83 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 6 1 4 "mutate"
+LParen 9 1 1 10 "("
+Ident 10 6 1 11 "values"
+Colon 16 1 1 17 ":"
+Ident 18 5 1 19 "write"
+Ident 24 4 1 25 "list"
+Lt 28 1 1 29 "<"
+Ident 29 4 1 30 "long"
+Comma 33 1 1 34 ","
+Number 35 1 1 36 "2"
+Gt 36 1 1 37 ">"
+RParen 37 1 1 38 ")"
+LBrace 39 1 1 40 "{"
+RBrace 40 1 1 41 "}"
+Newline 41 1 1 42 "\n"
+Ident 42 2 2 1 "fn"
+Ident 45 4 2 4 "main"
+LParen 49 1 2 8 "("
+RParen 50 1 2 9 ")"
+LBrace 52 1 2 11 "{"
+Ident 54 3 2 13 "var"
+Ident 58 6 2 17 "values"
+Colon 64 1 2 23 ":"
+Ident 66 4 2 25 "list"
+Lt 70 1 2 29 "<"
+Ident 71 4 2 30 "long"
+Comma 75 1 2 34 ","
+Number 77 1 2 36 "2"
+Gt 78 1 2 37 ">"
+Eq 80 1 2 39 "="
+Ident 82 4 2 41 "list"
+LBrace 87 1 2 46 "{"
+RBrace 88 1 2 47 "}"
+Semicolon 89 1 2 48 ";"
+Ident 91 7 2 50 "discard"
+Ident 99 6 2 58 "values"
+Dot 105 1 2 64 "."
+Ident 106 4 2 65 "push"
+LParen 110 1 2 69 "("
+Number 111 2 2 70 "1L"
+RParen 113 1 2 72 ")"
+Semicolon 114 1 2 73 ";"
+Ident 116 3 2 75 "for"
+Ident 120 4 2 79 "item"
+Ident 125 2 2 84 "in"
+Ident 128 6 2 87 "values"
+LBrace 135 1 2 94 "{"
+Ident 137 6 2 96 "mutate"
+LParen 143 1 2 102 "("
+Ident 144 6 2 103 "values"
+RParen 150 1 2 109 ")"
+RBrace 152 1 2 111 "}"
+RBrace 154 1 2 113 "}"
+Newline 155 1 2 114 "\n"
+Eof 156 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..156
+  Function 0..41 name="mutate" recursive=false generics=[]
+    Parameter 10..37 name="values" mode=write
+      ParameterType 24..37 name="list" range=none policy=checked
+        TypeArgument 29..33 name="long" range=none policy=checked
+        Integer 35..36 magnitude=2 negative=false long_suffix=false
+    Block 39..41
+  Function 42..155 name="main" recursive=false generics=[]
+    Block 52..155
+      Let 54..89 mutable=true name="values"
+        Annotation 66..79 name="list" range=none policy=checked
+          TypeArgument 71..75 name="long" range=none policy=checked
+          Integer 77..78 magnitude=2 negative=false long_suffix=false
+        ListLiteral 82..89
+      Discard 91..114
+        MethodCall 99..114 name="push"
+          Name 99..105 name="values"
+          Integer 111..113 magnitude=1 negative=false long_suffix=true
+      ForEach 116..153 name="item" indexes=[]
+        Name 128..134 name="values"
+        Block 135..153
+          Call 137..151 name="mutate"
+            Name 144..150 name="values"

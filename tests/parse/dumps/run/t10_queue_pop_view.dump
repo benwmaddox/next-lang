@@ -1,0 +1,68 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "var"
+Ident 20 1 2 9 "q"
+Colon 21 1 2 10 ":"
+Ident 23 5 2 12 "queue"
+Lt 28 1 2 17 "<"
+Ident 29 4 2 18 "long"
+Comma 33 1 2 22 ","
+Number 35 1 2 24 "2"
+Gt 36 1 2 25 ">"
+Eq 38 1 2 27 "="
+Ident 40 5 2 29 "queue"
+LBrace 46 1 2 35 "{"
+RBrace 47 1 2 36 "}"
+Newline 48 1 2 37 "\n"
+Ident 53 7 3 5 "discard"
+Ident 61 1 3 13 "q"
+Dot 62 1 3 14 "."
+Ident 63 4 3 15 "push"
+LParen 67 1 3 19 "("
+Number 68 2 3 20 "1L"
+RParen 70 1 3 22 ")"
+Newline 71 1 3 23 "\n"
+Ident 76 3 4 5 "for"
+Ident 80 4 4 9 "item"
+Ident 85 2 4 14 "in"
+Ident 88 1 4 17 "q"
+LBrace 90 1 4 19 "{"
+Newline 91 1 4 20 "\n"
+Ident 100 7 5 9 "discard"
+Ident 108 1 5 17 "q"
+Dot 109 1 5 18 "."
+Ident 110 3 5 19 "pop"
+LParen 113 1 5 22 "("
+RParen 114 1 5 23 ")"
+Newline 115 1 5 24 "\n"
+RBrace 120 1 6 5 "}"
+Newline 121 1 6 6 "\n"
+RBrace 122 1 7 1 "}"
+Newline 123 1 7 2 "\n"
+Eof 124 0 8 1 ""
+== tree ==
+file "main.nl"
+Program 0..124
+  Function 0..123 name="main" recursive=false generics=[]
+    Block 10..123
+      Let 16..48 mutable=true name="q"
+        Annotation 23..37 name="queue" range=none policy=checked
+          TypeArgument 29..33 name="long" range=none policy=checked
+          Integer 35..36 magnitude=2 negative=false long_suffix=false
+        QueueLiteral 40..48
+      Discard 53..71
+        MethodCall 61..71 name="push"
+          Name 61..62 name="q"
+          Integer 68..70 magnitude=1 negative=false long_suffix=true
+      ForEach 76..121 name="item" indexes=[]
+        Name 88..89 name="q"
+        Block 90..121
+          Discard 100..115
+            MethodCall 108..115 name="pop"
+              Name 108..109 name="q"

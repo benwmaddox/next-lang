@@ -1,0 +1,92 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 6 1 4 "mutate"
+LParen 9 1 1 10 "("
+Ident 10 5 1 11 "value"
+Colon 15 1 1 16 ":"
+Ident 17 5 1 18 "write"
+Ident 23 3 1 24 "int"
+RParen 26 1 1 27 ")"
+LBrace 28 1 1 29 "{"
+Ident 30 5 1 31 "value"
+PlusEq 36 2 1 37 "+="
+Number 39 1 1 40 "1"
+RBrace 41 1 1 42 "}"
+Newline 42 1 1 43 "\n"
+Ident 43 2 2 1 "fn"
+Ident 46 7 2 4 "wrapper"
+LParen 53 1 2 11 "("
+Ident 54 5 2 12 "value"
+Colon 59 1 2 17 ":"
+Ident 61 3 2 19 "int"
+RParen 64 1 2 22 ")"
+Arrow 66 2 2 24 "->"
+Ident 69 3 2 27 "int"
+LBrace 73 1 2 31 "{"
+Newline 74 1 2 32 "\n"
+Ident 79 3 3 5 "var"
+Ident 83 4 3 9 "copy"
+Eq 88 1 3 14 "="
+Ident 90 5 3 16 "value"
+Newline 95 1 3 21 "\n"
+Ident 100 6 4 5 "mutate"
+LParen 106 1 4 11 "("
+Ident 107 4 4 12 "copy"
+RParen 111 1 4 16 ")"
+Newline 112 1 4 17 "\n"
+Ident 117 4 5 5 "copy"
+Newline 121 1 5 9 "\n"
+RBrace 122 1 6 1 "}"
+Newline 123 1 6 2 "\n"
+Ident 124 5 7 1 "const"
+Ident 130 8 7 7 "REJECTED"
+Colon 138 1 7 15 ":"
+Ident 140 3 7 17 "int"
+Eq 144 1 7 21 "="
+Ident 146 7 7 23 "wrapper"
+LParen 153 1 7 30 "("
+Number 154 1 7 31 "4"
+RParen 155 1 7 32 ")"
+Newline 156 1 7 33 "\n"
+Ident 158 2 9 1 "fn"
+Ident 161 4 9 4 "main"
+LParen 165 1 9 8 "("
+RParen 166 1 9 9 ")"
+LBrace 168 1 9 11 "{"
+Ident 170 5 9 13 "print"
+LParen 175 1 9 18 "("
+Ident 176 8 9 19 "REJECTED"
+RParen 184 1 9 27 ")"
+RBrace 186 1 9 29 "}"
+Newline 187 1 9 30 "\n"
+Eof 188 0 10 1 ""
+== tree ==
+file "main.nl"
+Program 0..188
+  Function 0..42 name="mutate" recursive=false generics=[]
+    Parameter 10..26 name="value" mode=write
+      ParameterType 23..26 name="int" range=none policy=checked
+    Block 28..42
+      Assign 30..40 op=+=
+        Name 30..35 name="value"
+        Integer 39..40 magnitude=1 negative=false long_suffix=false
+  Function 43..123 name="wrapper" recursive=false generics=[]
+    Parameter 54..64 name="value" mode=read
+      ParameterType 61..64 name="int" range=none policy=checked
+    ResultType 69..72 name="int" range=none policy=checked
+    Block 73..123
+      Let 79..95 mutable=true name="copy"
+        Name 90..95 name="value"
+      ExpressionStatement 100..112
+        Call 100..112 name="mutate"
+          Name 107..111 name="copy"
+      Name 117..121 name="copy"
+  Const 124..156 name="REJECTED"
+    DeclaredType 140..143 name="int" range=none policy=checked
+    Call 146..156 name="wrapper"
+      Integer 154..155 magnitude=4 negative=false long_suffix=false
+  Function 158..187 name="main" recursive=false generics=[]
+    Block 168..187
+      Call 170..185 name="print"
+        Name 176..184 name="REJECTED"

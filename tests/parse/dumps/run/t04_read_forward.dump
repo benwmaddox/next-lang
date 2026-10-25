@@ -1,0 +1,62 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 3 1 4 "set"
+LParen 6 1 1 7 "("
+Ident 7 1 1 8 "x"
+Colon 8 1 1 9 ":"
+Ident 10 5 1 11 "write"
+Ident 16 3 1 17 "int"
+RParen 19 1 1 20 ")"
+LBrace 21 1 1 22 "{"
+Ident 23 1 1 24 "x"
+Eq 25 1 1 26 "="
+Number 27 1 1 28 "5"
+RBrace 29 1 1 30 "}"
+Newline 30 1 1 31 "\n"
+Ident 31 2 2 1 "fn"
+Ident 34 4 2 4 "read"
+LParen 38 1 2 8 "("
+Ident 39 1 2 9 "x"
+Colon 40 1 2 10 ":"
+Ident 42 3 2 12 "int"
+RParen 45 1 2 15 ")"
+LBrace 47 1 2 17 "{"
+Ident 49 3 2 19 "set"
+LParen 52 1 2 22 "("
+Ident 53 1 2 23 "x"
+RParen 54 1 2 24 ")"
+RBrace 56 1 2 26 "}"
+Newline 57 1 2 27 "\n"
+Ident 58 2 3 1 "fn"
+Ident 61 4 3 4 "main"
+LParen 65 1 3 8 "("
+RParen 66 1 3 9 ")"
+LBrace 68 1 3 11 "{"
+Ident 70 4 3 13 "read"
+LParen 74 1 3 17 "("
+Number 75 1 3 18 "2"
+RParen 76 1 3 19 ")"
+RBrace 78 1 3 21 "}"
+Newline 79 1 3 22 "\n"
+Eof 80 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..80
+  Function 0..30 name="set" recursive=false generics=[]
+    Parameter 7..19 name="x" mode=write
+      ParameterType 16..19 name="int" range=none policy=checked
+    Block 21..30
+      Assign 23..28 op==
+        Name 23..24 name="x"
+        Integer 27..28 magnitude=5 negative=false long_suffix=false
+  Function 31..57 name="read" recursive=false generics=[]
+    Parameter 39..45 name="x" mode=read
+      ParameterType 42..45 name="int" range=none policy=checked
+    Block 47..57
+      Call 49..55 name="set"
+        Name 53..54 name="x"
+  Function 58..79 name="main" recursive=false generics=[]
+    Block 68..79
+      Call 70..77 name="read"
+        Integer 75..76 magnitude=2 negative=false long_suffix=false

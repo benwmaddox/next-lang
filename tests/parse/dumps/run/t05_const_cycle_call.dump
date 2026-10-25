@@ -1,0 +1,55 @@
+== tokens ==
+file "main.nl"
+Ident 0 5 1 1 "const"
+Ident 6 5 1 7 "FIRST"
+Colon 11 1 1 12 ":"
+Ident 13 3 1 14 "int"
+Eq 17 1 1 18 "="
+Ident 19 11 1 20 "read_second"
+LParen 30 1 1 31 "("
+RParen 31 1 1 32 ")"
+Newline 32 1 1 33 "\n"
+Ident 33 5 2 1 "const"
+Ident 39 6 2 7 "SECOND"
+Colon 45 1 2 13 ":"
+Ident 47 3 2 15 "int"
+Eq 51 1 2 19 "="
+Ident 53 5 2 21 "FIRST"
+Plus 59 1 2 27 "+"
+Number 61 1 2 29 "1"
+Newline 62 1 2 30 "\n"
+Ident 64 2 4 1 "fn"
+Ident 67 11 4 4 "read_second"
+LParen 78 1 4 15 "("
+RParen 79 1 4 16 ")"
+Arrow 81 2 4 18 "->"
+Ident 84 3 4 21 "int"
+LBrace 88 1 4 25 "{"
+Ident 90 6 4 27 "SECOND"
+RBrace 97 1 4 34 "}"
+Newline 98 1 4 35 "\n"
+Ident 99 2 5 1 "fn"
+Ident 102 4 5 4 "main"
+LParen 106 1 5 8 "("
+RParen 107 1 5 9 ")"
+LBrace 109 1 5 11 "{"
+RBrace 110 1 5 12 "}"
+Newline 111 1 5 13 "\n"
+Eof 112 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..112
+  Const 0..32 name="FIRST"
+    DeclaredType 13..16 name="int" range=none policy=checked
+    Call 19..32 name="read_second"
+  Const 33..62 name="SECOND"
+    DeclaredType 47..50 name="int" range=none policy=checked
+    Binary 53..62 op=add
+      Name 53..58 name="FIRST"
+      Integer 61..62 magnitude=1 negative=false long_suffix=false
+  Function 64..98 name="read_second" recursive=false generics=[]
+    ResultType 84..87 name="int" range=none policy=checked
+    Block 88..98
+      Name 90..96 name="SECOND"
+  Function 99..111 name="main" recursive=false generics=[]
+    Block 109..111

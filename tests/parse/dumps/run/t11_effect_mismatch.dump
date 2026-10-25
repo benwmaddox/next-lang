@@ -1,0 +1,75 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 8 1 4 "announce"
+LParen 11 1 1 12 "("
+Ident 12 5 1 13 "value"
+Colon 17 1 1 18 ":"
+Ident 19 3 1 20 "int"
+RParen 22 1 1 23 ")"
+Arrow 24 2 1 25 "->"
+Ident 27 3 1 28 "int"
+LBrace 31 1 1 32 "{"
+Newline 32 1 1 33 "\n"
+Ident 37 5 2 5 "print"
+LParen 42 1 2 10 "("
+Ident 43 5 2 11 "value"
+RParen 48 1 2 16 ")"
+Newline 49 1 2 17 "\n"
+Ident 54 5 3 5 "value"
+Newline 59 1 3 10 "\n"
+RBrace 60 1 4 1 "}"
+Newline 61 1 4 2 "\n"
+Ident 63 2 6 1 "fn"
+Ident 66 4 6 4 "main"
+LParen 70 1 6 8 "("
+RParen 71 1 6 9 ")"
+LBrace 73 1 6 11 "{"
+Newline 74 1 6 12 "\n"
+Ident 79 3 7 5 "let"
+Ident 83 8 7 9 "callback"
+Colon 91 1 7 17 ":"
+Ident 93 2 7 19 "fn"
+LParen 95 1 7 21 "("
+Ident 96 3 7 22 "int"
+RParen 99 1 7 25 ")"
+Arrow 101 2 7 27 "->"
+Ident 104 3 7 30 "int"
+Eq 108 1 7 34 "="
+Ident 110 8 7 36 "announce"
+Newline 118 1 7 44 "\n"
+Ident 123 5 8 5 "print"
+LParen 128 1 8 10 "("
+Ident 129 8 8 11 "callback"
+LParen 137 1 8 19 "("
+Number 138 1 8 20 "1"
+RParen 139 1 8 21 ")"
+RParen 140 1 8 22 ")"
+Newline 141 1 8 23 "\n"
+RBrace 142 1 9 1 "}"
+Newline 143 1 9 2 "\n"
+Eof 144 0 10 1 ""
+== tree ==
+file "main.nl"
+Program 0..144
+  Function 0..61 name="announce" recursive=false generics=[]
+    Parameter 12..22 name="value" mode=read
+      ParameterType 19..22 name="int" range=none policy=checked
+    ResultType 27..30 name="int" range=none policy=checked
+    Block 31..61
+      ExpressionStatement 37..49
+        Call 37..49 name="print"
+          Name 43..48 name="value"
+      Name 54..59 name="value"
+  Function 63..143 name="main" recursive=false generics=[]
+    Block 73..143
+      Let 79..118 mutable=false name="callback"
+        Annotation 93..107 name="fn" range=none policy=checked
+          FunctionType 93..107
+            FunctionTypeParameter 96..99 mode=read
+              ParameterType 96..99 name="int" range=none policy=checked
+            ResultType 104..107 name="int" range=none policy=checked
+        Name 110..118 name="announce"
+      Call 123..141 name="print"
+        Call 129..140 name="callback"
+          Integer 138..139 magnitude=1 negative=false long_suffix=false

@@ -1,0 +1,110 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 9 1 4 "last_step"
+LParen 12 1 1 13 "("
+Ident 13 5 1 14 "value"
+Colon 18 1 1 19 ":"
+Ident 20 3 1 21 "int"
+RParen 23 1 1 24 ")"
+Arrow 25 2 1 26 "->"
+Ident 28 3 1 29 "int"
+LBrace 32 1 1 33 "{"
+Newline 33 1 1 34 "\n"
+Ident 38 5 2 5 "print"
+LParen 43 1 2 10 "("
+Ident 44 5 2 11 "value"
+RParen 49 1 2 16 ")"
+Newline 50 1 2 17 "\n"
+Ident 55 5 3 5 "value"
+Newline 60 1 3 10 "\n"
+RBrace 61 1 4 1 "}"
+Newline 62 1 4 2 "\n"
+Ident 64 2 6 1 "fn"
+Ident 67 6 6 4 "middle"
+LParen 73 1 6 10 "("
+Ident 74 5 6 11 "value"
+Colon 79 1 6 16 ":"
+Ident 81 3 6 18 "int"
+RParen 84 1 6 21 ")"
+Arrow 86 2 6 23 "->"
+Ident 89 3 6 26 "int"
+LBrace 93 1 6 30 "{"
+Ident 95 9 6 32 "last_step"
+LParen 104 1 6 41 "("
+Ident 105 5 6 42 "value"
+RParen 110 1 6 47 ")"
+RBrace 112 1 6 49 "}"
+Newline 113 1 6 50 "\n"
+Ident 114 2 7 1 "fn"
+Ident 117 5 7 4 "first"
+LParen 122 1 7 9 "("
+Ident 123 5 7 10 "value"
+Colon 128 1 7 15 ":"
+Ident 130 3 7 17 "int"
+RParen 133 1 7 20 ")"
+Arrow 135 2 7 22 "->"
+Ident 138 3 7 25 "int"
+LBrace 142 1 7 29 "{"
+Ident 144 6 7 31 "middle"
+LParen 150 1 7 37 "("
+Ident 151 5 7 38 "value"
+RParen 156 1 7 43 ")"
+RBrace 158 1 7 45 "}"
+Newline 159 1 7 46 "\n"
+Ident 160 5 8 1 "const"
+Ident 166 8 8 7 "REJECTED"
+Colon 174 1 8 15 ":"
+Ident 176 3 8 17 "int"
+Eq 180 1 8 21 "="
+Ident 182 5 8 23 "first"
+LParen 187 1 8 28 "("
+Number 188 1 8 29 "7"
+RParen 189 1 8 30 ")"
+Newline 190 1 8 31 "\n"
+Ident 192 2 10 1 "fn"
+Ident 195 4 10 4 "main"
+LParen 199 1 10 8 "("
+RParen 200 1 10 9 ")"
+LBrace 202 1 10 11 "{"
+Ident 204 5 10 13 "print"
+LParen 209 1 10 18 "("
+Ident 210 8 10 19 "REJECTED"
+RParen 218 1 10 27 ")"
+RBrace 220 1 10 29 "}"
+Newline 221 1 10 30 "\n"
+Eof 222 0 11 1 ""
+== tree ==
+file "main.nl"
+Program 0..222
+  Function 0..62 name="last_step" recursive=false generics=[]
+    Parameter 13..23 name="value" mode=read
+      ParameterType 20..23 name="int" range=none policy=checked
+    ResultType 28..31 name="int" range=none policy=checked
+    Block 32..62
+      ExpressionStatement 38..50
+        Call 38..50 name="print"
+          Name 44..49 name="value"
+      Name 55..60 name="value"
+  Function 64..113 name="middle" recursive=false generics=[]
+    Parameter 74..84 name="value" mode=read
+      ParameterType 81..84 name="int" range=none policy=checked
+    ResultType 89..92 name="int" range=none policy=checked
+    Block 93..113
+      Call 95..111 name="last_step"
+        Name 105..110 name="value"
+  Function 114..159 name="first" recursive=false generics=[]
+    Parameter 123..133 name="value" mode=read
+      ParameterType 130..133 name="int" range=none policy=checked
+    ResultType 138..141 name="int" range=none policy=checked
+    Block 142..159
+      Call 144..157 name="middle"
+        Name 151..156 name="value"
+  Const 160..190 name="REJECTED"
+    DeclaredType 176..179 name="int" range=none policy=checked
+    Call 182..190 name="first"
+      Integer 188..189 magnitude=7 negative=false long_suffix=false
+  Function 192..221 name="main" recursive=false generics=[]
+    Block 202..221
+      Call 204..219 name="print"
+        Name 210..218 name="REJECTED"

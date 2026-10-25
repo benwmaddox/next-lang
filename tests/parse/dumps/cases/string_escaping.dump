@@ -1,0 +1,21 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Ident 12 5 1 13 "print"
+LParen 17 1 1 18 "("
+String 18 16 1 19 "\"é \\\" \\\\ \\n \\t\""
+RParen 34 1 1 35 ")"
+RBrace 36 1 1 37 "}"
+Newline 37 1 1 38 "\n"
+Eof 38 0 2 1 ""
+== tree ==
+file "main.nl"
+Program 0..38
+  Function 0..37 name="main" recursive=false generics=[]
+    Block 10..37
+      Call 12..35 name="print"
+        ByteString 18..34 value="é \" \\ \n \t"

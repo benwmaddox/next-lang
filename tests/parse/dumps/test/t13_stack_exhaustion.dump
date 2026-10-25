@@ -1,0 +1,103 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "test"
+String 5 49 1 6 "\"bounded local fits the normal stack reservation\""
+LBrace 55 1 1 56 "{"
+Newline 56 1 1 57 "\n"
+Ident 61 3 2 5 "let"
+Ident 65 6 2 9 "values"
+Colon 71 1 2 15 ":"
+Ident 73 4 2 17 "long"
+LBracket 77 1 2 21 "["
+Number 78 4 2 22 "8192"
+RBracket 82 1 2 26 "]"
+Eq 84 1 2 28 "="
+Ident 86 4 2 30 "fill"
+LParen 90 1 2 34 "("
+Number 91 2 2 35 "1L"
+RParen 93 1 2 37 ")"
+Newline 94 1 2 38 "\n"
+Ident 99 6 3 5 "expect"
+Ident 106 6 3 12 "values"
+LBracket 112 1 3 18 "["
+Number 113 5 3 19 "8191L"
+RBracket 118 1 3 24 "]"
+EqEq 120 2 3 26 "=="
+Number 123 2 3 29 "1L"
+Newline 125 1 3 31 "\n"
+RBrace 126 1 4 1 "}"
+Newline 127 1 4 2 "\n"
+Ident 129 4 6 1 "test"
+String 134 40 6 6 "\"iteration region is released each time\""
+LBrace 175 1 6 47 "{"
+Newline 176 1 6 48 "\n"
+Ident 181 3 7 5 "for"
+Ident 185 1 7 9 "i"
+Colon 186 1 7 10 ":"
+Ident 188 4 7 12 "long"
+Ident 193 2 7 17 "in"
+Number 196 2 7 20 "0L"
+Range 198 2 7 22 ".."
+Number 200 2 7 24 "8L"
+LBrace 203 1 7 27 "{"
+Newline 204 1 7 28 "\n"
+Ident 213 3 8 9 "let"
+Ident 217 7 8 13 "scratch"
+Colon 224 1 8 20 ":"
+Ident 226 4 8 22 "long"
+LBracket 230 1 8 26 "["
+Number 231 4 8 27 "1024"
+RBracket 235 1 8 31 "]"
+Eq 237 1 8 33 "="
+Ident 239 4 8 35 "fill"
+LParen 243 1 8 39 "("
+Ident 244 1 8 40 "i"
+RParen 245 1 8 41 ")"
+Newline 246 1 8 42 "\n"
+Ident 255 6 9 9 "expect"
+Ident 262 7 9 16 "scratch"
+LBracket 269 1 9 23 "["
+Number 270 2 9 24 "0L"
+RBracket 272 1 9 26 "]"
+EqEq 274 2 9 28 "=="
+Ident 277 1 9 31 "i"
+Newline 278 1 9 32 "\n"
+RBrace 283 1 10 5 "}"
+Newline 284 1 10 6 "\n"
+RBrace 285 1 11 1 "}"
+Newline 286 1 11 2 "\n"
+Eof 287 0 12 1 ""
+== tree ==
+file "main.nl"
+Program 0..287
+  Test 0..127 name="bounded local fits the normal stack reservation"
+    Block 55..127
+      Let 61..94 mutable=false name="values"
+        Annotation 73..83 name="long" range=none policy=checked
+          Integer 78..82 magnitude=8192 negative=false long_suffix=false
+        Call 86..94 name="fill"
+          Integer 91..93 magnitude=1 negative=false long_suffix=true
+      Expect 99..125 source="expect values[8191L] == 1L"
+        Binary 106..125 op=eq
+          Index 106..119
+            Name 106..112 name="values"
+            Integer 113..118 magnitude=8191 negative=false long_suffix=true
+          Integer 123..125 magnitude=1 negative=false long_suffix=true
+  Test 129..286 name="iteration region is released each time"
+    Block 175..286
+      For 181..284 name="i" inclusive=false
+        Annotation 188..192 name="long" range=none policy=checked
+        Integer 196..198 magnitude=0 negative=false long_suffix=true
+        Integer 200..202 magnitude=8 negative=false long_suffix=true
+        Block 203..284
+          Let 213..246 mutable=false name="scratch"
+            Annotation 226..236 name="long" range=none policy=checked
+              Integer 231..235 magnitude=1024 negative=false long_suffix=false
+            Call 239..246 name="fill"
+              Name 244..245 name="i"
+          Expect 255..278 source="expect scratch[0L] == i"
+            Binary 262..278 op=eq
+              Index 262..273
+                Name 262..269 name="scratch"
+                Integer 270..272 magnitude=0 negative=false long_suffix=true
+              Name 277..278 name="i"

@@ -1,0 +1,40 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "let"
+Ident 20 9 2 9 "too_large"
+Colon 29 1 2 18 ":"
+Ident 31 4 2 20 "grid"
+Lt 35 1 2 24 "<"
+Ident 36 3 2 25 "int"
+Comma 39 1 2 28 ","
+Number 41 10 2 30 "3037000500"
+Comma 51 1 2 40 ","
+Number 53 10 2 42 "3037000500"
+Gt 63 1 2 52 ">"
+Eq 65 1 2 54 "="
+Ident 67 4 2 56 "fill"
+LParen 71 1 2 60 "("
+Number 72 1 2 61 "0"
+RParen 73 1 2 62 ")"
+Newline 74 1 2 63 "\n"
+RBrace 75 1 3 1 "}"
+Newline 76 1 3 2 "\n"
+Eof 77 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..77
+  Function 0..76 name="main" recursive=false generics=[]
+    Block 10..76
+      Let 16..74 mutable=false name="too_large"
+        Annotation 31..64 name="grid" range=none policy=checked
+          TypeArgument 36..39 name="int" range=none policy=checked
+          Integer 41..51 magnitude=3037000500 negative=false long_suffix=false
+          Integer 53..63 magnitude=3037000500 negative=false long_suffix=false
+        Call 67..74 name="fill"
+          Integer 72..73 magnitude=0 negative=false long_suffix=false

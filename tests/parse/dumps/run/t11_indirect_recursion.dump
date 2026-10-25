@@ -1,0 +1,71 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 5 1 4 "recur"
+LParen 8 1 1 9 "("
+Ident 9 5 1 10 "value"
+Colon 14 1 1 15 ":"
+Ident 16 3 1 17 "int"
+RParen 19 1 1 20 ")"
+Arrow 21 2 1 22 "->"
+Ident 24 3 1 25 "int"
+LBrace 28 1 1 29 "{"
+Newline 29 1 1 30 "\n"
+Ident 34 3 2 5 "let"
+Ident 38 8 2 9 "callback"
+Colon 46 1 2 17 ":"
+Ident 48 2 2 19 "fn"
+LParen 50 1 2 21 "("
+Ident 51 3 2 22 "int"
+RParen 54 1 2 25 ")"
+Arrow 56 2 2 27 "->"
+Ident 59 3 2 30 "int"
+Eq 63 1 2 34 "="
+Ident 65 5 2 36 "recur"
+Newline 70 1 2 41 "\n"
+Ident 75 8 3 5 "callback"
+LParen 83 1 3 13 "("
+Ident 84 5 3 14 "value"
+RParen 89 1 3 19 ")"
+Newline 90 1 3 20 "\n"
+RBrace 91 1 4 1 "}"
+Newline 92 1 4 2 "\n"
+Ident 94 2 6 1 "fn"
+Ident 97 4 6 4 "main"
+LParen 101 1 6 8 "("
+RParen 102 1 6 9 ")"
+LBrace 104 1 6 11 "{"
+Newline 105 1 6 12 "\n"
+Ident 110 5 7 5 "print"
+LParen 115 1 7 10 "("
+Ident 116 5 7 11 "recur"
+LParen 121 1 7 16 "("
+Number 122 1 7 17 "1"
+RParen 123 1 7 18 ")"
+RParen 124 1 7 19 ")"
+Newline 125 1 7 20 "\n"
+RBrace 126 1 8 1 "}"
+Newline 127 1 8 2 "\n"
+Eof 128 0 9 1 ""
+== tree ==
+file "main.nl"
+Program 0..128
+  Function 0..92 name="recur" recursive=false generics=[]
+    Parameter 9..19 name="value" mode=read
+      ParameterType 16..19 name="int" range=none policy=checked
+    ResultType 24..27 name="int" range=none policy=checked
+    Block 28..92
+      Let 34..70 mutable=false name="callback"
+        Annotation 48..62 name="fn" range=none policy=checked
+          FunctionType 48..62
+            FunctionTypeParameter 51..54 mode=read
+              ParameterType 51..54 name="int" range=none policy=checked
+            ResultType 59..62 name="int" range=none policy=checked
+        Name 65..70 name="recur"
+      Call 75..90 name="callback"
+        Name 84..89 name="value"
+  Function 94..127 name="main" recursive=false generics=[]
+    Block 104..127
+      Call 110..125 name="print"
+        Call 116..124 name="recur"
+          Integer 122..123 magnitude=1 negative=false long_suffix=false

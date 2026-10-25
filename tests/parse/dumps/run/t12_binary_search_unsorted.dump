@@ -1,0 +1,84 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "var"
+Ident 20 6 2 9 "values"
+Colon 26 1 2 15 ":"
+Ident 28 4 2 17 "long"
+LBracket 32 1 2 21 "["
+Number 33 1 2 22 "3"
+RBracket 34 1 2 23 "]"
+Eq 36 1 2 25 "="
+Ident 38 4 2 27 "fill"
+LParen 42 1 2 31 "("
+Number 43 2 2 32 "0L"
+RParen 45 1 2 34 ")"
+Newline 46 1 2 35 "\n"
+Ident 51 6 3 5 "values"
+LBracket 57 1 3 11 "["
+Number 58 2 3 12 "0L"
+RBracket 60 1 3 14 "]"
+Eq 62 1 3 16 "="
+Number 64 2 3 18 "2L"
+Newline 66 1 3 20 "\n"
+Ident 71 6 4 5 "values"
+LBracket 77 1 4 11 "["
+Number 78 2 4 12 "1L"
+RBracket 80 1 4 14 "]"
+Eq 82 1 4 16 "="
+Number 84 2 4 18 "1L"
+Newline 86 1 4 20 "\n"
+Ident 91 6 5 5 "values"
+LBracket 97 1 5 11 "["
+Number 98 2 5 12 "2L"
+RBracket 100 1 5 14 "]"
+Eq 102 1 5 16 "="
+Number 104 2 5 18 "3L"
+Newline 106 1 5 20 "\n"
+Ident 111 5 6 5 "print"
+LParen 116 1 6 10 "("
+Ident 117 13 6 11 "binary_search"
+LParen 130 1 6 24 "("
+Ident 131 6 6 25 "values"
+Comma 137 1 6 31 ","
+Number 139 2 6 33 "2L"
+RParen 141 1 6 35 ")"
+RParen 142 1 6 36 ")"
+Newline 143 1 6 37 "\n"
+RBrace 144 1 7 1 "}"
+Newline 145 1 7 2 "\n"
+Eof 146 0 8 1 ""
+== tree ==
+file "main.nl"
+Program 0..146
+  Function 0..145 name="main" recursive=false generics=[]
+    Block 10..145
+      Let 16..46 mutable=true name="values"
+        Annotation 28..35 name="long" range=none policy=checked
+          Integer 33..34 magnitude=3 negative=false long_suffix=false
+        Call 38..46 name="fill"
+          Integer 43..45 magnitude=0 negative=false long_suffix=true
+      Assign 51..66 op==
+        Index 51..61
+          Name 51..57 name="values"
+          Integer 58..60 magnitude=0 negative=false long_suffix=true
+        Integer 64..66 magnitude=2 negative=false long_suffix=true
+      Assign 71..86 op==
+        Index 71..81
+          Name 71..77 name="values"
+          Integer 78..80 magnitude=1 negative=false long_suffix=true
+        Integer 84..86 magnitude=1 negative=false long_suffix=true
+      Assign 91..106 op==
+        Index 91..101
+          Name 91..97 name="values"
+          Integer 98..100 magnitude=2 negative=false long_suffix=true
+        Integer 104..106 magnitude=3 negative=false long_suffix=true
+      Call 111..143 name="print"
+        Call 117..142 name="binary_search"
+          Name 131..137 name="values"
+          Integer 139..141 magnitude=2 negative=false long_suffix=true

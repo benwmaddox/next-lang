@@ -1,0 +1,998 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 3 1 8 "Ops"
+LBrace 11 1 1 12 "{"
+Newline 12 1 1 13 "\n"
+Ident 17 3 2 5 "add"
+Colon 20 1 2 8 ":"
+Ident 22 2 2 10 "fn"
+LParen 24 1 2 12 "("
+Ident 25 3 2 13 "int"
+Comma 28 1 2 16 ","
+Ident 30 3 2 18 "int"
+RParen 33 1 2 21 ")"
+Arrow 35 2 2 23 "->"
+Ident 38 3 2 26 "int"
+Comma 41 1 2 29 ","
+Newline 42 1 2 30 "\n"
+Ident 47 3 3 5 "run"
+Colon 50 1 3 8 ":"
+Ident 52 2 3 10 "fn"
+LParen 54 1 3 12 "("
+RParen 55 1 3 13 ")"
+Arrow 57 2 3 15 "->"
+Ident 60 3 3 18 "int"
+Newline 63 1 3 21 "\n"
+RBrace 64 1 4 1 "}"
+Newline 65 1 4 2 "\n"
+Ident 67 6 6 1 "struct"
+Ident 74 9 6 8 "OwnerNode"
+Lt 83 1 6 17 "<"
+Ident 84 1 6 18 "P"
+Gt 85 1 6 19 ">"
+LBrace 87 1 6 21 "{"
+Ident 89 5 6 23 "value"
+Colon 94 1 6 28 ":"
+Ident 96 4 6 30 "long"
+RBrace 101 1 6 35 "}"
+Newline 102 1 6 36 "\n"
+Ident 103 6 7 1 "struct"
+Ident 110 10 7 8 "OwnerState"
+Lt 120 1 7 18 "<"
+Ident 121 1 7 19 "P"
+Gt 122 1 7 20 ">"
+LBrace 124 1 7 22 "{"
+Ident 126 5 7 24 "nodes"
+Colon 131 1 7 29 ":"
+Ident 133 4 7 31 "pool"
+Lt 137 1 7 35 "<"
+Ident 138 9 7 36 "OwnerNode"
+Lt 147 1 7 45 "<"
+Ident 148 1 7 46 "P"
+Gt 149 1 7 47 ">"
+Comma 150 1 7 48 ","
+Number 152 1 7 50 "1"
+Comma 153 1 7 51 ","
+Ident 155 1 7 53 "P"
+Gt 156 1 7 54 ">"
+Comma 157 1 7 55 ","
+Ident 159 5 7 57 "score"
+Colon 164 1 7 62 ":"
+Ident 166 3 7 64 "int"
+RBrace 170 1 7 68 "}"
+Newline 171 1 7 69 "\n"
+Ident 173 6 9 1 "global"
+Ident 180 10 9 8 "global_add"
+Colon 190 1 9 18 ":"
+Ident 192 2 9 20 "fn"
+LParen 194 1 9 22 "("
+Ident 195 3 9 23 "int"
+Comma 198 1 9 26 ","
+Ident 200 3 9 28 "int"
+RParen 203 1 9 31 ")"
+Arrow 205 2 9 33 "->"
+Ident 208 3 9 36 "int"
+Eq 212 1 9 40 "="
+Ident 214 3 9 42 "add"
+Newline 217 1 9 45 "\n"
+Ident 218 6 10 1 "global"
+Ident 225 3 10 8 "app"
+Colon 228 1 10 11 ":"
+Ident 230 10 10 13 "OwnerState"
+Lt 240 1 10 23 "<"
+Ident 241 3 10 24 "app"
+Dot 244 1 10 27 "."
+Ident 245 5 10 28 "nodes"
+Gt 250 1 10 33 ">"
+Eq 252 1 10 35 "="
+Ident 254 10 10 37 "OwnerState"
+LBrace 265 1 10 48 "{"
+Ident 267 5 10 50 "nodes"
+Colon 272 1 10 55 ":"
+Ident 274 4 10 57 "pool"
+LBrace 279 1 10 62 "{"
+RBrace 280 1 10 63 "}"
+Comma 281 1 10 64 ","
+Ident 283 5 10 66 "score"
+Colon 288 1 10 71 ":"
+Number 290 1 10 73 "0"
+RBrace 292 1 10 75 "}"
+Newline 293 1 10 76 "\n"
+Ident 295 2 12 1 "fn"
+Ident 298 3 12 4 "add"
+LParen 301 1 12 7 "("
+Ident 302 1 12 8 "a"
+Colon 303 1 12 9 ":"
+Ident 305 3 12 11 "int"
+Comma 308 1 12 14 ","
+Ident 310 1 12 16 "b"
+Colon 311 1 12 17 ":"
+Ident 313 3 12 19 "int"
+RParen 316 1 12 22 ")"
+Arrow 318 2 12 24 "->"
+Ident 321 3 12 27 "int"
+LBrace 325 1 12 31 "{"
+Ident 327 1 12 33 "a"
+Plus 329 1 12 35 "+"
+Ident 331 1 12 37 "b"
+RBrace 333 1 12 39 "}"
+Newline 334 1 12 40 "\n"
+Ident 335 2 13 1 "fn"
+Ident 338 8 13 4 "subtract"
+LParen 346 1 13 12 "("
+Ident 347 1 13 13 "a"
+Colon 348 1 13 14 ":"
+Ident 350 3 13 16 "int"
+Comma 353 1 13 19 ","
+Ident 355 1 13 21 "b"
+Colon 356 1 13 22 ":"
+Ident 358 3 13 24 "int"
+RParen 361 1 13 27 ")"
+Arrow 363 2 13 29 "->"
+Ident 366 3 13 32 "int"
+LBrace 370 1 13 36 "{"
+Ident 372 1 13 38 "a"
+Minus 374 1 13 40 "-"
+Ident 376 1 13 42 "b"
+RBrace 378 1 13 44 "}"
+Newline 379 1 13 45 "\n"
+Ident 380 2 14 1 "fn"
+Ident 383 9 14 4 "increment"
+LParen 392 1 14 13 "("
+Ident 393 5 14 14 "value"
+Colon 398 1 14 19 ":"
+Ident 400 3 14 21 "int"
+RParen 403 1 14 24 ")"
+Arrow 405 2 14 26 "->"
+Ident 408 3 14 29 "int"
+LBrace 412 1 14 33 "{"
+Ident 414 5 14 35 "value"
+Plus 420 1 14 41 "+"
+Number 422 1 14 43 "1"
+RBrace 424 1 14 45 "}"
+Newline 425 1 14 46 "\n"
+Ident 426 2 15 1 "fn"
+Ident 429 4 15 4 "zero"
+LParen 433 1 15 8 "("
+RParen 434 1 15 9 ")"
+Arrow 436 2 15 11 "->"
+Ident 439 3 15 14 "int"
+LBrace 443 1 15 18 "{"
+Number 445 2 15 20 "77"
+RBrace 448 1 15 23 "}"
+Newline 449 1 15 24 "\n"
+Ident 450 2 16 1 "fn"
+Ident 453 8 16 4 "announce"
+LParen 461 1 16 12 "("
+Ident 462 5 16 13 "value"
+Colon 467 1 16 18 ":"
+Ident 469 3 16 20 "int"
+RParen 472 1 16 23 ")"
+Arrow 474 2 16 25 "->"
+Ident 477 3 16 28 "int"
+LBrace 481 1 16 32 "{"
+Newline 482 1 16 33 "\n"
+Ident 487 5 17 5 "print"
+LParen 492 1 17 10 "("
+Ident 493 5 17 11 "value"
+RParen 498 1 17 16 ")"
+Newline 499 1 17 17 "\n"
+Ident 504 5 18 5 "value"
+Newline 509 1 18 10 "\n"
+RBrace 510 1 19 1 "}"
+Newline 511 1 19 2 "\n"
+Ident 512 2 20 1 "fn"
+Ident 515 11 20 4 "owner_value"
+LParen 526 1 20 15 "("
+Ident 527 2 20 16 "id"
+Colon 529 1 20 18 ":"
+Ident 531 2 20 20 "Id"
+Lt 533 1 20 22 "<"
+Ident 534 3 20 23 "app"
+Dot 537 1 20 26 "."
+Ident 538 5 20 27 "nodes"
+Gt 543 1 20 32 ">"
+RParen 544 1 20 33 ")"
+Arrow 546 2 20 35 "->"
+Ident 549 4 20 38 "long"
+LBrace 554 1 20 43 "{"
+Newline 555 1 20 44 "\n"
+Ident 560 3 21 5 "app"
+Dot 563 1 21 8 "."
+Ident 564 5 21 9 "nodes"
+Dot 569 1 21 14 "."
+Ident 570 3 21 15 "get"
+LParen 573 1 21 18 "("
+Ident 574 2 21 19 "id"
+RParen 576 1 21 21 ")"
+Dot 577 1 21 22 "."
+Ident 578 6 21 23 "unwrap"
+LParen 584 1 21 29 "("
+RParen 585 1 21 30 ")"
+Dot 586 1 21 31 "."
+Ident 587 5 21 32 "value"
+Newline 592 1 21 37 "\n"
+RBrace 593 1 22 1 "}"
+Newline 594 1 22 2 "\n"
+Ident 595 2 23 1 "fn"
+Ident 598 12 23 4 "update_score"
+LParen 610 1 23 16 "("
+Ident 611 5 23 17 "value"
+Colon 616 1 23 22 ":"
+Ident 618 3 23 24 "int"
+RParen 621 1 23 27 ")"
+LBrace 623 1 23 29 "{"
+Ident 625 3 23 31 "app"
+Dot 628 1 23 34 "."
+Ident 629 5 23 35 "score"
+Eq 635 1 23 41 "="
+Ident 637 5 23 43 "value"
+RBrace 643 1 23 49 "}"
+Newline 644 1 23 50 "\n"
+Ident 646 2 25 1 "fn"
+Ident 649 10 25 4 "choose_add"
+LParen 659 1 25 14 "("
+RParen 660 1 25 15 ")"
+Arrow 662 2 25 17 "->"
+Ident 665 2 25 20 "fn"
+LParen 667 1 25 22 "("
+Ident 668 3 25 23 "int"
+Comma 671 1 25 26 ","
+Ident 673 3 25 28 "int"
+RParen 676 1 25 31 ")"
+Arrow 678 2 25 33 "->"
+Ident 681 3 25 36 "int"
+LBrace 685 1 25 40 "{"
+Ident 687 3 25 42 "add"
+RBrace 691 1 25 46 "}"
+Newline 692 1 25 47 "\n"
+Ident 693 2 26 1 "fn"
+Ident 696 5 26 4 "apply"
+LParen 701 1 26 9 "("
+Ident 702 1 26 10 "f"
+Colon 703 1 26 11 ":"
+Ident 705 2 26 13 "fn"
+LParen 707 1 26 15 "("
+Ident 708 3 26 16 "int"
+Comma 711 1 26 19 ","
+Ident 713 3 26 21 "int"
+RParen 716 1 26 24 ")"
+Arrow 718 2 26 26 "->"
+Ident 721 3 26 29 "int"
+Comma 724 1 26 32 ","
+Ident 726 1 26 34 "a"
+Colon 727 1 26 35 ":"
+Ident 729 3 26 37 "int"
+Comma 732 1 26 40 ","
+Ident 734 1 26 42 "b"
+Colon 735 1 26 43 ":"
+Ident 737 3 26 45 "int"
+RParen 740 1 26 48 ")"
+Arrow 742 2 26 50 "->"
+Ident 745 3 26 53 "int"
+LBrace 749 1 26 57 "{"
+Ident 751 1 26 59 "f"
+LParen 752 1 26 60 "("
+Ident 753 1 26 61 "a"
+Comma 754 1 26 62 ","
+Ident 756 1 26 64 "b"
+RParen 757 1 26 65 ")"
+RBrace 759 1 26 67 "}"
+Newline 760 1 26 68 "\n"
+Ident 762 2 28 1 "fn"
+Ident 765 4 28 4 "main"
+LParen 769 1 28 8 "("
+RParen 770 1 28 9 ")"
+LBrace 772 1 28 11 "{"
+Newline 773 1 28 12 "\n"
+Ident 778 3 29 5 "let"
+Ident 782 5 29 9 "local"
+Eq 788 1 29 15 "="
+Ident 790 3 29 17 "add"
+Newline 793 1 29 20 "\n"
+Ident 798 5 30 5 "print"
+LParen 803 1 30 10 "("
+Ident 804 5 30 11 "local"
+LParen 809 1 30 16 "("
+Number 810 2 30 17 "20"
+Comma 812 1 30 19 ","
+Number 814 2 30 21 "22"
+RParen 816 1 30 23 ")"
+RParen 817 1 30 24 ")"
+Newline 818 1 30 25 "\n"
+Ident 823 5 31 5 "print"
+LParen 828 1 31 10 "("
+Ident 829 5 31 11 "apply"
+LParen 834 1 31 16 "("
+Ident 835 3 31 17 "add"
+Comma 838 1 31 20 ","
+Number 840 1 31 22 "3"
+Comma 841 1 31 23 ","
+Number 843 1 31 25 "4"
+RParen 844 1 31 26 ")"
+RParen 845 1 31 27 ")"
+Newline 846 1 31 28 "\n"
+Ident 852 3 33 5 "let"
+Ident 856 8 33 9 "returned"
+Eq 865 1 33 18 "="
+Ident 867 10 33 20 "choose_add"
+LParen 877 1 33 30 "("
+RParen 878 1 33 31 ")"
+Newline 879 1 33 32 "\n"
+Ident 884 5 34 5 "print"
+LParen 889 1 34 10 "("
+Ident 890 8 34 11 "returned"
+LParen 898 1 34 19 "("
+Number 899 1 34 20 "5"
+Comma 900 1 34 21 ","
+Number 902 1 34 23 "6"
+RParen 903 1 34 24 ")"
+RParen 904 1 34 25 ")"
+Newline 905 1 34 26 "\n"
+Ident 911 3 36 5 "let"
+Ident 915 3 36 9 "ops"
+Eq 919 1 36 13 "="
+Ident 921 3 36 15 "Ops"
+LBrace 925 1 36 19 "{"
+Ident 927 3 36 21 "add"
+Colon 930 1 36 24 ":"
+Ident 932 3 36 26 "add"
+Comma 935 1 36 29 ","
+Ident 937 3 36 31 "run"
+Colon 940 1 36 34 ":"
+Ident 942 4 36 36 "zero"
+RBrace 947 1 36 41 "}"
+Newline 948 1 36 42 "\n"
+Ident 953 5 37 5 "print"
+LParen 958 1 37 10 "("
+Ident 959 3 37 11 "ops"
+Dot 962 1 37 14 "."
+Ident 963 3 37 15 "add"
+LParen 966 1 37 18 "("
+Number 967 1 37 19 "7"
+Comma 968 1 37 20 ","
+Number 970 1 37 22 "8"
+RParen 971 1 37 23 ")"
+RParen 972 1 37 24 ")"
+Newline 973 1 37 25 "\n"
+Ident 978 5 38 5 "print"
+LParen 983 1 38 10 "("
+Ident 984 3 38 11 "ops"
+Dot 987 1 38 14 "."
+Ident 988 3 38 15 "run"
+LParen 991 1 38 18 "("
+RParen 992 1 38 19 ")"
+RParen 993 1 38 20 ")"
+Newline 994 1 38 21 "\n"
+Ident 1000 3 40 5 "let"
+Ident 1004 5 40 9 "array"
+Colon 1009 1 40 14 ":"
+LParen 1011 1 40 16 "("
+Ident 1012 2 40 17 "fn"
+LParen 1014 1 40 19 "("
+Ident 1015 3 40 20 "int"
+Comma 1018 1 40 23 ","
+Ident 1020 3 40 25 "int"
+RParen 1023 1 40 28 ")"
+Arrow 1025 2 40 30 "->"
+Ident 1028 3 40 33 "int"
+RParen 1031 1 40 36 ")"
+LBracket 1032 1 40 37 "["
+Number 1033 1 40 38 "2"
+RBracket 1034 1 40 39 "]"
+Eq 1036 1 40 41 "="
+Ident 1038 4 40 43 "fill"
+LParen 1042 1 40 47 "("
+Ident 1043 3 40 48 "add"
+RParen 1046 1 40 51 ")"
+Newline 1047 1 40 52 "\n"
+Ident 1052 5 41 5 "print"
+LParen 1057 1 41 10 "("
+Ident 1058 5 41 11 "array"
+LBracket 1063 1 41 16 "["
+Number 1064 2 41 17 "0L"
+RBracket 1066 1 41 19 "]"
+LParen 1067 1 41 20 "("
+Number 1068 1 41 21 "9"
+Comma 1069 1 41 22 ","
+Number 1071 2 41 24 "10"
+RParen 1073 1 41 26 ")"
+RParen 1074 1 41 27 ")"
+Newline 1075 1 41 28 "\n"
+Ident 1081 3 43 5 "var"
+Ident 1085 4 43 9 "list"
+Colon 1089 1 43 13 ":"
+Ident 1091 4 43 15 "list"
+Lt 1095 1 43 19 "<"
+Ident 1096 2 43 20 "fn"
+LParen 1098 1 43 22 "("
+Ident 1099 3 43 23 "int"
+Comma 1102 1 43 26 ","
+Ident 1104 3 43 28 "int"
+RParen 1107 1 43 31 ")"
+Arrow 1109 2 43 33 "->"
+Ident 1112 3 43 36 "int"
+Comma 1115 1 43 39 ","
+Number 1117 1 43 41 "2"
+Gt 1118 1 43 42 ">"
+Eq 1120 1 43 44 "="
+Ident 1122 4 43 46 "list"
+LBrace 1127 1 43 51 "{"
+RBrace 1128 1 43 52 "}"
+Newline 1129 1 43 53 "\n"
+Ident 1134 4 44 5 "list"
+Dot 1138 1 44 9 "."
+Ident 1139 4 44 10 "push"
+LParen 1143 1 44 14 "("
+Ident 1144 8 44 15 "subtract"
+RParen 1152 1 44 23 ")"
+Dot 1153 1 44 24 "."
+Ident 1154 6 44 25 "unwrap"
+LParen 1160 1 44 31 "("
+RParen 1161 1 44 32 ")"
+Newline 1162 1 44 33 "\n"
+Ident 1167 5 45 5 "print"
+LParen 1172 1 45 10 "("
+Ident 1173 4 45 11 "list"
+LBracket 1177 1 45 15 "["
+Number 1178 2 45 16 "0L"
+RBracket 1180 1 45 18 "]"
+LParen 1181 1 45 19 "("
+Number 1182 2 45 20 "12"
+Comma 1184 1 45 22 ","
+Number 1186 1 45 24 "5"
+RParen 1187 1 45 25 ")"
+RParen 1188 1 45 26 ")"
+Newline 1189 1 45 27 "\n"
+Ident 1195 3 47 5 "var"
+Ident 1199 3 47 9 "map"
+Colon 1202 1 47 12 ":"
+Ident 1204 3 47 14 "map"
+Lt 1207 1 47 17 "<"
+Ident 1208 3 47 18 "int"
+Comma 1211 1 47 21 ","
+Ident 1213 2 47 23 "fn"
+LParen 1215 1 47 25 "("
+Ident 1216 3 47 26 "int"
+Comma 1219 1 47 29 ","
+Ident 1221 3 47 31 "int"
+RParen 1224 1 47 34 ")"
+Arrow 1226 2 47 36 "->"
+Ident 1229 3 47 39 "int"
+Comma 1232 1 47 42 ","
+Number 1234 1 47 44 "2"
+Gt 1235 1 47 45 ">"
+Eq 1237 1 47 47 "="
+Ident 1239 3 47 49 "map"
+LBrace 1243 1 47 53 "{"
+RBrace 1244 1 47 54 "}"
+Newline 1245 1 47 55 "\n"
+Ident 1250 3 48 5 "map"
+Dot 1253 1 48 8 "."
+Ident 1254 3 48 9 "set"
+LParen 1257 1 48 12 "("
+Number 1258 1 48 13 "1"
+Comma 1259 1 48 14 ","
+Ident 1261 3 48 16 "add"
+RParen 1264 1 48 19 ")"
+Dot 1265 1 48 20 "."
+Ident 1266 6 48 21 "unwrap"
+LParen 1272 1 48 27 "("
+RParen 1273 1 48 28 ")"
+Newline 1274 1 48 29 "\n"
+Ident 1279 3 49 5 "let"
+Ident 1283 6 49 9 "mapped"
+Eq 1290 1 49 16 "="
+Ident 1292 3 49 18 "map"
+Dot 1295 1 49 21 "."
+Ident 1296 3 49 22 "get"
+LParen 1299 1 49 25 "("
+Number 1300 1 49 26 "1"
+RParen 1301 1 49 27 ")"
+QuestionQuestion 1303 2 49 29 "??"
+Ident 1306 8 49 32 "subtract"
+Newline 1314 1 49 40 "\n"
+Ident 1319 5 50 5 "print"
+LParen 1324 1 50 10 "("
+Ident 1325 6 50 11 "mapped"
+LParen 1331 1 50 17 "("
+Number 1332 2 50 18 "11"
+Comma 1334 1 50 20 ","
+Number 1336 2 50 22 "12"
+RParen 1338 1 50 24 ")"
+RParen 1339 1 50 25 ")"
+Newline 1340 1 50 26 "\n"
+Ident 1346 5 52 5 "print"
+LParen 1351 1 52 10 "("
+Ident 1352 10 52 11 "global_add"
+LParen 1362 1 52 21 "("
+Number 1363 2 52 22 "13"
+Comma 1365 1 52 24 ","
+Number 1367 2 52 26 "14"
+RParen 1369 1 52 28 ")"
+RParen 1370 1 52 29 ")"
+Newline 1371 1 52 30 "\n"
+Ident 1376 3 53 5 "let"
+Ident 1380 13 53 9 "print_allowed"
+Colon 1393 1 53 22 ":"
+Ident 1395 2 53 24 "fn"
+LParen 1397 1 53 26 "("
+Ident 1398 3 53 27 "int"
+RParen 1401 1 53 30 ")"
+Arrow 1403 2 53 32 "->"
+Ident 1406 3 53 35 "int"
+Ident 1410 7 53 39 "effects"
+Ident 1418 3 53 47 "out"
+Eq 1422 1 53 51 "="
+Ident 1424 9 53 53 "increment"
+Newline 1433 1 53 62 "\n"
+Ident 1438 5 54 5 "print"
+LParen 1443 1 54 10 "("
+Ident 1444 13 54 11 "print_allowed"
+LParen 1457 1 54 24 "("
+Number 1458 2 54 25 "14"
+RParen 1460 1 54 27 ")"
+RParen 1461 1 54 28 ")"
+Newline 1462 1 54 29 "\n"
+Ident 1468 3 56 5 "let"
+Ident 1472 7 56 9 "printer"
+Colon 1479 1 56 16 ":"
+Ident 1481 2 56 18 "fn"
+LParen 1483 1 56 20 "("
+Ident 1484 3 56 21 "int"
+RParen 1487 1 56 24 ")"
+Arrow 1489 2 56 26 "->"
+Ident 1492 3 56 29 "int"
+Ident 1496 7 56 33 "effects"
+Ident 1504 3 56 41 "out"
+Eq 1508 1 56 45 "="
+Ident 1510 8 56 47 "announce"
+Newline 1518 1 56 55 "\n"
+Ident 1523 5 57 5 "print"
+LParen 1528 1 57 10 "("
+Ident 1529 7 57 11 "printer"
+LParen 1536 1 57 18 "("
+Number 1537 2 57 19 "16"
+RParen 1539 1 57 21 ")"
+RParen 1540 1 57 22 ")"
+Newline 1541 1 57 23 "\n"
+Ident 1546 5 58 5 "print"
+LParen 1551 1 58 10 "("
+Ident 1552 3 58 11 "add"
+EqEq 1556 2 58 15 "=="
+Ident 1559 3 58 18 "add"
+RParen 1562 1 58 21 ")"
+Newline 1563 1 58 22 "\n"
+Ident 1568 5 59 5 "print"
+LParen 1573 1 59 10 "("
+Ident 1574 3 59 11 "add"
+EqEq 1578 2 59 15 "=="
+Ident 1581 8 59 18 "subtract"
+RParen 1589 1 59 26 ")"
+Newline 1590 1 59 27 "\n"
+Ident 1595 5 60 5 "print"
+LParen 1600 1 60 10 "("
+Ident 1601 3 60 11 "add"
+RParen 1604 1 60 14 ")"
+Newline 1605 1 60 15 "\n"
+Ident 1610 5 61 5 "print"
+LParen 1615 1 61 10 "("
+Ident 1616 8 61 11 "announce"
+RParen 1624 1 61 19 ")"
+Newline 1625 1 61 20 "\n"
+Ident 1631 3 63 5 "let"
+Ident 1635 14 63 9 "owner_callback"
+Colon 1649 1 63 23 ":"
+Ident 1651 2 63 25 "fn"
+LParen 1653 1 63 27 "("
+Ident 1654 2 63 28 "Id"
+Lt 1656 1 63 30 "<"
+Ident 1657 3 63 31 "app"
+Dot 1660 1 63 34 "."
+Ident 1661 5 63 35 "nodes"
+Gt 1666 1 63 40 ">"
+RParen 1667 1 63 41 ")"
+Arrow 1669 2 63 43 "->"
+Ident 1672 4 63 46 "long"
+Ident 1677 7 63 51 "effects"
+Ident 1685 5 63 59 "reads"
+Ident 1691 3 63 65 "app"
+Eq 1695 1 63 69 "="
+Ident 1697 11 63 71 "owner_value"
+Newline 1708 1 63 82 "\n"
+Ident 1713 3 64 5 "let"
+Ident 1717 8 64 9 "owner_id"
+Colon 1725 1 64 17 ":"
+Ident 1727 2 64 19 "Id"
+Lt 1729 1 64 21 "<"
+Ident 1730 3 64 22 "app"
+Dot 1733 1 64 25 "."
+Ident 1734 5 64 26 "nodes"
+Gt 1739 1 64 31 ">"
+Eq 1741 1 64 33 "="
+Ident 1743 3 64 35 "app"
+Dot 1746 1 64 38 "."
+Ident 1747 5 64 39 "nodes"
+Dot 1752 1 64 44 "."
+Ident 1753 3 64 45 "add"
+LParen 1756 1 64 48 "("
+Ident 1757 9 64 49 "OwnerNode"
+LBrace 1767 1 64 59 "{"
+Ident 1769 5 64 61 "value"
+Colon 1774 1 64 66 ":"
+Number 1776 3 64 68 "31L"
+RBrace 1780 1 64 72 "}"
+RParen 1781 1 64 73 ")"
+Dot 1782 1 64 74 "."
+Ident 1783 6 64 75 "unwrap"
+LParen 1789 1 64 81 "("
+RParen 1790 1 64 82 ")"
+Newline 1791 1 64 83 "\n"
+Ident 1796 5 65 5 "print"
+LParen 1801 1 65 10 "("
+Ident 1802 14 65 11 "owner_callback"
+LParen 1816 1 65 25 "("
+Ident 1817 8 65 26 "owner_id"
+RParen 1825 1 65 34 ")"
+RParen 1826 1 65 35 ")"
+Newline 1827 1 65 36 "\n"
+Ident 1833 3 67 5 "let"
+Ident 1837 6 67 9 "writer"
+Colon 1843 1 67 15 ":"
+Ident 1845 2 67 17 "fn"
+LParen 1847 1 67 19 "("
+Ident 1848 3 67 20 "int"
+RParen 1851 1 67 23 ")"
+Arrow 1853 2 67 25 "->"
+LParen 1856 1 67 28 "("
+RParen 1857 1 67 29 ")"
+Ident 1859 7 67 31 "effects"
+Ident 1867 6 67 39 "writes"
+Ident 1874 3 67 46 "app"
+Dot 1877 1 67 49 "."
+Ident 1878 5 67 50 "score"
+Eq 1884 1 67 56 "="
+Ident 1886 12 67 58 "update_score"
+Newline 1898 1 67 70 "\n"
+Ident 1903 6 68 5 "writer"
+LParen 1909 1 68 11 "("
+Number 1910 2 68 12 "35"
+RParen 1912 1 68 14 ")"
+Newline 1913 1 68 15 "\n"
+Ident 1918 5 69 5 "print"
+LParen 1923 1 69 10 "("
+Ident 1924 3 69 11 "app"
+Dot 1927 1 69 14 "."
+Ident 1928 5 69 15 "score"
+RParen 1933 1 69 20 ")"
+Newline 1934 1 69 21 "\n"
+RBrace 1935 1 70 1 "}"
+Newline 1936 1 70 2 "\n"
+Eof 1937 0 71 1 ""
+== tree ==
+file "main.nl"
+Program 0..1937
+  Struct 0..65 name="Ops" generics=[]
+    StructField 17..41 name="add"
+      FieldType 22..41 name="fn" range=none policy=checked
+        FunctionType 22..41
+          FunctionTypeParameter 25..28 mode=read
+            ParameterType 25..28 name="int" range=none policy=checked
+          FunctionTypeParameter 30..33 mode=read
+            ParameterType 30..33 name="int" range=none policy=checked
+          ResultType 38..41 name="int" range=none policy=checked
+    StructField 47..63 name="run"
+      FieldType 52..63 name="fn" range=none policy=checked
+        FunctionType 52..63
+          ResultType 60..63 name="int" range=none policy=checked
+  Struct 67..102 name="OwnerNode" generics=["P"]
+    StructField 89..100 name="value"
+      FieldType 96..100 name="long" range=none policy=checked
+  Struct 103..171 name="OwnerState" generics=["P"]
+    StructField 126..157 name="nodes"
+      FieldType 133..157 name="pool" range=none policy=checked
+        TypeArgument 138..150 name="OwnerNode" range=none policy=checked
+          TypeArgument 148..149 name="P" range=none policy=checked
+        Integer 152..153 magnitude=1 negative=false long_suffix=false
+        TypeArgument 155..156 name="P" range=none policy=checked
+    StructField 159..169 name="score"
+      FieldType 166..169 name="int" range=none policy=checked
+  Global 173..217 name="global_add" prefault=false
+    DeclaredType 192..211 name="fn" range=none policy=checked
+      FunctionType 192..211
+        FunctionTypeParameter 195..198 mode=read
+          ParameterType 195..198 name="int" range=none policy=checked
+        FunctionTypeParameter 200..203 mode=read
+          ParameterType 200..203 name="int" range=none policy=checked
+        ResultType 208..211 name="int" range=none policy=checked
+    Name 214..217 name="add"
+  Global 218..293 name="app" prefault=false
+    DeclaredType 230..251 name="OwnerState" range=none policy=checked
+      TypeArgument 241..250 name="app.nodes" range=none policy=checked
+    StructInit 254..293 name="OwnerState"
+      InitializerField 267..281 name="nodes"
+        PoolLiteral 274..281
+      InitializerField 283..291 name="score"
+        Integer 290..291 magnitude=0 negative=false long_suffix=false
+  Function 295..334 name="add" recursive=false generics=[]
+    Parameter 302..308 name="a" mode=read
+      ParameterType 305..308 name="int" range=none policy=checked
+    Parameter 310..316 name="b" mode=read
+      ParameterType 313..316 name="int" range=none policy=checked
+    ResultType 321..324 name="int" range=none policy=checked
+    Block 325..334
+      Binary 327..332 op=add
+        Name 327..328 name="a"
+        Name 331..332 name="b"
+  Function 335..379 name="subtract" recursive=false generics=[]
+    Parameter 347..353 name="a" mode=read
+      ParameterType 350..353 name="int" range=none policy=checked
+    Parameter 355..361 name="b" mode=read
+      ParameterType 358..361 name="int" range=none policy=checked
+    ResultType 366..369 name="int" range=none policy=checked
+    Block 370..379
+      Binary 372..377 op=sub
+        Name 372..373 name="a"
+        Name 376..377 name="b"
+  Function 380..425 name="increment" recursive=false generics=[]
+    Parameter 393..403 name="value" mode=read
+      ParameterType 400..403 name="int" range=none policy=checked
+    ResultType 408..411 name="int" range=none policy=checked
+    Block 412..425
+      Binary 414..423 op=add
+        Name 414..419 name="value"
+        Integer 422..423 magnitude=1 negative=false long_suffix=false
+  Function 426..449 name="zero" recursive=false generics=[]
+    ResultType 439..442 name="int" range=none policy=checked
+    Block 443..449
+      Integer 445..447 magnitude=77 negative=false long_suffix=false
+  Function 450..511 name="announce" recursive=false generics=[]
+    Parameter 462..472 name="value" mode=read
+      ParameterType 469..472 name="int" range=none policy=checked
+    ResultType 477..480 name="int" range=none policy=checked
+    Block 481..511
+      ExpressionStatement 487..499
+        Call 487..499 name="print"
+          Name 493..498 name="value"
+      Name 504..509 name="value"
+  Function 512..594 name="owner_value" recursive=false generics=[]
+    Parameter 527..544 name="id" mode=read
+      ParameterType 531..544 name="Id" range=none policy=checked
+        TypeArgument 534..543 name="app.nodes" range=none policy=checked
+    ResultType 549..553 name="long" range=none policy=checked
+    Block 554..594
+      Field 560..592 name="value"
+        MethodCall 560..586 name="unwrap"
+          MethodCall 560..577 name="get"
+            Field 560..569 name="nodes"
+              Name 560..563 name="app"
+            Name 574..576 name="id"
+  Function 595..644 name="update_score" recursive=false generics=[]
+    Parameter 611..621 name="value" mode=read
+      ParameterType 618..621 name="int" range=none policy=checked
+    Block 623..644
+      Assign 625..642 op==
+        Field 625..634 name="score"
+          Name 625..628 name="app"
+        Name 637..642 name="value"
+  Function 646..692 name="choose_add" recursive=false generics=[]
+    ResultType 665..684 name="fn" range=none policy=checked
+      FunctionType 665..684
+        FunctionTypeParameter 668..671 mode=read
+          ParameterType 668..671 name="int" range=none policy=checked
+        FunctionTypeParameter 673..676 mode=read
+          ParameterType 673..676 name="int" range=none policy=checked
+        ResultType 681..684 name="int" range=none policy=checked
+    Block 685..692
+      Name 687..690 name="add"
+  Function 693..760 name="apply" recursive=false generics=[]
+    Parameter 702..724 name="f" mode=read
+      ParameterType 705..724 name="fn" range=none policy=checked
+        FunctionType 705..724
+          FunctionTypeParameter 708..711 mode=read
+            ParameterType 708..711 name="int" range=none policy=checked
+          FunctionTypeParameter 713..716 mode=read
+            ParameterType 713..716 name="int" range=none policy=checked
+          ResultType 721..724 name="int" range=none policy=checked
+    Parameter 726..732 name="a" mode=read
+      ParameterType 729..732 name="int" range=none policy=checked
+    Parameter 734..740 name="b" mode=read
+      ParameterType 737..740 name="int" range=none policy=checked
+    ResultType 745..748 name="int" range=none policy=checked
+    Block 749..760
+      Call 751..758 name="f"
+        Name 753..754 name="a"
+        Name 756..757 name="b"
+  Function 762..1936 name="main" recursive=false generics=[]
+    Block 772..1936
+      Let 778..793 mutable=false name="local"
+        Name 790..793 name="add"
+      ExpressionStatement 798..818
+        Call 798..818 name="print"
+          Call 804..817 name="local"
+            Integer 810..812 magnitude=20 negative=false long_suffix=false
+            Integer 814..816 magnitude=22 negative=false long_suffix=false
+      ExpressionStatement 823..846
+        Call 823..846 name="print"
+          Call 829..845 name="apply"
+            Name 835..838 name="add"
+            Integer 840..841 magnitude=3 negative=false long_suffix=false
+            Integer 843..844 magnitude=4 negative=false long_suffix=false
+      Let 852..879 mutable=false name="returned"
+        Call 867..879 name="choose_add"
+      ExpressionStatement 884..905
+        Call 884..905 name="print"
+          Call 890..904 name="returned"
+            Integer 899..900 magnitude=5 negative=false long_suffix=false
+            Integer 902..903 magnitude=6 negative=false long_suffix=false
+      Let 911..948 mutable=false name="ops"
+        StructInit 921..948 name="Ops"
+          InitializerField 927..935 name="add"
+            Name 932..935 name="add"
+          InitializerField 937..946 name="run"
+            Name 942..946 name="zero"
+      ExpressionStatement 953..973
+        Call 953..973 name="print"
+          MethodCall 959..972 name="add"
+            Name 959..962 name="ops"
+            Integer 967..968 magnitude=7 negative=false long_suffix=false
+            Integer 970..971 magnitude=8 negative=false long_suffix=false
+      ExpressionStatement 978..994
+        Call 978..994 name="print"
+          MethodCall 984..993 name="run"
+            Name 984..987 name="ops"
+      Let 1000..1047 mutable=false name="array"
+        Annotation 1011..1035 name="fn" range=none policy=checked
+          FunctionType 1012..1031
+            FunctionTypeParameter 1015..1018 mode=read
+              ParameterType 1015..1018 name="int" range=none policy=checked
+            FunctionTypeParameter 1020..1023 mode=read
+              ParameterType 1020..1023 name="int" range=none policy=checked
+            ResultType 1028..1031 name="int" range=none policy=checked
+          Integer 1033..1034 magnitude=2 negative=false long_suffix=false
+        Call 1038..1047 name="fill"
+          Name 1043..1046 name="add"
+      ExpressionStatement 1052..1075
+        Call 1052..1075 name="print"
+          IndirectCall 1058..1074
+            Index 1058..1067
+              Name 1058..1063 name="array"
+              Integer 1064..1066 magnitude=0 negative=false long_suffix=true
+            Integer 1068..1069 magnitude=9 negative=false long_suffix=false
+            Integer 1071..1073 magnitude=10 negative=false long_suffix=false
+      Let 1081..1129 mutable=true name="list"
+        Annotation 1091..1119 name="list" range=none policy=checked
+          TypeArgument 1096..1115 name="fn" range=none policy=checked
+            FunctionType 1096..1115
+              FunctionTypeParameter 1099..1102 mode=read
+                ParameterType 1099..1102 name="int" range=none policy=checked
+              FunctionTypeParameter 1104..1107 mode=read
+                ParameterType 1104..1107 name="int" range=none policy=checked
+              ResultType 1112..1115 name="int" range=none policy=checked
+          Integer 1117..1118 magnitude=2 negative=false long_suffix=false
+        ListLiteral 1122..1129
+      ExpressionStatement 1134..1162
+        MethodCall 1134..1162 name="unwrap"
+          MethodCall 1134..1153 name="push"
+            Name 1134..1138 name="list"
+            Name 1144..1152 name="subtract"
+      ExpressionStatement 1167..1189
+        Call 1167..1189 name="print"
+          IndirectCall 1173..1188
+            Index 1173..1181
+              Name 1173..1177 name="list"
+              Integer 1178..1180 magnitude=0 negative=false long_suffix=true
+            Integer 1182..1184 magnitude=12 negative=false long_suffix=false
+            Integer 1186..1187 magnitude=5 negative=false long_suffix=false
+      Let 1195..1245 mutable=true name="map"
+        Annotation 1204..1236 name="map" range=none policy=checked
+          TypeArgument 1208..1211 name="int" range=none policy=checked
+          TypeArgument 1213..1232 name="fn" range=none policy=checked
+            FunctionType 1213..1232
+              FunctionTypeParameter 1216..1219 mode=read
+                ParameterType 1216..1219 name="int" range=none policy=checked
+              FunctionTypeParameter 1221..1224 mode=read
+                ParameterType 1221..1224 name="int" range=none policy=checked
+              ResultType 1229..1232 name="int" range=none policy=checked
+          Integer 1234..1235 magnitude=2 negative=false long_suffix=false
+        MapLiteral 1239..1245
+      ExpressionStatement 1250..1274
+        MethodCall 1250..1274 name="unwrap"
+          MethodCall 1250..1265 name="set"
+            Name 1250..1253 name="map"
+            Integer 1258..1259 magnitude=1 negative=false long_suffix=false
+            Name 1261..1264 name="add"
+      Let 1279..1314 mutable=false name="mapped"
+        Binary 1292..1314 op=coalesce
+          MethodCall 1292..1302 name="get"
+            Name 1292..1295 name="map"
+            Integer 1300..1301 magnitude=1 negative=false long_suffix=false
+          Name 1306..1314 name="subtract"
+      ExpressionStatement 1319..1340
+        Call 1319..1340 name="print"
+          Call 1325..1339 name="mapped"
+            Integer 1332..1334 magnitude=11 negative=false long_suffix=false
+            Integer 1336..1338 magnitude=12 negative=false long_suffix=false
+      ExpressionStatement 1346..1371
+        Call 1346..1371 name="print"
+          Call 1352..1370 name="global_add"
+            Integer 1363..1365 magnitude=13 negative=false long_suffix=false
+            Integer 1367..1369 magnitude=14 negative=false long_suffix=false
+      Let 1376..1433 mutable=false name="print_allowed"
+        Annotation 1395..1421 name="fn" range=none policy=checked
+          FunctionType 1395..1421
+            FunctionTypeParameter 1398..1401 mode=read
+              ParameterType 1398..1401 name="int" range=none policy=checked
+            ResultType 1406..1409 name="int" range=none policy=checked
+            Effect 1418..1421 kind=out
+        Name 1424..1433 name="increment"
+      ExpressionStatement 1438..1462
+        Call 1438..1462 name="print"
+          Call 1444..1461 name="print_allowed"
+            Integer 1458..1460 magnitude=14 negative=false long_suffix=false
+      Let 1468..1518 mutable=false name="printer"
+        Annotation 1481..1507 name="fn" range=none policy=checked
+          FunctionType 1481..1507
+            FunctionTypeParameter 1484..1487 mode=read
+              ParameterType 1484..1487 name="int" range=none policy=checked
+            ResultType 1492..1495 name="int" range=none policy=checked
+            Effect 1504..1507 kind=out
+        Name 1510..1518 name="announce"
+      ExpressionStatement 1523..1541
+        Call 1523..1541 name="print"
+          Call 1529..1540 name="printer"
+            Integer 1537..1539 magnitude=16 negative=false long_suffix=false
+      ExpressionStatement 1546..1563
+        Call 1546..1563 name="print"
+          Binary 1552..1562 op=eq
+            Name 1552..1555 name="add"
+            Name 1559..1562 name="add"
+      ExpressionStatement 1568..1590
+        Call 1568..1590 name="print"
+          Binary 1574..1589 op=eq
+            Name 1574..1577 name="add"
+            Name 1581..1589 name="subtract"
+      ExpressionStatement 1595..1605
+        Call 1595..1605 name="print"
+          Name 1601..1604 name="add"
+      ExpressionStatement 1610..1625
+        Call 1610..1625 name="print"
+          Name 1616..1624 name="announce"
+      Let 1631..1708 mutable=false name="owner_callback"
+        Annotation 1651..1694 name="fn" range=none policy=checked
+          FunctionType 1651..1694
+            FunctionTypeParameter 1654..1667 mode=read
+              ParameterType 1654..1667 name="Id" range=none policy=checked
+                TypeArgument 1657..1666 name="app.nodes" range=none policy=checked
+            ResultType 1672..1676 name="long" range=none policy=checked
+            Effect 1685..1694 kind=reads path="app"
+        Name 1697..1708 name="owner_value"
+      Let 1713..1791 mutable=false name="owner_id"
+        Annotation 1727..1740 name="Id" range=none policy=checked
+          TypeArgument 1730..1739 name="app.nodes" range=none policy=checked
+        MethodCall 1743..1791 name="unwrap"
+          MethodCall 1743..1782 name="add"
+            Field 1743..1752 name="nodes"
+              Name 1743..1746 name="app"
+            StructInit 1757..1781 name="OwnerNode"
+              InitializerField 1769..1779 name="value"
+                Integer 1776..1779 magnitude=31 negative=false long_suffix=true
+      ExpressionStatement 1796..1827
+        Call 1796..1827 name="print"
+          Call 1802..1826 name="owner_callback"
+            Name 1817..1825 name="owner_id"
+      Let 1833..1898 mutable=false name="writer"
+        Annotation 1845..1883 name="fn" range=none policy=checked
+          FunctionType 1845..1883
+            FunctionTypeParameter 1848..1851 mode=read
+              ParameterType 1848..1851 name="int" range=none policy=checked
+            ResultType 1856..1858 name="()" range=none policy=checked
+            Effect 1867..1883 kind=writes path="app.score"
+        Name 1886..1898 name="update_score"
+      ExpressionStatement 1903..1913
+        Call 1903..1913 name="writer"
+          Integer 1910..1912 magnitude=35 negative=false long_suffix=false
+      Call 1918..1934 name="print"
+        Field 1924..1933 name="score"
+          Name 1924..1927 name="app"

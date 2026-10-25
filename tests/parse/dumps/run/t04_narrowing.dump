@@ -1,0 +1,791 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "type"
+Ident 5 5 1 6 "Small"
+Eq 11 1 1 12 "="
+Ident 13 3 1 14 "int"
+Number 17 1 1 18 "0"
+RangeInclusive 18 3 1 19 "..="
+Number 21 2 1 22 "10"
+Newline 23 1 1 24 "\n"
+Ident 24 6 2 1 "struct"
+Ident 31 9 2 8 "Container"
+LBrace 41 1 2 18 "{"
+Ident 43 4 2 20 "size"
+Colon 47 1 2 24 ":"
+Ident 49 5 2 26 "Small"
+RBrace 55 1 2 32 "}"
+Newline 56 1 2 33 "\n"
+Ident 57 4 3 1 "enum"
+Ident 62 8 3 6 "Measured"
+LBrace 71 1 3 15 "{"
+Ident 73 6 3 17 "Amount"
+LParen 79 1 3 23 "("
+Ident 80 5 3 24 "Small"
+RParen 85 1 3 29 ")"
+RBrace 87 1 3 31 "}"
+Newline 88 1 3 32 "\n"
+Ident 89 2 4 1 "fn"
+Ident 92 7 4 4 "bounded"
+LParen 99 1 4 11 "("
+Ident 100 1 4 12 "x"
+Colon 101 1 4 13 ":"
+Ident 103 3 4 15 "int"
+RParen 106 1 4 18 ")"
+Arrow 108 2 4 20 "->"
+Ident 111 5 4 23 "Small"
+LBrace 117 1 4 29 "{"
+Newline 118 1 4 30 "\n"
+Ident 123 2 5 5 "if"
+Ident 126 1 5 8 "x"
+Lt 128 1 5 10 "<"
+Number 130 1 5 12 "0"
+LBrace 132 1 5 14 "{"
+Ident 134 6 5 16 "return"
+Number 141 1 5 23 "0"
+RBrace 143 1 5 25 "}"
+Newline 144 1 5 26 "\n"
+Ident 149 2 6 5 "if"
+Ident 152 1 6 8 "x"
+Gt 154 1 6 10 ">"
+Number 156 2 6 12 "10"
+LBrace 159 1 6 15 "{"
+Ident 161 6 6 17 "return"
+Number 168 2 6 24 "10"
+RBrace 171 1 6 27 "}"
+Newline 172 1 6 28 "\n"
+Ident 177 1 7 5 "x"
+Newline 178 1 7 6 "\n"
+RBrace 179 1 8 1 "}"
+Newline 180 1 8 2 "\n"
+Ident 181 2 9 1 "fn"
+Ident 184 7 9 4 "consume"
+LParen 191 1 9 11 "("
+Ident 192 1 9 12 "x"
+Colon 193 1 9 13 ":"
+Ident 195 5 9 15 "Small"
+RParen 200 1 9 20 ")"
+Arrow 202 2 9 22 "->"
+Ident 205 3 9 25 "int"
+LBrace 209 1 9 29 "{"
+Ident 211 1 9 31 "x"
+RBrace 213 1 9 33 "}"
+Newline 214 1 9 34 "\n"
+Ident 215 2 10 1 "fn"
+Ident 218 9 10 4 "increment"
+LParen 227 1 10 13 "("
+Ident 228 1 10 14 "x"
+Colon 229 1 10 15 ":"
+Ident 231 5 10 17 "Small"
+RParen 236 1 10 22 ")"
+Arrow 238 2 10 24 "->"
+Ident 241 5 10 27 "Small"
+LBrace 247 1 10 33 "{"
+Newline 248 1 10 34 "\n"
+Ident 253 2 11 5 "if"
+Ident 256 1 11 8 "x"
+Lt 258 1 11 10 "<"
+Number 260 2 11 12 "10"
+LBrace 263 1 11 15 "{"
+Ident 265 1 11 17 "x"
+Plus 267 1 11 19 "+"
+Number 269 1 11 21 "1"
+RBrace 271 1 11 23 "}"
+Ident 273 4 11 25 "else"
+LBrace 278 1 11 30 "{"
+Ident 280 1 11 32 "x"
+RBrace 282 1 11 34 "}"
+Newline 283 1 11 35 "\n"
+RBrace 284 1 12 1 "}"
+Newline 285 1 12 2 "\n"
+Ident 286 2 13 1 "fn"
+Ident 289 9 13 4 "decrement"
+LParen 298 1 13 13 "("
+Ident 299 1 13 14 "x"
+Colon 300 1 13 15 ":"
+Ident 302 5 13 17 "Small"
+RParen 307 1 13 22 ")"
+Arrow 309 2 13 24 "->"
+Ident 312 5 13 27 "Small"
+LBrace 318 1 13 33 "{"
+Newline 319 1 13 34 "\n"
+Ident 324 2 14 5 "if"
+Ident 327 1 14 8 "x"
+Gt 329 1 14 10 ">"
+Number 331 1 14 12 "0"
+LBrace 333 1 14 14 "{"
+Ident 335 1 14 16 "x"
+Minus 337 1 14 18 "-"
+Number 339 1 14 20 "1"
+RBrace 341 1 14 22 "}"
+Ident 343 4 14 24 "else"
+LBrace 348 1 14 29 "{"
+Ident 350 1 14 31 "x"
+RBrace 352 1 14 33 "}"
+Newline 353 1 14 34 "\n"
+RBrace 354 1 15 1 "}"
+Newline 355 1 15 2 "\n"
+Ident 356 2 16 1 "fn"
+Ident 359 7 16 4 "doubled"
+LParen 366 1 16 11 "("
+Ident 367 1 16 12 "x"
+Colon 368 1 16 13 ":"
+Ident 370 5 16 15 "Small"
+RParen 375 1 16 20 ")"
+Arrow 377 2 16 22 "->"
+Ident 380 5 16 25 "Small"
+LBrace 386 1 16 31 "{"
+Newline 387 1 16 32 "\n"
+Ident 392 2 17 5 "if"
+Ident 395 1 17 8 "x"
+Le 397 2 17 10 "<="
+Number 400 1 17 13 "5"
+LBrace 402 1 17 15 "{"
+Ident 404 1 17 17 "x"
+Star 406 1 17 19 "*"
+Number 408 1 17 21 "2"
+RBrace 410 1 17 23 "}"
+Ident 412 4 17 25 "else"
+LBrace 417 1 17 30 "{"
+Ident 419 1 17 32 "x"
+RBrace 421 1 17 34 "}"
+Newline 422 1 17 35 "\n"
+RBrace 423 1 18 1 "}"
+Newline 424 1 18 2 "\n"
+Ident 425 2 19 1 "fn"
+Ident 428 11 19 4 "from_minmax"
+LParen 439 1 19 15 "("
+Ident 440 1 19 16 "x"
+Colon 441 1 19 17 ":"
+Ident 443 3 19 19 "int"
+RParen 446 1 19 22 ")"
+Arrow 448 2 19 24 "->"
+Ident 451 5 19 27 "Small"
+LBrace 457 1 19 33 "{"
+Ident 459 3 19 35 "min"
+LParen 462 1 19 38 "("
+Ident 463 3 19 39 "max"
+LParen 466 1 19 42 "("
+Ident 467 1 19 43 "x"
+Comma 468 1 19 44 ","
+Number 470 1 19 46 "0"
+RParen 471 1 19 47 ")"
+Comma 472 1 19 48 ","
+Number 474 2 19 50 "10"
+RParen 476 1 19 52 ")"
+RBrace 478 1 19 54 "}"
+Newline 479 1 19 55 "\n"
+Ident 480 2 20 1 "fn"
+Ident 483 9 20 4 "container"
+LParen 492 1 20 13 "("
+Ident 493 1 20 14 "x"
+Colon 494 1 20 15 ":"
+Ident 496 3 20 17 "int"
+RParen 499 1 20 20 ")"
+Arrow 501 2 20 22 "->"
+Ident 504 9 20 25 "Container"
+LBrace 514 1 20 35 "{"
+Ident 516 9 20 37 "Container"
+LBrace 526 1 20 47 "{"
+Ident 528 4 20 49 "size"
+Colon 532 1 20 53 ":"
+Ident 534 3 20 55 "min"
+LParen 537 1 20 58 "("
+Ident 538 3 20 59 "max"
+LParen 541 1 20 62 "("
+Ident 542 1 20 63 "x"
+Comma 543 1 20 64 ","
+Number 545 1 20 66 "0"
+RParen 546 1 20 67 ")"
+Comma 547 1 20 68 ","
+Number 549 2 20 70 "10"
+RParen 551 1 20 72 ")"
+RBrace 553 1 20 74 "}"
+RBrace 555 1 20 76 "}"
+Newline 556 1 20 77 "\n"
+Ident 557 2 21 1 "fn"
+Ident 560 8 21 4 "measured"
+LParen 568 1 21 12 "("
+Ident 569 1 21 13 "x"
+Colon 570 1 21 14 ":"
+Ident 572 3 21 16 "int"
+RParen 575 1 21 19 ")"
+Arrow 577 2 21 21 "->"
+Ident 580 8 21 24 "Measured"
+LBrace 589 1 21 33 "{"
+Ident 591 8 21 35 "Measured"
+Dot 599 1 21 43 "."
+Ident 600 6 21 44 "Amount"
+LParen 606 1 21 50 "("
+Ident 607 3 21 51 "min"
+LParen 610 1 21 54 "("
+Ident 611 3 21 55 "max"
+LParen 614 1 21 58 "("
+Ident 615 1 21 59 "x"
+Comma 616 1 21 60 ","
+Number 618 1 21 62 "0"
+RParen 619 1 21 63 ")"
+Comma 620 1 21 64 ","
+Number 622 2 21 66 "10"
+RParen 624 1 21 68 ")"
+RParen 625 1 21 69 ")"
+RBrace 627 1 21 71 "}"
+Newline 628 1 21 72 "\n"
+Ident 629 2 22 1 "fn"
+Ident 632 6 22 4 "joined"
+LParen 638 1 22 10 "("
+Ident 639 1 22 11 "x"
+Colon 640 1 22 12 ":"
+Ident 642 3 22 14 "int"
+RParen 645 1 22 17 ")"
+Arrow 647 2 22 19 "->"
+Ident 650 5 22 22 "Small"
+LBrace 656 1 22 28 "{"
+Newline 657 1 22 29 "\n"
+Ident 662 3 23 5 "var"
+Ident 666 1 23 9 "y"
+Eq 668 1 23 11 "="
+Ident 670 1 23 13 "x"
+Newline 671 1 23 14 "\n"
+Ident 676 2 24 5 "if"
+Ident 679 1 24 8 "y"
+Lt 681 1 24 10 "<"
+Number 683 1 24 12 "0"
+LBrace 685 1 24 14 "{"
+Ident 687 1 24 16 "y"
+Eq 689 1 24 18 "="
+Number 691 1 24 20 "0"
+RBrace 693 1 24 22 "}"
+Ident 695 4 24 24 "else"
+LBrace 700 1 24 29 "{"
+Ident 702 1 24 31 "y"
+Eq 704 1 24 33 "="
+Ident 706 3 24 35 "min"
+LParen 709 1 24 38 "("
+Ident 710 1 24 39 "y"
+Comma 711 1 24 40 ","
+Number 713 2 24 42 "10"
+RParen 715 1 24 44 ")"
+RBrace 717 1 24 46 "}"
+Newline 718 1 24 47 "\n"
+Ident 723 1 25 5 "y"
+Newline 724 1 25 6 "\n"
+RBrace 725 1 26 1 "}"
+Newline 726 1 26 2 "\n"
+Ident 727 2 27 1 "fn"
+Ident 730 5 27 4 "by_if"
+LParen 735 1 27 9 "("
+Ident 736 1 27 10 "x"
+Colon 737 1 27 11 ":"
+Ident 739 3 27 13 "int"
+RParen 742 1 27 16 ")"
+Arrow 744 2 27 18 "->"
+Ident 747 3 27 21 "int"
+LBrace 751 1 27 25 "{"
+Newline 752 1 27 26 "\n"
+Ident 757 2 28 5 "if"
+Ident 760 1 28 8 "x"
+Ge 762 2 28 10 ">="
+Number 765 1 28 13 "0"
+AndAnd 767 2 28 15 "&&"
+Ident 770 1 28 18 "x"
+Le 772 2 28 20 "<="
+Number 775 2 28 23 "10"
+LBrace 778 1 28 26 "{"
+Ident 780 7 28 28 "consume"
+LParen 787 1 28 35 "("
+Ident 788 1 28 36 "x"
+RParen 789 1 28 37 ")"
+RBrace 791 1 28 39 "}"
+Ident 793 4 28 41 "else"
+LBrace 798 1 28 46 "{"
+Number 800 1 28 48 "0"
+RBrace 802 1 28 50 "}"
+Newline 803 1 28 51 "\n"
+RBrace 804 1 29 1 "}"
+Newline 805 1 29 2 "\n"
+Ident 806 2 30 1 "fn"
+Ident 809 12 30 4 "continue_sum"
+LParen 821 1 30 16 "("
+Ident 822 1 30 17 "n"
+Colon 823 1 30 18 ":"
+Ident 825 5 30 20 "Small"
+RParen 830 1 30 25 ")"
+Arrow 832 2 30 27 "->"
+Ident 835 3 30 30 "int"
+LBrace 839 1 30 34 "{"
+Newline 840 1 30 35 "\n"
+Ident 845 3 31 5 "var"
+Ident 849 5 31 9 "total"
+Eq 855 1 31 15 "="
+Number 857 1 31 17 "0"
+Newline 858 1 31 18 "\n"
+Ident 863 3 32 5 "for"
+Ident 867 1 32 9 "i"
+Ident 869 2 32 11 "in"
+Minus 872 1 32 14 "-"
+Number 873 1 32 15 "2"
+RangeInclusive 874 3 32 16 "..="
+Ident 877 1 32 19 "n"
+LBrace 879 1 32 21 "{"
+Newline 880 1 32 22 "\n"
+Ident 889 2 33 9 "if"
+Ident 892 1 33 12 "i"
+Lt 894 1 33 14 "<"
+Number 896 1 33 16 "0"
+LBrace 898 1 33 18 "{"
+Ident 900 8 33 20 "continue"
+RBrace 909 1 33 29 "}"
+Newline 910 1 33 30 "\n"
+Ident 919 5 34 9 "total"
+PlusEq 925 2 34 15 "+="
+Ident 928 7 34 18 "bounded"
+LParen 935 1 34 25 "("
+Ident 936 1 34 26 "i"
+RParen 937 1 34 27 ")"
+Newline 938 1 34 28 "\n"
+RBrace 943 1 35 5 "}"
+Newline 944 1 35 6 "\n"
+Ident 949 5 36 5 "total"
+Newline 954 1 36 10 "\n"
+RBrace 955 1 37 1 "}"
+Newline 956 1 37 2 "\n"
+Ident 957 2 38 1 "fn"
+Ident 960 9 38 4 "break_sum"
+LParen 969 1 38 13 "("
+Ident 970 1 38 14 "n"
+Colon 971 1 38 15 ":"
+Ident 973 3 38 17 "int"
+RParen 976 1 38 20 ")"
+Arrow 978 2 38 22 "->"
+Ident 981 3 38 25 "int"
+LBrace 985 1 38 29 "{"
+Newline 986 1 38 30 "\n"
+Ident 991 3 39 5 "var"
+Ident 995 5 39 9 "total"
+Eq 1001 1 39 15 "="
+Number 1003 1 39 17 "0"
+Newline 1004 1 39 18 "\n"
+Ident 1009 3 40 5 "for"
+Ident 1013 1 40 9 "i"
+Ident 1015 2 40 11 "in"
+Minus 1018 1 40 14 "-"
+Number 1019 1 40 15 "2"
+Range 1020 2 40 16 ".."
+Ident 1022 1 40 18 "n"
+LBrace 1024 1 40 20 "{"
+Newline 1025 1 40 21 "\n"
+Ident 1034 2 41 9 "if"
+Ident 1037 1 41 12 "i"
+Gt 1039 1 41 14 ">"
+Number 1041 2 41 16 "10"
+LBrace 1044 1 41 19 "{"
+Ident 1046 5 41 21 "break"
+RBrace 1052 1 41 27 "}"
+Newline 1053 1 41 28 "\n"
+Ident 1062 2 42 9 "if"
+Ident 1065 1 42 12 "i"
+Lt 1067 1 42 14 "<"
+Number 1069 1 42 16 "0"
+LBrace 1071 1 42 18 "{"
+Ident 1073 8 42 20 "continue"
+RBrace 1082 1 42 29 "}"
+Newline 1083 1 42 30 "\n"
+Ident 1092 5 43 9 "total"
+PlusEq 1098 2 43 15 "+="
+Ident 1101 1 43 18 "i"
+Newline 1102 1 43 19 "\n"
+RBrace 1107 1 44 5 "}"
+Newline 1108 1 44 6 "\n"
+Ident 1113 5 45 5 "total"
+Newline 1118 1 45 10 "\n"
+RBrace 1119 1 46 1 "}"
+Newline 1120 1 46 2 "\n"
+Ident 1121 2 47 1 "fn"
+Ident 1124 4 47 4 "main"
+LParen 1128 1 47 8 "("
+RParen 1129 1 47 9 ")"
+LBrace 1131 1 47 11 "{"
+Newline 1132 1 47 12 "\n"
+Ident 1137 5 48 5 "print"
+LParen 1142 1 48 10 "("
+Ident 1143 7 48 11 "bounded"
+LParen 1150 1 48 18 "("
+Number 1151 2 48 19 "50"
+RParen 1153 1 48 21 ")"
+RParen 1154 1 48 22 ")"
+Newline 1155 1 48 23 "\n"
+Ident 1160 5 49 5 "print"
+LParen 1165 1 49 10 "("
+Ident 1166 9 49 11 "increment"
+LParen 1175 1 49 20 "("
+Number 1176 1 49 21 "9"
+RParen 1177 1 49 22 ")"
+RParen 1178 1 49 23 ")"
+Newline 1179 1 49 24 "\n"
+Ident 1184 5 50 5 "print"
+LParen 1189 1 50 10 "("
+Ident 1190 9 50 11 "increment"
+LParen 1199 1 50 20 "("
+Number 1200 2 50 21 "10"
+RParen 1202 1 50 23 ")"
+RParen 1203 1 50 24 ")"
+Newline 1204 1 50 25 "\n"
+Ident 1209 5 51 5 "print"
+LParen 1214 1 51 10 "("
+Ident 1215 9 51 11 "decrement"
+LParen 1224 1 51 20 "("
+Number 1225 1 51 21 "0"
+RParen 1226 1 51 22 ")"
+RParen 1227 1 51 23 ")"
+Newline 1228 1 51 24 "\n"
+Ident 1233 5 52 5 "print"
+LParen 1238 1 52 10 "("
+Ident 1239 9 52 11 "decrement"
+LParen 1248 1 52 20 "("
+Number 1249 1 52 21 "5"
+RParen 1250 1 52 22 ")"
+RParen 1251 1 52 23 ")"
+Newline 1252 1 52 24 "\n"
+Ident 1257 5 53 5 "print"
+LParen 1262 1 53 10 "("
+Ident 1263 7 53 11 "doubled"
+LParen 1270 1 53 18 "("
+Number 1271 1 53 19 "5"
+RParen 1272 1 53 20 ")"
+RParen 1273 1 53 21 ")"
+Newline 1274 1 53 22 "\n"
+Ident 1279 5 54 5 "print"
+LParen 1284 1 54 10 "("
+Ident 1285 7 54 11 "doubled"
+LParen 1292 1 54 18 "("
+Number 1293 2 54 19 "10"
+RParen 1295 1 54 21 ")"
+RParen 1296 1 54 22 ")"
+Newline 1297 1 54 23 "\n"
+Ident 1302 5 55 5 "print"
+LParen 1307 1 55 10 "("
+Ident 1308 11 55 11 "from_minmax"
+LParen 1319 1 55 22 "("
+Number 1320 3 55 23 "100"
+RParen 1323 1 55 26 ")"
+RParen 1324 1 55 27 ")"
+Newline 1325 1 55 28 "\n"
+Ident 1330 5 56 5 "print"
+LParen 1335 1 56 10 "("
+Ident 1336 9 56 11 "container"
+LParen 1345 1 56 20 "("
+Number 1346 3 56 21 "100"
+RParen 1349 1 56 24 ")"
+RParen 1350 1 56 25 ")"
+Newline 1351 1 56 26 "\n"
+Ident 1356 5 57 5 "print"
+LParen 1361 1 57 10 "("
+Ident 1362 8 57 11 "measured"
+LParen 1370 1 57 19 "("
+Number 1371 3 57 20 "100"
+RParen 1374 1 57 23 ")"
+RParen 1375 1 57 24 ")"
+Newline 1376 1 57 25 "\n"
+Ident 1381 5 58 5 "print"
+LParen 1386 1 58 10 "("
+Ident 1387 6 58 11 "joined"
+LParen 1393 1 58 17 "("
+Number 1394 3 58 18 "100"
+RParen 1397 1 58 21 ")"
+RParen 1398 1 58 22 ")"
+Newline 1399 1 58 23 "\n"
+Ident 1404 5 59 5 "print"
+LParen 1409 1 59 10 "("
+Ident 1410 5 59 11 "by_if"
+LParen 1415 1 59 16 "("
+Number 1416 1 59 17 "7"
+RParen 1417 1 59 18 ")"
+RParen 1418 1 59 19 ")"
+Newline 1419 1 59 20 "\n"
+Ident 1424 5 60 5 "print"
+LParen 1429 1 60 10 "("
+Ident 1430 12 60 11 "continue_sum"
+LParen 1442 1 60 23 "("
+Number 1443 1 60 24 "3"
+RParen 1444 1 60 25 ")"
+RParen 1445 1 60 26 ")"
+Newline 1446 1 60 27 "\n"
+Ident 1451 5 61 5 "print"
+LParen 1456 1 61 10 "("
+Ident 1457 9 61 11 "break_sum"
+LParen 1466 1 61 20 "("
+Number 1467 3 61 21 "100"
+RParen 1470 1 61 24 ")"
+RParen 1471 1 61 25 ")"
+Newline 1472 1 61 26 "\n"
+RBrace 1473 1 62 1 "}"
+Newline 1474 1 62 2 "\n"
+Eof 1475 0 63 1 ""
+== tree ==
+file "main.nl"
+Program 0..1475
+  TypeAlias 0..23 name="Small"
+    AliasedType 13..23 name="int" range=0..=10 policy=checked
+  Struct 24..56 name="Container" generics=[]
+    StructField 43..54 name="size"
+      FieldType 49..54 name="Small" range=none policy=checked
+  Enum 57..88 name="Measured"
+    EnumCase 73..86 name="Amount"
+      PayloadType 80..85 name="Small" range=none policy=checked
+  Function 89..180 name="bounded" recursive=false generics=[]
+    Parameter 100..106 name="x" mode=read
+      ParameterType 103..106 name="int" range=none policy=checked
+    ResultType 111..116 name="Small" range=none policy=checked
+    Block 117..180
+      ExpressionStatement 123..144
+        If 123..144
+          Binary 126..131 op=lt
+            Name 126..127 name="x"
+            Integer 130..131 magnitude=0 negative=false long_suffix=false
+          Block 132..144
+            ReturnStatement 134..142
+              Integer 141..142 magnitude=0 negative=false long_suffix=false
+      ExpressionStatement 149..172
+        If 149..172
+          Binary 152..158 op=gt
+            Name 152..153 name="x"
+            Integer 156..158 magnitude=10 negative=false long_suffix=false
+          Block 159..172
+            ReturnStatement 161..170
+              Integer 168..170 magnitude=10 negative=false long_suffix=false
+      Name 177..178 name="x"
+  Function 181..214 name="consume" recursive=false generics=[]
+    Parameter 192..200 name="x" mode=read
+      ParameterType 195..200 name="Small" range=none policy=checked
+    ResultType 205..208 name="int" range=none policy=checked
+    Block 209..214
+      Name 211..212 name="x"
+  Function 215..285 name="increment" recursive=false generics=[]
+    Parameter 228..236 name="x" mode=read
+      ParameterType 231..236 name="Small" range=none policy=checked
+    ResultType 241..246 name="Small" range=none policy=checked
+    Block 247..285
+      If 253..283
+        Binary 256..262 op=lt
+          Name 256..257 name="x"
+          Integer 260..262 magnitude=10 negative=false long_suffix=false
+        Block 263..272
+          Binary 265..270 op=add
+            Name 265..266 name="x"
+            Integer 269..270 magnitude=1 negative=false long_suffix=false
+        Block 278..283
+          Name 280..281 name="x"
+  Function 286..355 name="decrement" recursive=false generics=[]
+    Parameter 299..307 name="x" mode=read
+      ParameterType 302..307 name="Small" range=none policy=checked
+    ResultType 312..317 name="Small" range=none policy=checked
+    Block 318..355
+      If 324..353
+        Binary 327..332 op=gt
+          Name 327..328 name="x"
+          Integer 331..332 magnitude=0 negative=false long_suffix=false
+        Block 333..342
+          Binary 335..340 op=sub
+            Name 335..336 name="x"
+            Integer 339..340 magnitude=1 negative=false long_suffix=false
+        Block 348..353
+          Name 350..351 name="x"
+  Function 356..424 name="doubled" recursive=false generics=[]
+    Parameter 367..375 name="x" mode=read
+      ParameterType 370..375 name="Small" range=none policy=checked
+    ResultType 380..385 name="Small" range=none policy=checked
+    Block 386..424
+      If 392..422
+        Binary 395..401 op=le
+          Name 395..396 name="x"
+          Integer 400..401 magnitude=5 negative=false long_suffix=false
+        Block 402..411
+          Binary 404..409 op=mul
+            Name 404..405 name="x"
+            Integer 408..409 magnitude=2 negative=false long_suffix=false
+        Block 417..422
+          Name 419..420 name="x"
+  Function 425..479 name="from_minmax" recursive=false generics=[]
+    Parameter 440..446 name="x" mode=read
+      ParameterType 443..446 name="int" range=none policy=checked
+    ResultType 451..456 name="Small" range=none policy=checked
+    Block 457..479
+      Call 459..477 name="min"
+        Call 463..472 name="max"
+          Name 467..468 name="x"
+          Integer 470..471 magnitude=0 negative=false long_suffix=false
+        Integer 474..476 magnitude=10 negative=false long_suffix=false
+  Function 480..556 name="container" recursive=false generics=[]
+    Parameter 493..499 name="x" mode=read
+      ParameterType 496..499 name="int" range=none policy=checked
+    ResultType 504..513 name="Container" range=none policy=checked
+    Block 514..556
+      StructInit 516..554 name="Container"
+        InitializerField 528..552 name="size"
+          Call 534..552 name="min"
+            Call 538..547 name="max"
+              Name 542..543 name="x"
+              Integer 545..546 magnitude=0 negative=false long_suffix=false
+            Integer 549..551 magnitude=10 negative=false long_suffix=false
+  Function 557..628 name="measured" recursive=false generics=[]
+    Parameter 569..575 name="x" mode=read
+      ParameterType 572..575 name="int" range=none policy=checked
+    ResultType 580..588 name="Measured" range=none policy=checked
+    Block 589..628
+      QualifiedCase 591..626 enum="Measured" case="Amount"
+        Call 607..625 name="min"
+          Call 611..620 name="max"
+            Name 615..616 name="x"
+            Integer 618..619 magnitude=0 negative=false long_suffix=false
+          Integer 622..624 magnitude=10 negative=false long_suffix=false
+  Function 629..726 name="joined" recursive=false generics=[]
+    Parameter 639..645 name="x" mode=read
+      ParameterType 642..645 name="int" range=none policy=checked
+    ResultType 650..655 name="Small" range=none policy=checked
+    Block 656..726
+      Let 662..671 mutable=true name="y"
+        Name 670..671 name="x"
+      ExpressionStatement 676..718
+        If 676..718
+          Binary 679..684 op=lt
+            Name 679..680 name="y"
+            Integer 683..684 magnitude=0 negative=false long_suffix=false
+          Block 685..694
+            Assign 687..692 op==
+              Name 687..688 name="y"
+              Integer 691..692 magnitude=0 negative=false long_suffix=false
+          Block 700..718
+            Assign 702..716 op==
+              Name 702..703 name="y"
+              Call 706..716 name="min"
+                Name 710..711 name="y"
+                Integer 713..715 magnitude=10 negative=false long_suffix=false
+      Name 723..724 name="y"
+  Function 727..805 name="by_if" recursive=false generics=[]
+    Parameter 736..742 name="x" mode=read
+      ParameterType 739..742 name="int" range=none policy=checked
+    ResultType 747..750 name="int" range=none policy=checked
+    Block 751..805
+      If 757..803
+        Binary 760..777 op=and
+          Binary 760..766 op=ge
+            Name 760..761 name="x"
+            Integer 765..766 magnitude=0 negative=false long_suffix=false
+          Binary 770..777 op=le
+            Name 770..771 name="x"
+            Integer 775..777 magnitude=10 negative=false long_suffix=false
+        Block 778..792
+          Call 780..790 name="consume"
+            Name 788..789 name="x"
+        Block 798..803
+          Integer 800..801 magnitude=0 negative=false long_suffix=false
+  Function 806..956 name="continue_sum" recursive=false generics=[]
+    Parameter 822..830 name="n" mode=read
+      ParameterType 825..830 name="Small" range=none policy=checked
+    ResultType 835..838 name="int" range=none policy=checked
+    Block 839..956
+      Let 845..858 mutable=true name="total"
+        Integer 857..858 magnitude=0 negative=false long_suffix=false
+      For 863..944 name="i" inclusive=true
+        Integer 872..874 magnitude=2 negative=true long_suffix=false
+        Name 877..878 name="n"
+        Block 879..944
+          ExpressionStatement 889..910
+            If 889..910
+              Binary 892..897 op=lt
+                Name 892..893 name="i"
+                Integer 896..897 magnitude=0 negative=false long_suffix=false
+              Block 898..910
+                ContinueStatement 900..908
+          Assign 919..938 op=+=
+            Name 919..924 name="total"
+            Call 928..938 name="bounded"
+              Name 936..937 name="i"
+      Name 949..954 name="total"
+  Function 957..1120 name="break_sum" recursive=false generics=[]
+    Parameter 970..976 name="n" mode=read
+      ParameterType 973..976 name="int" range=none policy=checked
+    ResultType 981..984 name="int" range=none policy=checked
+    Block 985..1120
+      Let 991..1004 mutable=true name="total"
+        Integer 1003..1004 magnitude=0 negative=false long_suffix=false
+      For 1009..1108 name="i" inclusive=false
+        Integer 1018..1020 magnitude=2 negative=true long_suffix=false
+        Name 1022..1023 name="n"
+        Block 1024..1108
+          ExpressionStatement 1034..1053
+            If 1034..1053
+              Binary 1037..1043 op=gt
+                Name 1037..1038 name="i"
+                Integer 1041..1043 magnitude=10 negative=false long_suffix=false
+              Block 1044..1053
+                BreakStatement 1046..1051
+          ExpressionStatement 1062..1083
+            If 1062..1083
+              Binary 1065..1070 op=lt
+                Name 1065..1066 name="i"
+                Integer 1069..1070 magnitude=0 negative=false long_suffix=false
+              Block 1071..1083
+                ContinueStatement 1073..1081
+          Assign 1092..1102 op=+=
+            Name 1092..1097 name="total"
+            Name 1101..1102 name="i"
+      Name 1113..1118 name="total"
+  Function 1121..1474 name="main" recursive=false generics=[]
+    Block 1131..1474
+      ExpressionStatement 1137..1155
+        Call 1137..1155 name="print"
+          Call 1143..1154 name="bounded"
+            Integer 1151..1153 magnitude=50 negative=false long_suffix=false
+      ExpressionStatement 1160..1179
+        Call 1160..1179 name="print"
+          Call 1166..1178 name="increment"
+            Integer 1176..1177 magnitude=9 negative=false long_suffix=false
+      ExpressionStatement 1184..1204
+        Call 1184..1204 name="print"
+          Call 1190..1203 name="increment"
+            Integer 1200..1202 magnitude=10 negative=false long_suffix=false
+      ExpressionStatement 1209..1228
+        Call 1209..1228 name="print"
+          Call 1215..1227 name="decrement"
+            Integer 1225..1226 magnitude=0 negative=false long_suffix=false
+      ExpressionStatement 1233..1252
+        Call 1233..1252 name="print"
+          Call 1239..1251 name="decrement"
+            Integer 1249..1250 magnitude=5 negative=false long_suffix=false
+      ExpressionStatement 1257..1274
+        Call 1257..1274 name="print"
+          Call 1263..1273 name="doubled"
+            Integer 1271..1272 magnitude=5 negative=false long_suffix=false
+      ExpressionStatement 1279..1297
+        Call 1279..1297 name="print"
+          Call 1285..1296 name="doubled"
+            Integer 1293..1295 magnitude=10 negative=false long_suffix=false
+      ExpressionStatement 1302..1325
+        Call 1302..1325 name="print"
+          Call 1308..1324 name="from_minmax"
+            Integer 1320..1323 magnitude=100 negative=false long_suffix=false
+      ExpressionStatement 1330..1351
+        Call 1330..1351 name="print"
+          Call 1336..1350 name="container"
+            Integer 1346..1349 magnitude=100 negative=false long_suffix=false
+      ExpressionStatement 1356..1376
+        Call 1356..1376 name="print"
+          Call 1362..1375 name="measured"
+            Integer 1371..1374 magnitude=100 negative=false long_suffix=false
+      ExpressionStatement 1381..1399
+        Call 1381..1399 name="print"
+          Call 1387..1398 name="joined"
+            Integer 1394..1397 magnitude=100 negative=false long_suffix=false
+      ExpressionStatement 1404..1419
+        Call 1404..1419 name="print"
+          Call 1410..1418 name="by_if"
+            Integer 1416..1417 magnitude=7 negative=false long_suffix=false
+      ExpressionStatement 1424..1446
+        Call 1424..1446 name="print"
+          Call 1430..1445 name="continue_sum"
+            Integer 1443..1444 magnitude=3 negative=false long_suffix=false
+      Call 1451..1472 name="print"
+        Call 1457..1471 name="break_sum"
+          Integer 1467..1470 magnitude=100 negative=false long_suffix=false

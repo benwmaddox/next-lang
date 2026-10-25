@@ -1,0 +1,30 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "let"
+Ident 20 9 2 9 "too_large"
+Eq 30 1 2 19 "="
+Number 32 10 2 21 "2147483648"
+Newline 42 1 2 31 "\n"
+Ident 47 5 3 5 "print"
+LParen 52 1 3 10 "("
+Ident 53 9 3 11 "too_large"
+RParen 62 1 3 20 ")"
+Newline 63 1 3 21 "\n"
+RBrace 64 1 4 1 "}"
+Newline 65 1 4 2 "\n"
+Eof 66 0 5 1 ""
+== tree ==
+file "main.nl"
+Program 0..66
+  Function 0..65 name="main" recursive=false generics=[]
+    Block 10..65
+      Let 16..42 mutable=false name="too_large"
+        Integer 32..42 magnitude=2147483648 negative=false long_suffix=false
+      Call 47..63 name="print"
+        Name 53..62 name="too_large"

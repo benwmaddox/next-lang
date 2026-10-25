@@ -1,0 +1,49 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 4 1 8 "Unit"
+LBrace 12 1 1 13 "{"
+Ident 14 5 1 15 "items"
+Colon 19 1 1 20 ":"
+Ident 21 4 1 22 "list"
+Lt 25 1 1 26 "<"
+Ident 26 4 1 27 "long"
+Comma 30 1 1 31 ","
+Number 32 3 1 33 "200"
+Gt 35 1 1 36 ">"
+Eq 37 1 1 38 "="
+Ident 39 4 1 40 "list"
+LBrace 44 1 1 45 "{"
+RBrace 45 1 1 46 "}"
+RBrace 47 1 1 48 "}"
+Newline 48 1 1 49 "\n"
+Ident 49 2 2 1 "fn"
+Ident 52 4 2 4 "main"
+LParen 56 1 2 8 "("
+RParen 57 1 2 9 ")"
+LBrace 59 1 2 11 "{"
+Ident 61 3 2 13 "let"
+Ident 65 5 2 17 "units"
+Colon 70 1 2 22 ":"
+Ident 72 4 2 24 "Unit"
+LBracket 76 1 2 28 "["
+Number 77 2 2 29 "64"
+RBracket 79 1 2 31 "]"
+RBrace 81 1 2 33 "}"
+Newline 82 1 2 34 "\n"
+Eof 83 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..83
+  Struct 0..48 name="Unit" generics=[]
+    StructField 14..46 name="items"
+      FieldType 21..36 name="list" range=none policy=checked
+        TypeArgument 26..30 name="long" range=none policy=checked
+        Integer 32..35 magnitude=200 negative=false long_suffix=false
+      ListLiteral 39..46
+  Function 49..82 name="main" recursive=false generics=[]
+    Block 59..82
+      Let 61..80 mutable=false name="units"
+        Annotation 72..80 name="Unit" range=none policy=checked
+          Integer 77..79 magnitude=64 negative=false long_suffix=false
+        Call 80..80 name="default"

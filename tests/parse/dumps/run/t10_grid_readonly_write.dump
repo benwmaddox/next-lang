@@ -1,0 +1,81 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 10 1 4 "write_cell"
+LParen 13 1 1 14 "("
+Ident 14 1 1 15 "g"
+Colon 15 1 1 16 ":"
+Ident 17 4 1 18 "grid"
+Lt 21 1 1 22 "<"
+Ident 22 4 1 23 "long"
+Comma 26 1 1 27 ","
+Number 28 1 1 29 "2"
+Comma 29 1 1 30 ","
+Number 31 1 1 32 "2"
+Gt 32 1 1 33 ">"
+RParen 33 1 1 34 ")"
+LBrace 35 1 1 36 "{"
+Newline 36 1 1 37 "\n"
+Ident 41 1 2 5 "g"
+LBracket 42 1 2 6 "["
+Number 43 2 2 7 "0L"
+Comma 45 1 2 9 ","
+Number 47 2 2 11 "0L"
+RBracket 49 1 2 13 "]"
+Eq 51 1 2 15 "="
+Number 53 2 2 17 "9L"
+Newline 55 1 2 19 "\n"
+RBrace 56 1 3 1 "}"
+Newline 57 1 3 2 "\n"
+Ident 59 2 5 1 "fn"
+Ident 62 4 5 4 "main"
+LParen 66 1 5 8 "("
+RParen 67 1 5 9 ")"
+LBrace 69 1 5 11 "{"
+Newline 70 1 5 12 "\n"
+Ident 75 3 6 5 "let"
+Ident 79 1 6 9 "g"
+Colon 80 1 6 10 ":"
+Ident 82 4 6 12 "grid"
+Lt 86 1 6 16 "<"
+Ident 87 4 6 17 "long"
+Comma 91 1 6 21 ","
+Number 93 1 6 23 "2"
+Comma 94 1 6 24 ","
+Number 96 1 6 26 "2"
+Gt 97 1 6 27 ">"
+Newline 98 1 6 28 "\n"
+Ident 103 10 7 5 "write_cell"
+LParen 113 1 7 15 "("
+Ident 114 1 7 16 "g"
+RParen 115 1 7 17 ")"
+Newline 116 1 7 18 "\n"
+RBrace 117 1 8 1 "}"
+Newline 118 1 8 2 "\n"
+Eof 119 0 9 1 ""
+== tree ==
+file "main.nl"
+Program 0..119
+  Function 0..57 name="write_cell" recursive=false generics=[]
+    Parameter 14..33 name="g" mode=read
+      ParameterType 17..33 name="grid" range=none policy=checked
+        TypeArgument 22..26 name="long" range=none policy=checked
+        Integer 28..29 magnitude=2 negative=false long_suffix=false
+        Integer 31..32 magnitude=2 negative=false long_suffix=false
+    Block 35..57
+      Assign 41..55 op==
+        GridIndex 41..50
+          Name 41..42 name="g"
+          Integer 43..45 magnitude=0 negative=false long_suffix=true
+          Integer 47..49 magnitude=0 negative=false long_suffix=true
+        Integer 53..55 magnitude=9 negative=false long_suffix=true
+  Function 59..118 name="main" recursive=false generics=[]
+    Block 69..118
+      Let 75..98 mutable=false name="g"
+        Annotation 82..98 name="grid" range=none policy=checked
+          TypeArgument 87..91 name="long" range=none policy=checked
+          Integer 93..94 magnitude=2 negative=false long_suffix=false
+          Integer 96..97 magnitude=2 negative=false long_suffix=false
+        Call 98..98 name="default"
+      Call 103..116 name="write_cell"
+        Name 114..115 name="g"

@@ -1,0 +1,62 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "type"
+Ident 5 5 1 6 "Small"
+Eq 11 1 1 12 "="
+Ident 13 3 1 14 "int"
+Number 17 1 1 18 "0"
+RangeInclusive 18 3 1 19 "..="
+Number 21 2 1 22 "10"
+Newline 23 1 1 24 "\n"
+Ident 24 2 2 1 "fn"
+Ident 27 3 2 4 "set"
+LParen 30 1 2 7 "("
+Ident 31 1 2 8 "x"
+Colon 32 1 2 9 ":"
+Ident 34 5 2 11 "write"
+Ident 40 3 2 17 "int"
+RParen 43 1 2 20 ")"
+LBrace 45 1 2 22 "{"
+Ident 47 1 2 24 "x"
+Eq 49 1 2 26 "="
+Number 51 2 2 28 "20"
+RBrace 54 1 2 31 "}"
+Newline 55 1 2 32 "\n"
+Ident 56 2 3 1 "fn"
+Ident 59 4 3 4 "main"
+LParen 63 1 3 8 "("
+RParen 64 1 3 9 ")"
+LBrace 66 1 3 11 "{"
+Ident 68 3 3 13 "var"
+Ident 72 5 3 17 "small"
+Colon 77 1 3 22 ":"
+Ident 79 5 3 24 "Small"
+Eq 85 1 3 30 "="
+Number 87 1 3 32 "2"
+Semicolon 88 1 3 33 ";"
+Ident 90 3 3 35 "set"
+LParen 93 1 3 38 "("
+Ident 94 5 3 39 "small"
+RParen 99 1 3 44 ")"
+RBrace 101 1 3 46 "}"
+Newline 102 1 3 47 "\n"
+Eof 103 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..103
+  TypeAlias 0..23 name="Small"
+    AliasedType 13..23 name="int" range=0..=10 policy=checked
+  Function 24..55 name="set" recursive=false generics=[]
+    Parameter 31..43 name="x" mode=write
+      ParameterType 40..43 name="int" range=none policy=checked
+    Block 45..55
+      Assign 47..53 op==
+        Name 47..48 name="x"
+        Integer 51..53 magnitude=20 negative=false long_suffix=false
+  Function 56..102 name="main" recursive=false generics=[]
+    Block 66..102
+      Let 68..88 mutable=true name="small"
+        Annotation 79..84 name="Small" range=none policy=checked
+        Integer 87..88 magnitude=2 negative=false long_suffix=false
+      Call 90..100 name="set"
+        Name 94..99 name="small"

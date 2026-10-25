@@ -1,0 +1,147 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 5 1 8 "Point"
+LBrace 13 1 1 14 "{"
+Ident 15 1 1 16 "x"
+Colon 16 1 1 17 ":"
+Ident 18 4 1 19 "long"
+Eq 23 1 1 24 "="
+Number 25 2 1 26 "0L"
+Comma 27 1 1 28 ","
+Ident 29 1 1 30 "y"
+Colon 30 1 1 31 ":"
+Ident 32 4 1 33 "long"
+Eq 37 1 1 38 "="
+Number 39 2 1 40 "0L"
+RBrace 42 1 1 43 "}"
+Newline 43 1 1 44 "\n"
+Ident 44 6 2 1 "struct"
+Ident 51 4 2 8 "Unit"
+LBrace 56 1 2 13 "{"
+Ident 58 2 2 15 "id"
+Colon 60 1 2 17 ":"
+Ident 62 4 2 19 "long"
+Eq 67 1 2 24 "="
+Number 69 2 2 26 "0L"
+Comma 71 1 2 28 ","
+Ident 73 9 2 30 "inventory"
+Colon 82 1 2 39 ":"
+Ident 84 4 2 41 "list"
+Lt 88 1 2 45 "<"
+Ident 89 5 2 46 "Point"
+Comma 94 1 2 51 ","
+Number 96 1 2 53 "8"
+Gt 97 1 2 54 ">"
+Eq 99 1 2 56 "="
+Ident 101 4 2 58 "list"
+LBrace 106 1 2 63 "{"
+RBrace 107 1 2 64 "}"
+RBrace 109 1 2 66 "}"
+Newline 110 1 2 67 "\n"
+Ident 111 2 3 1 "fn"
+Ident 114 4 3 4 "main"
+LParen 118 1 3 8 "("
+RParen 119 1 3 9 ")"
+LBrace 121 1 3 11 "{"
+Newline 122 1 3 12 "\n"
+Ident 127 3 4 5 "let"
+Ident 131 5 4 9 "units"
+Colon 136 1 4 14 ":"
+Ident 138 4 4 16 "Unit"
+LBracket 142 1 4 20 "["
+Number 143 2 4 21 "64"
+RBracket 145 1 4 23 "]"
+Newline 146 1 4 24 "\n"
+Ident 151 3 5 5 "for"
+Ident 155 1 5 9 "i"
+Colon 156 1 5 10 ":"
+Ident 158 4 5 12 "long"
+Ident 163 2 5 17 "in"
+Number 166 2 5 20 "0L"
+Range 168 2 5 22 ".."
+Ident 170 5 5 24 "units"
+Dot 175 1 5 29 "."
+Ident 176 3 5 30 "len"
+LParen 179 1 5 33 "("
+RParen 180 1 5 34 ")"
+LBrace 182 1 5 36 "{"
+Newline 183 1 5 37 "\n"
+Ident 192 3 6 9 "let"
+Ident 196 5 6 13 "local"
+Colon 201 1 6 18 ":"
+Ident 203 4 6 20 "long"
+LBracket 207 1 6 24 "["
+Number 208 1 6 25 "2"
+RBracket 209 1 6 26 "]"
+Eq 211 1 6 28 "="
+Ident 213 4 6 30 "fill"
+LParen 217 1 6 34 "("
+Ident 218 1 6 35 "i"
+RParen 219 1 6 36 ")"
+Newline 220 1 6 37 "\n"
+Ident 229 5 7 9 "print"
+LParen 234 1 7 14 "("
+Ident 235 5 7 15 "units"
+LBracket 240 1 7 20 "["
+Ident 241 1 7 21 "i"
+RBracket 242 1 7 22 "]"
+Dot 243 1 7 23 "."
+Ident 244 2 7 24 "id"
+Plus 247 1 7 27 "+"
+Ident 249 5 7 29 "local"
+LBracket 254 1 7 34 "["
+Number 255 2 7 35 "0L"
+RBracket 257 1 7 37 "]"
+RParen 258 1 7 38 ")"
+Newline 259 1 7 39 "\n"
+RBrace 264 1 8 5 "}"
+Newline 265 1 8 6 "\n"
+RBrace 266 1 9 1 "}"
+Newline 267 1 9 2 "\n"
+Eof 268 0 10 1 ""
+== tree ==
+file "main.nl"
+Program 0..268
+  Struct 0..43 name="Point" generics=[]
+    StructField 15..27 name="x"
+      FieldType 18..22 name="long" range=none policy=checked
+      Integer 25..27 magnitude=0 negative=false long_suffix=true
+    StructField 29..41 name="y"
+      FieldType 32..36 name="long" range=none policy=checked
+      Integer 39..41 magnitude=0 negative=false long_suffix=true
+  Struct 44..110 name="Unit" generics=[]
+    StructField 58..71 name="id"
+      FieldType 62..66 name="long" range=none policy=checked
+      Integer 69..71 magnitude=0 negative=false long_suffix=true
+    StructField 73..108 name="inventory"
+      FieldType 84..98 name="list" range=none policy=checked
+        TypeArgument 89..94 name="Point" range=none policy=checked
+        Integer 96..97 magnitude=8 negative=false long_suffix=false
+      ListLiteral 101..108
+  Function 111..267 name="main" recursive=false generics=[]
+    Block 121..267
+      Let 127..146 mutable=false name="units"
+        Annotation 138..146 name="Unit" range=none policy=checked
+          Integer 143..145 magnitude=64 negative=false long_suffix=false
+        Call 146..146 name="default"
+      For 151..265 name="i" inclusive=false
+        Annotation 158..162 name="long" range=none policy=checked
+        Integer 166..168 magnitude=0 negative=false long_suffix=true
+        MethodCall 170..181 name="len"
+          Name 170..175 name="units"
+        Block 182..265
+          Let 192..220 mutable=false name="local"
+            Annotation 203..210 name="long" range=none policy=checked
+              Integer 208..209 magnitude=2 negative=false long_suffix=false
+            Call 213..220 name="fill"
+              Name 218..219 name="i"
+          Call 229..259 name="print"
+            Binary 235..258 op=add
+              Field 235..246 name="id"
+                Index 235..243
+                  Name 235..240 name="units"
+                  Name 241..242 name="i"
+              Index 249..258
+                Name 249..254 name="local"
+                Integer 255..257 magnitude=0 negative=false long_suffix=true

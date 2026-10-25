@@ -1,0 +1,59 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Ident 12 3 1 13 "var"
+Ident 16 6 1 17 "values"
+Colon 22 1 1 23 ":"
+Ident 24 4 1 25 "list"
+Lt 28 1 1 29 "<"
+Ident 29 4 1 30 "long"
+Comma 33 1 1 34 ","
+Number 35 1 1 36 "2"
+Gt 36 1 1 37 ">"
+Eq 38 1 1 39 "="
+Ident 40 4 1 41 "list"
+LBrace 45 1 1 46 "{"
+RBrace 46 1 1 47 "}"
+Semicolon 47 1 1 48 ";"
+Ident 49 7 1 50 "discard"
+Ident 57 6 1 58 "values"
+Dot 63 1 1 64 "."
+Ident 64 4 1 65 "push"
+LParen 68 1 1 69 "("
+Number 69 2 1 70 "5L"
+RParen 71 1 1 72 ")"
+Semicolon 72 1 1 73 ";"
+Ident 74 5 1 75 "print"
+LParen 79 1 1 80 "("
+Ident 80 6 1 81 "values"
+Dot 86 1 1 87 "."
+Ident 87 6 1 88 "remove"
+LParen 93 1 1 94 "("
+Number 94 2 1 95 "1L"
+RParen 96 1 1 97 ")"
+RParen 97 1 1 98 ")"
+RBrace 99 1 1 100 "}"
+Newline 100 1 1 101 "\n"
+Eof 101 0 2 1 ""
+== tree ==
+file "main.nl"
+Program 0..101
+  Function 0..100 name="main" recursive=false generics=[]
+    Block 10..100
+      Let 12..47 mutable=true name="values"
+        Annotation 24..37 name="list" range=none policy=checked
+          TypeArgument 29..33 name="long" range=none policy=checked
+          Integer 35..36 magnitude=2 negative=false long_suffix=false
+        ListLiteral 40..47
+      Discard 49..72
+        MethodCall 57..72 name="push"
+          Name 57..63 name="values"
+          Integer 69..71 magnitude=5 negative=false long_suffix=true
+      Call 74..98 name="print"
+        MethodCall 80..97 name="remove"
+          Name 80..86 name="values"
+          Integer 94..96 magnitude=1 negative=false long_suffix=true

@@ -1,0 +1,60 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "global"
+Ident 7 4 1 8 "base"
+Colon 11 1 1 12 ":"
+Ident 13 3 1 14 "int"
+Eq 17 1 1 18 "="
+Number 19 1 1 20 "1"
+Newline 20 1 1 21 "\n"
+Ident 21 6 2 1 "global"
+Ident 28 6 2 8 "result"
+Colon 34 1 2 14 ":"
+Ident 36 3 2 16 "int"
+Eq 40 1 2 20 "="
+Ident 42 10 2 22 "initialize"
+LParen 52 1 2 32 "("
+RParen 53 1 2 33 ")"
+Newline 54 1 2 34 "\n"
+Ident 56 2 4 1 "fn"
+Ident 59 10 4 4 "initialize"
+LParen 69 1 4 14 "("
+RParen 70 1 4 15 ")"
+Arrow 72 2 4 17 "->"
+Ident 75 3 4 20 "int"
+LBrace 79 1 4 24 "{"
+Newline 80 1 4 25 "\n"
+Ident 85 4 5 5 "base"
+PlusEq 90 2 5 10 "+="
+Number 93 1 5 13 "1"
+Newline 94 1 5 14 "\n"
+Ident 99 4 6 5 "base"
+Newline 103 1 6 9 "\n"
+RBrace 104 1 7 1 "}"
+Newline 105 1 7 2 "\n"
+Ident 107 2 9 1 "fn"
+Ident 110 4 9 4 "main"
+LParen 114 1 9 8 "("
+RParen 115 1 9 9 ")"
+LBrace 117 1 9 11 "{"
+RBrace 118 1 9 12 "}"
+Newline 119 1 9 13 "\n"
+Eof 120 0 10 1 ""
+== tree ==
+file "main.nl"
+Program 0..120
+  Global 0..20 name="base" prefault=false
+    DeclaredType 13..16 name="int" range=none policy=checked
+    Integer 19..20 magnitude=1 negative=false long_suffix=false
+  Global 21..54 name="result" prefault=false
+    DeclaredType 36..39 name="int" range=none policy=checked
+    Call 42..54 name="initialize"
+  Function 56..105 name="initialize" recursive=false generics=[]
+    ResultType 75..78 name="int" range=none policy=checked
+    Block 79..105
+      Assign 85..94 op=+=
+        Name 85..89 name="base"
+        Integer 93..94 magnitude=1 negative=false long_suffix=false
+      Name 99..103 name="base"
+  Function 107..119 name="main" recursive=false generics=[]
+    Block 117..119

@@ -1,0 +1,129 @@
+== tokens ==
+file "main.nl"
+Ident 0 9 1 1 "recursive"
+Ident 10 2 1 11 "fn"
+Ident 13 4 1 14 "walk"
+LParen 17 1 1 18 "("
+Ident 18 1 1 19 "n"
+Colon 19 1 1 20 ":"
+Ident 21 3 1 22 "int"
+RParen 24 1 1 25 ")"
+Arrow 26 2 1 27 "->"
+Ident 29 3 1 30 "int"
+LBrace 33 1 1 34 "{"
+Newline 34 1 1 35 "\n"
+Ident 39 3 2 5 "var"
+Ident 43 7 2 9 "scratch"
+Colon 50 1 2 16 ":"
+Ident 52 3 2 18 "int"
+LBracket 55 1 2 21 "["
+Number 56 4 2 22 "2048"
+RBracket 60 1 2 26 "]"
+Eq 62 1 2 28 "="
+Ident 64 4 2 30 "fill"
+LParen 68 1 2 34 "("
+Ident 69 1 2 35 "n"
+RParen 70 1 2 36 ")"
+Newline 71 1 2 37 "\n"
+Ident 76 2 3 5 "if"
+Ident 79 1 3 8 "n"
+EqEq 81 2 3 10 "=="
+Number 84 1 3 13 "0"
+LBrace 86 1 3 15 "{"
+Newline 87 1 3 16 "\n"
+Ident 96 7 4 9 "scratch"
+LBracket 103 1 4 16 "["
+Number 104 1 4 17 "0"
+RBracket 105 1 4 18 "]"
+Newline 106 1 4 19 "\n"
+RBrace 111 1 5 5 "}"
+Ident 113 4 5 7 "else"
+LBrace 118 1 5 12 "{"
+Newline 119 1 5 13 "\n"
+Ident 128 3 6 9 "let"
+Ident 132 8 6 13 "callback"
+Colon 140 1 6 21 ":"
+Ident 142 2 6 23 "fn"
+LParen 144 1 6 25 "("
+Ident 145 3 6 26 "int"
+RParen 148 1 6 29 ")"
+Arrow 150 2 6 31 "->"
+Ident 153 3 6 34 "int"
+Eq 157 1 6 38 "="
+Ident 159 4 6 40 "walk"
+Newline 163 1 6 44 "\n"
+Ident 172 8 7 9 "callback"
+LParen 180 1 7 17 "("
+Ident 181 1 7 18 "n"
+Minus 183 1 7 20 "-"
+Number 185 1 7 22 "1"
+RParen 186 1 7 23 ")"
+Plus 188 1 7 25 "+"
+Ident 190 7 7 27 "scratch"
+LBracket 197 1 7 34 "["
+Number 198 1 7 35 "0"
+RBracket 199 1 7 36 "]"
+Newline 200 1 7 37 "\n"
+RBrace 205 1 8 5 "}"
+Newline 206 1 8 6 "\n"
+RBrace 207 1 9 1 "}"
+Newline 208 1 9 2 "\n"
+Ident 210 2 11 1 "fn"
+Ident 213 4 11 4 "main"
+LParen 217 1 11 8 "("
+RParen 218 1 11 9 ")"
+LBrace 220 1 11 11 "{"
+Newline 221 1 11 12 "\n"
+Ident 226 5 12 5 "print"
+LParen 231 1 12 10 "("
+Ident 232 4 12 11 "walk"
+LParen 236 1 12 15 "("
+Number 237 1 12 16 "2"
+RParen 238 1 12 17 ")"
+RParen 239 1 12 18 ")"
+Newline 240 1 12 19 "\n"
+RBrace 241 1 13 1 "}"
+Newline 242 1 13 2 "\n"
+Eof 243 0 14 1 ""
+== tree ==
+file "main.nl"
+Program 0..243
+  Function 0..208 name="walk" recursive=true generics=[]
+    Parameter 18..24 name="n" mode=read
+      ParameterType 21..24 name="int" range=none policy=checked
+    ResultType 29..32 name="int" range=none policy=checked
+    Block 33..208
+      Let 39..71 mutable=true name="scratch"
+        Annotation 52..61 name="int" range=none policy=checked
+          Integer 56..60 magnitude=2048 negative=false long_suffix=false
+        Call 64..71 name="fill"
+          Name 69..70 name="n"
+      If 76..206
+        Binary 79..85 op=eq
+          Name 79..80 name="n"
+          Integer 84..85 magnitude=0 negative=false long_suffix=false
+        Block 86..112
+          Index 96..106
+            Name 96..103 name="scratch"
+            Integer 104..105 magnitude=0 negative=false long_suffix=false
+        Block 118..206
+          Let 128..163 mutable=false name="callback"
+            Annotation 142..156 name="fn" range=none policy=checked
+              FunctionType 142..156
+                FunctionTypeParameter 145..148 mode=read
+                  ParameterType 145..148 name="int" range=none policy=checked
+                ResultType 153..156 name="int" range=none policy=checked
+            Name 159..163 name="walk"
+          Binary 172..200 op=add
+            Call 172..187 name="callback"
+              Binary 181..186 op=sub
+                Name 181..182 name="n"
+                Integer 185..186 magnitude=1 negative=false long_suffix=false
+            Index 190..200
+              Name 190..197 name="scratch"
+              Integer 198..199 magnitude=0 negative=false long_suffix=false
+  Function 210..242 name="main" recursive=false generics=[]
+    Block 220..242
+      Call 226..240 name="print"
+        Call 232..239 name="walk"
+          Integer 237..238 magnitude=2 negative=false long_suffix=false

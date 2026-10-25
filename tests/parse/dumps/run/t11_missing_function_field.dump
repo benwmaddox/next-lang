@@ -1,0 +1,70 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 3 1 8 "Ops"
+LBrace 11 1 1 12 "{"
+Newline 12 1 1 13 "\n"
+Ident 17 3 2 5 "run"
+Colon 20 1 2 8 ":"
+Ident 22 2 2 10 "fn"
+LParen 24 1 2 12 "("
+RParen 25 1 2 13 ")"
+Arrow 27 2 2 15 "->"
+Ident 30 3 2 18 "int"
+Newline 33 1 2 21 "\n"
+RBrace 34 1 3 1 "}"
+Newline 35 1 3 2 "\n"
+Ident 37 2 5 1 "fn"
+Ident 40 3 5 4 "run"
+LParen 43 1 5 7 "("
+RParen 44 1 5 8 ")"
+Arrow 46 2 5 10 "->"
+Ident 49 3 5 13 "int"
+LBrace 53 1 5 17 "{"
+Number 55 1 5 19 "1"
+RBrace 57 1 5 21 "}"
+Newline 58 1 5 22 "\n"
+Ident 60 2 7 1 "fn"
+Ident 63 4 7 4 "main"
+LParen 67 1 7 8 "("
+RParen 68 1 7 9 ")"
+LBrace 70 1 7 11 "{"
+Newline 71 1 7 12 "\n"
+Ident 76 3 8 5 "let"
+Ident 80 3 8 9 "ops"
+Eq 84 1 8 13 "="
+Ident 86 3 8 15 "Ops"
+LBrace 90 1 8 19 "{"
+RBrace 91 1 8 20 "}"
+Newline 92 1 8 21 "\n"
+Ident 97 5 9 5 "print"
+LParen 102 1 9 10 "("
+Ident 103 3 9 11 "ops"
+Dot 106 1 9 14 "."
+Ident 107 3 9 15 "run"
+LParen 110 1 9 18 "("
+RParen 111 1 9 19 ")"
+RParen 112 1 9 20 ")"
+Newline 113 1 9 21 "\n"
+RBrace 114 1 10 1 "}"
+Newline 115 1 10 2 "\n"
+Eof 116 0 11 1 ""
+== tree ==
+file "main.nl"
+Program 0..116
+  Struct 0..35 name="Ops" generics=[]
+    StructField 17..33 name="run"
+      FieldType 22..33 name="fn" range=none policy=checked
+        FunctionType 22..33
+          ResultType 30..33 name="int" range=none policy=checked
+  Function 37..58 name="run" recursive=false generics=[]
+    ResultType 49..52 name="int" range=none policy=checked
+    Block 53..58
+      Integer 55..56 magnitude=1 negative=false long_suffix=false
+  Function 60..115 name="main" recursive=false generics=[]
+    Block 70..115
+      Let 76..92 mutable=false name="ops"
+        StructInit 86..92 name="Ops"
+      Call 97..113 name="print"
+        MethodCall 103..112 name="run"
+          Name 103..106 name="ops"

@@ -1,0 +1,112 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 7 1 4 "compare"
+LParen 10 1 1 11 "("
+Ident 11 3 1 12 "ctx"
+Colon 14 1 1 15 ":"
+Ident 16 4 1 17 "long"
+Comma 20 1 1 21 ","
+Ident 22 4 1 23 "left"
+Colon 26 1 1 27 ":"
+Ident 28 4 1 29 "long"
+Comma 32 1 1 33 ","
+Ident 34 5 1 35 "right"
+Colon 39 1 1 40 ":"
+Ident 41 4 1 42 "long"
+RParen 45 1 1 46 ")"
+Arrow 47 2 1 48 "->"
+Ident 50 4 1 51 "bool"
+LBrace 55 1 1 56 "{"
+Ident 57 4 1 58 "left"
+Lt 62 1 1 63 "<"
+Ident 64 5 1 65 "right"
+RBrace 70 1 1 71 "}"
+Newline 71 1 1 72 "\n"
+Ident 73 2 3 1 "fn"
+Ident 76 4 3 4 "main"
+LParen 80 1 3 8 "("
+RParen 81 1 3 9 ")"
+LBrace 83 1 3 11 "{"
+Newline 84 1 3 12 "\n"
+Ident 89 3 4 5 "var"
+Ident 93 6 4 9 "values"
+Colon 99 1 4 15 ":"
+Ident 101 4 4 17 "list"
+Lt 105 1 4 21 "<"
+Ident 106 4 4 22 "long"
+Comma 110 1 4 26 ","
+Number 112 1 4 28 "2"
+Gt 113 1 4 29 ">"
+Eq 115 1 4 31 "="
+Ident 117 4 4 33 "list"
+LBrace 122 1 4 38 "{"
+RBrace 123 1 4 39 "}"
+Newline 124 1 4 40 "\n"
+Ident 129 7 5 5 "discard"
+Ident 137 6 5 13 "values"
+Dot 143 1 5 19 "."
+Ident 144 4 5 20 "push"
+LParen 148 1 5 24 "("
+Number 149 2 5 25 "2L"
+RParen 151 1 5 27 ")"
+Newline 152 1 5 28 "\n"
+Ident 157 7 6 5 "discard"
+Ident 165 6 6 13 "values"
+Dot 171 1 6 19 "."
+Ident 172 4 6 20 "push"
+LParen 176 1 6 24 "("
+Number 177 2 6 25 "1L"
+RParen 179 1 6 27 ")"
+Newline 180 1 6 28 "\n"
+Ident 185 7 7 5 "sort_by"
+LParen 192 1 7 12 "("
+Ident 193 6 7 13 "values"
+Comma 199 1 7 19 ","
+Ident 201 6 7 21 "values"
+LBracket 207 1 7 27 "["
+Number 208 2 7 28 "0L"
+RBracket 210 1 7 30 "]"
+Comma 211 1 7 31 ","
+Ident 213 7 7 33 "compare"
+RParen 220 1 7 40 ")"
+Newline 221 1 7 41 "\n"
+RBrace 222 1 8 1 "}"
+Newline 223 1 8 2 "\n"
+Eof 224 0 9 1 ""
+== tree ==
+file "main.nl"
+Program 0..224
+  Function 0..71 name="compare" recursive=false generics=[]
+    Parameter 11..20 name="ctx" mode=read
+      ParameterType 16..20 name="long" range=none policy=checked
+    Parameter 22..32 name="left" mode=read
+      ParameterType 28..32 name="long" range=none policy=checked
+    Parameter 34..45 name="right" mode=read
+      ParameterType 41..45 name="long" range=none policy=checked
+    ResultType 50..54 name="bool" range=none policy=checked
+    Block 55..71
+      Binary 57..69 op=lt
+        Name 57..61 name="left"
+        Name 64..69 name="right"
+  Function 73..223 name="main" recursive=false generics=[]
+    Block 83..223
+      Let 89..124 mutable=true name="values"
+        Annotation 101..114 name="list" range=none policy=checked
+          TypeArgument 106..110 name="long" range=none policy=checked
+          Integer 112..113 magnitude=2 negative=false long_suffix=false
+        ListLiteral 117..124
+      Discard 129..152
+        MethodCall 137..152 name="push"
+          Name 137..143 name="values"
+          Integer 149..151 magnitude=2 negative=false long_suffix=true
+      Discard 157..180
+        MethodCall 165..180 name="push"
+          Name 165..171 name="values"
+          Integer 177..179 magnitude=1 negative=false long_suffix=true
+      Call 185..221 name="sort_by"
+        Name 193..199 name="values"
+        Index 201..211
+          Name 201..207 name="values"
+          Integer 208..210 magnitude=0 negative=false long_suffix=true
+        Name 213..220 name="compare"

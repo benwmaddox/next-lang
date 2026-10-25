@@ -1,0 +1,1 @@
+main.nl:1:28: error: 'locked' globals are unsupported; remove the modifier instead of silently ignoring it

@@ -1,0 +1,105 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 6 1 4 "mutate"
+LParen 9 1 1 10 "("
+Ident 10 6 1 11 "values"
+Colon 16 1 1 17 ":"
+Ident 18 5 1 19 "write"
+Ident 24 4 1 25 "list"
+Lt 28 1 1 29 "<"
+Ident 29 4 1 30 "long"
+Comma 33 1 1 34 ","
+Number 35 1 1 36 "2"
+Gt 36 1 1 37 ">"
+RParen 37 1 1 38 ")"
+LBrace 39 1 1 40 "{"
+Ident 41 7 1 42 "discard"
+Ident 49 6 1 50 "values"
+Dot 55 1 1 56 "."
+Ident 56 4 1 57 "push"
+LParen 60 1 1 61 "("
+Number 61 2 1 62 "2L"
+RParen 63 1 1 64 ")"
+RBrace 65 1 1 66 "}"
+Newline 66 1 1 67 "\n"
+Ident 67 2 2 1 "fn"
+Ident 70 4 2 4 "main"
+LParen 74 1 2 8 "("
+RParen 75 1 2 9 ")"
+LBrace 77 1 2 11 "{"
+Newline 78 1 2 12 "\n"
+Ident 83 3 3 5 "var"
+Ident 87 6 3 9 "values"
+Colon 93 1 3 15 ":"
+Ident 95 4 3 17 "list"
+Lt 99 1 3 21 "<"
+Ident 100 4 3 22 "long"
+Comma 104 1 3 26 ","
+Number 106 1 3 28 "2"
+Gt 107 1 3 29 ">"
+Eq 109 1 3 31 "="
+Ident 111 4 3 33 "list"
+LBrace 116 1 3 38 "{"
+RBrace 117 1 3 39 "}"
+Newline 118 1 3 40 "\n"
+Ident 123 6 4 5 "values"
+Dot 129 1 4 11 "."
+Ident 130 4 4 12 "push"
+LParen 134 1 4 16 "("
+Number 135 2 4 17 "1L"
+RParen 137 1 4 19 ")"
+Newline 138 1 4 20 "\n"
+Ident 143 6 5 5 "mutate"
+LParen 149 1 5 11 "("
+Ident 150 6 5 12 "values"
+RParen 156 1 5 18 ")"
+Newline 157 1 5 19 "\n"
+Ident 162 6 6 5 "values"
+Dot 168 1 6 11 "."
+Ident 169 4 6 12 "push"
+LParen 173 1 6 16 "("
+Number 174 2 6 17 "3L"
+RParen 176 1 6 19 ")"
+Newline 177 1 6 20 "\n"
+Ident 182 5 7 5 "print"
+LParen 187 1 7 10 "("
+Number 188 1 7 11 "0"
+RParen 189 1 7 12 ")"
+Newline 190 1 7 13 "\n"
+RBrace 191 1 8 1 "}"
+Newline 192 1 8 2 "\n"
+Eof 193 0 9 1 ""
+== tree ==
+file "main.nl"
+Program 0..193
+  Function 0..66 name="mutate" recursive=false generics=[]
+    Parameter 10..37 name="values" mode=write
+      ParameterType 24..37 name="list" range=none policy=checked
+        TypeArgument 29..33 name="long" range=none policy=checked
+        Integer 35..36 magnitude=2 negative=false long_suffix=false
+    Block 39..66
+      Discard 41..64
+        MethodCall 49..64 name="push"
+          Name 49..55 name="values"
+          Integer 61..63 magnitude=2 negative=false long_suffix=true
+  Function 67..192 name="main" recursive=false generics=[]
+    Block 77..192
+      Let 83..118 mutable=true name="values"
+        Annotation 95..108 name="list" range=none policy=checked
+          TypeArgument 100..104 name="long" range=none policy=checked
+          Integer 106..107 magnitude=2 negative=false long_suffix=false
+        ListLiteral 111..118
+      ExpressionStatement 123..138
+        MethodCall 123..138 name="push"
+          Name 123..129 name="values"
+          Integer 135..137 magnitude=1 negative=false long_suffix=true
+      ExpressionStatement 143..157
+        Call 143..157 name="mutate"
+          Name 150..156 name="values"
+      ExpressionStatement 162..177
+        MethodCall 162..177 name="push"
+          Name 162..168 name="values"
+          Integer 174..176 magnitude=3 negative=false long_suffix=true
+      Call 182..190 name="print"
+        Integer 188..189 magnitude=0 negative=false long_suffix=false

@@ -1,0 +1,131 @@
+== tokens ==
+file "main.nl"
+Ident 0 9 1 1 "recursive"
+Ident 10 2 1 11 "fn"
+Ident 13 5 1 14 "first"
+LParen 18 1 1 19 "("
+Ident 19 1 1 20 "n"
+Colon 20 1 1 21 ":"
+Ident 22 3 1 23 "int"
+RParen 25 1 1 26 ")"
+Arrow 27 2 1 28 "->"
+Ident 30 3 1 31 "int"
+LBrace 34 1 1 35 "{"
+Newline 35 1 1 36 "\n"
+Ident 40 2 2 5 "if"
+Ident 43 1 2 8 "n"
+EqEq 45 2 2 10 "=="
+Number 48 1 2 13 "0"
+LBrace 50 1 2 15 "{"
+Number 52 1 2 17 "0"
+RBrace 54 1 2 19 "}"
+Ident 56 4 2 21 "else"
+LBrace 61 1 2 26 "{"
+Ident 63 6 2 28 "second"
+LParen 69 1 2 34 "("
+Ident 70 1 2 35 "n"
+Minus 72 1 2 37 "-"
+Number 74 1 2 39 "1"
+RParen 75 1 2 40 ")"
+RBrace 77 1 2 42 "}"
+Newline 78 1 2 43 "\n"
+RBrace 79 1 3 1 "}"
+Newline 80 1 3 2 "\n"
+Ident 82 9 5 1 "recursive"
+Ident 92 2 5 11 "fn"
+Ident 95 6 5 14 "second"
+LParen 101 1 5 20 "("
+Ident 102 1 5 21 "n"
+Colon 103 1 5 22 ":"
+Ident 105 3 5 24 "int"
+RParen 108 1 5 27 ")"
+Arrow 110 2 5 29 "->"
+Ident 113 3 5 32 "int"
+LBrace 117 1 5 36 "{"
+Newline 118 1 5 37 "\n"
+Ident 123 5 6 5 "print"
+LParen 128 1 6 10 "("
+Ident 129 1 6 11 "n"
+RParen 130 1 6 12 ")"
+Newline 131 1 6 13 "\n"
+Ident 136 2 7 5 "if"
+Ident 139 1 7 8 "n"
+EqEq 141 2 7 10 "=="
+Number 144 1 7 13 "0"
+LBrace 146 1 7 15 "{"
+Number 148 1 7 17 "0"
+RBrace 150 1 7 19 "}"
+Ident 152 4 7 21 "else"
+LBrace 157 1 7 26 "{"
+Ident 159 5 7 28 "first"
+LParen 164 1 7 33 "("
+Ident 165 1 7 34 "n"
+Minus 167 1 7 36 "-"
+Number 169 1 7 38 "1"
+RParen 170 1 7 39 ")"
+RBrace 172 1 7 41 "}"
+Newline 173 1 7 42 "\n"
+RBrace 174 1 8 1 "}"
+Newline 175 1 8 2 "\n"
+Ident 177 5 10 1 "const"
+Ident 183 3 10 7 "BAD"
+Colon 186 1 10 10 ":"
+Ident 188 3 10 12 "int"
+Eq 192 1 10 16 "="
+Ident 194 5 10 18 "first"
+LParen 199 1 10 23 "("
+Number 200 1 10 24 "4"
+RParen 201 1 10 25 ")"
+Newline 202 1 10 26 "\n"
+Ident 204 2 12 1 "fn"
+Ident 207 4 12 4 "main"
+LParen 211 1 12 8 "("
+RParen 212 1 12 9 ")"
+LBrace 214 1 12 11 "{"
+RBrace 215 1 12 12 "}"
+Newline 216 1 12 13 "\n"
+Eof 217 0 13 1 ""
+== tree ==
+file "main.nl"
+Program 0..217
+  Function 0..80 name="first" recursive=true generics=[]
+    Parameter 19..25 name="n" mode=read
+      ParameterType 22..25 name="int" range=none policy=checked
+    ResultType 30..33 name="int" range=none policy=checked
+    Block 34..80
+      If 40..78
+        Binary 43..49 op=eq
+          Name 43..44 name="n"
+          Integer 48..49 magnitude=0 negative=false long_suffix=false
+        Block 50..55
+          Integer 52..53 magnitude=0 negative=false long_suffix=false
+        Block 61..78
+          Call 63..76 name="second"
+            Binary 70..75 op=sub
+              Name 70..71 name="n"
+              Integer 74..75 magnitude=1 negative=false long_suffix=false
+  Function 82..175 name="second" recursive=true generics=[]
+    Parameter 102..108 name="n" mode=read
+      ParameterType 105..108 name="int" range=none policy=checked
+    ResultType 113..116 name="int" range=none policy=checked
+    Block 117..175
+      ExpressionStatement 123..131
+        Call 123..131 name="print"
+          Name 129..130 name="n"
+      If 136..173
+        Binary 139..145 op=eq
+          Name 139..140 name="n"
+          Integer 144..145 magnitude=0 negative=false long_suffix=false
+        Block 146..151
+          Integer 148..149 magnitude=0 negative=false long_suffix=false
+        Block 157..173
+          Call 159..171 name="first"
+            Binary 165..170 op=sub
+              Name 165..166 name="n"
+              Integer 169..170 magnitude=1 negative=false long_suffix=false
+  Const 177..202 name="BAD"
+    DeclaredType 188..191 name="int" range=none policy=checked
+    Call 194..202 name="first"
+      Integer 200..201 magnitude=4 negative=false long_suffix=false
+  Function 204..216 name="main" recursive=false generics=[]
+    Block 214..216

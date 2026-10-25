@@ -1,0 +1,73 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "type"
+Ident 5 7 1 6 "Checked"
+Eq 13 1 1 14 "="
+Ident 15 3 1 16 "int"
+Number 19 1 1 20 "0"
+RangeInclusive 20 3 1 21 "..="
+Number 23 1 1 24 "3"
+Newline 24 1 1 25 "\n"
+Ident 25 4 2 1 "type"
+Ident 30 7 2 6 "Wrapped"
+Eq 38 1 2 14 "="
+Ident 40 3 2 16 "int"
+Number 44 1 2 20 "0"
+RangeInclusive 45 3 2 21 "..="
+Number 48 1 2 24 "3"
+Ident 50 4 2 26 "wrap"
+Newline 54 1 2 30 "\n"
+Ident 55 2 3 1 "fn"
+Ident 58 3 3 4 "set"
+LParen 61 1 3 7 "("
+Ident 62 1 3 8 "x"
+Colon 63 1 3 9 ":"
+Ident 65 5 3 11 "write"
+Ident 71 7 3 17 "Wrapped"
+RParen 78 1 3 24 ")"
+LBrace 80 1 3 26 "{"
+Ident 82 1 3 28 "x"
+Eq 84 1 3 30 "="
+Number 86 1 3 32 "2"
+RBrace 88 1 3 34 "}"
+Newline 89 1 3 35 "\n"
+Ident 90 2 4 1 "fn"
+Ident 93 4 4 4 "main"
+LParen 97 1 4 8 "("
+RParen 98 1 4 9 ")"
+LBrace 100 1 4 11 "{"
+Ident 102 3 4 13 "var"
+Ident 106 5 4 17 "value"
+Colon 111 1 4 22 ":"
+Ident 113 7 4 24 "Checked"
+Eq 121 1 4 32 "="
+Number 123 1 4 34 "1"
+Semicolon 124 1 4 35 ";"
+Ident 126 3 4 37 "set"
+LParen 129 1 4 40 "("
+Ident 130 5 4 41 "value"
+RParen 135 1 4 46 ")"
+RBrace 137 1 4 48 "}"
+Newline 138 1 4 49 "\n"
+Eof 139 0 5 1 ""
+== tree ==
+file "main.nl"
+Program 0..139
+  TypeAlias 0..24 name="Checked"
+    AliasedType 15..24 name="int" range=0..=3 policy=checked
+  TypeAlias 25..54 name="Wrapped"
+    AliasedType 40..54 name="int" range=0..=3 policy=wrap
+  Function 55..89 name="set" recursive=false generics=[]
+    Parameter 62..78 name="x" mode=write
+      ParameterType 71..78 name="Wrapped" range=none policy=checked
+    Block 80..89
+      Assign 82..87 op==
+        Name 82..83 name="x"
+        Integer 86..87 magnitude=2 negative=false long_suffix=false
+  Function 90..138 name="main" recursive=false generics=[]
+    Block 100..138
+      Let 102..124 mutable=true name="value"
+        Annotation 113..120 name="Checked" range=none policy=checked
+        Integer 123..124 magnitude=1 negative=false long_suffix=false
+      Call 126..136 name="set"
+        Name 130..135 name="value"

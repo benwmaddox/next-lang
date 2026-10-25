@@ -1,0 +1,73 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "both"
+LParen 7 1 1 8 "("
+Ident 8 6 1 9 "values"
+Colon 14 1 1 15 ":"
+Ident 16 5 1 17 "write"
+Ident 22 4 1 23 "long"
+LBracket 26 1 1 27 "["
+Number 27 1 1 28 "2"
+RBracket 28 1 1 29 "]"
+Comma 29 1 1 30 ","
+Ident 31 4 1 32 "item"
+Colon 35 1 1 36 ":"
+Ident 37 5 1 38 "write"
+Ident 43 4 1 44 "long"
+RParen 47 1 1 48 ")"
+LBrace 49 1 1 50 "{"
+RBrace 50 1 1 51 "}"
+Newline 51 1 1 52 "\n"
+Ident 52 2 2 1 "fn"
+Ident 55 4 2 4 "main"
+LParen 59 1 2 8 "("
+RParen 60 1 2 9 ")"
+LBrace 62 1 2 11 "{"
+Ident 64 3 2 13 "var"
+Ident 68 6 2 17 "values"
+Colon 74 1 2 23 ":"
+Ident 76 4 2 25 "long"
+LBracket 80 1 2 29 "["
+Number 81 1 2 30 "2"
+RBracket 82 1 2 31 "]"
+Eq 84 1 2 33 "="
+Ident 86 4 2 35 "fill"
+LParen 90 1 2 39 "("
+Number 91 2 2 40 "0L"
+RParen 93 1 2 42 ")"
+Semicolon 94 1 2 43 ";"
+Ident 96 4 2 45 "both"
+LParen 100 1 2 49 "("
+Ident 101 6 2 50 "values"
+Comma 107 1 2 56 ","
+Ident 109 6 2 58 "values"
+LBracket 115 1 2 64 "["
+Number 116 2 2 65 "0L"
+RBracket 118 1 2 67 "]"
+RParen 119 1 2 68 ")"
+RBrace 121 1 2 70 "}"
+Newline 122 1 2 71 "\n"
+Eof 123 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..123
+  Function 0..51 name="both" recursive=false generics=[]
+    Parameter 8..29 name="values" mode=write
+      ParameterType 22..29 name="long" range=none policy=checked
+        Integer 27..28 magnitude=2 negative=false long_suffix=false
+    Parameter 31..47 name="item" mode=write
+      ParameterType 43..47 name="long" range=none policy=checked
+    Block 49..51
+  Function 52..122 name="main" recursive=false generics=[]
+    Block 62..122
+      Let 64..94 mutable=true name="values"
+        Annotation 76..83 name="long" range=none policy=checked
+          Integer 81..82 magnitude=2 negative=false long_suffix=false
+        Call 86..94 name="fill"
+          Integer 91..93 magnitude=0 negative=false long_suffix=true
+      Call 96..120 name="both"
+        Name 101..107 name="values"
+        Index 109..119
+          Name 109..115 name="values"
+          Integer 116..118 magnitude=0 negative=false long_suffix=true

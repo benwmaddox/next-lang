@@ -1,0 +1,83 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 5 1 8 "State"
+LBrace 13 1 1 14 "{"
+Ident 15 6 1 16 "values"
+Colon 21 1 1 22 ":"
+Ident 23 4 1 24 "list"
+Lt 27 1 1 28 "<"
+Ident 28 4 1 29 "long"
+Comma 32 1 1 33 ","
+Number 34 1 1 35 "2"
+Gt 35 1 1 36 ">"
+RBrace 37 1 1 38 "}"
+Newline 38 1 1 39 "\n"
+Ident 39 6 2 1 "global"
+Ident 46 3 2 8 "app"
+Colon 49 1 2 11 ":"
+Ident 51 5 2 13 "State"
+Eq 57 1 2 19 "="
+Ident 59 5 2 21 "State"
+LBrace 65 1 2 27 "{"
+RBrace 66 1 2 28 "}"
+Newline 67 1 2 29 "\n"
+Ident 69 2 4 1 "fn"
+Ident 72 7 4 4 "reorder"
+LParen 79 1 4 11 "("
+RParen 80 1 4 12 ")"
+LBrace 82 1 4 14 "{"
+Ident 84 4 4 16 "sort"
+LParen 88 1 4 20 "("
+Ident 89 3 4 21 "app"
+Dot 92 1 4 24 "."
+Ident 93 6 4 25 "values"
+RParen 99 1 4 31 ")"
+RBrace 101 1 4 33 "}"
+Newline 102 1 4 34 "\n"
+Ident 104 2 6 1 "fn"
+Ident 107 4 6 4 "main"
+LParen 111 1 6 8 "("
+RParen 112 1 6 9 ")"
+LBrace 114 1 6 11 "{"
+Newline 115 1 6 12 "\n"
+Ident 120 3 7 5 "for"
+Ident 124 5 7 9 "value"
+Ident 130 2 7 15 "in"
+Ident 133 3 7 18 "app"
+Dot 136 1 7 21 "."
+Ident 137 6 7 22 "values"
+LBrace 144 1 7 29 "{"
+Newline 145 1 7 30 "\n"
+Ident 154 7 8 9 "reorder"
+LParen 161 1 8 16 "("
+RParen 162 1 8 17 ")"
+Newline 163 1 8 18 "\n"
+RBrace 168 1 9 5 "}"
+Newline 169 1 9 6 "\n"
+RBrace 170 1 10 1 "}"
+Newline 171 1 10 2 "\n"
+Eof 172 0 11 1 ""
+== tree ==
+file "main.nl"
+Program 0..172
+  Struct 0..38 name="State" generics=[]
+    StructField 15..36 name="values"
+      FieldType 23..36 name="list" range=none policy=checked
+        TypeArgument 28..32 name="long" range=none policy=checked
+        Integer 34..35 magnitude=2 negative=false long_suffix=false
+  Global 39..67 name="app" prefault=false
+    DeclaredType 51..56 name="State" range=none policy=checked
+    StructInit 59..67 name="State"
+  Function 69..102 name="reorder" recursive=false generics=[]
+    Block 82..102
+      Call 84..100 name="sort"
+        Field 89..99 name="values"
+          Name 89..92 name="app"
+  Function 104..171 name="main" recursive=false generics=[]
+    Block 114..171
+      ForEach 120..169 name="value" indexes=[]
+        Field 133..143 name="values"
+          Name 133..136 name="app"
+        Block 144..169
+          Call 154..163 name="reorder"

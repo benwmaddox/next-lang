@@ -2,7 +2,8 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use next_lang::{
-    PackageError, build_package, inspect_contracts, inspect_memory, run_package_args, test_package,
+    PackageError, build_package, inspect_contracts, inspect_memory, parse_package,
+    run_package_args, test_package,
 };
 
 fn main() -> ExitCode {
@@ -29,6 +30,32 @@ fn main() -> ExitCode {
             Ok(code) => ExitCode::from(code),
             Err(error) => report_error(error),
         },
+        "parse" if (1..=3).contains(&rest.len()) => {
+            let flags = &rest[1..];
+            let want_tree = flags.iter().any(|arg| arg == "--tree");
+            let want_tokens = flags.iter().any(|arg| arg == "--tokens");
+            let valid_flags = flags.iter().all(|arg| arg == "--tree" || arg == "--tokens")
+                && flags.len() == usize::from(want_tree) + usize::from(want_tokens);
+            if !valid_flags {
+                usage();
+                ExitCode::from(3)
+            } else {
+                match parse_package(Path::new(&rest[0])) {
+                    Ok(dump) => {
+                        match (want_tokens, want_tree) {
+                            (true, true) => {
+                                print!("== tokens ==\n{}== tree ==\n{}", dump.tokens, dump.tree);
+                            }
+                            (true, false) => print!("{}", dump.tokens),
+                            (false, true) => print!("{}", dump.tree),
+                            (false, false) => {}
+                        }
+                        ExitCode::SUCCESS
+                    }
+                    Err(error) => report_error(error),
+                }
+            }
+        }
         "build" if rest.len() == 3 && rest[1] == "-o" => {
             match build_package(Path::new(&rest[0]), Path::new(&rest[2])) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -74,6 +101,6 @@ fn report_error(error: PackageError) -> ExitCode {
 
 fn usage() {
     eprintln!(
-        "usage: nlc run <package-dir> [--allow-overcommit] | nlc build <package-dir> -o <file> | nlc test <package-dir> | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir>"
+        "usage: nlc run <package-dir> [--allow-overcommit] | nlc build <package-dir> -o <file> | nlc test <package-dir> | nlc parse <package-dir> [--tree] [--tokens] | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir>"
     );
 }

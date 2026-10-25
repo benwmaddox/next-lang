@@ -1,0 +1,33 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+Ident 8 3 1 9 "env"
+Colon 11 1 1 12 ":"
+Ident 13 3 1 14 "Env"
+RParen 16 1 1 17 ")"
+LBrace 18 1 1 19 "{"
+Newline 19 1 1 20 "\n"
+Ident 24 3 2 5 "let"
+Ident 28 4 2 9 "args"
+Eq 33 1 2 14 "="
+Ident 35 3 2 16 "env"
+Dot 38 1 2 19 "."
+Ident 39 4 2 20 "args"
+LParen 43 1 2 24 "("
+RParen 44 1 2 25 ")"
+Newline 45 1 2 26 "\n"
+RBrace 46 1 3 1 "}"
+Newline 47 1 3 2 "\n"
+Eof 48 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..48
+  Function 0..47 name="main" recursive=false generics=[]
+    Parameter 8..16 name="env" mode=read
+      ParameterType 13..16 name="Env" range=none policy=checked
+    Block 18..47
+      Let 24..45 mutable=false name="args"
+        MethodCall 35..45 name="args"
+          Name 35..38 name="env"

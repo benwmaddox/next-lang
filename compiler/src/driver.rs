@@ -6,10 +6,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::ast::Span;
 use crate::emit::StackContract;
-use crate::{checker, emit, lexer, parser};
+use crate::{checker, emit, lexer, parser, syntax_dump};
 
 static TEMP_ID: AtomicUsize = AtomicUsize::new(0);
 const COMPILER_STACK_SIZE: usize = 1024 * 1024 * 1024;
+const MAX_PARSE_FILES: usize = 256;
+const MAX_PARSE_SOURCE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PARSE_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PARSE_PACKAGE_TOKENS: usize = 4_000_000;
+const MAX_PARSE_PACKAGE_NODES: usize = syntax_dump::MAX_TREE_NODES;
+const MAX_PARSE_PACKAGE_EDGES: usize = syntax_dump::MAX_TREE_EDGES;
+const MAX_PARSE_WORK_UNITS: usize = 72_000_000;
 
 #[derive(Clone, Debug)]
 pub struct CompileError {
@@ -37,6 +44,12 @@ pub struct CompileOutput {
     pub contracts: Vec<StackContract>,
     call_graph: Vec<Vec<usize>>,
     recursive_functions: Vec<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ParseDump {
+    pub tokens: String,
+    pub tree: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -83,9 +96,181 @@ pub fn compile_package(package: &Path) -> Result<CompileOutput, CompileError> {
                 file: 0,
                 line: 1,
                 col: 1,
+                start_offset: 0,
+                end_offset: 0,
             },
             message,
         }),
+    }
+}
+
+/// Lex and parse a package without type checking. The dumps are deterministic for a
+/// given byte-for-byte package and are the reference format for the self-hosted parser.
+pub fn parse_package(package: &Path) -> Result<ParseDump, PackageError> {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("nlc-parse".to_owned())
+            .stack_size(COMPILER_STACK_SIZE)
+            .spawn_scoped(scope, move || parse_package_on_worker(package))
+            .map_err(|error| PackageError::Tool(format!("could not start parser thread: {error}")))?
+            .join()
+            .map_err(|_| PackageError::Tool("parser thread panicked".to_owned()))?
+    })
+}
+
+fn parse_package_on_worker(package: &Path) -> Result<ParseDump, PackageError> {
+    let entries = fs::read_dir(package)
+        .map_err(|e| PackageError::Tool(format!("cannot read package directory: {e}")))?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| PackageError::Tool(format!("cannot read package entry: {e}")))?;
+        let path = entry.path();
+        if path.extension().is_some_and(|extension| extension == "nl") && path.is_file() {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    if paths.is_empty() {
+        return Err(PackageError::Tool(
+            "package has no .nl source files".to_owned(),
+        ));
+    }
+    if paths.len() > MAX_PARSE_FILES {
+        return Err(parse_limit_error(
+            "<package>",
+            format!("source file limit of {MAX_PARSE_FILES} per package exceeded"),
+        ));
+    }
+
+    let mut dump = ParseDump::default();
+    let mut package_bytes = 0usize;
+    let mut package_tokens = 0usize;
+    let mut package_nodes = 0usize;
+    let mut package_edges = 0usize;
+    for (file_id, path) in paths.into_iter().enumerate() {
+        let file = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<source>")
+            .to_owned();
+        let bytes = fs::read(&path).map_err(|error| {
+            PackageError::Tool(format!("cannot read source file '{file}': {error}"))
+        })?;
+        if bytes.len() > MAX_PARSE_SOURCE_BYTES {
+            return Err(parse_limit_error(
+                &file,
+                format!("source byte limit of {MAX_PARSE_SOURCE_BYTES} per file exceeded"),
+            ));
+        }
+        package_bytes = package_bytes.saturating_add(bytes.len());
+        if package_bytes > MAX_PARSE_PACKAGE_BYTES {
+            return Err(parse_limit_error(
+                &file,
+                format!("source byte limit of {MAX_PARSE_PACKAGE_BYTES} per package exceeded"),
+            ));
+        }
+        let source = match String::from_utf8(bytes) {
+            Ok(source) => source,
+            Err(error) => {
+                let offset = error.utf8_error().valid_up_to();
+                let raw = error.into_bytes();
+                let span = invalid_utf8_span(file_id, &raw, offset);
+                return Err(PackageError::Compile(CompileError {
+                    file,
+                    span,
+                    message: "source is not valid UTF-8; save the file as UTF-8".to_owned(),
+                }));
+            }
+        };
+        let tokens = lexer::lex(&source, file_id).map_err(|error| {
+            PackageError::Compile(CompileError {
+                file: file.clone(),
+                span: error.span,
+                message: error.message,
+            })
+        })?;
+        package_tokens = package_tokens.saturating_add(tokens.len());
+        if package_tokens > MAX_PARSE_PACKAGE_TOKENS {
+            return Err(parse_limit_error(
+                &file,
+                format!("token limit of {MAX_PARSE_PACKAGE_TOKENS} per package exceeded"),
+            ));
+        }
+        let program = parser::parse(tokens.clone(), &source).map_err(|error| {
+            PackageError::Compile(CompileError {
+                file: file.clone(),
+                span: error.span,
+                message: error.message,
+            })
+        })?;
+        let (tree, nodes, edges) =
+            syntax_dump::tree_dump(&file, source.len(), &program).map_err(|limit| {
+                let message = if limit.edges > MAX_PARSE_PACKAGE_EDGES {
+                    format!("child edge limit of {MAX_PARSE_PACKAGE_EDGES} per package exceeded")
+                } else if limit.nodes > MAX_PARSE_PACKAGE_NODES {
+                    format!("node limit of {MAX_PARSE_PACKAGE_NODES} per package exceeded")
+                } else {
+                    "tree dump limit exceeded".to_owned()
+                };
+                parse_limit_error(&file, message)
+            })?;
+        package_nodes = package_nodes.saturating_add(nodes);
+        if package_nodes > MAX_PARSE_PACKAGE_NODES {
+            return Err(parse_limit_error(
+                &file,
+                format!("node limit of {MAX_PARSE_PACKAGE_NODES} per package exceeded"),
+            ));
+        }
+        package_edges = package_edges.saturating_add(edges);
+        if package_edges > MAX_PARSE_PACKAGE_EDGES {
+            return Err(parse_limit_error(
+                &file,
+                format!("child edge limit of {MAX_PARSE_PACKAGE_EDGES} per package exceeded"),
+            ));
+        }
+        let work = package_bytes
+            .saturating_add(package_tokens)
+            .saturating_add(package_nodes)
+            .saturating_add(package_edges);
+        if work > MAX_PARSE_WORK_UNITS {
+            return Err(parse_limit_error(
+                &file,
+                format!("parse work limit of {MAX_PARSE_WORK_UNITS} units per package exceeded"),
+            ));
+        }
+        dump.tokens
+            .push_str(&syntax_dump::token_dump(&file, &source, &tokens));
+        dump.tree.push_str(&tree);
+    }
+    Ok(dump)
+}
+
+fn parse_limit_error(file: &str, message: String) -> PackageError {
+    PackageError::Compile(CompileError {
+        file: file.to_owned(),
+        span: Span {
+            file: 0,
+            line: 1,
+            col: 1,
+            start_offset: 0,
+            end_offset: 0,
+        },
+        message,
+    })
+}
+
+fn invalid_utf8_span(file: usize, bytes: &[u8], offset: usize) -> Span {
+    let prefix = &bytes[..offset.min(bytes.len())];
+    let line = prefix.iter().filter(|byte| **byte == b'\n').count() + 1;
+    let last_newline = prefix.iter().rposition(|byte| *byte == b'\n');
+    let col = offset.saturating_sub(last_newline.map(|index| index + 1).unwrap_or(0)) + 1;
+    Span {
+        file,
+        line,
+        col,
+        start_offset: offset,
+        end_offset: offset.saturating_add(1),
     }
 }
 

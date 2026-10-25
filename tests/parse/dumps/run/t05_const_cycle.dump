@@ -1,0 +1,57 @@
+== tokens ==
+file "main.nl"
+Ident 0 5 1 1 "const"
+Ident 6 5 1 7 "FIRST"
+Colon 11 1 1 12 ":"
+Ident 13 3 1 14 "int"
+Eq 17 1 1 18 "="
+Ident 19 6 1 20 "SECOND"
+Plus 26 1 1 27 "+"
+Number 28 1 1 29 "1"
+Newline 29 1 1 30 "\n"
+Ident 30 5 2 1 "const"
+Ident 36 6 2 7 "SECOND"
+Colon 42 1 2 13 ":"
+Ident 44 3 2 15 "int"
+Eq 48 1 2 19 "="
+Ident 50 5 2 21 "THIRD"
+Plus 56 1 2 27 "+"
+Number 58 1 2 29 "1"
+Newline 59 1 2 30 "\n"
+Ident 60 5 3 1 "const"
+Ident 66 5 3 7 "THIRD"
+Colon 71 1 3 12 ":"
+Ident 73 3 3 14 "int"
+Eq 77 1 3 18 "="
+Ident 79 5 3 20 "FIRST"
+Plus 85 1 3 26 "+"
+Number 87 1 3 28 "1"
+Newline 88 1 3 29 "\n"
+Ident 90 2 5 1 "fn"
+Ident 93 4 5 4 "main"
+LParen 97 1 5 8 "("
+RParen 98 1 5 9 ")"
+LBrace 100 1 5 11 "{"
+RBrace 101 1 5 12 "}"
+Newline 102 1 5 13 "\n"
+Eof 103 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..103
+  Const 0..29 name="FIRST"
+    DeclaredType 13..16 name="int" range=none policy=checked
+    Binary 19..29 op=add
+      Name 19..25 name="SECOND"
+      Integer 28..29 magnitude=1 negative=false long_suffix=false
+  Const 30..59 name="SECOND"
+    DeclaredType 44..47 name="int" range=none policy=checked
+    Binary 50..59 op=add
+      Name 50..55 name="THIRD"
+      Integer 58..59 magnitude=1 negative=false long_suffix=false
+  Const 60..88 name="THIRD"
+    DeclaredType 73..76 name="int" range=none policy=checked
+    Binary 79..88 op=add
+      Name 79..84 name="FIRST"
+      Integer 87..88 magnitude=1 negative=false long_suffix=false
+  Function 90..102 name="main" recursive=false generics=[]
+    Block 100..102

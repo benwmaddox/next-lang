@@ -1,0 +1,114 @@
+== tokens ==
+file "main.nl"
+Ident 0 9 1 1 "recursive"
+Ident 10 2 1 11 "fn"
+Ident 13 5 1 14 "frame"
+LParen 18 1 1 19 "("
+Ident 19 1 1 20 "n"
+Colon 20 1 1 21 ":"
+Ident 22 3 1 23 "int"
+RParen 25 1 1 26 ")"
+Arrow 27 2 1 28 "->"
+Ident 30 3 1 31 "int"
+LBrace 34 1 1 35 "{"
+Newline 35 1 1 36 "\n"
+Ident 40 3 2 5 "var"
+Ident 44 6 2 9 "values"
+Colon 50 1 2 15 ":"
+Ident 52 3 2 17 "int"
+LBracket 55 1 2 20 "["
+Number 56 4 2 21 "1024"
+RBracket 60 1 2 25 "]"
+Eq 62 1 2 27 "="
+Ident 64 4 2 29 "fill"
+LParen 68 1 2 33 "("
+Ident 69 1 2 34 "n"
+RParen 70 1 2 35 ")"
+Newline 71 1 2 36 "\n"
+Ident 76 4 3 5 "sort"
+LParen 80 1 3 9 "("
+Ident 81 6 3 10 "values"
+RParen 87 1 3 16 ")"
+Newline 88 1 3 17 "\n"
+Ident 93 2 4 5 "if"
+Ident 96 1 4 8 "n"
+EqEq 98 2 4 10 "=="
+Number 101 1 4 13 "0"
+LBrace 103 1 4 15 "{"
+Ident 105 6 4 17 "values"
+LBracket 111 1 4 23 "["
+Number 112 1 4 24 "0"
+RBracket 113 1 4 25 "]"
+RBrace 115 1 4 27 "}"
+Ident 117 4 4 29 "else"
+LBrace 122 1 4 34 "{"
+Ident 124 5 4 36 "frame"
+LParen 129 1 4 41 "("
+Ident 130 1 4 42 "n"
+Minus 132 1 4 44 "-"
+Number 134 1 4 46 "1"
+RParen 135 1 4 47 ")"
+Plus 137 1 4 49 "+"
+Ident 139 6 4 51 "values"
+LBracket 145 1 4 57 "["
+Number 146 1 4 58 "0"
+RBracket 147 1 4 59 "]"
+RBrace 149 1 4 61 "}"
+Newline 150 1 4 62 "\n"
+RBrace 151 1 5 1 "}"
+Newline 152 1 5 2 "\n"
+Ident 154 2 7 1 "fn"
+Ident 157 4 7 4 "main"
+LParen 161 1 7 8 "("
+RParen 162 1 7 9 ")"
+LBrace 164 1 7 11 "{"
+Newline 165 1 7 12 "\n"
+Ident 170 5 8 5 "print"
+LParen 175 1 8 10 "("
+Ident 176 5 8 11 "frame"
+LParen 181 1 8 16 "("
+Number 182 3 8 17 "100"
+RParen 185 1 8 20 ")"
+RParen 186 1 8 21 ")"
+Newline 187 1 8 22 "\n"
+RBrace 188 1 9 1 "}"
+Newline 189 1 9 2 "\n"
+Eof 190 0 10 1 ""
+== tree ==
+file "main.nl"
+Program 0..190
+  Function 0..152 name="frame" recursive=true generics=[]
+    Parameter 19..25 name="n" mode=read
+      ParameterType 22..25 name="int" range=none policy=checked
+    ResultType 30..33 name="int" range=none policy=checked
+    Block 34..152
+      Let 40..71 mutable=true name="values"
+        Annotation 52..61 name="int" range=none policy=checked
+          Integer 56..60 magnitude=1024 negative=false long_suffix=false
+        Call 64..71 name="fill"
+          Name 69..70 name="n"
+      ExpressionStatement 76..88
+        Call 76..88 name="sort"
+          Name 81..87 name="values"
+      If 93..150
+        Binary 96..102 op=eq
+          Name 96..97 name="n"
+          Integer 101..102 magnitude=0 negative=false long_suffix=false
+        Block 103..116
+          Index 105..114
+            Name 105..111 name="values"
+            Integer 112..113 magnitude=0 negative=false long_suffix=false
+        Block 122..150
+          Binary 124..148 op=add
+            Call 124..136 name="frame"
+              Binary 130..135 op=sub
+                Name 130..131 name="n"
+                Integer 134..135 magnitude=1 negative=false long_suffix=false
+            Index 139..148
+              Name 139..145 name="values"
+              Integer 146..147 magnitude=0 negative=false long_suffix=false
+  Function 154..189 name="main" recursive=false generics=[]
+    Block 164..189
+      Call 170..187 name="print"
+        Call 176..186 name="frame"
+          Integer 182..185 magnitude=100 negative=false long_suffix=false

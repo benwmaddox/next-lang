@@ -1,0 +1,71 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "push"
+LParen 7 1 1 8 "("
+Ident 8 6 1 9 "values"
+Colon 14 1 1 15 ":"
+Ident 16 5 1 17 "write"
+Ident 22 4 1 23 "list"
+Lt 26 1 1 27 "<"
+Ident 27 4 1 28 "long"
+Comma 31 1 1 32 ","
+Number 33 1 1 34 "2"
+Gt 34 1 1 35 ">"
+RParen 35 1 1 36 ")"
+LBrace 37 1 1 38 "{"
+Ident 39 6 1 40 "values"
+Dot 45 1 1 46 "."
+Ident 46 4 1 47 "push"
+LParen 50 1 1 51 "("
+Number 51 2 1 52 "1L"
+RParen 53 1 1 54 ")"
+RBrace 55 1 1 56 "}"
+Newline 56 1 1 57 "\n"
+Ident 57 2 2 1 "fn"
+Ident 60 4 2 4 "main"
+LParen 64 1 2 8 "("
+RParen 65 1 2 9 ")"
+LBrace 67 1 2 11 "{"
+Ident 69 3 2 13 "var"
+Ident 73 6 2 17 "values"
+Colon 79 1 2 23 ":"
+Ident 81 4 2 25 "list"
+Lt 85 1 2 29 "<"
+Ident 86 4 2 30 "long"
+Comma 90 1 2 34 ","
+Number 92 1 2 36 "2"
+Gt 93 1 2 37 ">"
+Eq 95 1 2 39 "="
+Ident 97 4 2 41 "list"
+LBrace 102 1 2 46 "{"
+RBrace 103 1 2 47 "}"
+Semicolon 104 1 2 48 ";"
+Ident 106 4 2 50 "push"
+LParen 110 1 2 54 "("
+Ident 111 6 2 55 "values"
+RParen 117 1 2 61 ")"
+RBrace 119 1 2 63 "}"
+Newline 120 1 2 64 "\n"
+Eof 121 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..121
+  Function 0..56 name="push" recursive=false generics=[]
+    Parameter 8..35 name="values" mode=write
+      ParameterType 22..35 name="list" range=none policy=checked
+        TypeArgument 27..31 name="long" range=none policy=checked
+        Integer 33..34 magnitude=2 negative=false long_suffix=false
+    Block 37..56
+      MethodCall 39..54 name="push"
+        Name 39..45 name="values"
+        Integer 51..53 magnitude=1 negative=false long_suffix=true
+  Function 57..120 name="main" recursive=false generics=[]
+    Block 67..120
+      Let 69..104 mutable=true name="values"
+        Annotation 81..94 name="list" range=none policy=checked
+          TypeArgument 86..90 name="long" range=none policy=checked
+          Integer 92..93 magnitude=2 negative=false long_suffix=false
+        ListLiteral 97..104
+      Call 106..118 name="push"
+        Name 111..117 name="values"

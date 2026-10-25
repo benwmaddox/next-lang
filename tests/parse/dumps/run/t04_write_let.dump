@@ -1,0 +1,49 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 3 1 4 "set"
+LParen 6 1 1 7 "("
+Ident 7 1 1 8 "x"
+Colon 8 1 1 9 ":"
+Ident 10 5 1 11 "write"
+Ident 16 3 1 17 "int"
+RParen 19 1 1 20 ")"
+LBrace 21 1 1 22 "{"
+Ident 23 1 1 24 "x"
+Eq 25 1 1 26 "="
+Number 27 1 1 28 "5"
+RBrace 29 1 1 30 "}"
+Newline 30 1 1 31 "\n"
+Ident 31 2 2 1 "fn"
+Ident 34 4 2 4 "main"
+LParen 38 1 2 8 "("
+RParen 39 1 2 9 ")"
+LBrace 41 1 2 11 "{"
+Ident 43 3 2 13 "let"
+Ident 47 1 2 17 "n"
+Eq 49 1 2 19 "="
+Number 51 1 2 21 "2"
+Semicolon 52 1 2 22 ";"
+Ident 54 3 2 24 "set"
+LParen 57 1 2 27 "("
+Ident 58 1 2 28 "n"
+RParen 59 1 2 29 ")"
+RBrace 61 1 2 31 "}"
+Newline 62 1 2 32 "\n"
+Eof 63 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..63
+  Function 0..30 name="set" recursive=false generics=[]
+    Parameter 7..19 name="x" mode=write
+      ParameterType 16..19 name="int" range=none policy=checked
+    Block 21..30
+      Assign 23..28 op==
+        Name 23..24 name="x"
+        Integer 27..28 magnitude=5 negative=false long_suffix=false
+  Function 31..62 name="main" recursive=false generics=[]
+    Block 41..62
+      Let 43..52 mutable=false name="n"
+        Integer 51..52 magnitude=2 negative=false long_suffix=false
+      Call 54..60 name="set"
+        Name 58..59 name="n"

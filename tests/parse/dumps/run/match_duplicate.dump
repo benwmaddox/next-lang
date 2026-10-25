@@ -1,0 +1,73 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "enum"
+Ident 5 5 1 6 "Color"
+LBrace 11 1 1 12 "{"
+Ident 13 3 1 14 "Red"
+Comma 16 1 1 17 ","
+Ident 18 4 1 19 "Blue"
+RBrace 23 1 1 24 "}"
+Newline 24 1 1 25 "\n"
+Ident 25 2 2 1 "fn"
+Ident 28 4 2 4 "main"
+LParen 32 1 2 8 "("
+RParen 33 1 2 9 ")"
+LBrace 35 1 2 11 "{"
+Newline 36 1 2 12 "\n"
+Ident 41 3 3 5 "let"
+Ident 45 5 3 9 "color"
+Eq 51 1 3 15 "="
+Ident 53 5 3 17 "Color"
+Dot 58 1 3 22 "."
+Ident 59 3 3 23 "Red"
+Newline 62 1 3 26 "\n"
+Ident 67 5 4 5 "print"
+LParen 72 1 4 10 "("
+Ident 73 5 4 11 "match"
+Ident 79 5 4 17 "color"
+LBrace 85 1 4 23 "{"
+Ident 87 5 4 25 "Color"
+Dot 92 1 4 30 "."
+Ident 93 3 4 31 "Red"
+FatArrow 97 2 4 35 "=>"
+Number 100 1 4 38 "1"
+Comma 101 1 4 39 ","
+Ident 103 3 4 41 "Red"
+FatArrow 107 2 4 45 "=>"
+Number 110 1 4 48 "2"
+Comma 111 1 4 49 ","
+Ident 113 4 4 51 "Blue"
+FatArrow 118 2 4 56 "=>"
+Number 121 1 4 59 "3"
+RBrace 123 1 4 61 "}"
+RParen 124 1 4 62 ")"
+Newline 125 1 4 63 "\n"
+RBrace 126 1 5 1 "}"
+Newline 127 1 5 2 "\n"
+Eof 128 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..128
+  Enum 0..24 name="Color"
+    EnumCase 13..16 name="Red"
+    EnumCase 18..22 name="Blue"
+  Function 25..127 name="main" recursive=false generics=[]
+    Block 35..127
+      Let 41..62 mutable=false name="color"
+        Field 53..62 name="Red"
+          Name 53..58 name="Color"
+      Call 67..125 name="print"
+        Match 73..124
+          Name 79..84 name="color"
+          MatchArm 87..101
+            CasePattern 87..96 name="Red" enum="Color"
+            Block 100..101
+              Integer 100..101 magnitude=1 negative=false long_suffix=false
+          MatchArm 103..111
+            CasePattern 103..106 name="Red"
+            Block 110..111
+              Integer 110..111 magnitude=2 negative=false long_suffix=false
+          MatchArm 113..122
+            CasePattern 113..117 name="Blue"
+            Block 121..122
+              Integer 121..122 magnitude=3 negative=false long_suffix=false

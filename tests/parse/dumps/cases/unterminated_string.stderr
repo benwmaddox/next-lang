@@ -1,0 +1,1 @@
+main.nl:1:19: error: string literals cannot contain a newline; escape it as \n

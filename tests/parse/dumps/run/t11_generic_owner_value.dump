@@ -1,0 +1,53 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 8 1 4 "identity"
+Lt 11 1 1 12 "<"
+Ident 12 1 1 13 "P"
+Gt 13 1 1 14 ">"
+LParen 14 1 1 15 "("
+Ident 15 5 1 16 "value"
+Colon 20 1 1 21 ":"
+Ident 22 2 1 23 "Id"
+Lt 24 1 1 25 "<"
+Ident 25 1 1 26 "P"
+Gt 26 1 1 27 ">"
+RParen 27 1 1 28 ")"
+Arrow 29 2 1 30 "->"
+Ident 32 2 1 33 "Id"
+Lt 34 1 1 35 "<"
+Ident 35 1 1 36 "P"
+Gt 36 1 1 37 ">"
+LBrace 38 1 1 39 "{"
+Ident 40 5 1 41 "value"
+RBrace 46 1 1 47 "}"
+Newline 47 1 1 48 "\n"
+Ident 49 2 3 1 "fn"
+Ident 52 4 3 4 "main"
+LParen 56 1 3 8 "("
+RParen 57 1 3 9 ")"
+LBrace 59 1 3 11 "{"
+Newline 60 1 3 12 "\n"
+Ident 65 3 4 5 "let"
+Ident 69 8 4 9 "callback"
+Eq 78 1 4 18 "="
+Ident 80 8 4 20 "identity"
+Newline 88 1 4 28 "\n"
+RBrace 89 1 5 1 "}"
+Newline 90 1 5 2 "\n"
+Eof 91 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..91
+  Function 0..47 name="identity" recursive=false generics=["P"]
+    Parameter 15..27 name="value" mode=read
+      ParameterType 22..27 name="Id" range=none policy=checked
+        TypeArgument 25..26 name="P" range=none policy=checked
+    ResultType 32..37 name="Id" range=none policy=checked
+      TypeArgument 35..36 name="P" range=none policy=checked
+    Block 38..47
+      Name 40..45 name="value"
+  Function 49..90 name="main" recursive=false generics=[]
+    Block 59..90
+      Let 65..88 mutable=false name="callback"
+        Name 80..88 name="identity"

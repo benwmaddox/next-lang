@@ -1,0 +1,58 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 6 1 4 "change"
+LParen 9 1 1 10 "("
+Ident 10 5 1 11 "value"
+Colon 15 1 1 16 ":"
+Ident 17 5 1 18 "write"
+Ident 23 3 1 24 "int"
+RParen 26 1 1 27 ")"
+LBrace 28 1 1 29 "{"
+Newline 29 1 1 30 "\n"
+Ident 34 5 2 5 "value"
+PlusEq 40 2 2 11 "+="
+Number 43 1 2 14 "1"
+Newline 44 1 2 15 "\n"
+RBrace 45 1 3 1 "}"
+Newline 46 1 3 2 "\n"
+Ident 48 2 5 1 "fn"
+Ident 51 4 5 4 "main"
+LParen 55 1 5 8 "("
+RParen 56 1 5 9 ")"
+LBrace 58 1 5 11 "{"
+Newline 59 1 5 12 "\n"
+Ident 64 3 6 5 "let"
+Ident 68 8 6 9 "callback"
+Colon 76 1 6 17 ":"
+Ident 78 2 6 19 "fn"
+LParen 80 1 6 21 "("
+Ident 81 3 6 22 "int"
+RParen 84 1 6 25 ")"
+Eq 86 1 6 27 "="
+Ident 88 6 6 29 "change"
+Newline 94 1 6 35 "\n"
+Ident 99 8 7 5 "callback"
+Newline 107 1 7 13 "\n"
+RBrace 108 1 8 1 "}"
+Newline 109 1 8 2 "\n"
+Eof 110 0 9 1 ""
+== tree ==
+file "main.nl"
+Program 0..110
+  Function 0..46 name="change" recursive=false generics=[]
+    Parameter 10..26 name="value" mode=write
+      ParameterType 23..26 name="int" range=none policy=checked
+    Block 28..46
+      Assign 34..44 op=+=
+        Name 34..39 name="value"
+        Integer 43..44 magnitude=1 negative=false long_suffix=false
+  Function 48..109 name="main" recursive=false generics=[]
+    Block 58..109
+      Let 64..94 mutable=false name="callback"
+        Annotation 78..85 name="fn" range=none policy=checked
+          FunctionType 78..85
+            FunctionTypeParameter 81..84 mode=read
+              ParameterType 81..84 name="int" range=none policy=checked
+        Name 88..94 name="change"
+      Name 99..107 name="callback"

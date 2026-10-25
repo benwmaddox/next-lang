@@ -1,0 +1,80 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "enum"
+Ident 5 7 1 6 "Failure"
+LBrace 13 1 1 14 "{"
+Ident 15 3 1 16 "Bad"
+RBrace 19 1 1 20 "}"
+Newline 20 1 1 21 "\n"
+Ident 21 2 2 1 "fn"
+Ident 24 4 2 4 "plus"
+LParen 28 1 2 8 "("
+Ident 29 5 2 9 "value"
+Colon 34 1 2 14 ":"
+Ident 36 3 2 16 "int"
+RParen 39 1 2 19 ")"
+Arrow 41 2 2 21 "->"
+Ident 44 3 2 24 "int"
+LBrace 48 1 2 28 "{"
+Ident 50 5 2 30 "value"
+Plus 56 1 2 36 "+"
+Number 58 1 2 38 "1"
+RBrace 60 1 2 40 "}"
+Newline 61 1 2 41 "\n"
+Ident 62 2 3 1 "fn"
+Ident 65 4 3 4 "main"
+LParen 69 1 3 8 "("
+RParen 70 1 3 9 ")"
+LBrace 72 1 3 11 "{"
+Newline 73 1 3 12 "\n"
+Ident 78 3 4 5 "let"
+Ident 82 5 4 9 "value"
+Colon 87 1 4 14 ":"
+Ident 89 6 4 16 "Result"
+Lt 95 1 4 22 "<"
+Ident 96 3 4 23 "int"
+Comma 99 1 4 26 ","
+Ident 101 7 4 28 "Failure"
+Gt 108 1 4 35 ">"
+Eq 110 1 4 37 "="
+Ident 112 2 4 39 "ok"
+LParen 114 1 4 41 "("
+Number 115 1 4 42 "1"
+RParen 116 1 4 43 ")"
+Newline 117 1 4 44 "\n"
+Ident 122 5 5 5 "print"
+LParen 127 1 5 10 "("
+Ident 128 5 5 11 "value"
+QuestionDot 133 2 5 16 "?."
+Ident 135 4 5 18 "plus"
+LParen 139 1 5 22 "("
+RParen 140 1 5 23 ")"
+RParen 141 1 5 24 ")"
+Newline 142 1 5 25 "\n"
+RBrace 143 1 6 1 "}"
+Newline 144 1 6 2 "\n"
+Eof 145 0 7 1 ""
+== tree ==
+file "main.nl"
+Program 0..145
+  Enum 0..20 name="Failure"
+    EnumCase 15..18 name="Bad"
+  Function 21..61 name="plus" recursive=false generics=[]
+    Parameter 29..39 name="value" mode=read
+      ParameterType 36..39 name="int" range=none policy=checked
+    ResultType 44..47 name="int" range=none policy=checked
+    Block 48..61
+      Binary 50..59 op=add
+        Name 50..55 name="value"
+        Integer 58..59 magnitude=1 negative=false long_suffix=false
+  Function 62..144 name="main" recursive=false generics=[]
+    Block 72..144
+      Let 78..117 mutable=false name="value"
+        Annotation 89..109 name="Result" range=none policy=checked
+          TypeArgument 96..99 name="int" range=none policy=checked
+          TypeArgument 101..108 name="Failure" range=none policy=checked
+        Call 112..117 name="ok"
+          Integer 115..116 magnitude=1 negative=false long_suffix=false
+      Call 122..142 name="print"
+        OptionalCall 128..141 name="plus"
+          Name 128..133 name="value"

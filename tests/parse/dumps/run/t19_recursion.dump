@@ -1,0 +1,990 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 4 1 8 "Node"
+Lt 11 1 1 12 "<"
+Ident 12 1 1 13 "P"
+Gt 13 1 1 14 ">"
+LBrace 15 1 1 16 "{"
+Newline 16 1 1 17 "\n"
+Ident 21 6 2 5 "parent"
+Colon 27 1 2 11 ":"
+Ident 29 6 2 13 "Option"
+Lt 35 1 2 19 "<"
+Ident 36 2 2 20 "Id"
+Lt 38 1 2 22 "<"
+Ident 39 1 2 23 "P"
+Shr 40 2 2 24 ">>"
+Newline 42 1 2 26 "\n"
+Ident 47 5 3 5 "value"
+Colon 52 1 3 10 ":"
+Ident 54 3 3 12 "int"
+Newline 57 1 3 15 "\n"
+RBrace 58 1 4 1 "}"
+Newline 59 1 4 2 "\n"
+Ident 61 9 6 1 "recursive"
+Ident 71 2 6 11 "fn"
+Ident 74 4 6 14 "fact"
+LParen 78 1 6 18 "("
+Ident 79 1 6 19 "n"
+Colon 80 1 6 20 ":"
+Ident 82 3 6 22 "int"
+RParen 85 1 6 25 ")"
+Arrow 87 2 6 27 "->"
+Ident 90 3 6 30 "int"
+LBrace 94 1 6 34 "{"
+Newline 95 1 6 35 "\n"
+Ident 100 2 7 5 "if"
+Ident 103 1 7 8 "n"
+Le 105 2 7 10 "<="
+Number 108 1 7 13 "1"
+LBrace 110 1 7 15 "{"
+Number 112 1 7 17 "1"
+RBrace 114 1 7 19 "}"
+Ident 116 4 7 21 "else"
+LBrace 121 1 7 26 "{"
+Ident 123 1 7 28 "n"
+Star 125 1 7 30 "*"
+Ident 127 4 7 32 "fact"
+LParen 131 1 7 36 "("
+Ident 132 1 7 37 "n"
+Minus 134 1 7 39 "-"
+Number 136 1 7 41 "1"
+RParen 137 1 7 42 ")"
+RBrace 139 1 7 44 "}"
+Newline 140 1 7 45 "\n"
+RBrace 141 1 8 1 "}"
+Newline 142 1 8 2 "\n"
+Ident 144 9 10 1 "recursive"
+Ident 154 2 10 11 "fn"
+Ident 157 3 10 14 "fib"
+LParen 160 1 10 17 "("
+Ident 161 1 10 18 "n"
+Colon 162 1 10 19 ":"
+Ident 164 3 10 21 "int"
+RParen 167 1 10 24 ")"
+Arrow 169 2 10 26 "->"
+Ident 172 3 10 29 "int"
+LBrace 176 1 10 33 "{"
+Newline 177 1 10 34 "\n"
+Ident 182 2 11 5 "if"
+Ident 185 1 11 8 "n"
+Le 187 2 11 10 "<="
+Number 190 1 11 13 "1"
+LBrace 192 1 11 15 "{"
+Ident 194 1 11 17 "n"
+RBrace 196 1 11 19 "}"
+Ident 198 4 11 21 "else"
+LBrace 203 1 11 26 "{"
+Ident 205 3 11 28 "fib"
+LParen 208 1 11 31 "("
+Ident 209 1 11 32 "n"
+Minus 211 1 11 34 "-"
+Number 213 1 11 36 "1"
+RParen 214 1 11 37 ")"
+Plus 216 1 11 39 "+"
+Ident 218 3 11 41 "fib"
+LParen 221 1 11 44 "("
+Ident 222 1 11 45 "n"
+Minus 224 1 11 47 "-"
+Number 226 1 11 49 "2"
+RParen 227 1 11 50 ")"
+RBrace 229 1 11 52 "}"
+Newline 230 1 11 53 "\n"
+RBrace 231 1 12 1 "}"
+Newline 232 1 12 2 "\n"
+Ident 234 9 14 1 "recursive"
+Ident 244 2 14 11 "fn"
+Ident 247 7 14 14 "is_even"
+LParen 254 1 14 21 "("
+Ident 255 1 14 22 "n"
+Colon 256 1 14 23 ":"
+Ident 258 3 14 25 "int"
+RParen 261 1 14 28 ")"
+Arrow 263 2 14 30 "->"
+Ident 266 4 14 33 "bool"
+LBrace 271 1 14 38 "{"
+Newline 272 1 14 39 "\n"
+Ident 277 2 15 5 "if"
+Ident 280 1 15 8 "n"
+EqEq 282 2 15 10 "=="
+Number 285 1 15 13 "0"
+LBrace 287 1 15 15 "{"
+Ident 289 4 15 17 "true"
+RBrace 294 1 15 22 "}"
+Ident 296 4 15 24 "else"
+LBrace 301 1 15 29 "{"
+Ident 303 6 15 31 "is_odd"
+LParen 309 1 15 37 "("
+Ident 310 1 15 38 "n"
+Minus 312 1 15 40 "-"
+Number 314 1 15 42 "1"
+RParen 315 1 15 43 ")"
+RBrace 317 1 15 45 "}"
+Newline 318 1 15 46 "\n"
+RBrace 319 1 16 1 "}"
+Newline 320 1 16 2 "\n"
+Ident 322 9 18 1 "recursive"
+Ident 332 2 18 11 "fn"
+Ident 335 6 18 14 "is_odd"
+LParen 341 1 18 20 "("
+Ident 342 1 18 21 "n"
+Colon 343 1 18 22 ":"
+Ident 345 3 18 24 "int"
+RParen 348 1 18 27 ")"
+Arrow 350 2 18 29 "->"
+Ident 353 4 18 32 "bool"
+LBrace 358 1 18 37 "{"
+Newline 359 1 18 38 "\n"
+Ident 364 2 19 5 "if"
+Ident 367 1 19 8 "n"
+EqEq 369 2 19 10 "=="
+Number 372 1 19 13 "0"
+LBrace 374 1 19 15 "{"
+Ident 376 5 19 17 "false"
+RBrace 382 1 19 23 "}"
+Ident 384 4 19 25 "else"
+LBrace 389 1 19 30 "{"
+Ident 391 7 19 32 "is_even"
+LParen 398 1 19 39 "("
+Ident 399 1 19 40 "n"
+Minus 401 1 19 42 "-"
+Number 403 1 19 44 "1"
+RParen 404 1 19 45 ")"
+RBrace 406 1 19 47 "}"
+Newline 407 1 19 48 "\n"
+RBrace 408 1 20 1 "}"
+Newline 409 1 20 2 "\n"
+Ident 411 9 22 1 "recursive"
+Ident 421 2 22 11 "fn"
+Ident 424 8 22 14 "indirect"
+LParen 432 1 22 22 "("
+Ident 433 1 22 23 "n"
+Colon 434 1 22 24 ":"
+Ident 436 3 22 26 "int"
+RParen 439 1 22 29 ")"
+Arrow 441 2 22 31 "->"
+Ident 444 3 22 34 "int"
+LBrace 448 1 22 38 "{"
+Newline 449 1 22 39 "\n"
+Ident 454 2 23 5 "if"
+Ident 457 1 23 8 "n"
+EqEq 459 2 23 10 "=="
+Number 462 1 23 13 "0"
+LBrace 464 1 23 15 "{"
+Newline 465 1 23 16 "\n"
+Number 474 1 24 9 "0"
+Newline 475 1 24 10 "\n"
+RBrace 480 1 25 5 "}"
+Ident 482 4 25 7 "else"
+LBrace 487 1 25 12 "{"
+Newline 488 1 25 13 "\n"
+Ident 497 3 26 9 "let"
+Ident 501 8 26 13 "callback"
+Colon 509 1 26 21 ":"
+Ident 511 2 26 23 "fn"
+LParen 513 1 26 25 "("
+Ident 514 3 26 26 "int"
+RParen 517 1 26 29 ")"
+Arrow 519 2 26 31 "->"
+Ident 522 3 26 34 "int"
+Eq 526 1 26 38 "="
+Ident 528 8 26 40 "indirect"
+Newline 536 1 26 48 "\n"
+Ident 545 8 27 9 "callback"
+LParen 553 1 27 17 "("
+Ident 554 1 27 18 "n"
+Minus 556 1 27 20 "-"
+Number 558 1 27 22 "1"
+RParen 559 1 27 23 ")"
+Plus 561 1 27 25 "+"
+Number 563 1 27 27 "1"
+Newline 564 1 27 28 "\n"
+RBrace 569 1 28 5 "}"
+Newline 570 1 28 6 "\n"
+RBrace 571 1 29 1 "}"
+Newline 572 1 29 2 "\n"
+Ident 574 9 31 1 "recursive"
+Ident 584 2 31 11 "fn"
+Ident 587 5 31 14 "depth"
+Lt 592 1 31 19 "<"
+Ident 593 1 31 20 "P"
+Comma 594 1 31 21 ","
+Ident 596 1 31 23 "N"
+Gt 597 1 31 24 ">"
+LParen 598 1 31 25 "("
+Ident 599 5 31 26 "nodes"
+Colon 604 1 31 31 ":"
+Ident 606 4 31 33 "pool"
+Lt 610 1 31 37 "<"
+Ident 611 4 31 38 "Node"
+Lt 615 1 31 42 "<"
+Ident 616 1 31 43 "P"
+Gt 617 1 31 44 ">"
+Comma 618 1 31 45 ","
+Ident 620 1 31 47 "N"
+Comma 621 1 31 48 ","
+Ident 623 1 31 50 "P"
+Gt 624 1 31 51 ">"
+Comma 625 1 31 52 ","
+Ident 627 2 31 54 "id"
+Colon 629 1 31 56 ":"
+Ident 631 2 31 58 "Id"
+Lt 633 1 31 60 "<"
+Ident 634 1 31 61 "P"
+Gt 635 1 31 62 ">"
+RParen 636 1 31 63 ")"
+Arrow 638 2 31 65 "->"
+Ident 641 3 31 68 "int"
+LBrace 645 1 31 72 "{"
+Newline 646 1 31 73 "\n"
+Ident 651 3 32 5 "let"
+Ident 655 4 32 9 "node"
+Eq 660 1 32 14 "="
+Ident 662 5 32 16 "nodes"
+Dot 667 1 32 21 "."
+Ident 668 3 32 22 "get"
+LParen 671 1 32 25 "("
+Ident 672 2 32 26 "id"
+RParen 674 1 32 28 ")"
+QuestionQuestion 676 2 32 30 "??"
+Ident 679 6 32 33 "return"
+Number 686 1 32 40 "0"
+Newline 687 1 32 41 "\n"
+Ident 692 3 33 5 "let"
+Ident 696 6 33 9 "parent"
+Eq 703 1 33 16 "="
+Ident 705 4 33 18 "node"
+Dot 709 1 33 22 "."
+Ident 710 6 33 23 "parent"
+QuestionQuestion 717 2 33 30 "??"
+Ident 720 6 33 33 "return"
+Number 727 1 33 40 "0"
+Newline 728 1 33 41 "\n"
+Ident 733 5 34 5 "depth"
+LParen 738 1 34 10 "("
+Ident 739 5 34 11 "nodes"
+Comma 744 1 34 16 ","
+Ident 746 6 34 18 "parent"
+RParen 752 1 34 24 ")"
+Plus 754 1 34 26 "+"
+Number 756 1 34 28 "1"
+Newline 757 1 34 29 "\n"
+RBrace 758 1 35 1 "}"
+Newline 759 1 35 2 "\n"
+Ident 761 9 37 1 "recursive"
+Ident 771 2 37 11 "fn"
+Ident 774 10 37 14 "wide_frame"
+LParen 784 1 37 24 "("
+Ident 785 1 37 25 "n"
+Colon 786 1 37 26 ":"
+Ident 788 3 37 28 "int"
+RParen 791 1 37 31 ")"
+Arrow 793 2 37 33 "->"
+Ident 796 3 37 36 "int"
+LBrace 800 1 37 40 "{"
+Newline 801 1 37 41 "\n"
+Ident 806 3 38 5 "var"
+Ident 810 5 38 9 "local"
+Colon 815 1 38 14 ":"
+Ident 817 3 38 16 "int"
+LBracket 820 1 38 19 "["
+Number 821 4 38 20 "1024"
+RBracket 825 1 38 24 "]"
+Eq 827 1 38 26 "="
+Ident 829 4 38 28 "fill"
+LParen 833 1 38 32 "("
+Ident 834 1 38 33 "n"
+RParen 835 1 38 34 ")"
+Newline 836 1 38 35 "\n"
+Ident 841 2 39 5 "if"
+Ident 844 1 39 8 "n"
+EqEq 846 2 39 10 "=="
+Number 849 1 39 13 "0"
+LBrace 851 1 39 15 "{"
+Ident 853 5 39 17 "local"
+LBracket 858 1 39 22 "["
+Number 859 1 39 23 "0"
+RBracket 860 1 39 24 "]"
+RBrace 862 1 39 26 "}"
+Ident 864 4 39 28 "else"
+LBrace 869 1 39 33 "{"
+Ident 871 10 39 35 "wide_frame"
+LParen 881 1 39 45 "("
+Ident 882 1 39 46 "n"
+Minus 884 1 39 48 "-"
+Number 886 1 39 50 "1"
+RParen 887 1 39 51 ")"
+Plus 889 1 39 53 "+"
+Ident 891 5 39 55 "local"
+LBracket 896 1 39 60 "["
+Number 897 1 39 61 "0"
+RBracket 898 1 39 62 "]"
+RBrace 900 1 39 64 "}"
+Newline 901 1 39 65 "\n"
+RBrace 902 1 40 1 "}"
+Newline 903 1 40 2 "\n"
+Ident 905 9 42 1 "recursive"
+Ident 915 2 42 11 "fn"
+Ident 918 9 42 14 "const_sum"
+LParen 927 1 42 23 "("
+Ident 928 1 42 24 "n"
+Colon 929 1 42 25 ":"
+Ident 931 3 42 27 "int"
+RParen 934 1 42 30 ")"
+Arrow 936 2 42 32 "->"
+Ident 939 3 42 35 "int"
+LBrace 943 1 42 39 "{"
+Newline 944 1 42 40 "\n"
+Ident 949 2 43 5 "if"
+Ident 952 1 43 8 "n"
+EqEq 954 2 43 10 "=="
+Number 957 1 43 13 "0"
+LBrace 959 1 43 15 "{"
+Number 961 1 43 17 "0"
+RBrace 963 1 43 19 "}"
+Ident 965 4 43 21 "else"
+LBrace 970 1 43 26 "{"
+Ident 972 1 43 28 "n"
+Plus 974 1 43 30 "+"
+Ident 976 9 43 32 "const_sum"
+LParen 985 1 43 41 "("
+Ident 986 1 43 42 "n"
+Minus 988 1 43 44 "-"
+Number 990 1 43 46 "1"
+RParen 991 1 43 47 ")"
+RBrace 993 1 43 49 "}"
+Newline 994 1 43 50 "\n"
+RBrace 995 1 44 1 "}"
+Newline 996 1 44 2 "\n"
+Ident 998 9 46 1 "recursive"
+Ident 1008 2 46 11 "fn"
+Ident 1011 14 46 14 "recursive_less"
+LParen 1025 1 46 28 "("
+Ident 1026 3 46 29 "ctx"
+Colon 1029 1 46 32 ":"
+Ident 1031 3 46 34 "int"
+Comma 1034 1 46 37 ","
+Ident 1036 4 46 39 "left"
+Colon 1040 1 46 43 ":"
+Ident 1042 3 46 45 "int"
+Comma 1045 1 46 48 ","
+Ident 1047 5 46 50 "right"
+Colon 1052 1 46 55 ":"
+Ident 1054 3 46 57 "int"
+RParen 1057 1 46 60 ")"
+Arrow 1059 2 46 62 "->"
+Ident 1062 4 46 65 "bool"
+LBrace 1067 1 46 70 "{"
+Newline 1068 1 46 71 "\n"
+Ident 1073 2 47 5 "if"
+Ident 1076 3 47 8 "ctx"
+EqEq 1080 2 47 12 "=="
+Number 1083 1 47 15 "0"
+LBrace 1085 1 47 17 "{"
+Newline 1086 1 47 18 "\n"
+Ident 1095 4 48 9 "left"
+Lt 1100 1 48 14 "<"
+Ident 1102 5 48 16 "right"
+Newline 1107 1 48 21 "\n"
+RBrace 1112 1 49 5 "}"
+Ident 1114 4 49 7 "else"
+LBrace 1119 1 49 12 "{"
+Newline 1120 1 49 13 "\n"
+Ident 1129 3 50 9 "let"
+Ident 1133 8 50 13 "callback"
+Colon 1141 1 50 21 ":"
+Ident 1143 2 50 23 "fn"
+LParen 1145 1 50 25 "("
+Ident 1146 3 50 26 "int"
+Comma 1149 1 50 29 ","
+Ident 1151 3 50 31 "int"
+Comma 1154 1 50 34 ","
+Ident 1156 3 50 36 "int"
+RParen 1159 1 50 39 ")"
+Arrow 1161 2 50 41 "->"
+Ident 1164 4 50 44 "bool"
+Eq 1169 1 50 49 "="
+Ident 1171 14 50 51 "recursive_less"
+Newline 1185 1 50 65 "\n"
+Ident 1194 8 51 9 "callback"
+LParen 1202 1 51 17 "("
+Ident 1203 3 51 18 "ctx"
+Minus 1207 1 51 22 "-"
+Number 1209 1 51 24 "1"
+Comma 1210 1 51 25 ","
+Ident 1212 4 51 27 "left"
+Comma 1216 1 51 31 ","
+Ident 1218 5 51 33 "right"
+RParen 1223 1 51 38 ")"
+Newline 1224 1 51 39 "\n"
+RBrace 1229 1 52 5 "}"
+Newline 1230 1 52 6 "\n"
+RBrace 1231 1 53 1 "}"
+Newline 1232 1 53 2 "\n"
+Ident 1234 5 55 1 "const"
+Ident 1240 3 55 7 "SUM"
+Colon 1243 1 55 10 ":"
+Ident 1245 3 55 12 "int"
+Eq 1249 1 55 16 "="
+Ident 1251 9 55 18 "const_sum"
+LParen 1260 1 55 27 "("
+Number 1261 2 55 28 "10"
+RParen 1263 1 55 30 ")"
+Newline 1264 1 55 31 "\n"
+Ident 1266 2 57 1 "fn"
+Ident 1269 4 57 4 "main"
+LParen 1273 1 57 8 "("
+RParen 1274 1 57 9 ")"
+LBrace 1276 1 57 11 "{"
+Newline 1277 1 57 12 "\n"
+Ident 1282 5 58 5 "print"
+LParen 1287 1 58 10 "("
+Ident 1288 4 58 11 "fact"
+LParen 1292 1 58 15 "("
+Number 1293 1 58 16 "5"
+RParen 1294 1 58 17 ")"
+RParen 1295 1 58 18 ")"
+Newline 1296 1 58 19 "\n"
+Ident 1301 5 59 5 "print"
+LParen 1306 1 59 10 "("
+Ident 1307 3 59 11 "fib"
+LParen 1310 1 59 14 "("
+Number 1311 1 59 15 "8"
+RParen 1312 1 59 16 ")"
+RParen 1313 1 59 17 ")"
+Newline 1314 1 59 18 "\n"
+Ident 1319 5 60 5 "print"
+LParen 1324 1 60 10 "("
+Ident 1325 7 60 11 "is_even"
+LParen 1332 1 60 18 "("
+Number 1333 2 60 19 "12"
+RParen 1335 1 60 21 ")"
+RParen 1336 1 60 22 ")"
+Newline 1337 1 60 23 "\n"
+Ident 1342 5 61 5 "print"
+LParen 1347 1 61 10 "("
+Ident 1348 6 61 11 "is_odd"
+LParen 1354 1 61 17 "("
+Number 1355 2 61 18 "11"
+RParen 1357 1 61 20 ")"
+RParen 1358 1 61 21 ")"
+Newline 1359 1 61 22 "\n"
+Ident 1364 5 62 5 "print"
+LParen 1369 1 62 10 "("
+Ident 1370 8 62 11 "indirect"
+LParen 1378 1 62 19 "("
+Number 1379 1 62 20 "8"
+RParen 1380 1 62 21 ")"
+RParen 1381 1 62 22 ")"
+Newline 1382 1 62 23 "\n"
+Ident 1387 5 63 5 "print"
+LParen 1392 1 63 10 "("
+Ident 1393 10 63 11 "wide_frame"
+LParen 1403 1 63 21 "("
+Number 1404 1 63 22 "3"
+RParen 1405 1 63 23 ")"
+RParen 1406 1 63 24 ")"
+Newline 1407 1 63 25 "\n"
+Ident 1412 5 64 5 "print"
+LParen 1417 1 64 10 "("
+Ident 1418 3 64 11 "SUM"
+RParen 1421 1 64 14 ")"
+Newline 1422 1 64 15 "\n"
+Ident 1428 3 66 5 "var"
+Ident 1432 5 66 9 "nodes"
+Colon 1437 1 66 14 ":"
+Ident 1439 4 66 16 "pool"
+Lt 1443 1 66 20 "<"
+Ident 1444 4 66 21 "Node"
+Lt 1448 1 66 25 "<"
+Ident 1449 5 66 26 "nodes"
+Gt 1454 1 66 31 ">"
+Comma 1455 1 66 32 ","
+Number 1457 1 66 34 "4"
+Gt 1458 1 66 35 ">"
+Eq 1460 1 66 37 "="
+Ident 1462 4 66 39 "pool"
+LBrace 1467 1 66 44 "{"
+RBrace 1468 1 66 45 "}"
+Newline 1469 1 66 46 "\n"
+Ident 1474 3 67 5 "let"
+Ident 1478 4 67 9 "root"
+Colon 1482 1 67 13 ":"
+Ident 1484 5 67 15 "nodes"
+Dot 1489 1 67 20 "."
+Ident 1490 2 67 21 "Id"
+Eq 1493 1 67 24 "="
+Ident 1495 5 67 26 "nodes"
+Dot 1500 1 67 31 "."
+Ident 1501 3 67 32 "add"
+LParen 1504 1 67 35 "("
+Ident 1505 4 67 36 "Node"
+LBrace 1510 1 67 41 "{"
+Ident 1512 6 67 43 "parent"
+Colon 1518 1 67 49 ":"
+Ident 1520 4 67 51 "none"
+Comma 1524 1 67 55 ","
+Ident 1526 5 67 57 "value"
+Colon 1531 1 67 62 ":"
+Number 1533 1 67 64 "1"
+RBrace 1535 1 67 66 "}"
+RParen 1536 1 67 67 ")"
+Dot 1537 1 67 68 "."
+Ident 1538 6 67 69 "unwrap"
+LParen 1544 1 67 75 "("
+RParen 1545 1 67 76 ")"
+Newline 1546 1 67 77 "\n"
+Ident 1551 3 68 5 "let"
+Ident 1555 6 68 9 "middle"
+Colon 1561 1 68 15 ":"
+Ident 1563 5 68 17 "nodes"
+Dot 1568 1 68 22 "."
+Ident 1569 2 68 23 "Id"
+Eq 1572 1 68 26 "="
+Ident 1574 5 68 28 "nodes"
+Dot 1579 1 68 33 "."
+Ident 1580 3 68 34 "add"
+LParen 1583 1 68 37 "("
+Ident 1584 4 68 38 "Node"
+LBrace 1589 1 68 43 "{"
+Ident 1591 6 68 45 "parent"
+Colon 1597 1 68 51 ":"
+Ident 1599 4 68 53 "some"
+LParen 1603 1 68 57 "("
+Ident 1604 4 68 58 "root"
+RParen 1608 1 68 62 ")"
+Comma 1609 1 68 63 ","
+Ident 1611 5 68 65 "value"
+Colon 1616 1 68 70 ":"
+Number 1618 1 68 72 "2"
+RBrace 1620 1 68 74 "}"
+RParen 1621 1 68 75 ")"
+Dot 1622 1 68 76 "."
+Ident 1623 6 68 77 "unwrap"
+LParen 1629 1 68 83 "("
+RParen 1630 1 68 84 ")"
+Newline 1631 1 68 85 "\n"
+Ident 1636 3 69 5 "let"
+Ident 1640 4 69 9 "leaf"
+Colon 1644 1 69 13 ":"
+Ident 1646 5 69 15 "nodes"
+Dot 1651 1 69 20 "."
+Ident 1652 2 69 21 "Id"
+Eq 1655 1 69 24 "="
+Ident 1657 5 69 26 "nodes"
+Dot 1662 1 69 31 "."
+Ident 1663 3 69 32 "add"
+LParen 1666 1 69 35 "("
+Ident 1667 4 69 36 "Node"
+LBrace 1672 1 69 41 "{"
+Ident 1674 6 69 43 "parent"
+Colon 1680 1 69 49 ":"
+Ident 1682 4 69 51 "some"
+LParen 1686 1 69 55 "("
+Ident 1687 6 69 56 "middle"
+RParen 1693 1 69 62 ")"
+Comma 1694 1 69 63 ","
+Ident 1696 5 69 65 "value"
+Colon 1701 1 69 70 ":"
+Number 1703 1 69 72 "3"
+RBrace 1705 1 69 74 "}"
+RParen 1706 1 69 75 ")"
+Dot 1707 1 69 76 "."
+Ident 1708 6 69 77 "unwrap"
+LParen 1714 1 69 83 "("
+RParen 1715 1 69 84 ")"
+Newline 1716 1 69 85 "\n"
+Ident 1721 5 70 5 "print"
+LParen 1726 1 70 10 "("
+Ident 1727 5 70 11 "depth"
+LParen 1732 1 70 16 "("
+Ident 1733 5 70 17 "nodes"
+Comma 1738 1 70 22 ","
+Ident 1740 4 70 24 "leaf"
+RParen 1744 1 70 28 ")"
+RParen 1745 1 70 29 ")"
+Newline 1746 1 70 30 "\n"
+Ident 1752 3 72 5 "var"
+Ident 1756 8 72 9 "sortable"
+Colon 1764 1 72 17 ":"
+Ident 1766 4 72 19 "list"
+Lt 1770 1 72 23 "<"
+Ident 1771 3 72 24 "int"
+Comma 1774 1 72 27 ","
+Number 1776 1 72 29 "3"
+Gt 1777 1 72 30 ">"
+Eq 1779 1 72 32 "="
+Ident 1781 4 72 34 "list"
+LBrace 1786 1 72 39 "{"
+RBrace 1787 1 72 40 "}"
+Newline 1788 1 72 41 "\n"
+Ident 1793 8 73 5 "sortable"
+Dot 1801 1 73 13 "."
+Ident 1802 4 73 14 "push"
+LParen 1806 1 73 18 "("
+Number 1807 1 73 19 "3"
+RParen 1808 1 73 20 ")"
+Dot 1809 1 73 21 "."
+Ident 1810 6 73 22 "unwrap"
+LParen 1816 1 73 28 "("
+RParen 1817 1 73 29 ")"
+Newline 1818 1 73 30 "\n"
+Ident 1823 8 74 5 "sortable"
+Dot 1831 1 74 13 "."
+Ident 1832 4 74 14 "push"
+LParen 1836 1 74 18 "("
+Number 1837 1 74 19 "1"
+RParen 1838 1 74 20 ")"
+Dot 1839 1 74 21 "."
+Ident 1840 6 74 22 "unwrap"
+LParen 1846 1 74 28 "("
+RParen 1847 1 74 29 ")"
+Newline 1848 1 74 30 "\n"
+Ident 1853 8 75 5 "sortable"
+Dot 1861 1 75 13 "."
+Ident 1862 4 75 14 "push"
+LParen 1866 1 75 18 "("
+Number 1867 1 75 19 "2"
+RParen 1868 1 75 20 ")"
+Dot 1869 1 75 21 "."
+Ident 1870 6 75 22 "unwrap"
+LParen 1876 1 75 28 "("
+RParen 1877 1 75 29 ")"
+Newline 1878 1 75 30 "\n"
+Ident 1883 7 76 5 "sort_by"
+LParen 1890 1 76 12 "("
+Ident 1891 8 76 13 "sortable"
+Comma 1899 1 76 21 ","
+Number 1901 1 76 23 "1"
+Comma 1902 1 76 24 ","
+Ident 1904 14 76 26 "recursive_less"
+RParen 1918 1 76 40 ")"
+Newline 1919 1 76 41 "\n"
+Ident 1924 5 77 5 "print"
+LParen 1929 1 77 10 "("
+Ident 1930 8 77 11 "sortable"
+RParen 1938 1 77 19 ")"
+Newline 1939 1 77 20 "\n"
+RBrace 1940 1 78 1 "}"
+Newline 1941 1 78 2 "\n"
+Eof 1942 0 79 1 ""
+== tree ==
+file "main.nl"
+Program 0..1942
+  Struct 0..59 name="Node" generics=["P"]
+    StructField 21..42 name="parent"
+      FieldType 29..42 name="Option" range=none policy=checked
+        TypeArgument 36..41 name="Id" range=none policy=checked
+          TypeArgument 39..40 name="P" range=none policy=checked
+    StructField 47..57 name="value"
+      FieldType 54..57 name="int" range=none policy=checked
+  Function 61..142 name="fact" recursive=true generics=[]
+    Parameter 79..85 name="n" mode=read
+      ParameterType 82..85 name="int" range=none policy=checked
+    ResultType 90..93 name="int" range=none policy=checked
+    Block 94..142
+      If 100..140
+        Binary 103..109 op=le
+          Name 103..104 name="n"
+          Integer 108..109 magnitude=1 negative=false long_suffix=false
+        Block 110..115
+          Integer 112..113 magnitude=1 negative=false long_suffix=false
+        Block 121..140
+          Binary 123..138 op=mul
+            Name 123..124 name="n"
+            Call 127..138 name="fact"
+              Binary 132..137 op=sub
+                Name 132..133 name="n"
+                Integer 136..137 magnitude=1 negative=false long_suffix=false
+  Function 144..232 name="fib" recursive=true generics=[]
+    Parameter 161..167 name="n" mode=read
+      ParameterType 164..167 name="int" range=none policy=checked
+    ResultType 172..175 name="int" range=none policy=checked
+    Block 176..232
+      If 182..230
+        Binary 185..191 op=le
+          Name 185..186 name="n"
+          Integer 190..191 magnitude=1 negative=false long_suffix=false
+        Block 192..197
+          Name 194..195 name="n"
+        Block 203..230
+          Binary 205..228 op=add
+            Call 205..215 name="fib"
+              Binary 209..214 op=sub
+                Name 209..210 name="n"
+                Integer 213..214 magnitude=1 negative=false long_suffix=false
+            Call 218..228 name="fib"
+              Binary 222..227 op=sub
+                Name 222..223 name="n"
+                Integer 226..227 magnitude=2 negative=false long_suffix=false
+  Function 234..320 name="is_even" recursive=true generics=[]
+    Parameter 255..261 name="n" mode=read
+      ParameterType 258..261 name="int" range=none policy=checked
+    ResultType 266..270 name="bool" range=none policy=checked
+    Block 271..320
+      If 277..318
+        Binary 280..286 op=eq
+          Name 280..281 name="n"
+          Integer 285..286 magnitude=0 negative=false long_suffix=false
+        Block 287..295
+          Bool 289..293 value=true
+        Block 301..318
+          Call 303..316 name="is_odd"
+            Binary 310..315 op=sub
+              Name 310..311 name="n"
+              Integer 314..315 magnitude=1 negative=false long_suffix=false
+  Function 322..409 name="is_odd" recursive=true generics=[]
+    Parameter 342..348 name="n" mode=read
+      ParameterType 345..348 name="int" range=none policy=checked
+    ResultType 353..357 name="bool" range=none policy=checked
+    Block 358..409
+      If 364..407
+        Binary 367..373 op=eq
+          Name 367..368 name="n"
+          Integer 372..373 magnitude=0 negative=false long_suffix=false
+        Block 374..383
+          Bool 376..381 value=false
+        Block 389..407
+          Call 391..405 name="is_even"
+            Binary 399..404 op=sub
+              Name 399..400 name="n"
+              Integer 403..404 magnitude=1 negative=false long_suffix=false
+  Function 411..572 name="indirect" recursive=true generics=[]
+    Parameter 433..439 name="n" mode=read
+      ParameterType 436..439 name="int" range=none policy=checked
+    ResultType 444..447 name="int" range=none policy=checked
+    Block 448..572
+      If 454..570
+        Binary 457..463 op=eq
+          Name 457..458 name="n"
+          Integer 462..463 magnitude=0 negative=false long_suffix=false
+        Block 464..481
+          Integer 474..475 magnitude=0 negative=false long_suffix=false
+        Block 487..570
+          Let 497..536 mutable=false name="callback"
+            Annotation 511..525 name="fn" range=none policy=checked
+              FunctionType 511..525
+                FunctionTypeParameter 514..517 mode=read
+                  ParameterType 514..517 name="int" range=none policy=checked
+                ResultType 522..525 name="int" range=none policy=checked
+            Name 528..536 name="indirect"
+          Binary 545..564 op=add
+            Call 545..560 name="callback"
+              Binary 554..559 op=sub
+                Name 554..555 name="n"
+                Integer 558..559 magnitude=1 negative=false long_suffix=false
+            Integer 563..564 magnitude=1 negative=false long_suffix=false
+  Function 574..759 name="depth" recursive=true generics=["P","N"]
+    Parameter 599..625 name="nodes" mode=read
+      ParameterType 606..625 name="pool" range=none policy=checked
+        TypeArgument 611..618 name="Node" range=none policy=checked
+          TypeArgument 616..617 name="P" range=none policy=checked
+        Name 620..621 name="N"
+        TypeArgument 623..624 name="P" range=none policy=checked
+    Parameter 627..636 name="id" mode=read
+      ParameterType 631..636 name="Id" range=none policy=checked
+        TypeArgument 634..635 name="P" range=none policy=checked
+    ResultType 641..644 name="int" range=none policy=checked
+    Block 645..759
+      Let 651..687 mutable=false name="node"
+        Binary 662..687 op=coalesce
+          MethodCall 662..675 name="get"
+            Name 662..667 name="nodes"
+            Name 672..674 name="id"
+          Return 679..687
+            Integer 686..687 magnitude=0 negative=false long_suffix=false
+      Let 692..728 mutable=false name="parent"
+        Binary 705..728 op=coalesce
+          Field 705..716 name="parent"
+            Name 705..709 name="node"
+          Return 720..728
+            Integer 727..728 magnitude=0 negative=false long_suffix=false
+      Binary 733..757 op=add
+        Call 733..753 name="depth"
+          Name 739..744 name="nodes"
+          Name 746..752 name="parent"
+        Integer 756..757 magnitude=1 negative=false long_suffix=false
+  Function 761..903 name="wide_frame" recursive=true generics=[]
+    Parameter 785..791 name="n" mode=read
+      ParameterType 788..791 name="int" range=none policy=checked
+    ResultType 796..799 name="int" range=none policy=checked
+    Block 800..903
+      Let 806..836 mutable=true name="local"
+        Annotation 817..826 name="int" range=none policy=checked
+          Integer 821..825 magnitude=1024 negative=false long_suffix=false
+        Call 829..836 name="fill"
+          Name 834..835 name="n"
+      If 841..901
+        Binary 844..850 op=eq
+          Name 844..845 name="n"
+          Integer 849..850 magnitude=0 negative=false long_suffix=false
+        Block 851..863
+          Index 853..861
+            Name 853..858 name="local"
+            Integer 859..860 magnitude=0 negative=false long_suffix=false
+        Block 869..901
+          Binary 871..899 op=add
+            Call 871..888 name="wide_frame"
+              Binary 882..887 op=sub
+                Name 882..883 name="n"
+                Integer 886..887 magnitude=1 negative=false long_suffix=false
+            Index 891..899
+              Name 891..896 name="local"
+              Integer 897..898 magnitude=0 negative=false long_suffix=false
+  Function 905..996 name="const_sum" recursive=true generics=[]
+    Parameter 928..934 name="n" mode=read
+      ParameterType 931..934 name="int" range=none policy=checked
+    ResultType 939..942 name="int" range=none policy=checked
+    Block 943..996
+      If 949..994
+        Binary 952..958 op=eq
+          Name 952..953 name="n"
+          Integer 957..958 magnitude=0 negative=false long_suffix=false
+        Block 959..964
+          Integer 961..962 magnitude=0 negative=false long_suffix=false
+        Block 970..994
+          Binary 972..992 op=add
+            Name 972..973 name="n"
+            Call 976..992 name="const_sum"
+              Binary 986..991 op=sub
+                Name 986..987 name="n"
+                Integer 990..991 magnitude=1 negative=false long_suffix=false
+  Function 998..1232 name="recursive_less" recursive=true generics=[]
+    Parameter 1026..1034 name="ctx" mode=read
+      ParameterType 1031..1034 name="int" range=none policy=checked
+    Parameter 1036..1045 name="left" mode=read
+      ParameterType 1042..1045 name="int" range=none policy=checked
+    Parameter 1047..1057 name="right" mode=read
+      ParameterType 1054..1057 name="int" range=none policy=checked
+    ResultType 1062..1066 name="bool" range=none policy=checked
+    Block 1067..1232
+      If 1073..1230
+        Binary 1076..1084 op=eq
+          Name 1076..1079 name="ctx"
+          Integer 1083..1084 magnitude=0 negative=false long_suffix=false
+        Block 1085..1113
+          Binary 1095..1107 op=lt
+            Name 1095..1099 name="left"
+            Name 1102..1107 name="right"
+        Block 1119..1230
+          Let 1129..1185 mutable=false name="callback"
+            Annotation 1143..1168 name="fn" range=none policy=checked
+              FunctionType 1143..1168
+                FunctionTypeParameter 1146..1149 mode=read
+                  ParameterType 1146..1149 name="int" range=none policy=checked
+                FunctionTypeParameter 1151..1154 mode=read
+                  ParameterType 1151..1154 name="int" range=none policy=checked
+                FunctionTypeParameter 1156..1159 mode=read
+                  ParameterType 1156..1159 name="int" range=none policy=checked
+                ResultType 1164..1168 name="bool" range=none policy=checked
+            Name 1171..1185 name="recursive_less"
+          Call 1194..1224 name="callback"
+            Binary 1203..1210 op=sub
+              Name 1203..1206 name="ctx"
+              Integer 1209..1210 magnitude=1 negative=false long_suffix=false
+            Name 1212..1216 name="left"
+            Name 1218..1223 name="right"
+  Const 1234..1264 name="SUM"
+    DeclaredType 1245..1248 name="int" range=none policy=checked
+    Call 1251..1264 name="const_sum"
+      Integer 1261..1263 magnitude=10 negative=false long_suffix=false
+  Function 1266..1941 name="main" recursive=false generics=[]
+    Block 1276..1941
+      ExpressionStatement 1282..1296
+        Call 1282..1296 name="print"
+          Call 1288..1295 name="fact"
+            Integer 1293..1294 magnitude=5 negative=false long_suffix=false
+      ExpressionStatement 1301..1314
+        Call 1301..1314 name="print"
+          Call 1307..1313 name="fib"
+            Integer 1311..1312 magnitude=8 negative=false long_suffix=false
+      ExpressionStatement 1319..1337
+        Call 1319..1337 name="print"
+          Call 1325..1336 name="is_even"
+            Integer 1333..1335 magnitude=12 negative=false long_suffix=false
+      ExpressionStatement 1342..1359
+        Call 1342..1359 name="print"
+          Call 1348..1358 name="is_odd"
+            Integer 1355..1357 magnitude=11 negative=false long_suffix=false
+      ExpressionStatement 1364..1382
+        Call 1364..1382 name="print"
+          Call 1370..1381 name="indirect"
+            Integer 1379..1380 magnitude=8 negative=false long_suffix=false
+      ExpressionStatement 1387..1407
+        Call 1387..1407 name="print"
+          Call 1393..1406 name="wide_frame"
+            Integer 1404..1405 magnitude=3 negative=false long_suffix=false
+      ExpressionStatement 1412..1422
+        Call 1412..1422 name="print"
+          Name 1418..1421 name="SUM"
+      Let 1428..1469 mutable=true name="nodes"
+        Annotation 1439..1459 name="pool" range=none policy=checked
+          TypeArgument 1444..1455 name="Node" range=none policy=checked
+            TypeArgument 1449..1454 name="nodes" range=none policy=checked
+          Integer 1457..1458 magnitude=4 negative=false long_suffix=false
+        PoolLiteral 1462..1469
+      Let 1474..1546 mutable=false name="root"
+        Annotation 1484..1492 name="nodes.Id" range=none policy=checked
+        MethodCall 1495..1546 name="unwrap"
+          MethodCall 1495..1537 name="add"
+            Name 1495..1500 name="nodes"
+            StructInit 1505..1536 name="Node"
+              InitializerField 1512..1524 name="parent"
+                Name 1520..1524 name="none"
+              InitializerField 1526..1534 name="value"
+                Integer 1533..1534 magnitude=1 negative=false long_suffix=false
+      Let 1551..1631 mutable=false name="middle"
+        Annotation 1563..1571 name="nodes.Id" range=none policy=checked
+        MethodCall 1574..1631 name="unwrap"
+          MethodCall 1574..1622 name="add"
+            Name 1574..1579 name="nodes"
+            StructInit 1584..1621 name="Node"
+              InitializerField 1591..1609 name="parent"
+                Call 1599..1609 name="some"
+                  Name 1604..1608 name="root"
+              InitializerField 1611..1619 name="value"
+                Integer 1618..1619 magnitude=2 negative=false long_suffix=false
+      Let 1636..1716 mutable=false name="leaf"
+        Annotation 1646..1654 name="nodes.Id" range=none policy=checked
+        MethodCall 1657..1716 name="unwrap"
+          MethodCall 1657..1707 name="add"
+            Name 1657..1662 name="nodes"
+            StructInit 1667..1706 name="Node"
+              InitializerField 1674..1694 name="parent"
+                Call 1682..1694 name="some"
+                  Name 1687..1693 name="middle"
+              InitializerField 1696..1704 name="value"
+                Integer 1703..1704 magnitude=3 negative=false long_suffix=false
+      ExpressionStatement 1721..1746
+        Call 1721..1746 name="print"
+          Call 1727..1745 name="depth"
+            Name 1733..1738 name="nodes"
+            Name 1740..1744 name="leaf"
+      Let 1752..1788 mutable=true name="sortable"
+        Annotation 1766..1778 name="list" range=none policy=checked
+          TypeArgument 1771..1774 name="int" range=none policy=checked
+          Integer 1776..1777 magnitude=3 negative=false long_suffix=false
+        ListLiteral 1781..1788
+      ExpressionStatement 1793..1818
+        MethodCall 1793..1818 name="unwrap"
+          MethodCall 1793..1809 name="push"
+            Name 1793..1801 name="sortable"
+            Integer 1807..1808 magnitude=3 negative=false long_suffix=false
+      ExpressionStatement 1823..1848
+        MethodCall 1823..1848 name="unwrap"
+          MethodCall 1823..1839 name="push"
+            Name 1823..1831 name="sortable"
+            Integer 1837..1838 magnitude=1 negative=false long_suffix=false
+      ExpressionStatement 1853..1878
+        MethodCall 1853..1878 name="unwrap"
+          MethodCall 1853..1869 name="push"
+            Name 1853..1861 name="sortable"
+            Integer 1867..1868 magnitude=2 negative=false long_suffix=false
+      ExpressionStatement 1883..1919
+        Call 1883..1919 name="sort_by"
+          Name 1891..1899 name="sortable"
+          Integer 1901..1902 magnitude=1 negative=false long_suffix=false
+          Name 1904..1918 name="recursive_less"
+      Call 1924..1939 name="print"
+        Name 1930..1938 name="sortable"

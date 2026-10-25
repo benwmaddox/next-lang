@@ -1,0 +1,75 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "var"
+Ident 20 6 2 9 "values"
+Colon 26 1 2 15 ":"
+Ident 28 3 2 17 "map"
+Lt 31 1 2 20 "<"
+Ident 32 3 2 21 "int"
+Comma 35 1 2 24 ","
+Ident 37 3 2 26 "int"
+Comma 40 1 2 29 ","
+Number 42 1 2 31 "2"
+Gt 43 1 2 32 ">"
+Eq 45 1 2 34 "="
+Ident 47 3 2 36 "map"
+LBrace 51 1 2 40 "{"
+RBrace 52 1 2 41 "}"
+Newline 53 1 2 42 "\n"
+Ident 58 6 3 5 "values"
+Dot 64 1 3 11 "."
+Ident 65 3 3 12 "set"
+LParen 68 1 3 15 "("
+Number 69 1 3 16 "1"
+Comma 70 1 3 17 ","
+Number 72 2 3 19 "10"
+RParen 74 1 3 21 ")"
+Dot 75 1 3 22 "."
+Ident 76 6 3 23 "unwrap"
+LParen 82 1 3 29 "("
+RParen 83 1 3 30 ")"
+Newline 84 1 3 31 "\n"
+Ident 89 3 4 5 "for"
+Ident 93 5 4 9 "value"
+Comma 98 1 4 14 ","
+Ident 100 3 4 16 "key"
+Ident 104 2 4 20 "in"
+Ident 107 6 4 23 "values"
+LBrace 114 1 4 30 "{"
+Ident 116 5 4 32 "value"
+Eq 122 1 4 38 "="
+Number 124 2 4 40 "20"
+RBrace 127 1 4 43 "}"
+Newline 128 1 4 44 "\n"
+RBrace 129 1 5 1 "}"
+Newline 130 1 5 2 "\n"
+Eof 131 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..131
+  Function 0..130 name="main" recursive=false generics=[]
+    Block 10..130
+      Let 16..53 mutable=true name="values"
+        Annotation 28..44 name="map" range=none policy=checked
+          TypeArgument 32..35 name="int" range=none policy=checked
+          TypeArgument 37..40 name="int" range=none policy=checked
+          Integer 42..43 magnitude=2 negative=false long_suffix=false
+        MapLiteral 47..53
+      ExpressionStatement 58..84
+        MethodCall 58..84 name="unwrap"
+          MethodCall 58..75 name="set"
+            Name 58..64 name="values"
+            Integer 69..70 magnitude=1 negative=false long_suffix=false
+            Integer 72..74 magnitude=10 negative=false long_suffix=false
+      ForEach 89..128 name="value" indexes=["key"]
+        Name 107..113 name="values"
+        Block 114..128
+          Assign 116..126 op==
+            Name 116..121 name="value"
+            Integer 124..126 magnitude=20 negative=false long_suffix=false

@@ -1,0 +1,90 @@
+== tokens ==
+file "main.nl"
+Ident 0 9 1 1 "recursive"
+Ident 10 2 1 11 "fn"
+Ident 13 7 1 14 "descend"
+LParen 20 1 1 21 "("
+Ident 21 1 1 22 "n"
+Colon 22 1 1 23 ":"
+Ident 24 3 1 25 "int"
+RParen 27 1 1 28 ")"
+Arrow 29 2 1 30 "->"
+Ident 32 3 1 33 "int"
+LBrace 36 1 1 37 "{"
+Newline 37 1 1 38 "\n"
+Ident 42 2 2 5 "if"
+Ident 45 1 2 8 "n"
+EqEq 47 2 2 10 "=="
+Number 50 1 2 13 "0"
+LBrace 52 1 2 15 "{"
+Newline 53 1 2 16 "\n"
+Ident 62 5 3 9 "print"
+LParen 67 1 3 14 "("
+Number 68 1 3 15 "0"
+RParen 69 1 3 16 ")"
+Newline 70 1 3 17 "\n"
+Number 79 1 4 9 "0"
+Newline 80 1 4 10 "\n"
+RBrace 85 1 5 5 "}"
+Ident 87 4 5 7 "else"
+LBrace 92 1 5 12 "{"
+Newline 93 1 5 13 "\n"
+Ident 102 7 6 9 "descend"
+LParen 109 1 6 16 "("
+Ident 110 1 6 17 "n"
+Minus 112 1 6 19 "-"
+Number 114 1 6 21 "1"
+RParen 115 1 6 22 ")"
+Plus 117 1 6 24 "+"
+Number 119 1 6 26 "1"
+Newline 120 1 6 27 "\n"
+RBrace 125 1 7 5 "}"
+Newline 126 1 7 6 "\n"
+RBrace 127 1 8 1 "}"
+Newline 128 1 8 2 "\n"
+Ident 130 2 10 1 "fn"
+Ident 133 4 10 4 "main"
+LParen 137 1 10 8 "("
+RParen 138 1 10 9 ")"
+LBrace 140 1 10 11 "{"
+Newline 141 1 10 12 "\n"
+Ident 146 5 11 5 "print"
+LParen 151 1 11 10 "("
+Ident 152 7 11 11 "descend"
+LParen 159 1 11 18 "("
+Number 160 9 11 19 "100000000"
+RParen 169 1 11 28 ")"
+RParen 170 1 11 29 ")"
+Newline 171 1 11 30 "\n"
+RBrace 172 1 12 1 "}"
+Newline 173 1 12 2 "\n"
+Eof 174 0 13 1 ""
+== tree ==
+file "main.nl"
+Program 0..174
+  Function 0..128 name="descend" recursive=true generics=[]
+    Parameter 21..27 name="n" mode=read
+      ParameterType 24..27 name="int" range=none policy=checked
+    ResultType 32..35 name="int" range=none policy=checked
+    Block 36..128
+      If 42..126
+        Binary 45..51 op=eq
+          Name 45..46 name="n"
+          Integer 50..51 magnitude=0 negative=false long_suffix=false
+        Block 52..86
+          ExpressionStatement 62..70
+            Call 62..70 name="print"
+              Integer 68..69 magnitude=0 negative=false long_suffix=false
+          Integer 79..80 magnitude=0 negative=false long_suffix=false
+        Block 92..126
+          Binary 102..120 op=add
+            Call 102..116 name="descend"
+              Binary 110..115 op=sub
+                Name 110..111 name="n"
+                Integer 114..115 magnitude=1 negative=false long_suffix=false
+            Integer 119..120 magnitude=1 negative=false long_suffix=false
+  Function 130..173 name="main" recursive=false generics=[]
+    Block 140..173
+      Call 146..171 name="print"
+        Call 152..170 name="descend"
+          Integer 160..169 magnitude=100000000 negative=false long_suffix=false

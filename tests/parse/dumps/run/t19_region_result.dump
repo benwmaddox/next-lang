@@ -1,0 +1,108 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 3 1 8 "Big"
+LBrace 11 1 1 12 "{"
+Ident 13 4 1 14 "data"
+Colon 17 1 1 18 ":"
+Ident 19 3 1 20 "int"
+LBracket 22 1 1 23 "["
+Number 23 4 1 24 "2048"
+RBracket 27 1 1 28 "]"
+RBrace 29 1 1 30 "}"
+Newline 30 1 1 31 "\n"
+Ident 32 9 3 1 "recursive"
+Ident 42 2 3 11 "fn"
+Ident 45 4 3 14 "make"
+LParen 49 1 3 18 "("
+Ident 50 1 3 19 "n"
+Colon 51 1 3 20 ":"
+Ident 53 3 3 22 "int"
+RParen 56 1 3 25 ")"
+Arrow 58 2 3 27 "->"
+Ident 61 3 3 30 "Big"
+LBrace 65 1 3 34 "{"
+Newline 66 1 3 35 "\n"
+Ident 71 2 4 5 "if"
+Ident 74 1 4 8 "n"
+EqEq 76 2 4 10 "=="
+Number 79 1 4 13 "0"
+LBrace 81 1 4 15 "{"
+Ident 83 3 4 17 "Big"
+LBrace 87 1 4 21 "{"
+Ident 89 4 4 23 "data"
+Colon 93 1 4 27 ":"
+Ident 95 4 4 29 "fill"
+LParen 99 1 4 33 "("
+Ident 100 1 4 34 "n"
+RParen 101 1 4 35 ")"
+RBrace 103 1 4 37 "}"
+RBrace 105 1 4 39 "}"
+Ident 107 4 4 41 "else"
+LBrace 112 1 4 46 "{"
+Ident 114 4 4 48 "make"
+LParen 118 1 4 52 "("
+Ident 119 1 4 53 "n"
+Minus 121 1 4 55 "-"
+Number 123 1 4 57 "1"
+RParen 124 1 4 58 ")"
+RBrace 126 1 4 60 "}"
+Newline 127 1 4 61 "\n"
+RBrace 128 1 5 1 "}"
+Newline 129 1 5 2 "\n"
+Ident 131 2 7 1 "fn"
+Ident 134 4 7 4 "main"
+LParen 138 1 7 8 "("
+RParen 139 1 7 9 ")"
+LBrace 141 1 7 11 "{"
+Newline 142 1 7 12 "\n"
+Ident 147 5 8 5 "print"
+LParen 152 1 8 10 "("
+Ident 153 4 8 11 "make"
+LParen 157 1 8 15 "("
+Number 158 1 8 16 "1"
+RParen 159 1 8 17 ")"
+Dot 160 1 8 18 "."
+Ident 161 4 8 19 "data"
+LBracket 165 1 8 23 "["
+Number 166 1 8 24 "0"
+RBracket 167 1 8 25 "]"
+RParen 168 1 8 26 ")"
+Newline 169 1 8 27 "\n"
+RBrace 170 1 9 1 "}"
+Newline 171 1 9 2 "\n"
+Eof 172 0 10 1 ""
+== tree ==
+file "main.nl"
+Program 0..172
+  Struct 0..30 name="Big" generics=[]
+    StructField 13..28 name="data"
+      FieldType 19..28 name="int" range=none policy=checked
+        Integer 23..27 magnitude=2048 negative=false long_suffix=false
+  Function 32..129 name="make" recursive=true generics=[]
+    Parameter 50..56 name="n" mode=read
+      ParameterType 53..56 name="int" range=none policy=checked
+    ResultType 61..64 name="Big" range=none policy=checked
+    Block 65..129
+      If 71..127
+        Binary 74..80 op=eq
+          Name 74..75 name="n"
+          Integer 79..80 magnitude=0 negative=false long_suffix=false
+        Block 81..106
+          StructInit 83..104 name="Big"
+            InitializerField 89..102 name="data"
+              Call 95..102 name="fill"
+                Name 100..101 name="n"
+        Block 112..127
+          Call 114..125 name="make"
+            Binary 119..124 op=sub
+              Name 119..120 name="n"
+              Integer 123..124 magnitude=1 negative=false long_suffix=false
+  Function 131..171 name="main" recursive=false generics=[]
+    Block 141..171
+      Call 147..169 name="print"
+        Index 153..168
+          Field 153..165 name="data"
+            Call 153..160 name="make"
+              Integer 158..159 magnitude=1 negative=false long_suffix=false
+          Integer 166..167 magnitude=0 negative=false long_suffix=false

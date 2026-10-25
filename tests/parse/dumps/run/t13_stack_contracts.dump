@@ -1,0 +1,1105 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 6 1 8 "Nested"
+LBrace 14 1 1 15 "{"
+Ident 16 6 1 17 "values"
+Colon 22 1 1 23 ":"
+Ident 24 4 1 25 "list"
+Lt 28 1 1 29 "<"
+Ident 29 4 1 30 "long"
+Comma 33 1 1 34 ","
+Number 35 3 1 36 "600"
+Gt 38 1 1 39 ">"
+Eq 40 1 1 41 "="
+Ident 42 4 1 43 "list"
+LBrace 47 1 1 48 "{"
+RBrace 48 1 1 49 "}"
+RBrace 50 1 1 51 "}"
+Newline 51 1 1 52 "\n"
+Ident 53 2 3 1 "fn"
+Ident 56 11 3 4 "make_nested"
+LParen 67 1 3 15 "("
+RParen 68 1 3 16 ")"
+Arrow 70 2 3 18 "->"
+Ident 73 6 3 21 "Nested"
+LBracket 79 1 3 27 "["
+Number 80 1 3 28 "2"
+RBracket 81 1 3 29 "]"
+LBrace 83 1 3 31 "{"
+Newline 84 1 3 32 "\n"
+Ident 89 3 4 5 "var"
+Ident 93 4 4 9 "rows"
+Colon 97 1 4 13 ":"
+Ident 99 6 4 15 "Nested"
+LBracket 105 1 4 21 "["
+Number 106 1 4 22 "2"
+RBracket 107 1 4 23 "]"
+Eq 109 1 4 25 "="
+Ident 111 4 4 27 "fill"
+LParen 115 1 4 31 "("
+Ident 116 6 4 32 "Nested"
+LBrace 123 1 4 39 "{"
+RBrace 124 1 4 40 "}"
+RParen 125 1 4 41 ")"
+Newline 126 1 4 42 "\n"
+Ident 131 7 5 5 "discard"
+Ident 139 4 5 13 "rows"
+LBracket 143 1 5 17 "["
+Number 144 2 5 18 "1L"
+RBracket 146 1 5 20 "]"
+Dot 147 1 5 21 "."
+Ident 148 6 5 22 "values"
+Dot 154 1 5 28 "."
+Ident 155 4 5 29 "push"
+LParen 159 1 5 33 "("
+Number 160 3 5 34 "73L"
+RParen 163 1 5 37 ")"
+Newline 164 1 5 38 "\n"
+Ident 169 6 6 5 "return"
+Ident 176 4 6 12 "rows"
+Newline 180 1 6 16 "\n"
+RBrace 181 1 7 1 "}"
+Newline 182 1 7 2 "\n"
+Ident 184 2 9 1 "fn"
+Ident 187 8 9 4 "identity"
+LParen 195 1 9 12 "("
+Ident 196 6 9 13 "values"
+Colon 202 1 9 19 ":"
+Ident 204 4 9 21 "list"
+Lt 208 1 9 25 "<"
+Ident 209 4 9 26 "long"
+Comma 213 1 9 30 ","
+Number 215 4 9 32 "8192"
+Gt 219 1 9 36 ">"
+RParen 220 1 9 37 ")"
+Arrow 222 2 9 39 "->"
+Ident 225 4 9 42 "list"
+Lt 229 1 9 46 "<"
+Ident 230 4 9 47 "long"
+Comma 234 1 9 51 ","
+Number 236 4 9 53 "8192"
+Gt 240 1 9 57 ">"
+LBrace 242 1 9 59 "{"
+Newline 243 1 9 60 "\n"
+Ident 248 6 10 5 "values"
+Newline 254 1 10 11 "\n"
+RBrace 255 1 11 1 "}"
+Newline 256 1 11 2 "\n"
+Ident 258 2 13 1 "fn"
+Ident 261 12 13 4 "write_nested"
+LParen 273 1 13 16 "("
+Ident 274 5 13 17 "value"
+Colon 279 1 13 22 ":"
+Ident 281 5 13 24 "write"
+Ident 287 6 13 30 "Nested"
+RParen 293 1 13 36 ")"
+LBrace 295 1 13 38 "{"
+Newline 296 1 13 39 "\n"
+Ident 301 7 14 5 "discard"
+Ident 309 5 14 13 "value"
+Dot 314 1 14 18 "."
+Ident 315 6 14 19 "values"
+Dot 321 1 14 25 "."
+Ident 322 4 14 26 "push"
+LParen 326 1 14 30 "("
+Number 327 2 14 31 "5L"
+RParen 329 1 14 33 ")"
+Newline 330 1 14 34 "\n"
+RBrace 331 1 15 1 "}"
+Newline 332 1 15 2 "\n"
+Ident 334 2 17 1 "fn"
+Ident 337 14 17 4 "possibly_alias"
+LParen 351 1 17 18 "("
+Ident 352 4 17 19 "left"
+Colon 356 1 17 23 ":"
+Ident 358 6 17 25 "Nested"
+LBracket 364 1 17 31 "["
+Number 365 1 17 32 "2"
+RBracket 366 1 17 33 "]"
+Comma 367 1 17 34 ","
+Ident 369 5 17 36 "right"
+Colon 374 1 17 41 ":"
+Ident 376 6 17 43 "Nested"
+LBracket 382 1 17 49 "["
+Number 383 1 17 50 "2"
+RBracket 384 1 17 51 "]"
+RParen 385 1 17 52 ")"
+Arrow 387 2 17 54 "->"
+Ident 390 4 17 57 "long"
+LBrace 395 1 17 62 "{"
+Newline 396 1 17 63 "\n"
+Ident 401 4 18 5 "left"
+LBracket 405 1 18 9 "["
+Number 406 2 18 10 "0L"
+RBracket 408 1 18 12 "]"
+Dot 409 1 18 13 "."
+Ident 410 6 18 14 "values"
+Dot 416 1 18 20 "."
+Ident 417 5 18 21 "count"
+LParen 422 1 18 26 "("
+RParen 423 1 18 27 ")"
+Plus 425 1 18 29 "+"
+Ident 427 5 18 31 "right"
+LBracket 432 1 18 36 "["
+Number 433 2 18 37 "0L"
+RBracket 435 1 18 39 "]"
+Dot 436 1 18 40 "."
+Ident 437 6 18 41 "values"
+Dot 443 1 18 47 "."
+Ident 444 5 18 48 "count"
+LParen 449 1 18 53 "("
+RParen 450 1 18 54 ")"
+Newline 451 1 18 55 "\n"
+RBrace 452 1 19 1 "}"
+Newline 453 1 19 2 "\n"
+Ident 455 2 21 1 "fn"
+Ident 458 10 21 4 "sort_large"
+LParen 468 1 21 14 "("
+RParen 469 1 21 15 ")"
+LBrace 471 1 21 17 "{"
+Newline 472 1 21 18 "\n"
+Ident 477 3 22 5 "var"
+Ident 481 6 22 9 "values"
+Colon 487 1 22 15 ":"
+Ident 489 4 22 17 "list"
+Lt 493 1 22 21 "<"
+Ident 494 4 22 22 "long"
+Comma 498 1 22 26 ","
+Number 500 6 22 28 "100000"
+Gt 506 1 22 34 ">"
+Eq 508 1 22 36 "="
+Ident 510 4 22 38 "list"
+LBrace 515 1 22 43 "{"
+RBrace 516 1 22 44 "}"
+Newline 517 1 22 45 "\n"
+Ident 522 3 23 5 "for"
+Ident 526 1 23 9 "i"
+Colon 527 1 23 10 ":"
+Ident 529 4 23 12 "long"
+Ident 534 2 23 17 "in"
+Number 537 2 23 20 "0L"
+Range 539 2 23 22 ".."
+Number 541 7 23 24 "100000L"
+LBrace 549 1 23 32 "{"
+Newline 550 1 23 33 "\n"
+Ident 559 7 24 9 "discard"
+Ident 567 6 24 17 "values"
+Dot 573 1 24 23 "."
+Ident 574 4 24 24 "push"
+LParen 578 1 24 28 "("
+Number 579 7 24 29 "100000L"
+Minus 587 1 24 37 "-"
+Ident 589 1 24 39 "i"
+RParen 590 1 24 40 ")"
+Newline 591 1 24 41 "\n"
+RBrace 596 1 25 5 "}"
+Newline 597 1 25 6 "\n"
+Ident 602 4 26 5 "sort"
+LParen 606 1 26 9 "("
+Ident 607 6 26 10 "values"
+RParen 613 1 26 16 ")"
+Newline 614 1 26 17 "\n"
+Ident 619 5 27 5 "print"
+LParen 624 1 27 10 "("
+Ident 625 6 27 11 "values"
+LBracket 631 1 27 17 "["
+Number 632 2 27 18 "0L"
+RBracket 634 1 27 20 "]"
+RParen 635 1 27 21 ")"
+Newline 636 1 27 22 "\n"
+Ident 641 5 28 5 "print"
+LParen 646 1 28 10 "("
+Ident 647 6 28 11 "values"
+LBracket 653 1 28 17 "["
+Number 654 6 28 18 "99999L"
+RBracket 660 1 28 24 "]"
+RParen 661 1 28 25 ")"
+Newline 662 1 28 26 "\n"
+RBrace 663 1 29 1 "}"
+Newline 664 1 29 2 "\n"
+Ident 666 2 31 1 "fn"
+Ident 669 7 31 4 "consume"
+LParen 676 1 31 11 "("
+Ident 677 5 31 12 "value"
+Colon 682 1 31 17 ":"
+Ident 684 4 31 19 "long"
+RParen 688 1 31 23 ")"
+LBrace 690 1 31 25 "{"
+RBrace 691 1 31 26 "}"
+Newline 692 1 31 27 "\n"
+Ident 694 2 33 1 "fn"
+Ident 697 21 33 4 "indirect_large_target"
+LParen 718 1 33 25 "("
+RParen 719 1 33 26 ")"
+Arrow 721 2 33 28 "->"
+Ident 724 4 33 31 "long"
+LBrace 729 1 33 36 "{"
+Newline 730 1 33 37 "\n"
+Ident 735 3 34 5 "let"
+Ident 739 7 34 9 "scratch"
+Colon 746 1 34 16 ":"
+Ident 748 4 34 18 "long"
+LBracket 752 1 34 22 "["
+Number 753 4 34 23 "1024"
+RBracket 757 1 34 27 "]"
+Eq 759 1 34 29 "="
+Ident 761 4 34 31 "fill"
+LParen 765 1 34 35 "("
+Number 766 2 34 36 "0L"
+RParen 768 1 34 38 ")"
+Newline 769 1 34 39 "\n"
+Ident 774 7 35 5 "scratch"
+LBracket 781 1 35 12 "["
+Number 782 2 35 13 "0L"
+RBracket 784 1 35 15 "]"
+Newline 785 1 35 16 "\n"
+RBrace 786 1 36 1 "}"
+Newline 787 1 36 2 "\n"
+Ident 789 2 38 1 "fn"
+Ident 792 13 38 4 "call_indirect"
+LParen 805 1 38 17 "("
+Ident 806 8 38 18 "callback"
+Colon 814 1 38 26 ":"
+Ident 816 2 38 28 "fn"
+LParen 818 1 38 30 "("
+RParen 819 1 38 31 ")"
+Arrow 821 2 38 33 "->"
+Ident 824 4 38 36 "long"
+RParen 828 1 38 40 ")"
+Arrow 830 2 38 42 "->"
+Ident 833 4 38 45 "long"
+LBrace 838 1 38 50 "{"
+Newline 839 1 38 51 "\n"
+Ident 844 8 39 5 "callback"
+LParen 852 1 39 13 "("
+RParen 853 1 39 14 ")"
+Newline 854 1 39 15 "\n"
+RBrace 855 1 40 1 "}"
+Newline 856 1 40 2 "\n"
+Ident 858 2 42 1 "fn"
+Ident 861 10 42 4 "copy_large"
+LParen 871 1 42 14 "("
+Ident 872 5 42 15 "value"
+Colon 877 1 42 20 ":"
+Ident 879 4 42 22 "long"
+LBracket 883 1 42 26 "["
+Number 884 4 42 27 "1024"
+RBracket 888 1 42 31 "]"
+RParen 889 1 42 32 ")"
+Arrow 891 2 42 34 "->"
+Ident 894 4 42 37 "long"
+LBracket 898 1 42 41 "["
+Number 899 4 42 42 "1024"
+RBracket 903 1 42 46 "]"
+LBrace 905 1 42 48 "{"
+Newline 906 1 42 49 "\n"
+Ident 911 5 43 5 "value"
+Newline 916 1 43 10 "\n"
+RBrace 917 1 44 1 "}"
+Newline 918 1 44 2 "\n"
+Ident 920 2 46 1 "fn"
+Ident 923 10 46 4 "maybe_copy"
+LParen 933 1 46 14 "("
+Ident 934 5 46 15 "value"
+Colon 939 1 46 20 ":"
+Ident 941 6 46 22 "Option"
+Lt 947 1 46 28 "<"
+Ident 948 4 46 29 "long"
+LBracket 952 1 46 33 "["
+Number 953 4 46 34 "1024"
+RBracket 957 1 46 38 "]"
+Gt 958 1 46 39 ">"
+RParen 959 1 46 40 ")"
+Arrow 961 2 46 42 "->"
+Ident 964 6 46 45 "Option"
+Lt 970 1 46 51 "<"
+Ident 971 4 46 52 "long"
+LBracket 975 1 46 56 "["
+Number 976 4 46 57 "1024"
+RBracket 980 1 46 61 "]"
+Gt 981 1 46 62 ">"
+LBrace 983 1 46 64 "{"
+Newline 984 1 46 65 "\n"
+Ident 989 5 47 5 "value"
+QuestionDot 994 2 47 10 "?."
+Ident 996 10 47 12 "copy_large"
+LParen 1006 1 47 22 "("
+RParen 1007 1 47 23 ")"
+Newline 1008 1 47 24 "\n"
+RBrace 1009 1 48 1 "}"
+Newline 1010 1 48 2 "\n"
+Ident 1012 2 50 1 "fn"
+Ident 1015 14 50 4 "maybe_try_copy"
+LParen 1029 1 50 18 "("
+Ident 1030 5 50 19 "value"
+Colon 1035 1 50 24 ":"
+Ident 1037 6 50 26 "Option"
+Lt 1043 1 50 32 "<"
+Ident 1044 4 50 33 "long"
+LBracket 1048 1 50 37 "["
+Number 1049 4 50 38 "1024"
+RBracket 1053 1 50 42 "]"
+Gt 1054 1 50 43 ">"
+RParen 1055 1 50 44 ")"
+Arrow 1057 2 50 46 "->"
+Ident 1060 6 50 49 "Option"
+Lt 1066 1 50 55 "<"
+Ident 1067 4 50 56 "long"
+LBracket 1071 1 50 60 "["
+Number 1072 4 50 61 "1024"
+RBracket 1076 1 50 65 "]"
+Gt 1077 1 50 66 ">"
+LBrace 1079 1 50 68 "{"
+Newline 1080 1 50 69 "\n"
+Ident 1085 4 51 5 "some"
+LParen 1089 1 51 9 "("
+Ident 1090 5 51 10 "value"
+Question 1095 1 51 15 "?"
+RParen 1096 1 51 16 ")"
+Newline 1097 1 51 17 "\n"
+RBrace 1098 1 52 1 "}"
+Newline 1099 1 52 2 "\n"
+Ident 1101 2 54 1 "fn"
+Ident 1104 13 54 4 "no_stack_loop"
+LParen 1117 1 54 17 "("
+RParen 1118 1 54 18 ")"
+LBrace 1120 1 54 20 "{"
+Newline 1121 1 54 21 "\n"
+Ident 1126 3 55 5 "for"
+Ident 1130 1 55 9 "i"
+Colon 1131 1 55 10 ":"
+Ident 1133 4 55 12 "long"
+Ident 1138 2 55 17 "in"
+Number 1141 2 55 20 "0L"
+Range 1143 2 55 22 ".."
+Number 1145 3 55 24 "10L"
+LBrace 1149 1 55 28 "{"
+Newline 1150 1 55 29 "\n"
+Ident 1159 3 56 9 "let"
+Ident 1163 4 56 13 "next"
+Eq 1168 1 56 18 "="
+Ident 1170 1 56 20 "i"
+Plus 1172 1 56 22 "+"
+Number 1174 2 56 24 "1L"
+Newline 1176 1 56 26 "\n"
+Ident 1185 7 57 9 "consume"
+LParen 1192 1 57 16 "("
+Ident 1193 4 57 17 "next"
+RParen 1197 1 57 21 ")"
+Newline 1198 1 57 22 "\n"
+RBrace 1203 1 58 5 "}"
+Newline 1204 1 58 6 "\n"
+RBrace 1205 1 59 1 "}"
+Newline 1206 1 59 2 "\n"
+Ident 1208 2 61 1 "fn"
+Ident 1211 19 61 4 "outer_survives_loop"
+LParen 1230 1 61 23 "("
+RParen 1231 1 61 24 ")"
+LBrace 1233 1 61 26 "{"
+Newline 1234 1 61 27 "\n"
+Ident 1239 3 62 5 "var"
+Ident 1243 5 62 9 "outer"
+Colon 1248 1 62 14 ":"
+Ident 1250 4 62 16 "list"
+Lt 1254 1 62 20 "<"
+Ident 1255 4 62 21 "long"
+Comma 1259 1 62 25 ","
+Number 1261 4 62 27 "1024"
+Gt 1265 1 62 31 ">"
+Eq 1267 1 62 33 "="
+Ident 1269 4 62 35 "list"
+LBrace 1274 1 62 40 "{"
+RBrace 1275 1 62 41 "}"
+Newline 1276 1 62 42 "\n"
+Ident 1281 7 63 5 "discard"
+Ident 1289 5 63 13 "outer"
+Dot 1294 1 63 18 "."
+Ident 1295 4 63 19 "push"
+LParen 1299 1 63 23 "("
+Number 1300 3 63 24 "88L"
+RParen 1303 1 63 27 ")"
+Newline 1304 1 63 28 "\n"
+Ident 1309 3 64 5 "for"
+Ident 1313 1 64 9 "i"
+Colon 1314 1 64 10 ":"
+Ident 1316 4 64 12 "long"
+Ident 1321 2 64 17 "in"
+Number 1324 2 64 20 "0L"
+Range 1326 2 64 22 ".."
+Number 1328 3 64 24 "20L"
+LBrace 1332 1 64 28 "{"
+Newline 1333 1 64 29 "\n"
+Ident 1342 3 65 9 "let"
+Ident 1346 7 65 13 "scratch"
+Colon 1353 1 65 20 ":"
+Ident 1355 4 65 22 "long"
+LBracket 1359 1 65 26 "["
+Number 1360 4 65 27 "1024"
+RBracket 1364 1 65 31 "]"
+Eq 1366 1 65 33 "="
+Ident 1368 4 65 35 "fill"
+LParen 1372 1 65 39 "("
+Ident 1373 1 65 40 "i"
+RParen 1374 1 65 41 ")"
+Newline 1375 1 65 42 "\n"
+Ident 1384 7 66 9 "consume"
+LParen 1391 1 66 16 "("
+Ident 1392 7 66 17 "scratch"
+LBracket 1399 1 66 24 "["
+Number 1400 2 66 25 "0L"
+RBracket 1402 1 66 27 "]"
+RParen 1403 1 66 28 ")"
+Newline 1404 1 66 29 "\n"
+RBrace 1409 1 67 5 "}"
+Newline 1410 1 67 6 "\n"
+Ident 1415 5 68 5 "print"
+LParen 1420 1 68 10 "("
+Ident 1421 5 68 11 "outer"
+LBracket 1426 1 68 16 "["
+Number 1427 2 68 17 "0L"
+RBracket 1429 1 68 19 "]"
+RParen 1430 1 68 20 ")"
+Newline 1431 1 68 21 "\n"
+RBrace 1432 1 69 1 "}"
+Newline 1433 1 69 2 "\n"
+Ident 1435 2 71 1 "fn"
+Ident 1438 4 71 4 "main"
+LParen 1442 1 71 8 "("
+RParen 1443 1 71 9 ")"
+LBrace 1445 1 71 11 "{"
+Newline 1446 1 71 12 "\n"
+Ident 1451 3 72 5 "var"
+Ident 1455 5 72 9 "input"
+Colon 1460 1 72 14 ":"
+Ident 1462 4 72 16 "list"
+Lt 1466 1 72 20 "<"
+Ident 1467 4 72 21 "long"
+Comma 1471 1 72 25 ","
+Number 1473 4 72 27 "8192"
+Gt 1477 1 72 31 ">"
+Eq 1479 1 72 33 "="
+Ident 1481 4 72 35 "list"
+LBrace 1486 1 72 40 "{"
+RBrace 1487 1 72 41 "}"
+Newline 1488 1 72 42 "\n"
+Ident 1493 7 73 5 "discard"
+Ident 1501 5 73 13 "input"
+Dot 1506 1 73 18 "."
+Ident 1507 4 73 19 "push"
+LParen 1511 1 73 23 "("
+Number 1512 3 73 24 "41L"
+RParen 1515 1 73 27 ")"
+Newline 1516 1 73 28 "\n"
+Ident 1521 3 74 5 "let"
+Ident 1525 6 74 9 "copied"
+Eq 1532 1 74 16 "="
+Ident 1534 8 74 18 "identity"
+LParen 1542 1 74 26 "("
+Ident 1543 5 74 27 "input"
+RParen 1548 1 74 32 ")"
+Newline 1549 1 74 33 "\n"
+Ident 1554 5 75 5 "print"
+LParen 1559 1 75 10 "("
+Ident 1560 6 75 11 "copied"
+LBracket 1566 1 75 17 "["
+Number 1567 2 75 18 "0L"
+RBracket 1569 1 75 20 "]"
+RParen 1570 1 75 21 ")"
+Newline 1571 1 75 22 "\n"
+Ident 1577 3 77 5 "let"
+Ident 1581 6 77 9 "nested"
+Eq 1588 1 77 16 "="
+Ident 1590 11 77 18 "make_nested"
+LParen 1601 1 77 29 "("
+RParen 1602 1 77 30 ")"
+Newline 1603 1 77 31 "\n"
+Ident 1608 5 78 5 "print"
+LParen 1613 1 78 10 "("
+Ident 1614 6 78 11 "nested"
+LBracket 1620 1 78 17 "["
+Number 1621 2 78 18 "1L"
+RBracket 1623 1 78 20 "]"
+Dot 1624 1 78 21 "."
+Ident 1625 6 78 22 "values"
+LBracket 1631 1 78 28 "["
+Number 1632 2 78 29 "0L"
+RBracket 1634 1 78 31 "]"
+RParen 1635 1 78 32 ")"
+Newline 1636 1 78 33 "\n"
+Ident 1642 3 80 5 "var"
+Ident 1646 8 80 9 "megabyte"
+Colon 1654 1 80 17 ":"
+Ident 1656 4 80 19 "list"
+Lt 1660 1 80 23 "<"
+Ident 1661 4 80 24 "long"
+Comma 1665 1 80 28 ","
+Number 1667 6 80 30 "131072"
+Gt 1673 1 80 36 ">"
+Eq 1675 1 80 38 "="
+Ident 1677 4 80 40 "list"
+LBrace 1682 1 80 45 "{"
+RBrace 1683 1 80 46 "}"
+Newline 1684 1 80 47 "\n"
+Ident 1689 7 81 5 "discard"
+Ident 1697 8 81 13 "megabyte"
+Dot 1705 1 81 21 "."
+Ident 1706 4 81 22 "push"
+LParen 1710 1 81 26 "("
+Number 1711 2 81 27 "7L"
+RParen 1713 1 81 29 ")"
+Newline 1714 1 81 30 "\n"
+Ident 1719 5 82 5 "print"
+LParen 1724 1 82 10 "("
+Ident 1725 8 82 11 "megabyte"
+LBracket 1733 1 82 19 "["
+Number 1734 2 82 20 "0L"
+RBracket 1736 1 82 22 "]"
+RParen 1737 1 82 23 ")"
+Newline 1738 1 82 24 "\n"
+Ident 1744 10 84 5 "sort_large"
+LParen 1754 1 84 15 "("
+RParen 1755 1 84 16 ")"
+Newline 1756 1 84 17 "\n"
+Ident 1761 19 85 5 "outer_survives_loop"
+LParen 1780 1 85 24 "("
+RParen 1781 1 85 25 ")"
+Newline 1782 1 85 26 "\n"
+Ident 1787 13 86 5 "no_stack_loop"
+LParen 1800 1 86 18 "("
+RParen 1801 1 86 19 ")"
+Newline 1802 1 86 20 "\n"
+Ident 1807 5 87 5 "print"
+LParen 1812 1 87 10 "("
+Ident 1813 13 87 11 "call_indirect"
+LParen 1826 1 87 24 "("
+Ident 1827 21 87 25 "indirect_large_target"
+RParen 1848 1 87 46 ")"
+RParen 1849 1 87 47 ")"
+Newline 1850 1 87 48 "\n"
+Ident 1855 3 88 5 "var"
+Ident 1859 5 88 9 "items"
+Colon 1864 1 88 14 ":"
+Ident 1866 4 88 16 "long"
+LBracket 1870 1 88 20 "["
+Number 1871 4 88 21 "1024"
+RBracket 1875 1 88 25 "]"
+Eq 1877 1 88 27 "="
+Ident 1879 4 88 29 "fill"
+LParen 1883 1 88 33 "("
+Number 1884 2 88 34 "0L"
+RParen 1886 1 88 36 ")"
+Newline 1887 1 88 37 "\n"
+Ident 1892 5 89 5 "items"
+LBracket 1897 1 89 10 "["
+Number 1898 2 89 11 "0L"
+RBracket 1900 1 89 13 "]"
+Eq 1902 1 89 15 "="
+Number 1904 3 89 17 "77L"
+Newline 1907 1 89 20 "\n"
+Ident 1912 3 90 5 "let"
+Ident 1916 14 90 9 "optional_items"
+Colon 1930 1 90 23 ":"
+Ident 1932 6 90 25 "Option"
+Lt 1938 1 90 31 "<"
+Ident 1939 4 90 32 "long"
+LBracket 1943 1 90 36 "["
+Number 1944 4 90 37 "1024"
+RBracket 1948 1 90 41 "]"
+Gt 1949 1 90 42 ">"
+Eq 1951 1 90 44 "="
+Ident 1953 4 90 46 "some"
+LParen 1957 1 90 50 "("
+Ident 1958 5 90 51 "items"
+RParen 1963 1 90 56 ")"
+Newline 1964 1 90 57 "\n"
+Ident 1969 3 91 5 "let"
+Ident 1973 15 91 9 "copied_optional"
+Eq 1989 1 91 25 "="
+Ident 1991 10 91 27 "maybe_copy"
+LParen 2001 1 91 37 "("
+Ident 2002 14 91 38 "optional_items"
+RParen 2016 1 91 52 ")"
+Newline 2017 1 91 53 "\n"
+Ident 2022 5 92 5 "print"
+LParen 2027 1 92 10 "("
+Ident 2028 5 92 11 "match"
+Ident 2034 15 92 17 "copied_optional"
+LBrace 2050 1 92 33 "{"
+Ident 2060 4 93 9 "some"
+LParen 2064 1 93 13 "("
+Ident 2065 6 93 14 "copied"
+RParen 2071 1 93 20 ")"
+FatArrow 2073 2 93 22 "=>"
+Ident 2076 6 93 25 "copied"
+LBracket 2082 1 93 31 "["
+Number 2083 2 93 32 "0L"
+RBracket 2085 1 93 34 "]"
+Comma 2086 1 93 35 ","
+Ident 2096 4 94 9 "none"
+FatArrow 2101 2 94 14 "=>"
+Minus 2104 1 94 17 "-"
+Number 2105 2 94 18 "1L"
+RBrace 2112 1 95 5 "}"
+RParen 2113 1 95 6 ")"
+Newline 2114 1 95 7 "\n"
+Ident 2119 3 96 5 "let"
+Ident 2123 13 96 9 "absent_copied"
+Eq 2137 1 96 23 "="
+Ident 2139 10 96 25 "maybe_copy"
+LParen 2149 1 96 35 "("
+Ident 2150 4 96 36 "none"
+RParen 2154 1 96 40 ")"
+Newline 2155 1 96 41 "\n"
+Ident 2160 5 97 5 "print"
+LParen 2165 1 97 10 "("
+Ident 2166 5 97 11 "match"
+Ident 2172 13 97 17 "absent_copied"
+LBrace 2186 1 97 31 "{"
+Ident 2196 4 98 9 "some"
+LParen 2200 1 98 13 "("
+Ident 2201 6 98 14 "absent"
+RParen 2207 1 98 20 ")"
+FatArrow 2209 2 98 22 "=>"
+Ident 2212 6 98 25 "absent"
+LBracket 2218 1 98 31 "["
+Number 2219 2 98 32 "0L"
+RBracket 2221 1 98 34 "]"
+Comma 2222 1 98 35 ","
+Ident 2232 4 99 9 "none"
+FatArrow 2237 2 99 14 "=>"
+Minus 2240 1 99 17 "-"
+Number 2241 2 99 18 "1L"
+RBrace 2248 1 100 5 "}"
+RParen 2249 1 100 6 ")"
+Newline 2250 1 100 7 "\n"
+Ident 2255 3 101 5 "let"
+Ident 2259 14 101 9 "tried_optional"
+Eq 2274 1 101 24 "="
+Ident 2276 14 101 26 "maybe_try_copy"
+LParen 2290 1 101 40 "("
+Ident 2291 14 101 41 "optional_items"
+RParen 2305 1 101 55 ")"
+Newline 2306 1 101 56 "\n"
+Ident 2311 5 102 5 "print"
+LParen 2316 1 102 10 "("
+Ident 2317 5 102 11 "match"
+Ident 2323 14 102 17 "tried_optional"
+LBrace 2338 1 102 32 "{"
+Ident 2348 4 103 9 "some"
+LParen 2352 1 103 13 "("
+Ident 2353 5 103 14 "tried"
+RParen 2358 1 103 19 ")"
+FatArrow 2360 2 103 21 "=>"
+Ident 2363 5 103 24 "tried"
+LBracket 2368 1 103 29 "["
+Number 2369 2 103 30 "0L"
+RBracket 2371 1 103 32 "]"
+Comma 2372 1 103 33 ","
+Ident 2382 4 104 9 "none"
+FatArrow 2387 2 104 14 "=>"
+Minus 2390 1 104 17 "-"
+Number 2391 2 104 18 "1L"
+RBrace 2398 1 105 5 "}"
+RParen 2399 1 105 6 ")"
+Newline 2400 1 105 7 "\n"
+Ident 2405 3 106 5 "let"
+Ident 2409 15 106 9 "absent_optional"
+Eq 2425 1 106 25 "="
+Ident 2427 14 106 27 "maybe_try_copy"
+LParen 2441 1 106 41 "("
+Ident 2442 4 106 42 "none"
+RParen 2446 1 106 46 ")"
+Newline 2447 1 106 47 "\n"
+Ident 2452 5 107 5 "print"
+LParen 2457 1 107 10 "("
+Ident 2458 5 107 11 "match"
+Ident 2464 15 107 17 "absent_optional"
+LBrace 2480 1 107 33 "{"
+Ident 2490 4 108 9 "some"
+LParen 2494 1 108 13 "("
+Ident 2495 6 108 14 "absent"
+RParen 2501 1 108 20 ")"
+FatArrow 2503 2 108 22 "=>"
+Ident 2506 6 108 25 "absent"
+LBracket 2512 1 108 31 "["
+Number 2513 2 108 32 "0L"
+RBracket 2515 1 108 34 "]"
+Comma 2516 1 108 35 ","
+Ident 2526 4 109 9 "none"
+FatArrow 2531 2 109 14 "=>"
+Minus 2534 1 109 17 "-"
+Number 2535 2 109 18 "1L"
+RBrace 2542 1 110 5 "}"
+RParen 2543 1 110 6 ")"
+Newline 2544 1 110 7 "\n"
+Ident 2549 3 111 5 "let"
+Ident 2553 9 111 9 "coalesced"
+Colon 2562 1 111 18 ":"
+Ident 2564 4 111 20 "long"
+LBracket 2568 1 111 24 "["
+Number 2569 4 111 25 "1024"
+RBracket 2573 1 111 29 "]"
+Eq 2575 1 111 31 "="
+Ident 2577 15 111 33 "absent_optional"
+QuestionQuestion 2593 2 111 49 "??"
+Ident 2596 4 111 52 "fill"
+LParen 2600 1 111 56 "("
+Number 2601 2 111 57 "9L"
+RParen 2603 1 111 59 ")"
+Newline 2604 1 111 60 "\n"
+Ident 2609 5 112 5 "print"
+LParen 2614 1 112 10 "("
+Ident 2615 9 112 11 "coalesced"
+LBracket 2624 1 112 20 "["
+Number 2625 2 112 21 "0L"
+RBracket 2627 1 112 23 "]"
+RParen 2628 1 112 24 ")"
+Newline 2629 1 112 25 "\n"
+RBrace 2630 1 113 1 "}"
+Newline 2631 1 113 2 "\n"
+Eof 2632 0 114 1 ""
+== tree ==
+file "main.nl"
+Program 0..2632
+  Struct 0..51 name="Nested" generics=[]
+    StructField 16..49 name="values"
+      FieldType 24..39 name="list" range=none policy=checked
+        TypeArgument 29..33 name="long" range=none policy=checked
+        Integer 35..38 magnitude=600 negative=false long_suffix=false
+      ListLiteral 42..49
+  Function 53..182 name="make_nested" recursive=false generics=[]
+    ResultType 73..82 name="Nested" range=none policy=checked
+      Integer 80..81 magnitude=2 negative=false long_suffix=false
+    Block 83..182
+      Let 89..126 mutable=true name="rows"
+        Annotation 99..108 name="Nested" range=none policy=checked
+          Integer 106..107 magnitude=2 negative=false long_suffix=false
+        Call 111..126 name="fill"
+          StructInit 116..125 name="Nested"
+      Discard 131..164
+        MethodCall 139..164 name="push"
+          Field 139..154 name="values"
+            Index 139..147
+              Name 139..143 name="rows"
+              Integer 144..146 magnitude=1 negative=false long_suffix=true
+          Integer 160..163 magnitude=73 negative=false long_suffix=true
+      ReturnStatement 169..180
+        Name 176..180 name="rows"
+  Function 184..256 name="identity" recursive=false generics=[]
+    Parameter 196..220 name="values" mode=read
+      ParameterType 204..220 name="list" range=none policy=checked
+        TypeArgument 209..213 name="long" range=none policy=checked
+        Integer 215..219 magnitude=8192 negative=false long_suffix=false
+    ResultType 225..241 name="list" range=none policy=checked
+      TypeArgument 230..234 name="long" range=none policy=checked
+      Integer 236..240 magnitude=8192 negative=false long_suffix=false
+    Block 242..256
+      Name 248..254 name="values"
+  Function 258..332 name="write_nested" recursive=false generics=[]
+    Parameter 274..293 name="value" mode=write
+      ParameterType 287..293 name="Nested" range=none policy=checked
+    Block 295..332
+      Discard 301..330
+        MethodCall 309..330 name="push"
+          Field 309..321 name="values"
+            Name 309..314 name="value"
+          Integer 327..329 magnitude=5 negative=false long_suffix=true
+  Function 334..453 name="possibly_alias" recursive=false generics=[]
+    Parameter 352..367 name="left" mode=read
+      ParameterType 358..367 name="Nested" range=none policy=checked
+        Integer 365..366 magnitude=2 negative=false long_suffix=false
+    Parameter 369..385 name="right" mode=read
+      ParameterType 376..385 name="Nested" range=none policy=checked
+        Integer 383..384 magnitude=2 negative=false long_suffix=false
+    ResultType 390..394 name="long" range=none policy=checked
+    Block 395..453
+      Binary 401..451 op=add
+        MethodCall 401..424 name="count"
+          Field 401..416 name="values"
+            Index 401..409
+              Name 401..405 name="left"
+              Integer 406..408 magnitude=0 negative=false long_suffix=true
+        MethodCall 427..451 name="count"
+          Field 427..443 name="values"
+            Index 427..436
+              Name 427..432 name="right"
+              Integer 433..435 magnitude=0 negative=false long_suffix=true
+  Function 455..664 name="sort_large" recursive=false generics=[]
+    Block 471..664
+      Let 477..517 mutable=true name="values"
+        Annotation 489..507 name="list" range=none policy=checked
+          TypeArgument 494..498 name="long" range=none policy=checked
+          Integer 500..506 magnitude=100000 negative=false long_suffix=false
+        ListLiteral 510..517
+      For 522..597 name="i" inclusive=false
+        Annotation 529..533 name="long" range=none policy=checked
+        Integer 537..539 magnitude=0 negative=false long_suffix=true
+        Integer 541..548 magnitude=100000 negative=false long_suffix=true
+        Block 549..597
+          Discard 559..591
+            MethodCall 567..591 name="push"
+              Name 567..573 name="values"
+              Binary 579..590 op=sub
+                Integer 579..586 magnitude=100000 negative=false long_suffix=true
+                Name 589..590 name="i"
+      ExpressionStatement 602..614
+        Call 602..614 name="sort"
+          Name 607..613 name="values"
+      ExpressionStatement 619..636
+        Call 619..636 name="print"
+          Index 625..635
+            Name 625..631 name="values"
+            Integer 632..634 magnitude=0 negative=false long_suffix=true
+      Call 641..662 name="print"
+        Index 647..661
+          Name 647..653 name="values"
+          Integer 654..660 magnitude=99999 negative=false long_suffix=true
+  Function 666..692 name="consume" recursive=false generics=[]
+    Parameter 677..688 name="value" mode=read
+      ParameterType 684..688 name="long" range=none policy=checked
+    Block 690..692
+  Function 694..787 name="indirect_large_target" recursive=false generics=[]
+    ResultType 724..728 name="long" range=none policy=checked
+    Block 729..787
+      Let 735..769 mutable=false name="scratch"
+        Annotation 748..758 name="long" range=none policy=checked
+          Integer 753..757 magnitude=1024 negative=false long_suffix=false
+        Call 761..769 name="fill"
+          Integer 766..768 magnitude=0 negative=false long_suffix=true
+      Index 774..785
+        Name 774..781 name="scratch"
+        Integer 782..784 magnitude=0 negative=false long_suffix=true
+  Function 789..856 name="call_indirect" recursive=false generics=[]
+    Parameter 806..828 name="callback" mode=read
+      ParameterType 816..828 name="fn" range=none policy=checked
+        FunctionType 816..828
+          ResultType 824..828 name="long" range=none policy=checked
+    ResultType 833..837 name="long" range=none policy=checked
+    Block 838..856
+      Call 844..854 name="callback"
+  Function 858..918 name="copy_large" recursive=false generics=[]
+    Parameter 872..889 name="value" mode=read
+      ParameterType 879..889 name="long" range=none policy=checked
+        Integer 884..888 magnitude=1024 negative=false long_suffix=false
+    ResultType 894..904 name="long" range=none policy=checked
+      Integer 899..903 magnitude=1024 negative=false long_suffix=false
+    Block 905..918
+      Name 911..916 name="value"
+  Function 920..1010 name="maybe_copy" recursive=false generics=[]
+    Parameter 934..959 name="value" mode=read
+      ParameterType 941..959 name="Option" range=none policy=checked
+        TypeArgument 948..958 name="long" range=none policy=checked
+          Integer 953..957 magnitude=1024 negative=false long_suffix=false
+    ResultType 964..982 name="Option" range=none policy=checked
+      TypeArgument 971..981 name="long" range=none policy=checked
+        Integer 976..980 magnitude=1024 negative=false long_suffix=false
+    Block 983..1010
+      OptionalCall 989..1008 name="copy_large"
+        Name 989..994 name="value"
+  Function 1012..1099 name="maybe_try_copy" recursive=false generics=[]
+    Parameter 1030..1055 name="value" mode=read
+      ParameterType 1037..1055 name="Option" range=none policy=checked
+        TypeArgument 1044..1054 name="long" range=none policy=checked
+          Integer 1049..1053 magnitude=1024 negative=false long_suffix=false
+    ResultType 1060..1078 name="Option" range=none policy=checked
+      TypeArgument 1067..1077 name="long" range=none policy=checked
+        Integer 1072..1076 magnitude=1024 negative=false long_suffix=false
+    Block 1079..1099
+      Call 1085..1097 name="some"
+        Try 1090..1096
+          Name 1090..1095 name="value"
+  Function 1101..1206 name="no_stack_loop" recursive=false generics=[]
+    Block 1120..1206
+      For 1126..1204 name="i" inclusive=false
+        Annotation 1133..1137 name="long" range=none policy=checked
+        Integer 1141..1143 magnitude=0 negative=false long_suffix=true
+        Integer 1145..1148 magnitude=10 negative=false long_suffix=true
+        Block 1149..1204
+          Let 1159..1176 mutable=false name="next"
+            Binary 1170..1176 op=add
+              Name 1170..1171 name="i"
+              Integer 1174..1176 magnitude=1 negative=false long_suffix=true
+          Call 1185..1198 name="consume"
+            Name 1193..1197 name="next"
+  Function 1208..1433 name="outer_survives_loop" recursive=false generics=[]
+    Block 1233..1433
+      Let 1239..1276 mutable=true name="outer"
+        Annotation 1250..1266 name="list" range=none policy=checked
+          TypeArgument 1255..1259 name="long" range=none policy=checked
+          Integer 1261..1265 magnitude=1024 negative=false long_suffix=false
+        ListLiteral 1269..1276
+      Discard 1281..1304
+        MethodCall 1289..1304 name="push"
+          Name 1289..1294 name="outer"
+          Integer 1300..1303 magnitude=88 negative=false long_suffix=true
+      For 1309..1410 name="i" inclusive=false
+        Annotation 1316..1320 name="long" range=none policy=checked
+        Integer 1324..1326 magnitude=0 negative=false long_suffix=true
+        Integer 1328..1331 magnitude=20 negative=false long_suffix=true
+        Block 1332..1410
+          Let 1342..1375 mutable=false name="scratch"
+            Annotation 1355..1365 name="long" range=none policy=checked
+              Integer 1360..1364 magnitude=1024 negative=false long_suffix=false
+            Call 1368..1375 name="fill"
+              Name 1373..1374 name="i"
+          Call 1384..1404 name="consume"
+            Index 1392..1403
+              Name 1392..1399 name="scratch"
+              Integer 1400..1402 magnitude=0 negative=false long_suffix=true
+      Call 1415..1431 name="print"
+        Index 1421..1430
+          Name 1421..1426 name="outer"
+          Integer 1427..1429 magnitude=0 negative=false long_suffix=true
+  Function 1435..2631 name="main" recursive=false generics=[]
+    Block 1445..2631
+      Let 1451..1488 mutable=true name="input"
+        Annotation 1462..1478 name="list" range=none policy=checked
+          TypeArgument 1467..1471 name="long" range=none policy=checked
+          Integer 1473..1477 magnitude=8192 negative=false long_suffix=false
+        ListLiteral 1481..1488
+      Discard 1493..1516
+        MethodCall 1501..1516 name="push"
+          Name 1501..1506 name="input"
+          Integer 1512..1515 magnitude=41 negative=false long_suffix=true
+      Let 1521..1549 mutable=false name="copied"
+        Call 1534..1549 name="identity"
+          Name 1543..1548 name="input"
+      ExpressionStatement 1554..1571
+        Call 1554..1571 name="print"
+          Index 1560..1570
+            Name 1560..1566 name="copied"
+            Integer 1567..1569 magnitude=0 negative=false long_suffix=true
+      Let 1577..1603 mutable=false name="nested"
+        Call 1590..1603 name="make_nested"
+      ExpressionStatement 1608..1636
+        Call 1608..1636 name="print"
+          Index 1614..1635
+            Field 1614..1631 name="values"
+              Index 1614..1624
+                Name 1614..1620 name="nested"
+                Integer 1621..1623 magnitude=1 negative=false long_suffix=true
+            Integer 1632..1634 magnitude=0 negative=false long_suffix=true
+      Let 1642..1684 mutable=true name="megabyte"
+        Annotation 1656..1674 name="list" range=none policy=checked
+          TypeArgument 1661..1665 name="long" range=none policy=checked
+          Integer 1667..1673 magnitude=131072 negative=false long_suffix=false
+        ListLiteral 1677..1684
+      Discard 1689..1714
+        MethodCall 1697..1714 name="push"
+          Name 1697..1705 name="megabyte"
+          Integer 1711..1713 magnitude=7 negative=false long_suffix=true
+      ExpressionStatement 1719..1738
+        Call 1719..1738 name="print"
+          Index 1725..1737
+            Name 1725..1733 name="megabyte"
+            Integer 1734..1736 magnitude=0 negative=false long_suffix=true
+      ExpressionStatement 1744..1756
+        Call 1744..1756 name="sort_large"
+      ExpressionStatement 1761..1782
+        Call 1761..1782 name="outer_survives_loop"
+      ExpressionStatement 1787..1802
+        Call 1787..1802 name="no_stack_loop"
+      ExpressionStatement 1807..1850
+        Call 1807..1850 name="print"
+          Call 1813..1849 name="call_indirect"
+            Name 1827..1848 name="indirect_large_target"
+      Let 1855..1887 mutable=true name="items"
+        Annotation 1866..1876 name="long" range=none policy=checked
+          Integer 1871..1875 magnitude=1024 negative=false long_suffix=false
+        Call 1879..1887 name="fill"
+          Integer 1884..1886 magnitude=0 negative=false long_suffix=true
+      Assign 1892..1907 op==
+        Index 1892..1901
+          Name 1892..1897 name="items"
+          Integer 1898..1900 magnitude=0 negative=false long_suffix=true
+        Integer 1904..1907 magnitude=77 negative=false long_suffix=true
+      Let 1912..1964 mutable=false name="optional_items"
+        Annotation 1932..1950 name="Option" range=none policy=checked
+          TypeArgument 1939..1949 name="long" range=none policy=checked
+            Integer 1944..1948 magnitude=1024 negative=false long_suffix=false
+        Call 1953..1964 name="some"
+          Name 1958..1963 name="items"
+      Let 1969..2017 mutable=false name="copied_optional"
+        Call 1991..2017 name="maybe_copy"
+          Name 2002..2016 name="optional_items"
+      ExpressionStatement 2022..2114
+        Call 2022..2114 name="print"
+          Match 2028..2113
+            Name 2034..2049 name="copied_optional"
+            MatchArm 2060..2086
+              CasePattern 2060..2072 name="some"
+                PatternBinding 2065..2071 name="copied"
+              Block 2076..2086
+                Index 2076..2086
+                  Name 2076..2082 name="copied"
+                  Integer 2083..2085 magnitude=0 negative=false long_suffix=true
+            MatchArm 2096..2107
+              CasePattern 2096..2100 name="none"
+              Block 2104..2107
+                Integer 2104..2107 magnitude=1 negative=true long_suffix=true
+      Let 2119..2155 mutable=false name="absent_copied"
+        Call 2139..2155 name="maybe_copy"
+          Name 2150..2154 name="none"
+      ExpressionStatement 2160..2250
+        Call 2160..2250 name="print"
+          Match 2166..2249
+            Name 2172..2185 name="absent_copied"
+            MatchArm 2196..2222
+              CasePattern 2196..2208 name="some"
+                PatternBinding 2201..2207 name="absent"
+              Block 2212..2222
+                Index 2212..2222
+                  Name 2212..2218 name="absent"
+                  Integer 2219..2221 magnitude=0 negative=false long_suffix=true
+            MatchArm 2232..2243
+              CasePattern 2232..2236 name="none"
+              Block 2240..2243
+                Integer 2240..2243 magnitude=1 negative=true long_suffix=true
+      Let 2255..2306 mutable=false name="tried_optional"
+        Call 2276..2306 name="maybe_try_copy"
+          Name 2291..2305 name="optional_items"
+      ExpressionStatement 2311..2400
+        Call 2311..2400 name="print"
+          Match 2317..2399
+            Name 2323..2337 name="tried_optional"
+            MatchArm 2348..2372
+              CasePattern 2348..2359 name="some"
+                PatternBinding 2353..2358 name="tried"
+              Block 2363..2372
+                Index 2363..2372
+                  Name 2363..2368 name="tried"
+                  Integer 2369..2371 magnitude=0 negative=false long_suffix=true
+            MatchArm 2382..2393
+              CasePattern 2382..2386 name="none"
+              Block 2390..2393
+                Integer 2390..2393 magnitude=1 negative=true long_suffix=true
+      Let 2405..2447 mutable=false name="absent_optional"
+        Call 2427..2447 name="maybe_try_copy"
+          Name 2442..2446 name="none"
+      ExpressionStatement 2452..2544
+        Call 2452..2544 name="print"
+          Match 2458..2543
+            Name 2464..2479 name="absent_optional"
+            MatchArm 2490..2516
+              CasePattern 2490..2502 name="some"
+                PatternBinding 2495..2501 name="absent"
+              Block 2506..2516
+                Index 2506..2516
+                  Name 2506..2512 name="absent"
+                  Integer 2513..2515 magnitude=0 negative=false long_suffix=true
+            MatchArm 2526..2537
+              CasePattern 2526..2530 name="none"
+              Block 2534..2537
+                Integer 2534..2537 magnitude=1 negative=true long_suffix=true
+      Let 2549..2604 mutable=false name="coalesced"
+        Annotation 2564..2574 name="long" range=none policy=checked
+          Integer 2569..2573 magnitude=1024 negative=false long_suffix=false
+        Binary 2577..2604 op=coalesce
+          Name 2577..2592 name="absent_optional"
+          Call 2596..2604 name="fill"
+            Integer 2601..2603 magnitude=9 negative=false long_suffix=true
+      Call 2609..2629 name="print"
+        Index 2615..2628
+          Name 2615..2624 name="coalesced"
+          Integer 2625..2627 magnitude=0 negative=false long_suffix=true

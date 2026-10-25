@@ -1,0 +1,152 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 6 1 8 "Holder"
+LBrace 14 1 1 15 "{"
+Ident 16 5 1 17 "inner"
+Colon 21 1 1 22 ":"
+Ident 23 3 1 24 "map"
+Lt 26 1 1 27 "<"
+Ident 27 3 1 28 "int"
+Comma 30 1 1 31 ","
+Ident 32 3 1 33 "int"
+Comma 35 1 1 36 ","
+Number 37 1 1 38 "2"
+Gt 38 1 1 39 ">"
+RBrace 40 1 1 41 "}"
+Newline 41 1 1 42 "\n"
+Ident 43 2 3 1 "fn"
+Ident 46 6 3 4 "insert"
+LParen 52 1 3 10 "("
+Ident 53 6 3 11 "target"
+Colon 59 1 3 17 ":"
+Ident 61 5 3 19 "write"
+Ident 67 3 3 25 "map"
+Lt 70 1 3 28 "<"
+Ident 71 3 3 29 "int"
+Comma 74 1 3 32 ","
+Ident 76 3 3 34 "int"
+Comma 79 1 3 37 ","
+Number 81 1 3 39 "2"
+Gt 82 1 3 40 ">"
+RParen 83 1 3 41 ")"
+LBrace 85 1 3 43 "{"
+Newline 86 1 3 44 "\n"
+Ident 91 6 4 5 "target"
+Dot 97 1 4 11 "."
+Ident 98 3 4 12 "set"
+LParen 101 1 4 15 "("
+Number 102 1 4 16 "1"
+Comma 103 1 4 17 ","
+Number 105 2 4 19 "10"
+RParen 107 1 4 21 ")"
+Dot 108 1 4 22 "."
+Ident 109 6 4 23 "unwrap"
+LParen 115 1 4 29 "("
+RParen 116 1 4 30 ")"
+Newline 117 1 4 31 "\n"
+RBrace 118 1 5 1 "}"
+Newline 119 1 5 2 "\n"
+Ident 121 2 7 1 "fn"
+Ident 124 4 7 4 "main"
+LParen 128 1 7 8 "("
+RParen 129 1 7 9 ")"
+LBrace 131 1 7 11 "{"
+Newline 132 1 7 12 "\n"
+Ident 137 3 8 5 "var"
+Ident 141 5 8 9 "outer"
+Colon 146 1 8 14 ":"
+Ident 148 3 8 16 "map"
+Lt 151 1 8 19 "<"
+Ident 152 3 8 20 "int"
+Comma 155 1 8 23 ","
+Ident 157 6 8 25 "Holder"
+Comma 163 1 8 31 ","
+Number 165 1 8 33 "2"
+Gt 166 1 8 34 ">"
+Eq 168 1 8 36 "="
+Ident 170 3 8 38 "map"
+LBrace 174 1 8 42 "{"
+RBrace 175 1 8 43 "}"
+Newline 176 1 8 44 "\n"
+Ident 181 5 9 5 "outer"
+Dot 186 1 9 10 "."
+Ident 187 3 9 11 "set"
+LParen 190 1 9 14 "("
+Number 191 1 9 15 "0"
+Comma 192 1 9 16 ","
+Ident 194 6 9 18 "Holder"
+LBrace 201 1 9 25 "{"
+Ident 203 5 9 27 "inner"
+Colon 208 1 9 32 ":"
+Ident 210 3 9 34 "map"
+LBrace 214 1 9 38 "{"
+RBrace 215 1 9 39 "}"
+RBrace 217 1 9 41 "}"
+RParen 218 1 9 42 ")"
+Dot 219 1 9 43 "."
+Ident 220 6 9 44 "unwrap"
+LParen 226 1 9 50 "("
+RParen 227 1 9 51 ")"
+Newline 228 1 9 52 "\n"
+Ident 233 3 10 5 "for"
+Ident 237 6 10 9 "holder"
+Comma 243 1 10 15 ","
+Ident 245 3 10 17 "key"
+Ident 249 2 10 21 "in"
+Ident 252 5 10 24 "outer"
+LBrace 258 1 10 30 "{"
+Ident 260 6 10 32 "insert"
+LParen 266 1 10 38 "("
+Ident 267 6 10 39 "holder"
+Dot 273 1 10 45 "."
+Ident 274 5 10 46 "inner"
+RParen 279 1 10 51 ")"
+RBrace 281 1 10 53 "}"
+Newline 282 1 10 54 "\n"
+RBrace 283 1 11 1 "}"
+Newline 284 1 11 2 "\n"
+Eof 285 0 12 1 ""
+== tree ==
+file "main.nl"
+Program 0..285
+  Struct 0..41 name="Holder" generics=[]
+    StructField 16..39 name="inner"
+      FieldType 23..39 name="map" range=none policy=checked
+        TypeArgument 27..30 name="int" range=none policy=checked
+        TypeArgument 32..35 name="int" range=none policy=checked
+        Integer 37..38 magnitude=2 negative=false long_suffix=false
+  Function 43..119 name="insert" recursive=false generics=[]
+    Parameter 53..83 name="target" mode=write
+      ParameterType 67..83 name="map" range=none policy=checked
+        TypeArgument 71..74 name="int" range=none policy=checked
+        TypeArgument 76..79 name="int" range=none policy=checked
+        Integer 81..82 magnitude=2 negative=false long_suffix=false
+    Block 85..119
+      MethodCall 91..117 name="unwrap"
+        MethodCall 91..108 name="set"
+          Name 91..97 name="target"
+          Integer 102..103 magnitude=1 negative=false long_suffix=false
+          Integer 105..107 magnitude=10 negative=false long_suffix=false
+  Function 121..284 name="main" recursive=false generics=[]
+    Block 131..284
+      Let 137..176 mutable=true name="outer"
+        Annotation 148..167 name="map" range=none policy=checked
+          TypeArgument 152..155 name="int" range=none policy=checked
+          TypeArgument 157..163 name="Holder" range=none policy=checked
+          Integer 165..166 magnitude=2 negative=false long_suffix=false
+        MapLiteral 170..176
+      ExpressionStatement 181..228
+        MethodCall 181..228 name="unwrap"
+          MethodCall 181..219 name="set"
+            Name 181..186 name="outer"
+            Integer 191..192 magnitude=0 negative=false long_suffix=false
+            StructInit 194..218 name="Holder"
+              InitializerField 203..216 name="inner"
+                MapLiteral 210..216
+      ForEach 233..282 name="holder" indexes=["key"]
+        Name 252..257 name="outer"
+        Block 258..282
+          Call 260..280 name="insert"
+            Field 267..279 name="inner"
+              Name 267..273 name="holder"

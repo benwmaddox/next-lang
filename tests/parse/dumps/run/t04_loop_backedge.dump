@@ -1,0 +1,107 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "type"
+Ident 5 5 1 6 "Small"
+Eq 11 1 1 12 "="
+Ident 13 3 1 14 "int"
+Number 17 1 1 18 "0"
+RangeInclusive 18 3 1 19 "..="
+Number 21 2 1 22 "10"
+Newline 23 1 1 24 "\n"
+Ident 24 2 2 1 "fn"
+Ident 27 6 2 4 "looped"
+LParen 33 1 2 10 "("
+Ident 34 1 2 11 "x"
+Colon 35 1 2 12 ":"
+Ident 37 3 2 14 "int"
+RParen 40 1 2 17 ")"
+Arrow 42 2 2 19 "->"
+Ident 45 5 2 22 "Small"
+LBrace 51 1 2 28 "{"
+Newline 52 1 2 29 "\n"
+Ident 57 3 3 5 "var"
+Ident 61 1 3 9 "y"
+Eq 63 1 3 11 "="
+Ident 65 1 3 13 "x"
+Newline 66 1 3 14 "\n"
+Ident 71 3 4 5 "for"
+Ident 75 1 4 9 "i"
+Ident 77 2 4 11 "in"
+Number 80 1 4 14 "0"
+Range 81 2 4 15 ".."
+Number 83 1 4 17 "3"
+LBrace 85 1 4 19 "{"
+Ident 87 2 4 21 "if"
+Ident 90 1 4 24 "i"
+EqEq 92 2 4 26 "=="
+Number 95 1 4 29 "0"
+LBrace 97 1 4 31 "{"
+Ident 99 1 4 33 "y"
+Eq 101 1 4 35 "="
+Number 103 1 4 37 "1"
+RBrace 105 1 4 39 "}"
+Ident 107 4 4 41 "else"
+LBrace 112 1 4 46 "{"
+Ident 114 1 4 48 "y"
+Eq 116 1 4 50 "="
+Ident 118 1 4 52 "y"
+Plus 120 1 4 54 "+"
+Number 122 1 4 56 "1"
+RBrace 124 1 4 58 "}"
+RBrace 126 1 4 60 "}"
+Newline 127 1 4 61 "\n"
+Ident 132 1 5 5 "y"
+Newline 133 1 5 6 "\n"
+RBrace 134 1 6 1 "}"
+Newline 135 1 6 2 "\n"
+Ident 136 2 7 1 "fn"
+Ident 139 4 7 4 "main"
+LParen 143 1 7 8 "("
+RParen 144 1 7 9 ")"
+LBrace 146 1 7 11 "{"
+Ident 148 5 7 13 "print"
+LParen 153 1 7 18 "("
+Ident 154 6 7 19 "looped"
+LParen 160 1 7 25 "("
+Number 161 1 7 26 "0"
+RParen 162 1 7 27 ")"
+RParen 163 1 7 28 ")"
+RBrace 165 1 7 30 "}"
+Newline 166 1 7 31 "\n"
+Eof 167 0 8 1 ""
+== tree ==
+file "main.nl"
+Program 0..167
+  TypeAlias 0..23 name="Small"
+    AliasedType 13..23 name="int" range=0..=10 policy=checked
+  Function 24..135 name="looped" recursive=false generics=[]
+    Parameter 34..40 name="x" mode=read
+      ParameterType 37..40 name="int" range=none policy=checked
+    ResultType 45..50 name="Small" range=none policy=checked
+    Block 51..135
+      Let 57..66 mutable=true name="y"
+        Name 65..66 name="x"
+      For 71..127 name="i" inclusive=false
+        Integer 80..81 magnitude=0 negative=false long_suffix=false
+        Integer 83..84 magnitude=3 negative=false long_suffix=false
+        Block 85..127
+          If 87..125
+            Binary 90..96 op=eq
+              Name 90..91 name="i"
+              Integer 95..96 magnitude=0 negative=false long_suffix=false
+            Block 97..106
+              Assign 99..104 op==
+                Name 99..100 name="y"
+                Integer 103..104 magnitude=1 negative=false long_suffix=false
+            Block 112..125
+              Assign 114..123 op==
+                Name 114..115 name="y"
+                Binary 118..123 op=add
+                  Name 118..119 name="y"
+                  Integer 122..123 magnitude=1 negative=false long_suffix=false
+      Name 132..133 name="y"
+  Function 136..166 name="main" recursive=false generics=[]
+    Block 146..166
+      Call 148..164 name="print"
+        Call 154..163 name="looped"
+          Integer 161..162 magnitude=0 negative=false long_suffix=false

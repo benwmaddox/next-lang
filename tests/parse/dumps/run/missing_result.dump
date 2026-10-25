@@ -1,0 +1,46 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 5 1 4 "value"
+LParen 8 1 1 9 "("
+Ident 9 4 1 10 "flag"
+Colon 13 1 1 14 ":"
+Ident 15 4 1 16 "bool"
+RParen 19 1 1 20 ")"
+Arrow 21 2 1 22 "->"
+Ident 24 3 1 25 "int"
+LBrace 28 1 1 29 "{"
+Newline 29 1 1 30 "\n"
+Ident 34 2 2 5 "if"
+Ident 37 4 2 8 "flag"
+LBrace 42 1 2 13 "{"
+Ident 44 6 2 15 "return"
+Number 51 1 2 22 "1"
+RBrace 53 1 2 24 "}"
+Newline 54 1 2 25 "\n"
+RBrace 55 1 3 1 "}"
+Newline 56 1 3 2 "\n"
+Ident 57 2 4 1 "fn"
+Ident 60 4 4 4 "main"
+LParen 64 1 4 8 "("
+RParen 65 1 4 9 ")"
+LBrace 67 1 4 11 "{"
+RBrace 68 1 4 12 "}"
+Newline 69 1 4 13 "\n"
+Eof 70 0 5 1 ""
+== tree ==
+file "main.nl"
+Program 0..70
+  Function 0..56 name="value" recursive=false generics=[]
+    Parameter 9..19 name="flag" mode=read
+      ParameterType 15..19 name="bool" range=none policy=checked
+    ResultType 24..27 name="int" range=none policy=checked
+    Block 28..56
+      ExpressionStatement 34..54
+        If 34..54
+          Name 37..41 name="flag"
+          Block 42..54
+            ReturnStatement 44..52
+              Integer 51..52 magnitude=1 negative=false long_suffix=false
+  Function 57..69 name="main" recursive=false generics=[]
+    Block 67..69
