@@ -510,6 +510,15 @@ impl TreeWriter {
                     &format!("value={}", quote(string)),
                 )
             }
+            ExprKind::BytesLiteral(value) => {
+                let string = String::from_utf8_lossy(value);
+                self.row(
+                    depth,
+                    expr.span,
+                    "BytesLiteral",
+                    &format!("value={}", quote(&string)),
+                )
+            }
             ExprKind::Take(value) => {
                 self.row(depth, expr.span, "Take", "")?;
                 self.expr(value, depth + 1)

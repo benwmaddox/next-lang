@@ -349,10 +349,35 @@ impl Checker {
                     payload: vec![Ty::Int],
                     span: Span::default(),
                 },
+                TCase {
+                    name: "InvalidUtf8".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
             ]),
             span: Span::default(),
         });
         checker.type_ids.insert("IoError".to_owned(), io_error_ty);
+        let text_error_ty = Ty(checker.types.len());
+        checker.types.push(TType {
+            name: "TextError".to_owned(),
+            kind: TTypeKind::Enum(vec![
+                TCase {
+                    name: "InvalidUtf8".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+                TCase {
+                    name: "NonAscii".to_owned(),
+                    payload: Vec::new(),
+                    span: Span::default(),
+                },
+            ]),
+            span: Span::default(),
+        });
+        checker
+            .type_ids
+            .insert("TextError".to_owned(), text_error_ty);
         let file_kind_ty = Ty(checker.types.len());
         checker.types.push(TType {
             name: "FileKind".to_owned(),
@@ -675,7 +700,16 @@ impl Checker {
             {
                 if matches!(
                     name.as_str(),
-                    "int" | "long" | "bool" | "Ascii" | "Option" | "Result" | "Full"
+                    "int"
+                        | "long"
+                        | "bool"
+                        | "Ascii"
+                        | "Text"
+                        | "Bytes"
+                        | "Option"
+                        | "Result"
+                        | "Full"
+                        | "TextError"
                 ) || self.type_ids.contains_key(name)
                 {
                     return Err(CheckError {
@@ -806,7 +840,16 @@ impl Checker {
             for alias in pending {
                 if matches!(
                     alias.name.as_str(),
-                    "int" | "long" | "bool" | "Ascii" | "Option" | "Result" | "Full"
+                    "int"
+                        | "long"
+                        | "bool"
+                        | "Ascii"
+                        | "Text"
+                        | "Bytes"
+                        | "Option"
+                        | "Result"
+                        | "Full"
+                        | "TextError"
                 ) || self.type_ids.contains_key(&alias.name)
                 {
                     return Err(CheckError {
@@ -880,6 +923,55 @@ impl Checker {
                         });
                     }
                     self.intern_ascii(raw_max as usize, ty.span)
+                }
+                "Bytes" if ty.args.is_empty() && ty.const_args.len() == 1 && ty.range.is_none() => {
+                    let max_bytes = self.capacity_value(&ty.const_args[0])?;
+                    if max_bytes < 0 || max_bytes > i64::MAX as i128 {
+                        return Err(CheckError {
+                            span: ty.const_args[0].span,
+                            message:
+                                "Bytes maximum must fit a nonnegative long; reduce the byte count"
+                                    .to_owned(),
+                        });
+                    }
+                    self.intern_bytes(max_bytes as usize, ty.span)
+                }
+                "Text" | "TextBytes"
+                    if ty.args.is_empty() && ty.range.is_none() && !ty.const_args.is_empty() =>
+                {
+                    let (max_codepoints, max_bytes) = if ty.name == "TextBytes" {
+                        let bytes = self.capacity_value(&ty.const_args[0])?;
+                        (bytes, bytes)
+                    } else {
+                        let codepoints = self.capacity_value(&ty.const_args[0])?;
+                        let bytes = if ty.const_args.len() > 1 {
+                            self.capacity_value(&ty.const_args[1])?
+                        } else {
+                            codepoints.checked_mul(4).ok_or_else(|| CheckError {
+                                span: ty.const_args[0].span,
+                                message: "Text byte maximum overflows long; reduce the code-point maximum".to_owned(),
+                            })?
+                        };
+                        (codepoints, bytes)
+                    };
+                    if max_codepoints < 0
+                        || max_bytes < 0
+                        || max_codepoints > i64::MAX as i128
+                        || max_bytes > i64::MAX as i128
+                    {
+                        return Err(CheckError {
+                            span: ty.span,
+                            message: "Text maxima must fit nonnegative longs; reduce the code-point or byte maximum".to_owned(),
+                        });
+                    }
+                    self.intern_text(max_codepoints as usize, max_bytes as usize, ty.span)
+                }
+                "Text" | "TextBytes" => {
+                    return Err(CheckError {
+                        span: ty.span,
+                        message: "Text needs a bound; write 'Text max N' or 'Text bytes max N'"
+                            .to_owned(),
+                    });
                 }
                 "int" if ty.args.is_empty() && ty.const_args.is_empty() => {
                     if let Some(range) = ty.range {
@@ -1604,6 +1696,33 @@ impl Checker {
         visit(self, ty, &mut std::collections::HashSet::new())
     }
 
+    fn type_contains_growing_storage(&self, ty: Ty) -> bool {
+        fn visit(checker: &Checker, ty: Ty, seen: &mut std::collections::HashSet<Ty>) -> bool {
+            if !seen.insert(ty) {
+                return false;
+            }
+            match &checker.types[ty.0].kind {
+                TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. } => true,
+                TTypeKind::Struct(fields) => {
+                    fields.iter().any(|field| visit(checker, field.ty, seen))
+                }
+                TTypeKind::Enum(cases) => cases
+                    .iter()
+                    .flat_map(|case| case.payload.iter())
+                    .any(|ty| visit(checker, *ty, seen)),
+                TTypeKind::Option(inner) => visit(checker, *inner, seen),
+                TTypeKind::Result(ok, err) => {
+                    visit(checker, *ok, seen) || visit(checker, *err, seen)
+                }
+                TTypeKind::Array { element, .. } | TTypeKind::Grid { element, .. } => {
+                    visit(checker, *element, seen)
+                }
+                _ => false,
+            }
+        }
+        visit(self, ty, &mut std::collections::HashSet::new())
+    }
+
     fn type_contains_capability(&self, ty: Ty) -> bool {
         fn visit(checker: &Checker, ty: Ty, seen: &mut std::collections::HashSet<Ty>) -> bool {
             if !seen.insert(ty) {
@@ -2318,9 +2437,39 @@ impl Checker {
                 message: "collection size overflows long; reduce a capacity".to_owned(),
             })
         };
+        let checked_var_fields = || -> Result<u128, CheckError> {
+            let capacity = match self.types.get(ty.0).map(|definition| &definition.kind) {
+                Some(
+                    TTypeKind::Array { capacity, .. }
+                    | TTypeKind::List { capacity, .. }
+                    | TTypeKind::Queue { capacity, .. }
+                    | TTypeKind::Ring { capacity, .. }
+                    | TTypeKind::Grid { capacity, .. }
+                    | TTypeKind::Pool { capacity, .. }
+                    | TTypeKind::Map { capacity, .. },
+                ) => *capacity,
+                _ => return Ok(0),
+            };
+            let lanes = growing_collection_lanes(ty, &self.types).ok_or_else(|| CheckError {
+                span,
+                message: "collection size class rounding overflows long; reduce a field maximum"
+                    .to_owned(),
+            })?;
+            let mut extra = 0u128;
+            for lane in lanes {
+                for class_bytes in lane.class_bytes {
+                    let class = class_bytes as u128;
+                    let slots = checked_mul(capacity as u128, class)?;
+                    let free_slots = checked_mul(capacity as u128, 8)?;
+                    extra = checked_add(extra, checked_add(slots, checked_add(16, free_slots)?)?)?;
+                }
+            }
+            Ok(extra)
+        };
         let size = match &self.types[ty.0].kind {
             TTypeKind::Refinement { base, .. } => self.type_size_checked(*base, cache, span)?,
-            TTypeKind::Ascii { .. } => 16,
+            TTypeKind::Ascii { .. } | TTypeKind::Bytes { .. } => 16,
+            TTypeKind::Text { .. } => 24,
             TTypeKind::Struct(fields) => {
                 let mut size = 0u128;
                 for field in fields {
@@ -2351,7 +2500,7 @@ impl Checker {
                         )?,
                     )?;
                 }
-                if matches!(
+                let payload = if matches!(
                     self.types[ty.0].kind,
                     TTypeKind::List { .. } | TTypeKind::Queue { .. } | TTypeKind::Ring { .. }
                 ) {
@@ -2363,7 +2512,8 @@ impl Checker {
                     checked_add(metadata, payload)?
                 } else {
                     payload
-                }
+                };
+                checked_add(payload, checked_var_fields()?)?
             }
             TTypeKind::Map {
                 key,
@@ -2373,12 +2523,30 @@ impl Checker {
                 let key_size = self.type_size_checked(*key, cache, span)?;
                 let value_size = self.type_size_checked(*value, cache, span)?;
                 let per_entry = checked_add(17, checked_add(key_size, value_size)?)?;
-                checked_add(16, checked_mul(*capacity as u128, per_entry)?)?
+                let key_storage = match self.types[key.0].kind {
+                    TTypeKind::Ascii { max_bytes } => {
+                        checked_mul(*capacity as u128, max_bytes as u128)?
+                    }
+                    _ => 0,
+                };
+                checked_add(
+                    checked_add(16, checked_mul(*capacity as u128, per_entry)?)?,
+                    checked_add(key_storage, checked_var_fields()?)?,
+                )?
             }
             TTypeKind::Set { key, capacity } => {
                 let key_size = self.type_size_checked(*key, cache, span)?;
                 let per_entry = checked_add(17, key_size)?;
-                checked_add(16, checked_mul(*capacity as u128, per_entry)?)?
+                let key_storage = match self.types[key.0].kind {
+                    TTypeKind::Ascii { max_bytes } => {
+                        checked_mul(*capacity as u128, max_bytes as u128)?
+                    }
+                    _ => 0,
+                };
+                checked_add(
+                    checked_add(16, checked_mul(*capacity as u128, per_entry)?)?,
+                    key_storage,
+                )?
             }
             TTypeKind::Function { .. } => 8,
             TTypeKind::Pool {
@@ -2402,7 +2570,10 @@ impl Checker {
                 }
                 // occupied flags, generations, reusable-slot stack, active/free counts,
                 // plus the initialized-slot high-water mark.
-                checked_add(24 + (*capacity as u128) * 9, payload)?
+                checked_add(
+                    checked_add(24 + (*capacity as u128) * 9, payload)?,
+                    checked_var_fields()?,
+                )?
             }
             TTypeKind::Id { .. } | TTypeKind::Capability(_) => 8,
             TTypeKind::Enum(_) | TTypeKind::Option(_) | TTypeKind::Result(..) => {
@@ -2590,6 +2761,39 @@ impl Checker {
         ty
     }
 
+    fn intern_text(&mut self, max_codepoints: usize, max_bytes: usize, span: Span) -> Ty {
+        let name = format!("Text max {max_codepoints} bytes max {max_bytes}");
+        if let Some(ty) = self.type_ids.get(&name) {
+            return *ty;
+        }
+        let ty = Ty(self.types.len());
+        self.types.push(TType {
+            name: name.clone(),
+            kind: TTypeKind::Text {
+                max_codepoints,
+                max_bytes,
+            },
+            span,
+        });
+        self.type_ids.insert(name, ty);
+        ty
+    }
+
+    fn intern_bytes(&mut self, max_bytes: usize, span: Span) -> Ty {
+        let name = format!("Bytes max {max_bytes}");
+        if let Some(ty) = self.type_ids.get(&name) {
+            return *ty;
+        }
+        let ty = Ty(self.types.len());
+        self.types.push(TType {
+            name: name.clone(),
+            kind: TTypeKind::Bytes { max_bytes },
+            span,
+        });
+        self.type_ids.insert(name, ty);
+        ty
+    }
+
     fn intern_generic(
         &mut self,
         kind: u8,
@@ -2632,13 +2836,379 @@ impl Checker {
         }
     }
 
+    fn text_max(&self, ty: Ty) -> Option<(usize, usize)> {
+        match self.types.get(ty.0).map(|definition| &definition.kind) {
+            Some(TTypeKind::Text {
+                max_codepoints,
+                max_bytes,
+            }) => Some((*max_codepoints, *max_bytes)),
+            _ => None,
+        }
+    }
+
+    fn bytes_max(&self, ty: Ty) -> Option<usize> {
+        match self.types.get(ty.0).map(|definition| &definition.kind) {
+            Some(TTypeKind::Bytes { max_bytes }) => Some(*max_bytes),
+            _ => None,
+        }
+    }
+
+    fn string_byte_max(&self, ty: Ty) -> Option<usize> {
+        self.ascii_max(ty)
+            .or_else(|| self.text_max(ty).map(|(_, bytes)| bytes))
+            .or_else(|| self.bytes_max(ty))
+    }
+
+    fn same_string_kind(&self, left: Ty, right: Ty) -> bool {
+        matches!(
+            (
+                self.types.get(left.0).map(|definition| &definition.kind),
+                self.types.get(right.0).map(|definition| &definition.kind),
+            ),
+            (Some(TTypeKind::Ascii { .. }), Some(TTypeKind::Ascii { .. }))
+                | (Some(TTypeKind::Text { .. }), Some(TTypeKind::Text { .. }))
+                | (Some(TTypeKind::Bytes { .. }), Some(TTypeKind::Bytes { .. }))
+        )
+    }
+
+    fn string_width_fits(&self, actual: Ty, expected: Ty) -> bool {
+        match (
+            self.types.get(actual.0).map(|definition| &definition.kind),
+            self.types
+                .get(expected.0)
+                .map(|definition| &definition.kind),
+        ) {
+            (
+                Some(TTypeKind::Ascii { max_bytes: actual }),
+                Some(TTypeKind::Ascii {
+                    max_bytes: expected,
+                }),
+            ) => actual <= expected,
+            (
+                Some(TTypeKind::Bytes { max_bytes: actual }),
+                Some(TTypeKind::Bytes {
+                    max_bytes: expected,
+                }),
+            ) => actual <= expected,
+            (
+                Some(TTypeKind::Text {
+                    max_codepoints: actual_cp,
+                    max_bytes: actual_bytes,
+                }),
+                Some(TTypeKind::Text {
+                    max_codepoints: expected_cp,
+                    max_bytes: expected_bytes,
+                }),
+            ) => actual_cp <= expected_cp && actual_bytes <= expected_bytes,
+            _ => false,
+        }
+    }
+
+    fn function_result_fits(&self, actual: Ty, expected: Ty) -> bool {
+        actual == expected
+            || self.string_width_fits(actual, expected)
+            || matches!(
+                (&self.types[actual.0].kind, &self.types[expected.0].kind),
+                (
+                    TTypeKind::Result(actual_ok, actual_error),
+                    TTypeKind::Result(expected_ok, expected_error)
+                ) if actual_error == expected_error
+                    && self.string_width_fits(*actual_ok, *expected_ok)
+            )
+    }
+
+    fn value_width_fits(&self, actual: Ty, expected: Ty) -> bool {
+        if actual == expected || self.string_width_fits(actual, expected) {
+            return true;
+        }
+        match (
+            self.types.get(actual.0).map(|definition| &definition.kind),
+            self.types
+                .get(expected.0)
+                .map(|definition| &definition.kind),
+        ) {
+            (Some(TTypeKind::Option(a)), Some(TTypeKind::Option(b))) => {
+                self.value_width_fits(*a, *b)
+            }
+            (
+                Some(TTypeKind::Array {
+                    element: a,
+                    capacity: ac,
+                }),
+                Some(TTypeKind::Array {
+                    element: b,
+                    capacity: bc,
+                }),
+            ) => ac == bc && self.value_width_fits(*a, *b),
+            (
+                Some(TTypeKind::List {
+                    element: a,
+                    capacity: ac,
+                }),
+                Some(TTypeKind::List {
+                    element: b,
+                    capacity: bc,
+                }),
+            ) => ac == bc && self.value_width_fits(*a, *b),
+            _ => false,
+        }
+    }
+
+    fn is_string_type(&self, ty: Ty) -> bool {
+        self.string_byte_max(ty).is_some()
+    }
+
+    fn is_text_type(&self, ty: Ty) -> bool {
+        self.text_max(ty).is_some()
+    }
+
+    fn is_bytes_type(&self, ty: Ty) -> bool {
+        self.bytes_max(ty).is_some()
+    }
+
+    fn expression_may_be_string(&mut self, expr: &Expr) -> bool {
+        if self
+            .natural_expr_type(expr)
+            .is_some_and(|ty| self.is_string_type(ty))
+        {
+            return true;
+        }
+        match &expr.kind {
+            ExprKind::ByteString(_) | ExprKind::BytesLiteral(_) => true,
+            ExprKind::Name(name) => self
+                .visible_value_type(name)
+                .is_some_and(|ty| self.is_string_type(ty)),
+            ExprKind::Binary {
+                op: BinaryOp::Add,
+                left,
+                right,
+                ..
+            } => self.expression_may_be_string(left) || self.expression_may_be_string(right),
+            ExprKind::Call { name, .. } => {
+                matches!(name.as_str(), "str" | "ascii_upper")
+                    || self
+                        .signatures
+                        .get(name)
+                        .is_some_and(|signature| self.is_string_type(signature.result))
+            }
+            ExprKind::MethodCall { receiver, name, .. } => {
+                matches!(
+                    name.as_str(),
+                    "upper" | "bytes" | "slice" | "to_text" | "to_ascii"
+                ) || self.expression_may_be_string(receiver)
+            }
+            ExprKind::Try(value) | ExprKind::Take(value) => self.expression_may_be_string(value),
+            _ => false,
+        }
+    }
+
+    fn check_string_add(
+        &mut self,
+        left: TExpr,
+        right: TExpr,
+        expected: Option<Ty>,
+        span: Span,
+    ) -> Result<Option<(TExprKind, Ty)>, CheckError> {
+        let left_ascii = self.ascii_max(left.ty);
+        let right_ascii = self.ascii_max(right.ty);
+        let left_text = self.text_max(left.ty);
+        let right_text = self.text_max(right.ty);
+        let left_bytes = self.bytes_max(left.ty);
+        let right_bytes = self.bytes_max(right.ty);
+
+        let result = if let (Some(a), Some(b)) = (left_ascii, right_ascii) {
+            self.intern_ascii(
+                a.checked_add(b).ok_or_else(|| CheckError {
+                    span,
+                    message:
+                        "Ascii concatenation maximum overflows; reduce one of the declared maxima"
+                            .to_owned(),
+                })?,
+                span,
+            )
+        } else if let (Some(a), Some(b)) = (left_bytes, right_bytes) {
+            self.intern_bytes(
+                a.checked_add(b).ok_or_else(|| CheckError {
+                    span,
+                    message:
+                        "Bytes concatenation maximum overflows; reduce one of the declared maxima"
+                            .to_owned(),
+                })?,
+                span,
+            )
+        } else if (left_text.is_some() || right_text.is_some())
+            && (left_text.is_some() || left_ascii.is_some())
+            && (right_text.is_some() || right_ascii.is_some())
+        {
+            let (left_cp, left_len) = left_text.unwrap_or_else(|| {
+                let maximum = left_ascii.unwrap_or(0);
+                (maximum, maximum)
+            });
+            let (right_cp, right_len) = right_text.unwrap_or_else(|| {
+                let maximum = right_ascii.unwrap_or(0);
+                (maximum, maximum)
+            });
+            let cp = left_cp.checked_add(right_cp).ok_or_else(|| CheckError {
+                span,
+                message:
+                    "Text concatenation code-point maximum overflows; reduce an operand maximum"
+                        .to_owned(),
+            })?;
+            let bytes = left_len.checked_add(right_len).ok_or_else(|| CheckError {
+                span,
+                message: "Text concatenation byte maximum overflows; reduce an operand maximum"
+                    .to_owned(),
+            })?;
+            self.intern_text(cp, bytes, span)
+        } else {
+            return Ok(None);
+        };
+        if let Some(want) = expected {
+            if self.string_width_fits(result, want) {
+                return Ok(Some((
+                    TExprKind::Binary {
+                        op: BinaryOp::Add,
+                        operator_span: span,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    want,
+                )));
+            }
+            if let (Some(result_max), Some(want_max)) =
+                (self.ascii_max(result), self.ascii_max(want))
+            {
+                if result_max > want_max {
+                    let left_range = self
+                        .ascii_length_range(&left)
+                        .unwrap_or((0, left_ascii.unwrap_or(0)));
+                    let right_range = self
+                        .ascii_length_range(&right)
+                        .unwrap_or((0, right_ascii.unwrap_or(0)));
+                    if left_range.1.saturating_add(right_range.1) <= want_max {
+                        return Ok(Some((
+                            TExprKind::Binary {
+                                op: BinaryOp::Add,
+                                operator_span: span,
+                                left: Box::new(left),
+                                right: Box::new(right),
+                            },
+                            want,
+                        )));
+                    }
+                }
+            }
+            if self.text_max(want).is_some() && left_ascii.is_some() && right_ascii.is_some() {
+                let max_cp = left_ascii.unwrap().saturating_add(right_ascii.unwrap());
+                if max_cp <= self.text_max(want).unwrap().0
+                    && max_cp <= self.text_max(want).unwrap().1
+                {
+                    return Ok(Some((
+                        TExprKind::Binary {
+                            op: BinaryOp::Add,
+                            operator_span: span,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        },
+                        want,
+                    )));
+                }
+            }
+            return Err(CheckError {
+                span,
+                message: format!(
+                    "cannot prove this concatenation fits {}; reduce operand maxima or increase the destination bound",
+                    self.type_name(want)
+                ),
+            });
+        }
+        Ok(Some((
+            TExprKind::Binary {
+                op: BinaryOp::Add,
+                operator_span: span,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            result,
+        )))
+    }
+
+    fn check_read_argument(&mut self, expr: &Expr, target: Ty) -> Result<TExpr, CheckError> {
+        if self.is_function_type(target) {
+            return self.check_expr(expr, Some(target));
+        }
+        if matches!(
+            expr.kind,
+            ExprKind::ByteString(_) | ExprKind::BytesLiteral(_)
+        ) && self.is_byte_list(target)
+        {
+            return self.check_expr(expr, Some(target));
+        }
+        let contextual_sum_value = match &expr.kind {
+            ExprKind::QualifiedCase { .. } => true,
+            ExprKind::Call { name, .. } => {
+                matches!(name.as_str(), "none" | "some" | "ok" | "err")
+                    || (self.types[target.0].is_sum()
+                        && self.find_case_in_type(target, name).is_some())
+            }
+            ExprKind::Name(name)
+                if self.visible_value_type(name).is_none() && self.types[target.0].is_sum() =>
+            {
+                self.find_case_in_type(target, name).is_some()
+            }
+            _ => false,
+        };
+        if contextual_sum_value {
+            return self.check_expr(expr, Some(target));
+        }
+        let actual = self.check_expr(expr, None)?;
+        if self.is_ascii(actual.ty) && self.text_max(target).is_some() {
+            let actual_max = self.ascii_max(actual.ty).unwrap_or(0);
+            let (target_codepoints, target_bytes) = self.text_max(target).unwrap();
+            if actual_max > target_codepoints || actual_max > target_bytes {
+                return Err(CheckError {
+                    span: expr.span,
+                    message: format!(
+                        "{} does not fit read parameter {}; increase its code-point or byte maximum",
+                        self.type_name(actual.ty),
+                        self.type_name(target)
+                    ),
+                });
+            }
+            return Ok(TExpr {
+                kind: TExprKind::TextConvert {
+                    value: Box::new(actual),
+                    target,
+                    conversion: StringConversion::AsciiToText,
+                },
+                ty: target,
+                span: expr.span,
+            });
+        }
+        self.coerce_store_hint(actual, target, &source_hint(expr))
+    }
+
+    fn ascii_text_view(&self, value: TExpr, target: Ty) -> TExpr {
+        TExpr {
+            kind: TExprKind::TextConvert {
+                value: Box::new(value.clone()),
+                target,
+                conversion: StringConversion::AsciiToText,
+            },
+            ty: target,
+            span: value.span,
+        }
+    }
+
     fn ascii_option_pair(&self, left: Ty, right: Ty) -> bool {
         match (
             self.types.get(left.0).map(|ty| &ty.kind),
             self.types.get(right.0).map(|ty| &ty.kind),
         ) {
             (Some(TTypeKind::Option(left)), Some(TTypeKind::Option(right))) => {
-                self.is_ascii(*left) && self.is_ascii(*right)
+                self.same_string_kind(*left, *right)
+                    && (self.string_width_fits(*left, *right)
+                        || self.string_width_fits(*right, *left))
             }
             _ => false,
         }
@@ -3856,6 +4426,9 @@ impl Checker {
                 } else {
                     self.check_expr(value, None)?
                 };
+                if typed_expr_contains_bytes_view(&typed_value) {
+                    return Err(bytes_view_escape_error(value.span));
+                }
                 if typed_value.ty == Ty::Unit || typed_value.ty == Ty::Never {
                     return Err(CheckError { span: value.span, message: "a binding needs a value; functions and if expressions used here must return int, long, or bool".to_owned() });
                 }
@@ -4000,10 +4573,13 @@ impl Checker {
                     });
                 }
                 let target_place = self.canonical_place(&place);
+                let replaces_growing_field =
+                    *op == AssignOp::Set && self.type_contains_growing_storage(place.ty);
                 if self.active_views.iter().any(|view| {
                     let view = self.canonical_place(view);
                     places_overlap(&view, &target_place)
                         && (!places_proven_prefix(&view, &target_place)
+                            || replaces_growing_field
                             || (*op == AssignOp::Set
                                 && view.path.len() == target_place.path.len()
                                 && matches!(
@@ -4799,7 +5375,7 @@ impl Checker {
             } => Some(Ty::Long),
             ExprKind::Integer { .. } => None,
             ExprKind::Bool(_) => Some(Ty::Bool),
-            ExprKind::ByteString(_) => None,
+            ExprKind::ByteString(_) | ExprKind::BytesLiteral(_) => None,
             ExprKind::Name(name) if shadowed_counter == Some(name.as_str()) => None,
             ExprKind::Name(name) if self.current_generic_capacities.contains_key(name) => {
                 let value = self.current_generic_capacities[name];
@@ -5080,7 +5656,7 @@ impl Checker {
             ExprKind::Take(value) => {
                 self.collect_loop_constraints_expr(value, counter, expected, constraints)
             }
-            ExprKind::ByteString(_) => {}
+            ExprKind::ByteString(_) | ExprKind::BytesLiteral(_) => {}
             ExprKind::Call { name, args, .. } => {
                 let parameters = self
                     .signatures
@@ -5479,24 +6055,236 @@ impl Checker {
         expected: Option<Ty>,
         span: Span,
     ) -> Result<(TExprKind, Ty), CheckError> {
-        if matches!(&receiver.kind, ExprKind::Name(type_name) if type_name == "Ascii")
+        if matches!(&receiver.kind, ExprKind::Name(type_name)
+            if matches!(type_name.as_str(), "Ascii" | "Text" | "Bytes"))
             && name == "empty"
         {
+            let ExprKind::Name(type_name) = &receiver.kind else {
+                unreachable!();
+            };
             if !args.is_empty() {
                 return Err(CheckError {
                     span: method_span,
-                    message: "Ascii.empty() takes no arguments".to_owned(),
+                    message: format!("{type_name}.empty() takes no arguments"),
                 });
             }
-            let Some(ty) = expected.filter(|ty| self.is_ascii(*ty)) else {
+            let Some(ty) = expected.filter(|ty| match type_name.as_str() {
+                "Ascii" => self.is_ascii(*ty),
+                "Text" => self.text_max(*ty).is_some(),
+                "Bytes" => self.bytes_max(*ty).is_some(),
+                _ => unreachable!(),
+            }) else {
                 return Err(CheckError {
                     span: method_span,
-                    message: "Ascii.empty() needs a maximum from its destination; add an Ascii max N annotation".to_owned(),
+                    message: format!(
+                        "{type_name}.empty() needs a maximum from its destination; add a {type_name} max N annotation"
+                    ),
                 });
             };
-            return Ok((TExprKind::AsciiEmpty, ty));
+            let empty_kind = match type_name.as_str() {
+                "Ascii" => TExprKind::AsciiEmpty,
+                "Text" => TExprKind::TextEmpty,
+                "Bytes" => TExprKind::BytesEmpty,
+                _ => unreachable!(),
+            };
+            return Ok((empty_kind, ty));
         }
         let typed_collection = self.check_expr(receiver, None)?;
+        if name == "bytes" && self.is_ascii(typed_collection.ty) && args.is_empty() {
+            let maximum = self.ascii_max(typed_collection.ty).unwrap_or(0);
+            let result = self.intern_bytes(maximum, method_span);
+            if let Some(want) = expected {
+                self.type_mismatch(result, want, span)?;
+            }
+            return Ok((TExprKind::BytesView(Box::new(typed_collection)), result));
+        }
+        if let Some(max_bytes) = self
+            .text_max(typed_collection.ty)
+            .map(|(_, bytes)| bytes)
+            .or_else(|| self.bytes_max(typed_collection.ty))
+        {
+            let is_text = self.text_max(typed_collection.ty).is_some();
+            let is_bytes = self.bytes_max(typed_collection.ty).is_some();
+            match name {
+                "len" if args.is_empty() => {
+                    let maximum = self
+                        .text_max(typed_collection.ty)
+                        .map_or(max_bytes, |(codepoints, _)| codepoints);
+                    let range = TypeRangeAst {
+                        lower: 0,
+                        upper: maximum as i128,
+                        inclusive: true,
+                        span: method_span,
+                    };
+                    let result = self.intern_refinement(
+                        Ty::Long,
+                        range,
+                        RefinePolicy::Checked,
+                        method_span,
+                    )?;
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::Method {
+                            kind: if is_text {
+                                MethodKind::TextLen
+                            } else {
+                                MethodKind::BytesLen
+                            },
+                            receiver: Box::new(typed_collection),
+                        },
+                        result,
+                    ));
+                }
+                "byte_len" if is_text && args.is_empty() => {
+                    let result = self.intern_refinement(
+                        Ty::Long,
+                        TypeRangeAst {
+                            lower: 0,
+                            upper: max_bytes as i128,
+                            inclusive: true,
+                            span: method_span,
+                        },
+                        RefinePolicy::Checked,
+                        method_span,
+                    )?;
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::Method {
+                            kind: MethodKind::TextByteLen,
+                            receiver: Box::new(typed_collection),
+                        },
+                        result,
+                    ));
+                }
+                "upper" if is_text && args.is_empty() => {
+                    let (codepoints, _) = self.text_max(typed_collection.ty).unwrap();
+                    let output_codepoints =
+                        codepoints.checked_mul(3).ok_or_else(|| CheckError {
+                            span: method_span,
+                            message: "Text.upper maximum overflows long; reduce the input maximum"
+                                .to_owned(),
+                        })?;
+                    let output_bytes =
+                        output_codepoints.checked_mul(4).ok_or_else(|| CheckError {
+                            span: method_span,
+                            message:
+                                "Text.upper byte maximum overflows long; reduce the input maximum"
+                                    .to_owned(),
+                        })?;
+                    if output_codepoints > i64::MAX as usize || output_bytes > i64::MAX as usize {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: "Text.upper maximum overflows long; reduce the input maximum"
+                                .to_owned(),
+                        });
+                    }
+                    let result = self.intern_text(output_codepoints, output_bytes, method_span);
+                    if let Some(want) = expected {
+                        if !self.string_width_fits(result, want) {
+                            return Err(CheckError {
+                                span,
+                                message: format!(
+                                    "Text.upper may produce up to {} code points; increase {} or slice the result",
+                                    output_codepoints,
+                                    self.type_name(want)
+                                ),
+                            });
+                        }
+                    }
+                    return Ok((
+                        TExprKind::TextUpper(Box::new(typed_collection)),
+                        expected
+                            .filter(|want| self.string_width_fits(result, *want))
+                            .unwrap_or(result),
+                    ));
+                }
+                "slice" if (is_text || is_bytes) && args.len() == 2 => {
+                    let start = self.check_expr(&args[0], Some(Ty::Long))?;
+                    let end = self.check_expr(&args[1], Some(Ty::Long))?;
+                    if let Some(want) = expected {
+                        self.type_mismatch(typed_collection.ty, want, span)?;
+                    }
+                    return Ok((
+                        if is_text {
+                            TExprKind::TextSlice {
+                                receiver: Box::new(typed_collection.clone()),
+                                start: Box::new(start),
+                                end: Box::new(end),
+                            }
+                        } else {
+                            TExprKind::BytesSlice {
+                                receiver: Box::new(typed_collection.clone()),
+                                start: Box::new(start),
+                                end: Box::new(end),
+                            }
+                        },
+                        typed_collection.ty,
+                    ));
+                }
+                "bytes" if is_text && args.is_empty() => {
+                    let result = self.intern_bytes(max_bytes, method_span);
+                    if let Some(want) = expected {
+                        self.type_mismatch(result, want, span)?;
+                    }
+                    return Ok((TExprKind::BytesView(Box::new(typed_collection)), result));
+                }
+                "to_text" if is_bytes && args.is_empty() => {
+                    let result = self.intern_text(max_bytes, max_bytes, method_span);
+                    let error = self.type_ids["TextError"];
+                    let wrapped = self.intern_generic(
+                        2,
+                        result,
+                        error,
+                        format!("Result<{}, TextError>", self.type_name(result)),
+                        span,
+                        TTypeKind::Result(result, error),
+                    );
+                    if let Some(want) = expected {
+                        self.type_mismatch(wrapped, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::TextConvert {
+                            value: Box::new(typed_collection),
+                            target: result,
+                            conversion: StringConversion::BytesToText,
+                        },
+                        wrapped,
+                    ));
+                }
+                "to_ascii" if (is_text || is_bytes) && args.is_empty() => {
+                    let result = self.intern_ascii(max_bytes, method_span);
+                    let error = self.type_ids["TextError"];
+                    let wrapped = self.intern_generic(
+                        2,
+                        result,
+                        error,
+                        format!("Result<{}, TextError>", self.type_name(result)),
+                        span,
+                        TTypeKind::Result(result, error),
+                    );
+                    if let Some(want) = expected {
+                        self.type_mismatch(wrapped, want, span)?;
+                    }
+                    return Ok((
+                        TExprKind::TextConvert {
+                            value: Box::new(typed_collection),
+                            target: result,
+                            conversion: if is_text {
+                                StringConversion::TextToAscii
+                            } else {
+                                StringConversion::BytesToAscii
+                            },
+                        },
+                        wrapped,
+                    ));
+                }
+                _ => {}
+            }
+        }
         if let Some(max_bytes) = self.ascii_max(typed_collection.ty) {
             match name {
                 "len" if args.is_empty() => {
@@ -5688,7 +6476,10 @@ impl Checker {
                             return checker.check_expr(expr, Some(checker.type_ids["Path"]));
                         }
                         let typed = checker.check_expr(expr, None)?;
-                        if typed.ty == checker.type_ids["Arg"] || checker.is_byte_list(typed.ty) {
+                        if typed.ty == checker.type_ids["Arg"]
+                            || checker.is_byte_list(typed.ty)
+                            || checker.is_string_type(typed.ty)
+                        {
                             Ok(typed)
                         } else {
                             Err(CheckError {
@@ -5711,7 +6502,10 @@ impl Checker {
                             }
                             let typed_path = path(self, &args[0])?;
                             let typed_buffer = self.check_expr(&args[1], None)?;
-                            if !self.is_byte_list(typed_buffer.ty) {
+                            if !self.is_byte_list(typed_buffer.ty)
+                                && !self.is_text_type(typed_buffer.ty)
+                                && !self.is_bytes_type(typed_buffer.ty)
+                            {
                                 return Err(CheckError {
                                     span: args[1].span,
                                     message: "fs.read buffer must be a bounded byte list"
@@ -5908,7 +6702,10 @@ impl Checker {
                             self.check_expr(arg, Some(self.type_ids["Path"]))?
                         } else {
                             let typed = self.check_expr(arg, None)?;
-                            if typed.ty != self.type_ids["Arg"] && !self.is_byte_list(typed.ty) {
+                            if typed.ty != self.type_ids["Arg"]
+                                && !self.is_byte_list(typed.ty)
+                                && !self.is_string_type(typed.ty)
+                            {
                                 return Err(CheckError {
                                     span: arg.span,
                                     message:
@@ -7374,6 +8171,8 @@ impl Checker {
                     places_overlap(&view, &canonical)
                         && (write_collection
                             || replaces_map_value
+                            || (self.type_contains_growing_storage(place.ty)
+                                && places_proven_prefix(&view, &canonical))
                             || !places_proven_prefix(&view, &canonical))
                 }) {
                     return Err(CheckError {
@@ -7419,7 +8218,7 @@ impl Checker {
                     self.check_expr(arg, Some(param.ty))?
                 });
             } else {
-                typed_args.push(self.check_store(arg, param.ty)?);
+                typed_args.push(self.check_read_argument(arg, param.ty)?);
             }
             places.push((place, param.mode));
         }
@@ -7505,12 +8304,15 @@ impl Checker {
             let naturally_ordered = matches!(
                 self.types[base.0].kind,
                 TTypeKind::Int | TTypeKind::Long | TTypeKind::Bool
-            ) || matches!(&self.types[base.0].kind, TTypeKind::Enum(cases) if cases.iter().all(|case| case.payload.is_empty()));
+            ) || matches!(
+                &self.types[base.0].kind,
+                TTypeKind::Enum(cases) if cases.iter().all(|case| case.payload.is_empty())
+            ) || matches!(self.types[base.0].kind, TTypeKind::Ascii { .. });
             if !naturally_ordered {
                 return Err(CheckError {
                     span,
                     message: format!(
-                        "sort supports integer, bool, and payload-free enum elements; use sort_by for {}",
+                        "sort supports integer, bool, Ascii, and payload-free enum elements; use sort_by for {}",
                         self.type_name(element)
                     ),
                 });
@@ -7935,7 +8737,7 @@ impl Checker {
                     typed_args.push(self.check_expr(arg, Some(param.ty))?);
                 }
             } else {
-                typed_args.push(self.check_store(arg, param.ty)?);
+                typed_args.push(self.check_read_argument(arg, param.ty)?);
             }
             arg_places.push(place);
         }
@@ -8179,7 +8981,7 @@ impl Checker {
                 self.suppress_function_value_effect_check = saved_suppression;
                 let arg = checked_arg?;
                 if !matches!(self.base_type(arg.ty), Ty::Int | Ty::Long | Ty::Bool)
-                    && !self.is_ascii(arg.ty)
+                    && !self.is_string_type(arg.ty)
                     && !self.types[arg.ty.0].is_sum()
                     && !matches!(self.types[arg.ty.0].kind, TTypeKind::Struct(_))
                     && !matches!(
@@ -8288,6 +9090,8 @@ impl Checker {
                             places_overlap(&view, &canonical)
                                 && (write_collection
                                     || replaces_map_value
+                                    || (self.type_contains_growing_storage(place.ty)
+                                        && places_proven_prefix(&view, &canonical))
                                     || !places_proven_prefix(&view, &canonical))
                         }) {
                             return Err(CheckError {
@@ -8318,7 +9122,7 @@ impl Checker {
                             typed_args.push(self.check_expr(arg, Some(param.ty))?);
                         }
                     } else {
-                        typed_args.push(self.check_store(arg, param.ty)?);
+                        typed_args.push(self.check_read_argument(arg, param.ty)?);
                     }
                     arg_places.push(place);
                 }
@@ -8416,6 +9220,40 @@ impl Checker {
                 }
                 (TExprKind::Bool(*value), Ty::Bool)
             }
+            ExprKind::BytesLiteral(bytes) => {
+                if let Some(ty) = expected.filter(|ty| self.is_byte_list(*ty)) {
+                    let TTypeKind::List { capacity, .. } = self.types[ty.0].kind else {
+                        unreachable!()
+                    };
+                    if bytes.len() > capacity {
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: format!(
+                                "byte string has {} bytes, exceeding list capacity {}; increase the capacity",
+                                bytes.len(),
+                                capacity
+                            ),
+                        });
+                    }
+                    (TExprKind::ByteString(bytes.clone()), ty)
+                } else if let Some(ty) = expected.filter(|ty| self.bytes_max(*ty).is_some()) {
+                    let maximum = self.bytes_max(ty).unwrap_or(0);
+                    if bytes.len() > maximum {
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: format!(
+                                "byte literal has {} bytes, exceeding {}; increase the byte maximum",
+                                bytes.len(),
+                                self.type_name(ty)
+                            ),
+                        });
+                    }
+                    (TExprKind::ByteString(bytes.clone()), ty)
+                } else {
+                    let ty = self.intern_bytes(bytes.len(), expr.span);
+                    (TExprKind::ByteString(bytes.clone()), ty)
+                }
+            }
             ExprKind::ByteString(bytes) => {
                 if let Some(ty) = expected.filter(|ty| self.is_byte_list(*ty)) {
                     let TTypeKind::List { capacity, .. } = self.types[ty.0].kind else {
@@ -8432,17 +9270,36 @@ impl Checker {
                         });
                     }
                     (TExprKind::ByteString(bytes.clone()), ty)
-                } else {
-                    if !bytes.is_ascii() {
+                } else if let Some(ty) = expected.filter(|ty| self.text_max(*ty).is_some()) {
+                    let text = std::str::from_utf8(bytes).expect("lexer strings are UTF-8");
+                    let (max_codepoints, max_bytes) = self.text_max(ty).unwrap();
+                    if text.chars().count() > max_codepoints || bytes.len() > max_bytes {
                         return Err(CheckError {
                             span: expr.span,
-                            message: "an Ascii literal may contain only bytes 0 through 127; encode non-ASCII text as Text".to_owned(),
+                            message: format!(
+                                "text literal exceeds {}; increase its code-point or byte maximum",
+                                self.type_name(ty)
+                            ),
                         });
                     }
-                    let ty = self.intern_ascii(bytes.len(), expr.span);
-                    if let Some(want) = expected {
-                        self.type_mismatch(ty, want, expr.span)?;
+                    (TExprKind::ByteString(bytes.clone()), ty)
+                } else if let Some(ty) = expected.filter(|ty| self.ascii_max(*ty).is_some()) {
+                    if !bytes.is_ascii() || bytes.len() > self.ascii_max(ty).unwrap_or(0) {
+                        return Err(CheckError {
+                            span: expr.span,
+                            message: format!(
+                                "ASCII literal does not fit {}; increase its byte maximum",
+                                self.type_name(ty)
+                            ),
+                        });
                     }
+                    (TExprKind::ByteString(bytes.clone()), ty)
+                } else if bytes.is_ascii() {
+                    let ty = self.intern_ascii(bytes.len(), expr.span);
+                    (TExprKind::ByteString(bytes.clone()), ty)
+                } else {
+                    let text = std::str::from_utf8(bytes).expect("lexer strings are UTF-8");
+                    let ty = self.intern_text(text.chars().count(), bytes.len(), expr.span);
                     (TExprKind::ByteString(bytes.clone()), ty)
                 }
             }
@@ -9119,7 +9976,7 @@ impl Checker {
                         if param.mode == ParamMode::Write {
                             return Err(CheckError { span: *method_span, message: "optional calls cannot pass a write parameter; call a function directly with an assignable place".to_owned() });
                         }
-                        typed_args.push(self.check_store(arg, param.ty)?);
+                        typed_args.push(self.check_read_argument(arg, param.ty)?);
                     }
                     let (result_ty, wraps_result) =
                         if matches!(self.types[signature.result.0].kind, TTypeKind::Option(_)) {
@@ -9231,7 +10088,11 @@ impl Checker {
                                     .to_owned(),
                             });
                         }
-                        Some(Box::new(self.check_expr(value, Some(self.current_return))?))
+                        let typed = self.check_expr(value, Some(self.current_return))?;
+                        if typed_expr_contains_bytes_view(&typed) {
+                            return Err(bytes_view_escape_error(value.span));
+                        }
+                        Some(Box::new(typed))
                     }
                     None if self.current_return == Ty::Unit => None,
                     None => {
@@ -9724,6 +10585,87 @@ impl Checker {
         expected: Option<Ty>,
         span: Span,
     ) -> Result<(TExprKind, Ty), CheckError> {
+        if op == BinaryOp::Add
+            && (self.expression_may_be_string(left) || self.expression_may_be_string(right))
+        {
+            let left_value = self.check_expr(left, None)?;
+            let right_value = self.check_expr(right, None)?;
+            if self.is_string_type(left_value.ty) || self.is_string_type(right_value.ty) {
+                if let Some(result) =
+                    self.check_string_add(left_value, right_value, expected, span)?
+                {
+                    return Ok(result);
+                }
+            }
+        }
+        if matches!(
+            op,
+            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+        ) && (self.expression_may_be_string(left) || self.expression_may_be_string(right))
+        {
+            let mut left_value = self.check_expr(left, None)?;
+            let mut right_value = self.check_expr(right, None)?;
+            let text_ascii_pair = (self.text_max(left_value.ty).is_some()
+                && self.is_ascii(right_value.ty))
+                || (self.is_ascii(left_value.ty) && self.text_max(right_value.ty).is_some());
+            if text_ascii_pair {
+                let target = if self.text_max(left_value.ty).is_some() {
+                    left_value.ty
+                } else {
+                    right_value.ty
+                };
+                let (max_cp, max_bytes) = self.text_max(target).unwrap();
+                if let Some(maximum) = self.ascii_max(left_value.ty) {
+                    if maximum > max_cp || maximum > max_bytes {
+                        return Err(CheckError {
+                            span: left.span,
+                            message: format!(
+                                "{} does not fit {}; increase its text bound",
+                                self.type_name(left_value.ty),
+                                self.type_name(target)
+                            ),
+                        });
+                    }
+                    left_value = self.ascii_text_view(left_value, target);
+                }
+                if let Some(maximum) = self.ascii_max(right_value.ty) {
+                    if maximum > max_cp || maximum > max_bytes {
+                        return Err(CheckError {
+                            span: right.span,
+                            message: format!(
+                                "{} does not fit {}; increase its text bound",
+                                self.type_name(right_value.ty),
+                                self.type_name(target)
+                            ),
+                        });
+                    }
+                    right_value = self.ascii_text_view(right_value, target);
+                }
+                return Ok((
+                    TExprKind::Binary {
+                        op,
+                        operator_span: span,
+                        left: Box::new(left_value),
+                        right: Box::new(right_value),
+                    },
+                    Ty::Bool,
+                ));
+            }
+            if self.same_string_kind(left_value.ty, right_value.ty) {
+                return Ok((
+                    TExprKind::Binary {
+                        op,
+                        operator_span: span,
+                        left: Box::new(left_value),
+                        right: Box::new(right_value),
+                    },
+                    Ty::Bool,
+                ));
+            }
+            if self.is_string_type(left_value.ty) || self.is_string_type(right_value.ty) {
+                return Err(self.mixed_types_error(left_value.ty, right_value.ty, span));
+            }
+        }
         if op == BinaryOp::Add
             && (self.expression_may_be_ascii(left) || self.expression_may_be_ascii(right))
         {
@@ -10457,6 +11399,7 @@ impl Checker {
             | ExprKind::Integer { .. }
             | ExprKind::Bool(_)
             | ExprKind::ByteString(_)
+            | ExprKind::BytesLiteral(_)
             | ExprKind::LoopExit(_) => {}
         }
     }
@@ -11098,6 +12041,7 @@ impl Checker {
                 | ExprKind::Integer { .. }
                 | ExprKind::Bool(_)
                 | ExprKind::ByteString(_)
+                | ExprKind::BytesLiteral(_)
                 | ExprKind::Name(_)
                 | ExprKind::ListLiteral
                 | ExprKind::PoolLiteral
@@ -11399,10 +12343,7 @@ impl Checker {
     fn type_mismatch(&self, actual: Ty, expected: Ty, span: Span) -> Result<(), CheckError> {
         if actual == expected
             || actual == Ty::Never
-            || self
-                .ascii_max(actual)
-                .zip(self.ascii_max(expected))
-                .is_some_and(|(actual, expected)| actual <= expected)
+            || self.value_width_fits(actual, expected)
             || (self.is_numeric(actual) && self.base_type(actual) == self.base_type(expected))
             || self.function_type_assignable(actual, expected)
         {
@@ -11539,19 +12480,14 @@ impl Checker {
         };
         let result_width_fits = |actual: Ty, expected: Ty| {
             actual == expected
-                || self
-                    .ascii_max(actual)
-                    .zip(self.ascii_max(expected))
-                    .is_some_and(|(actual, expected)| actual <= expected)
+                || self.string_width_fits(actual, expected)
                 || matches!(
                     (&self.types[actual.0].kind, &self.types[expected.0].kind),
                     (
                         TTypeKind::Result(actual_ok, actual_error),
                         TTypeKind::Result(expected_ok, expected_error)
                     ) if actual_error == expected_error
-                        && self.ascii_max(*actual_ok)
-                            .zip(self.ascii_max(*expected_ok))
-                            .is_some_and(|(actual, expected)| actual <= expected)
+                        && self.string_width_fits(*actual_ok, *expected_ok)
                 )
         };
         let result_fits =
@@ -11832,6 +12768,9 @@ impl Checker {
 
     fn check_store(&mut self, expr: &Expr, target: Ty) -> Result<TExpr, CheckError> {
         let typed = self.check_expr(expr, Some(target))?;
+        if typed_expr_contains_bytes_view(&typed) {
+            return Err(bytes_view_escape_error(expr.span));
+        }
         self.coerce_store_hint(typed, target, &source_hint(expr))
     }
 
@@ -11847,11 +12786,7 @@ impl Checker {
                 ..value
             });
         }
-        if self
-            .ascii_max(value.ty)
-            .zip(self.ascii_max(target))
-            .is_some_and(|(actual, expected)| actual <= expected)
-        {
+        if self.value_width_fits(value.ty, target) {
             return Ok(TExpr {
                 ty: target,
                 ..value
@@ -12050,7 +12985,7 @@ impl Checker {
                         continue;
                     };
                     if function.is_test
-                        || function.result != *result
+                        || !self.function_result_fits(function.result, *result)
                         || function.params.len() != params.len()
                         || !function
                             .params
@@ -12616,8 +13551,13 @@ fn check_recursive_region_expr(
             value: receiver, ..
         }
         | TExprKind::AsciiUpper(receiver)
+        | TExprKind::TextUpper(receiver)
         | TExprKind::AsciiFormat(receiver)
         | TExprKind::AsciiCast(receiver)
+        | TExprKind::BytesView(receiver)
+        | TExprKind::TextConvert {
+            value: receiver, ..
+        }
         | TExprKind::Take(receiver)
         | TExprKind::Cast {
             value: receiver, ..
@@ -12639,6 +13579,20 @@ fn check_recursive_region_expr(
             }
         }
         TExprKind::Fill { value, .. } => recurse(value, active_regions)?,
+        TExprKind::TextSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::BytesSlice {
+            receiver,
+            start,
+            end,
+        } => {
+            recurse(receiver, active_regions)?;
+            recurse(start, active_regions)?;
+            recurse(end, active_regions)?;
+        }
         TExprKind::CollectionOp { receiver, args, .. }
         | TExprKind::PoolOp { receiver, args, .. }
         | TExprKind::MapOp { receiver, args, .. }
@@ -12724,7 +13678,9 @@ fn check_recursive_region_expr(
         | TExprKind::EmptyGrid
         | TExprKind::EmptyQueue
         | TExprKind::EmptyRing
-        | TExprKind::AsciiEmpty => {}
+        | TExprKind::AsciiEmpty
+        | TExprKind::TextEmpty
+        | TExprKind::BytesEmpty => {}
         TExprKind::AsciiFit { value, .. } => recurse(value, active_regions)?,
         TExprKind::AsciiTryAppend { receiver, argument } => {
             recurse(receiver, active_regions)?;
@@ -13330,12 +14286,29 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         | TExprKind::Fit { value, .. }
         | TExprKind::Try { value, .. }
         | TExprKind::AsciiUpper(value)
+        | TExprKind::TextUpper(value)
         | TExprKind::AsciiFormat(value)
         | TExprKind::AsciiCast(value)
+        | TExprKind::BytesView(value)
+        | TExprKind::TextConvert { value, .. }
         | TExprKind::Take(value)
         | TExprKind::Cast { value, .. }
         | TExprKind::Unary { value, .. } => collect_global_expr_effects(value, effects, functions),
         TExprKind::AsciiFit { value, .. } => collect_global_expr_effects(value, effects, functions),
+        TExprKind::TextSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::BytesSlice {
+            receiver,
+            start,
+            end,
+        } => {
+            collect_global_expr_effects(receiver, effects, functions);
+            collect_global_expr_effects(start, effects, functions);
+            collect_global_expr_effects(end, effects, functions);
+        }
         TExprKind::Coalesce { option, fallback } => {
             collect_global_expr_effects(option, effects, functions);
             collect_global_expr_effects(fallback, effects, functions);
@@ -13382,7 +14355,9 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         | TExprKind::EmptyGrid
         | TExprKind::EmptyQueue
         | TExprKind::EmptyRing
-        | TExprKind::AsciiEmpty => {}
+        | TExprKind::AsciiEmpty
+        | TExprKind::TextEmpty
+        | TExprKind::BytesEmpty => {}
     }
 }
 
@@ -13508,8 +14483,13 @@ fn visit_global_calls_expr(
             value: receiver, ..
         }
         | TExprKind::AsciiUpper(receiver)
+        | TExprKind::TextUpper(receiver)
         | TExprKind::AsciiFormat(receiver)
         | TExprKind::AsciiCast(receiver)
+        | TExprKind::BytesView(receiver)
+        | TExprKind::TextConvert {
+            value: receiver, ..
+        }
         | TExprKind::Take(receiver)
         | TExprKind::Cast {
             value: receiver, ..
@@ -13535,6 +14515,20 @@ fn visit_global_calls_expr(
         }
         TExprKind::Fill { value, .. } => visit_global_calls_expr(value, active_views, check)?,
         TExprKind::AsciiFit { value, .. } => visit_global_calls_expr(value, active_views, check)?,
+        TExprKind::TextSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::BytesSlice {
+            receiver,
+            start,
+            end,
+        } => {
+            visit_global_calls_expr(receiver, active_views, check)?;
+            visit_global_calls_expr(start, active_views, check)?;
+            visit_global_calls_expr(end, active_views, check)?;
+        }
         TExprKind::AsciiTryAppend { receiver, argument } => {
             visit_global_calls_expr(receiver, active_views, check)?;
             visit_global_calls_expr(argument, active_views, check)?;
@@ -13600,7 +14594,9 @@ fn visit_global_calls_expr(
         | TExprKind::EmptyQueue
         | TExprKind::EmptyRing
         | TExprKind::LoopExit(_)
-        | TExprKind::AsciiEmpty => {}
+        | TExprKind::AsciiEmpty
+        | TExprKind::TextEmpty
+        | TExprKind::BytesEmpty => {}
     }
     Ok(())
 }
@@ -13758,6 +14754,50 @@ fn negate_comparison(op: BinaryOp) -> BinaryOp {
         BinaryOp::Eq => BinaryOp::Ne,
         BinaryOp::Ne => BinaryOp::Eq,
         other => other,
+    }
+}
+
+fn bytes_view_escape_error(span: Span) -> CheckError {
+    CheckError {
+        span,
+        message: "a .bytes() view is temporary and cannot be stored or returned".to_owned(),
+    }
+}
+
+fn typed_expr_contains_bytes_view(expr: &TExpr) -> bool {
+    let block_tail_contains = |block: &TBlock| {
+        block
+            .tail
+            .as_deref()
+            .is_some_and(typed_expr_contains_bytes_view)
+    };
+    match &expr.kind {
+        TExprKind::BytesView(_) => true,
+        TExprKind::Construct { args, .. } => args.iter().any(typed_expr_contains_bytes_view),
+        TExprKind::StructConstruct { fields } => fields
+            .iter()
+            .any(|(_, value)| typed_expr_contains_bytes_view(value)),
+        TExprKind::Coalesce { option, fallback } => {
+            typed_expr_contains_bytes_view(option) || typed_expr_contains_bytes_view(fallback)
+        }
+        TExprKind::Try { value, .. }
+        | TExprKind::Return(Some(value))
+        | TExprKind::Take(value)
+        | TExprKind::Field {
+            receiver: value, ..
+        }
+        | TExprKind::Index {
+            receiver: value, ..
+        } => typed_expr_contains_bytes_view(value),
+        TExprKind::Match { arms, .. } => arms.iter().any(|arm| block_tail_contains(&arm.body)),
+        TExprKind::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            block_tail_contains(then_block) || else_block.as_ref().is_some_and(block_tail_contains)
+        }
+        _ => false,
     }
 }
 

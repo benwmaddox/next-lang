@@ -162,6 +162,8 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare void @nl_claim_memory(ptr, i64, i64, i1 zeroext)\n");
     out.push_str("declare i32 @nl_test_selected_index()\n");
     out.push_str("declare void @nl_set_test_mode()\n");
+    out.push_str("declare void @nl_test_var_storage_reset()\n");
+    out.push_str("declare void @nl_test_var_storage_note(ptr, ptr, i64)\n");
     out.push_str("declare void @nl_expect_fail_compare(i32, i32, i32, ptr, i64, i64, i32)\n");
     out.push_str("declare void @nl_expect_fail_bool(i32, i32, i32, ptr)\n");
     out.push_str("declare void @nl_print_int(i32)\n");
@@ -176,6 +178,13 @@ pub fn emit(program: &TProgram) -> String {
     out.push_str("declare i64 @nl_hash_ascii(ptr, i64, i64)\n");
     out.push_str("declare i64 @nl_ascii_format_i64(i64, ptr)\n");
     out.push_str("declare void @nl_ascii_upper_copy(ptr, ptr, i64)\n");
+    out.push_str("declare i32 @nl_utf8_count(ptr, i64, ptr)\n");
+    out.push_str("declare i64 @nl_utf8_offset(ptr, i64, i64)\n");
+    out.push_str("declare i64 @nl_text_upper_copy(ptr, i64, ptr, ptr)\n");
+    out.push_str("declare i32 @nl_bytes_are_ascii(ptr, i64)\n");
+    out.push_str(
+        "declare void @nl_fs_read_string(ptr, ptr, i32, i64, ptr, i64, i32, i64, ptr, ptr, ptr)\n",
+    );
     out.push_str("declare void @nl_print_newline()\n");
     out.push_str("declare void @nl_print_arg(ptr)\n");
     out.push_str("declare void @nl_print_set_fd(i32)\n");
@@ -193,16 +202,23 @@ pub fn emit(program: &TProgram) -> String {
     out.push('\n');
     let mut size_cache = vec![None; program.types.len()];
     out.push_str("%nl.ascii = type <{ ptr, i64 }>\n");
+    out.push_str("%nl.text = type <{ ptr, i64, i64 }>\n");
+    out.push_str("%nl.bytes = type <{ ptr, i64 }>\n");
     out.push_str("%nl.option.ascii = type { i32, [16 x i8] }\n");
+    out.push_str("%nl.option.text = type { i32, [24 x i8] }\n");
+    out.push_str("%nl.option.bytes = type { i32, [16 x i8] }\n");
     for (id, ty) in program.types.iter().enumerate().skip(5) {
         match &ty.kind {
             TTypeKind::Refinement { .. }
             | TTypeKind::Id { .. }
             | TTypeKind::Function { .. }
             | TTypeKind::Capability(_) => {}
-            TTypeKind::Ascii { .. } => {}
+            TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. } => {}
             TTypeKind::Option(inner)
-                if matches!(program.types[inner.0].kind, TTypeKind::Ascii { .. }) => {}
+                if matches!(
+                    program.types[inner.0].kind,
+                    TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. }
+                ) => {}
             TTypeKind::Struct(fields) => {
                 let fields = fields
                     .iter()
@@ -215,13 +231,14 @@ pub fn emit(program: &TProgram) -> String {
                 ));
             }
             TTypeKind::Array { element, capacity } => {
-                let lanes = collection_lane_types(*element, &program.types)
+                let mut lanes = collection_lane_types(*element, &program.types)
                     .iter()
                     .map(|lane| format!("[{} x {}]", capacity, llvm_type(*lane, &program.types)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                    .collect::<Vec<_>>();
+                lanes.extend(collection_var_pool_field_types(Ty(id), &program.types));
                 out.push_str(&format!(
-                    "%nl.ty.{id} = type <{{ {lanes} }}> ; {}\n",
+                    "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
+                    lanes.join(", "),
                     ty.name
                 ));
             }
@@ -234,6 +251,7 @@ pub fn emit(program: &TProgram) -> String {
                             format!("[{} x {}]", capacity, llvm_type(*lane, &program.types))
                         }),
                 );
+                lanes.extend(collection_var_pool_field_types(Ty(id), &program.types));
                 out.push_str(&format!(
                     "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
                     lanes.join(", "),
@@ -249,6 +267,7 @@ pub fn emit(program: &TProgram) -> String {
                             format!("[{} x {}]", capacity, llvm_type(*lane, &program.types))
                         }),
                 );
+                lanes.extend(collection_var_pool_field_types(Ty(id), &program.types));
                 out.push_str(&format!(
                     "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
                     lanes.join(", "),
@@ -258,13 +277,14 @@ pub fn emit(program: &TProgram) -> String {
             TTypeKind::Grid {
                 element, capacity, ..
             } => {
-                let lanes = collection_lane_types(*element, &program.types)
+                let mut lanes = collection_lane_types(*element, &program.types)
                     .iter()
                     .map(|lane| format!("[{} x {}]", capacity, llvm_type(*lane, &program.types)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                    .collect::<Vec<_>>();
+                lanes.extend(collection_var_pool_field_types(Ty(id), &program.types));
                 out.push_str(&format!(
-                    "%nl.ty.{id} = type <{{ {lanes} }}> ; {}\n",
+                    "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
+                    lanes.join(", "),
                     ty.name
                 ));
             }
@@ -273,40 +293,40 @@ pub fn emit(program: &TProgram) -> String {
                 value,
                 capacity,
             } => {
-                let ascii_key_storage = match program.types[key.0].kind {
-                    TTypeKind::Ascii { max_bytes } => {
-                        format!(", [{} x [{} x i8]]", capacity, max_bytes)
-                    }
-                    _ => String::new(),
-                };
+                let mut fields = vec![
+                    "i64".to_owned(),
+                    "i64".to_owned(),
+                    format!("[{capacity} x i1]"),
+                    format!("[{capacity} x i64]"),
+                    format!("[{capacity} x i64]"),
+                    format!("[{capacity} x {}]", llvm_type(*key, &program.types)),
+                    format!("[{capacity} x {}]", llvm_type(*value, &program.types)),
+                ];
+                if let TTypeKind::Ascii { max_bytes } = program.types[key.0].kind {
+                    fields.push(format!("[{capacity} x [{max_bytes} x i8]]"));
+                }
+                fields.extend(collection_var_pool_field_types(Ty(id), &program.types));
                 out.push_str(&format!(
-                    "%nl.ty.{id} = type <{{ i64, i64, [{} x i1], [{} x i64], [{} x i64], [{} x {}], [{} x {}]{} }}> ; {}\n",
-                    capacity,
-                    capacity,
-                    capacity,
-                    capacity,
-                    llvm_type(*key, &program.types),
-                    capacity,
-                    llvm_type(*value, &program.types),
-                    ascii_key_storage,
+                    "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
+                    fields.join(", "),
                     ty.name
                 ));
             }
             TTypeKind::Set { key, capacity } => {
-                let ascii_key_storage = match program.types[key.0].kind {
-                    TTypeKind::Ascii { max_bytes } => {
-                        format!(", [{} x [{} x i8]]", capacity, max_bytes)
-                    }
-                    _ => String::new(),
-                };
+                let mut fields = vec![
+                    "i64".to_owned(),
+                    "i64".to_owned(),
+                    format!("[{capacity} x i1]"),
+                    format!("[{capacity} x i64]"),
+                    format!("[{capacity} x i64]"),
+                    format!("[{capacity} x {}]", llvm_type(*key, &program.types)),
+                ];
+                if let TTypeKind::Ascii { max_bytes } = program.types[key.0].kind {
+                    fields.push(format!("[{capacity} x [{max_bytes} x i8]]"));
+                }
                 out.push_str(&format!(
-                    "%nl.ty.{id} = type <{{ i64, i64, [{} x i1], [{} x i64], [{} x i64], [{} x {}]{} }}> ; {}\n",
-                    capacity,
-                    capacity,
-                    capacity,
-                    capacity,
-                    llvm_type(*key, &program.types),
-                    ascii_key_storage,
+                    "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
+                    fields.join(", "),
                     ty.name
                 ));
             }
@@ -328,6 +348,7 @@ pub fn emit(program: &TProgram) -> String {
                             format!("[{} x {}]", capacity, llvm_type(*lane, &program.types))
                         }),
                 );
+                fields.extend(collection_var_pool_field_types(Ty(id), &program.types));
                 out.push_str(&format!(
                     "%nl.ty.{id} = type <{{ {} }}> ; {}\n",
                     fields.join(", "),
@@ -924,8 +945,11 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 own = own.saturating_add(expression_scratch(receiver, types));
             }
             TExprKind::AsciiUpper(value)
+            | TExprKind::TextUpper(value)
             | TExprKind::AsciiFormat(value)
             | TExprKind::AsciiCast(value)
+            | TExprKind::BytesView(value)
+            | TExprKind::TextConvert { value, .. }
             | TExprKind::Take(value)
             | TExprKind::AsciiFit { value, .. } => {
                 own = own.saturating_add(expression_scratch(value, types));
@@ -935,7 +959,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 own = own.saturating_add(expression_scratch(argument, types));
                 own = own.saturating_add(large_storage(argument.ty, 1, types));
             }
-            TExprKind::AsciiEmpty => {}
+            TExprKind::AsciiEmpty | TExprKind::TextEmpty | TExprKind::BytesEmpty => {}
             TExprKind::Field { receiver, .. } => {
                 own = own.saturating_add(expression_scratch(receiver, types));
             }
@@ -1054,6 +1078,20 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                         &mut vec![false; types.len()],
                     ));
                 }
+            }
+            TExprKind::TextSlice {
+                receiver,
+                start,
+                end,
+            }
+            | TExprKind::BytesSlice {
+                receiver,
+                start,
+                end,
+            } => {
+                own = own.saturating_add(expression_scratch(receiver, types));
+                own = own.saturating_add(expression_scratch(start, types));
+                own = own.saturating_add(expression_scratch(end, types));
             }
             TExprKind::If {
                 condition,
@@ -1448,8 +1486,11 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         }
         TExprKind::Method { receiver, .. } => collect_expect_sources_expr(receiver, sources),
         TExprKind::AsciiUpper(value)
+        | TExprKind::TextUpper(value)
         | TExprKind::AsciiFormat(value)
         | TExprKind::AsciiCast(value)
+        | TExprKind::BytesView(value)
+        | TExprKind::TextConvert { value, .. }
         | TExprKind::Take(value)
         | TExprKind::AsciiFit { value, .. } => collect_expect_sources_expr(value, sources),
         TExprKind::AsciiTryAppend { receiver, argument } => {
@@ -1471,6 +1512,20 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
             }
         }
         TExprKind::Fill { value, .. } => collect_expect_sources_expr(value, sources),
+        TExprKind::TextSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::BytesSlice {
+            receiver,
+            start,
+            end,
+        } => {
+            collect_expect_sources_expr(receiver, sources);
+            collect_expect_sources_expr(start, sources);
+            collect_expect_sources_expr(end, sources);
+        }
         TExprKind::CollectionOp { receiver, args, .. }
         | TExprKind::PoolOp { receiver, args, .. }
         | TExprKind::MapOp { receiver, args, .. }
@@ -1549,7 +1604,9 @@ fn collect_expect_sources_expr(expr: &TExpr, sources: &mut Vec<String>) {
         | TExprKind::EmptyGrid
         | TExprKind::EmptyQueue
         | TExprKind::EmptyRing
-        | TExprKind::AsciiEmpty => {}
+        | TExprKind::AsciiEmpty
+        | TExprKind::TextEmpty
+        | TExprKind::BytesEmpty => {}
     }
 }
 
@@ -1586,6 +1643,137 @@ fn collection_lane_types(element: Ty, types: &[TType]) -> Vec<Ty> {
     }
 }
 
+#[derive(Clone)]
+struct CollectionVarClass {
+    bytes: usize,
+    storage_field: usize,
+    next_field: usize,
+    free_count_field: usize,
+    free_stack_field: usize,
+}
+
+#[derive(Clone)]
+struct CollectionVarLane {
+    lane: usize,
+    ty: Ty,
+    classes: Vec<CollectionVarClass>,
+}
+
+fn collection_capacity(ty: Ty, types: &[TType]) -> Option<usize> {
+    match types.get(ty.0)?.kind {
+        TTypeKind::Array { capacity, .. }
+        | TTypeKind::List { capacity, .. }
+        | TTypeKind::Queue { capacity, .. }
+        | TTypeKind::Ring { capacity, .. }
+        | TTypeKind::Grid { capacity, .. }
+        | TTypeKind::Pool { capacity, .. }
+        | TTypeKind::Map { capacity, .. }
+        | TTypeKind::Set { capacity, .. } => Some(capacity),
+        _ => None,
+    }
+}
+
+fn collection_var_lanes(ty: Ty, types: &[TType]) -> Vec<CollectionVarLane> {
+    let capacity = collection_capacity(ty, types).unwrap_or(0);
+    let source = match types[ty.0].kind {
+        TTypeKind::Array { element, .. }
+        | TTypeKind::List { element, .. }
+        | TTypeKind::Queue { element, .. }
+        | TTypeKind::Ring { element, .. }
+        | TTypeKind::Grid { element, .. }
+        | TTypeKind::Pool { element, .. } => Some(element),
+        TTypeKind::Map { value, .. } => Some(value),
+        _ => None,
+    };
+    if capacity == 0 {
+        return Vec::new();
+    }
+    let Some(source) = source else {
+        return Vec::new();
+    };
+    let mut layouts = Vec::new();
+    for lane in growing_collection_lanes(ty, types).unwrap_or_default() {
+        let _ = source;
+        let mut classes = Vec::new();
+        for bytes in lane.class_bytes {
+            classes.push(CollectionVarClass {
+                bytes,
+                storage_field: 0,
+                next_field: 0,
+                free_count_field: 0,
+                free_stack_field: 0,
+            });
+        }
+        layouts.push(CollectionVarLane {
+            lane: lane.lane,
+            ty: lane.ty,
+            classes,
+        });
+    }
+    let kind = &types[ty.0].kind;
+    let mut field = match kind {
+        TTypeKind::Array { .. } | TTypeKind::Grid { .. } => {
+            collection_lane_types(source, types).len()
+        }
+        TTypeKind::List { .. } => 1 + collection_lane_types(source, types).len(),
+        TTypeKind::Queue { .. } | TTypeKind::Ring { .. } => {
+            2 + collection_lane_types(source, types).len()
+        }
+        TTypeKind::Pool { .. } => 6 + collection_lane_types(source, types).len(),
+        TTypeKind::Map { key, .. } => {
+            7 + usize::from(matches!(types[key.0].kind, TTypeKind::Ascii { .. }))
+        }
+        TTypeKind::Set { .. } => return Vec::new(),
+        _ => return Vec::new(),
+    };
+    for lane in &mut layouts {
+        for class in &mut lane.classes {
+            class.storage_field = field;
+            class.next_field = field + 1;
+            class.free_count_field = field + 2;
+            class.free_stack_field = field + 3;
+            field += 4;
+        }
+    }
+    layouts
+}
+
+fn collection_var_lane(ty: Ty, types: &[TType], lane: usize) -> Option<CollectionVarLane> {
+    collection_var_lanes(ty, types)
+        .into_iter()
+        .find(|layout| layout.lane == lane)
+}
+
+fn collection_var_pool_field_types(ty: Ty, types: &[TType]) -> Vec<String> {
+    let capacity = collection_capacity(ty, types).unwrap_or(0);
+    let mut fields = Vec::new();
+    for lane in collection_var_lanes(ty, types) {
+        for class in lane.classes {
+            fields.extend([
+                format!("[{capacity} x [{} x i8]]", class.bytes),
+                "i64".to_owned(),
+                "i64".to_owned(),
+                format!("[{capacity} x i64]"),
+            ]);
+        }
+    }
+    fields
+}
+
+fn collection_var_pool_extra_size(ty: Ty, types: &[TType]) -> usize {
+    let capacity = collection_capacity(ty, types).unwrap_or(0);
+    collection_var_lanes(ty, types)
+        .into_iter()
+        .flat_map(|lane| lane.classes)
+        .map(|class| {
+            capacity
+                .saturating_mul(class.bytes)
+                .saturating_add(16)
+                .saturating_add(capacity.saturating_mul(8))
+        })
+        .fold(0usize, usize::saturating_add)
+}
+
 fn collection_element_type(collection: Ty, types: &[TType]) -> Ty {
     match types[collection.0].kind {
         TTypeKind::Array { element, .. }
@@ -1612,7 +1800,8 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
             }
             let size = match &types[id].kind {
                 TTypeKind::Refinement { base, .. } => type_size(*base, types, cache),
-                TTypeKind::Ascii { .. } => 16,
+                TTypeKind::Ascii { .. } | TTypeKind::Bytes { .. } => 16,
+                TTypeKind::Text { .. } => 24,
                 TTypeKind::Struct(fields) => fields
                     .iter()
                     .map(|field| type_size(field.ty, types, cache))
@@ -1620,27 +1809,35 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
                 TTypeKind::Array { element, capacity } => collection_lane_types(*element, types)
                     .iter()
                     .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
-                    .sum(),
-                TTypeKind::List { element, capacity } => 8usize.saturating_add(
-                    collection_lane_types(*element, types)
-                        .iter()
-                        .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
-                        .sum::<usize>(),
-                ),
-                TTypeKind::Queue { element, capacity } | TTypeKind::Ring { element, capacity } => {
-                    16usize.saturating_add(
+                    .sum::<usize>()
+                    .saturating_add(collection_var_pool_extra_size(Ty(id), types)),
+                TTypeKind::List { element, capacity } => 8usize
+                    .saturating_add(
                         collection_lane_types(*element, types)
                             .iter()
                             .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
                             .sum::<usize>(),
                     )
+                    .saturating_add(collection_var_pool_extra_size(Ty(id), types)),
+                TTypeKind::Queue { element, capacity } | TTypeKind::Ring { element, capacity } => {
+                    16usize
+                        .saturating_add(
+                            collection_lane_types(*element, types)
+                                .iter()
+                                .map(|lane| {
+                                    type_size(*lane, types, cache).saturating_mul(*capacity)
+                                })
+                                .sum::<usize>(),
+                        )
+                        .saturating_add(collection_var_pool_extra_size(Ty(id), types))
                 }
                 TTypeKind::Grid {
                     element, capacity, ..
                 } => collection_lane_types(*element, types)
                     .iter()
                     .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
-                    .sum(),
+                    .sum::<usize>()
+                    .saturating_add(collection_var_pool_extra_size(Ty(id), types)),
                 TTypeKind::Map {
                     key,
                     value,
@@ -1659,6 +1856,7 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
                             ),
                         )
                         .saturating_add(key_storage)
+                        .saturating_add(collection_var_pool_extra_size(Ty(id), types))
                 }
                 TTypeKind::Set { key, capacity } => {
                     let key_storage = match types[key.0].kind {
@@ -1672,6 +1870,7 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
                             ),
                         )
                         .saturating_add(key_storage)
+                        .saturating_add(collection_var_pool_extra_size(Ty(id), types))
                 }
                 TTypeKind::Pool {
                     element, capacity, ..
@@ -1682,7 +1881,8 @@ fn type_size(ty: Ty, types: &[TType], cache: &mut [Option<usize>]) -> usize {
                             .iter()
                             .map(|lane| type_size(*lane, types, cache).saturating_mul(*capacity))
                             .sum::<usize>(),
-                    ),
+                    )
+                    .saturating_add(collection_var_pool_extra_size(Ty(id), types)),
                 TTypeKind::Id { .. } | TTypeKind::Capability(_) => 8,
                 TTypeKind::Function { .. } => 8,
                 _ => {
@@ -1719,6 +1919,7 @@ fn contains_lazy_collection(ty: Ty, types: &[TType], active: &mut [bool]) -> boo
         | TTypeKind::Pool { .. } => true,
         TTypeKind::Array { element, .. } | TTypeKind::Grid { element, .. } => {
             contains_lazy_collection(*element, types, active)
+                || contains_growing_value(*element, types, &mut vec![false; types.len()])
         }
         TTypeKind::Struct(fields) => fields
             .iter()
@@ -1746,7 +1947,10 @@ fn contains_growing_value(ty: Ty, types: &[TType], active: &mut [bool]) -> bool 
     }
     active[ty.0] = true;
     let contains = match &types[ty.0].kind {
-        TTypeKind::Ascii { .. } => true,
+        TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. } => true,
+        TTypeKind::Array { element, .. } | TTypeKind::Grid { element, .. } => {
+            contains_growing_value(*element, types, active)
+        }
         TTypeKind::Struct(fields) => fields
             .iter()
             .any(|field| contains_growing_value(field.ty, types, active)),
@@ -1775,7 +1979,8 @@ fn growing_value_extra(ty: Ty, types: &[TType], active: &mut [bool]) -> usize {
     }
     active[ty.0] = true;
     let extra = match &types[ty.0].kind {
-        TTypeKind::Ascii { max_bytes } => *max_bytes,
+        TTypeKind::Ascii { max_bytes } | TTypeKind::Bytes { max_bytes } => *max_bytes,
+        TTypeKind::Text { max_bytes, .. } => *max_bytes,
         TTypeKind::Struct(fields) => fields.iter().fold(0usize, |total, field| {
             total.saturating_add(growing_value_extra(field.ty, types, active))
         }),
@@ -2145,8 +2350,11 @@ fn growing_ascii_locals(
                 visit_expr(argument, program, growing, moves);
             }
             TExprKind::AsciiUpper(value)
+            | TExprKind::TextUpper(value)
             | TExprKind::AsciiFormat(value)
             | TExprKind::AsciiCast(value)
+            | TExprKind::BytesView(value)
+            | TExprKind::TextConvert { value, .. }
             | TExprKind::Take(value)
             | TExprKind::OptionalToLong(value)
             | TExprKind::Fill { value, .. }
@@ -2157,6 +2365,20 @@ fn growing_ascii_locals(
             | TExprKind::Cast { value, .. }
             | TExprKind::Unary { value, .. } => visit_expr(value, program, growing, moves),
             TExprKind::AsciiFit { value, .. } => visit_expr(value, program, growing, moves),
+            TExprKind::TextSlice {
+                receiver,
+                start,
+                end,
+            }
+            | TExprKind::BytesSlice {
+                receiver,
+                start,
+                end,
+            } => {
+                visit_expr(receiver, program, growing, moves);
+                visit_expr(start, program, growing, moves);
+                visit_expr(end, program, growing, moves);
+            }
             TExprKind::Method { receiver, .. } | TExprKind::Field { receiver, .. } => {
                 visit_expr(receiver, program, growing, moves)
             }
@@ -2218,6 +2440,8 @@ fn growing_ascii_locals(
                 }
             }
             TExprKind::AsciiEmpty
+            | TExprKind::TextEmpty
+            | TExprKind::BytesEmpty
             | TExprKind::Unit
             | TExprKind::Integer(_)
             | TExprKind::Bool(_)
@@ -2373,7 +2597,9 @@ fn llvm_constant(ty: Ty, value: &ConstValue, types: &[TType], functions: &[TFunc
             _ => unreachable!("function value constant has a non-function value"),
         },
         TTypeKind::Capability(_) => unreachable!("capabilities cannot be constants"),
-        TTypeKind::Ascii { .. } => unreachable!("Ascii constants are not supported"),
+        TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. } => {
+            unreachable!("growing text constants are not supported")
+        }
         TTypeKind::Struct(fields) => {
             let ConstValue::Struct(values) = value else {
                 unreachable!("struct constant has a non-struct value")
@@ -2823,7 +3049,9 @@ fn serialize_constant(
             bytes.push(u8::from(*value));
         }
         TTypeKind::Unit | TTypeKind::Never => {}
-        TTypeKind::Ascii { .. } => unreachable!("Ascii constants are not supported"),
+        TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. } => {
+            unreachable!("growing text constants are not supported")
+        }
         TTypeKind::Id { .. } => {
             let ConstValue::Integer(value) = value else {
                 unreachable!("id constant has a non-integer value")
@@ -3592,10 +3820,27 @@ impl<'a> FunctionEmitter<'a> {
             }
             TExprKind::Method { receiver, .. } => self.collect_expr(receiver),
             TExprKind::AsciiUpper(value)
+            | TExprKind::TextUpper(value)
             | TExprKind::AsciiFormat(value)
             | TExprKind::AsciiCast(value)
             | TExprKind::Take(value)
+            | TExprKind::BytesView(value)
+            | TExprKind::TextConvert { value, .. }
             | TExprKind::AsciiFit { value, .. } => self.collect_expr(value),
+            TExprKind::TextSlice {
+                receiver,
+                start,
+                end,
+            }
+            | TExprKind::BytesSlice {
+                receiver,
+                start,
+                end,
+            } => {
+                self.collect_expr(receiver);
+                self.collect_expr(start);
+                self.collect_expr(end);
+            }
             TExprKind::AsciiTryAppend { receiver, argument } => {
                 self.collect_expr(receiver);
                 self.collect_expr(argument);
@@ -3705,7 +3950,9 @@ impl<'a> FunctionEmitter<'a> {
             | TExprKind::EmptyGrid
             | TExprKind::EmptyQueue
             | TExprKind::EmptyRing
-            | TExprKind::AsciiEmpty => {}
+            | TExprKind::AsciiEmpty
+            | TExprKind::TextEmpty
+            | TExprKind::BytesEmpty => {}
         }
     }
 
@@ -3795,6 +4042,437 @@ impl<'a> FunctionEmitter<'a> {
         }
     }
 
+    fn emit_collection_var_field_ptr(
+        &mut self,
+        collection_ty: Ty,
+        pointer: &str,
+        field: usize,
+    ) -> String {
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 {field}",
+            self.lltype(collection_ty)
+        ));
+        result
+    }
+
+    fn emit_collection_var_slot_ptr(
+        &mut self,
+        collection_ty: Ty,
+        pointer: &str,
+        class: &CollectionVarClass,
+        slot: &str,
+    ) -> String {
+        let capacity = collection_capacity(collection_ty, &self.program.types).unwrap_or(0);
+        let storage =
+            self.emit_collection_var_field_ptr(collection_ty, pointer, class.storage_field);
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = getelementptr inbounds [{} x [{} x i8]], ptr {storage}, i32 0, i64 {slot}",
+            capacity, class.bytes
+        ));
+        result
+    }
+
+    fn emit_var_lane_old_slot_class(
+        &mut self,
+        collection_ty: Ty,
+        pointer: &str,
+        lane: usize,
+        old_data: &str,
+        require_fit: Option<&str>,
+    ) -> String {
+        let capacity = collection_capacity(collection_ty, &self.program.types).unwrap_or(0);
+        let Some(layout) = collection_var_lane(collection_ty, &self.program.types, lane) else {
+            return "false".to_owned();
+        };
+        let old_int = self.temp();
+        self.instruction(format!("{old_int} = ptrtoint ptr {old_data} to i64"));
+        let mut matched = "false".to_owned();
+        for class in layout.classes {
+            let base =
+                self.emit_collection_var_field_ptr(collection_ty, pointer, class.storage_field);
+            let base_int = self.temp();
+            self.instruction(format!("{base_int} = ptrtoint ptr {base} to i64"));
+            let end_int = self.temp();
+            self.instruction(format!(
+                "{end_int} = add i64 {base_int}, {}",
+                capacity.saturating_mul(class.bytes)
+            ));
+            let after_start = self.temp();
+            self.instruction(format!(
+                "{after_start} = icmp uge i64 {old_int}, {base_int}"
+            ));
+            let before_end = self.temp();
+            self.instruction(format!("{before_end} = icmp ult i64 {old_int}, {end_int}"));
+            let mut in_class = self.temp();
+            self.instruction(format!("{in_class} = and i1 {after_start}, {before_end}"));
+            if let Some(length) = require_fit {
+                let fits = self.temp();
+                self.instruction(format!("{fits} = icmp ule i64 {length}, {}", class.bytes));
+                let both = self.temp();
+                self.instruction(format!("{both} = and i1 {in_class}, {fits}"));
+                in_class = both;
+            }
+            let either = self.temp();
+            self.instruction(format!("{either} = or i1 {matched}, {in_class}"));
+            matched = either;
+        }
+        matched
+    }
+
+    fn emit_free_var_lane_slot(
+        &mut self,
+        collection_ty: Ty,
+        pointer: &str,
+        lane: usize,
+        old_data: &str,
+    ) {
+        let capacity = collection_capacity(collection_ty, &self.program.types).unwrap_or(0);
+        let Some(layout) = collection_var_lane(collection_ty, &self.program.types, lane) else {
+            return;
+        };
+        let old_int = self.temp();
+        self.instruction(format!("{old_int} = ptrtoint ptr {old_data} to i64"));
+        let done = self.new_label("var.slot.free.done");
+        let mut next = self.new_label("var.slot.free.inspect");
+        self.terminate(format!("br label %{next}"));
+        for class in layout.classes {
+            self.start_block(&next);
+            let after_start = self.temp();
+            let base =
+                self.emit_collection_var_field_ptr(collection_ty, pointer, class.storage_field);
+            let base_int = self.temp();
+            self.instruction(format!("{base_int} = ptrtoint ptr {base} to i64"));
+            let end_int = self.temp();
+            self.instruction(format!(
+                "{end_int} = add i64 {base_int}, {}",
+                capacity.saturating_mul(class.bytes)
+            ));
+            self.instruction(format!(
+                "{after_start} = icmp uge i64 {old_int}, {base_int}"
+            ));
+            let before_end = self.temp();
+            self.instruction(format!("{before_end} = icmp ult i64 {old_int}, {end_int}"));
+            let member = self.temp();
+            self.instruction(format!("{member} = and i1 {after_start}, {before_end}"));
+            let free_label = self.new_label("var.slot.free.class");
+            let following = self.new_label("var.slot.free.next");
+            self.terminate(format!(
+                "br i1 {member}, label %{free_label}, label %{following}"
+            ));
+            self.start_block(&free_label);
+            if class.bytes > 64 {
+                let relative = self.temp();
+                self.instruction(format!("{relative} = sub i64 {old_int}, {base_int}"));
+                let slot = self.temp();
+                self.instruction(format!("{slot} = udiv i64 {relative}, {}", class.bytes));
+                let count_ptr = self.emit_collection_var_field_ptr(
+                    collection_ty,
+                    pointer,
+                    class.free_count_field,
+                );
+                let count = self.temp();
+                self.instruction(format!("{count} = load i64, ptr {count_ptr}, align 1"));
+                let stack_ptr = self.emit_collection_var_field_ptr(
+                    collection_ty,
+                    pointer,
+                    class.free_stack_field,
+                );
+                let item = self.temp();
+                self.instruction(format!(
+                    "{item} = getelementptr inbounds [{} x i64], ptr {stack_ptr}, i32 0, i64 {count}",
+                    capacity
+                ));
+                self.instruction(format!("store i64 {slot}, ptr {item}, align 1"));
+                let incremented = self.temp();
+                self.instruction(format!("{incremented} = add i64 {count}, 1"));
+                self.instruction(format!("store i64 {incremented}, ptr {count_ptr}, align 1"));
+            }
+            self.terminate(format!("br label %{done}"));
+            next = following;
+        }
+        self.start_block(&next);
+        self.terminate(format!("br label %{done}"));
+        self.start_block(&done);
+    }
+
+    fn emit_alloc_var_lane_slot(
+        &mut self,
+        collection_ty: Ty,
+        pointer: &str,
+        class: &CollectionVarClass,
+    ) -> String {
+        let capacity = collection_capacity(collection_ty, &self.program.types).unwrap_or(0);
+        let slot_ptr = self.entry_alloca(Ty::Long);
+        let count_ptr =
+            self.emit_collection_var_field_ptr(collection_ty, pointer, class.free_count_field);
+        let count = self.temp();
+        self.instruction(format!("{count} = load i64, ptr {count_ptr}, align 1"));
+        let has_free = self.temp();
+        self.instruction(format!("{has_free} = icmp ne i64 {count}, 0"));
+        let reuse = self.new_label("var.slot.alloc.free");
+        let fresh = self.new_label("var.slot.alloc.fresh");
+        let done = self.new_label("var.slot.alloc.done");
+        self.terminate(format!("br i1 {has_free}, label %{reuse}, label %{fresh}"));
+        self.start_block(&reuse);
+        let top = self.temp();
+        self.instruction(format!("{top} = sub i64 {count}, 1"));
+        let stack_ptr =
+            self.emit_collection_var_field_ptr(collection_ty, pointer, class.free_stack_field);
+        let stack_item = self.temp();
+        self.instruction(format!(
+            "{stack_item} = getelementptr inbounds [{} x i64], ptr {stack_ptr}, i32 0, i64 {top}",
+            capacity
+        ));
+        let slot = self.temp();
+        self.instruction(format!("{slot} = load i64, ptr {stack_item}, align 1"));
+        self.instruction(format!("store i64 {top}, ptr {count_ptr}, align 1"));
+        self.instruction(format!("store i64 {slot}, ptr {slot_ptr}, align 1"));
+        self.terminate(format!("br label %{done}"));
+        self.start_block(&fresh);
+        let next_ptr = self.emit_collection_var_field_ptr(collection_ty, pointer, class.next_field);
+        let next = self.temp();
+        self.instruction(format!("{next} = load i64, ptr {next_ptr}, align 1"));
+        let incremented = self.temp();
+        self.instruction(format!("{incremented} = add i64 {next}, 1"));
+        self.instruction(format!("store i64 {incremented}, ptr {next_ptr}, align 1"));
+        self.instruction(format!("store i64 {next}, ptr {slot_ptr}, align 1"));
+        self.terminate(format!("br label %{done}"));
+        self.start_block(&done);
+        let slot = self.temp();
+        self.instruction(format!("{slot} = load i64, ptr {slot_ptr}, align 1"));
+        self.emit_collection_var_slot_ptr(collection_ty, pointer, class, &slot)
+    }
+
+    fn emit_store_var_lane(
+        &mut self,
+        collection_ty: Ty,
+        collection_pointer: &str,
+        index: &str,
+        lane: usize,
+        source: &str,
+    ) {
+        let Some(layout) = collection_var_lane(collection_ty, &self.program.types, lane) else {
+            return;
+        };
+        let descriptor =
+            self.emit_collection_lane_pointer(collection_ty, collection_pointer, index, lane);
+        let old_data_field = self.temp();
+        self.instruction(format!(
+            "{old_data_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 0",
+            self.lltype(layout.ty)
+        ));
+        let old_data = self.temp();
+        self.instruction(format!(
+            "{old_data} = load ptr, ptr {old_data_field}, align 1"
+        ));
+        let source_data_field = self.temp();
+        self.instruction(format!(
+            "{source_data_field} = getelementptr {}, ptr {source}, i32 0, i32 0",
+            self.lltype(layout.ty)
+        ));
+        let source_data = self.temp();
+        self.instruction(format!(
+            "{source_data} = load ptr, ptr {source_data_field}, align 1"
+        ));
+        let source_len_field = self.temp();
+        self.instruction(format!(
+            "{source_len_field} = getelementptr {}, ptr {source}, i32 0, i32 1",
+            self.lltype(layout.ty)
+        ));
+        let source_len = self.temp();
+        self.instruction(format!(
+            "{source_len} = load i64, ptr {source_len_field}, align 1"
+        ));
+        let can_reuse = self.emit_var_lane_old_slot_class(
+            collection_ty,
+            collection_pointer,
+            lane,
+            &old_data,
+            Some(&source_len),
+        );
+        let chosen_ptr = self.entry_alloca_raw("ptr");
+        let reuse_flag = self.entry_alloca_raw("i1");
+        let reuse_label = self.new_label("var.store.reuse");
+        let allocate_label = self.new_label("var.store.allocate");
+        let select = self.new_label("var.store.select");
+        let done = self.new_label("var.store.done");
+        self.terminate(format!(
+            "br i1 {can_reuse}, label %{reuse_label}, label %{allocate_label}"
+        ));
+        self.start_block(&reuse_label);
+        self.instruction(format!("store ptr {old_data}, ptr {chosen_ptr}, align 1"));
+        self.instruction(format!("store i1 true, ptr {reuse_flag}, align 1"));
+        self.terminate(format!("br label %{select}"));
+        let mut selection = allocate_label;
+        for (class_index, class) in layout.classes.iter().enumerate() {
+            self.start_block(&selection);
+            if class_index + 1 == layout.classes.len() {
+                let slot = self.emit_alloc_var_lane_slot(collection_ty, collection_pointer, class);
+                self.instruction(format!("store ptr {slot}, ptr {chosen_ptr}, align 1"));
+                self.instruction(format!("store i1 false, ptr {reuse_flag}, align 1"));
+                self.terminate(format!("br label %{select}"));
+            } else {
+                let fits = self.temp();
+                self.instruction(format!(
+                    "{fits} = icmp ule i64 {source_len}, {}",
+                    class.bytes
+                ));
+                let selected = self.new_label("var.store.class");
+                let following = self.new_label("var.store.nextclass");
+                self.terminate(format!(
+                    "br i1 {fits}, label %{selected}, label %{following}"
+                ));
+                self.start_block(&selected);
+                let slot = self.emit_alloc_var_lane_slot(collection_ty, collection_pointer, class);
+                self.instruction(format!("store ptr {slot}, ptr {chosen_ptr}, align 1"));
+                self.instruction(format!("store i1 false, ptr {reuse_flag}, align 1"));
+                self.terminate(format!("br label %{select}"));
+                selection = following;
+            }
+        }
+        self.start_block(&select);
+        let target_data = self.temp();
+        self.instruction(format!(
+            "{target_data} = load ptr, ptr {chosen_ptr}, align 1"
+        ));
+        self.instruction(format!("call void @llvm.memmove.p0.p0.i64(ptr {target_data}, ptr {source_data}, i64 {source_len}, i1 false)"));
+        self.instruction(format!(
+            "store ptr {target_data}, ptr {old_data_field}, align 1"
+        ));
+        let destination_len_field = self.temp();
+        self.instruction(format!(
+            "{destination_len_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 1",
+            self.lltype(layout.ty)
+        ));
+        self.instruction(format!(
+            "store i64 {source_len}, ptr {destination_len_field}, align 1"
+        ));
+        if self.is_text_type(layout.ty) {
+            let source_chars_field = self.temp();
+            self.instruction(format!(
+                "{source_chars_field} = getelementptr {}, ptr {source}, i32 0, i32 2",
+                self.lltype(layout.ty)
+            ));
+            let source_chars = self.temp();
+            self.instruction(format!(
+                "{source_chars} = load i64, ptr {source_chars_field}, align 1"
+            ));
+            let destination_chars_field = self.temp();
+            self.instruction(format!(
+                "{destination_chars_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 2",
+                self.lltype(layout.ty)
+            ));
+            self.instruction(format!(
+                "store i64 {source_chars}, ptr {destination_chars_field}, align 1"
+            ));
+        }
+        let reused = self.temp();
+        self.instruction(format!("{reused} = load i1, ptr {reuse_flag}, align 1"));
+        let free_label = self.new_label("var.store.free.old");
+        self.terminate(format!(
+            "br i1 {reused}, label %{done}, label %{free_label}"
+        ));
+        self.start_block(&free_label);
+        self.emit_free_var_lane_slot(collection_ty, collection_pointer, lane, &old_data);
+        self.terminate(format!("br label %{done}"));
+        self.start_block(&done);
+        self.instruction(format!(
+            "call void @nl_test_var_storage_note(ptr {descriptor}, ptr {target_data}, i64 {source_len})"
+        ));
+    }
+
+    fn emit_empty_var_pools(&mut self, collection_ty: Ty, destination: &str) {
+        for class in collection_var_lanes(collection_ty, &self.program.types)
+            .into_iter()
+            .flat_map(|lane| lane.classes)
+        {
+            for field in [class.next_field, class.free_count_field] {
+                let field_ptr =
+                    self.emit_collection_var_field_ptr(collection_ty, destination, field);
+                self.instruction(format!("store i64 0, ptr {field_ptr}, align 1"));
+            }
+        }
+    }
+
+    fn emit_init_var_collection_element(
+        &mut self,
+        collection_ty: Ty,
+        destination: &str,
+        index: &str,
+    ) {
+        for lane in collection_var_lanes(collection_ty, &self.program.types) {
+            let descriptor =
+                self.emit_collection_lane_pointer(collection_ty, destination, index, lane.lane);
+            let data_field = self.temp();
+            self.instruction(format!(
+                "{data_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 0",
+                self.lltype(lane.ty)
+            ));
+            if let Some(inline) = lane.classes.iter().find(|class| class.bytes <= 64) {
+                let data =
+                    self.emit_collection_var_slot_ptr(collection_ty, destination, inline, index);
+                self.instruction(format!("store ptr {data}, ptr {data_field}, align 1"));
+            } else {
+                self.instruction(format!("store ptr null, ptr {data_field}, align 1"));
+            }
+            let length = self.temp();
+            self.instruction(format!(
+                "{length} = getelementptr {}, ptr {descriptor}, i32 0, i32 1",
+                self.lltype(lane.ty)
+            ));
+            self.instruction(format!("store i64 0, ptr {length}, align 1"));
+            if self.is_text_type(lane.ty) {
+                let chars = self.temp();
+                self.instruction(format!(
+                    "{chars} = getelementptr {}, ptr {descriptor}, i32 0, i32 2",
+                    self.lltype(lane.ty)
+                ));
+                self.instruction(format!("store i64 0, ptr {chars}, align 1"));
+            }
+        }
+    }
+
+    fn emit_clear_collection_element(&mut self, collection_ty: Ty, pointer: &str, index: &str) {
+        self.instruction("call void @nl_test_var_storage_reset()".to_owned());
+        for lane in collection_var_lanes(collection_ty, &self.program.types) {
+            let descriptor =
+                self.emit_collection_lane_pointer(collection_ty, pointer, index, lane.lane);
+            let data_field = self.temp();
+            self.instruction(format!(
+                "{data_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 0",
+                self.lltype(lane.ty)
+            ));
+            let data = self.temp();
+            self.instruction(format!("{data} = load ptr, ptr {data_field}, align 1"));
+            self.emit_free_var_lane_slot(collection_ty, pointer, lane.lane, &data);
+            if let Some(inline) = lane.classes.iter().find(|class| class.bytes <= 64) {
+                let inline_data =
+                    self.emit_collection_var_slot_ptr(collection_ty, pointer, inline, index);
+                self.instruction(format!(
+                    "store ptr {inline_data}, ptr {data_field}, align 1"
+                ));
+            } else {
+                self.instruction(format!("store ptr null, ptr {data_field}, align 1"));
+            }
+            let length_field = self.temp();
+            self.instruction(format!(
+                "{length_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 1",
+                self.lltype(lane.ty)
+            ));
+            self.instruction(format!("store i64 0, ptr {length_field}, align 1"));
+            if self.is_text_type(lane.ty) {
+                let chars_field = self.temp();
+                self.instruction(format!(
+                    "{chars_field} = getelementptr {}, ptr {descriptor}, i32 0, i32 2",
+                    self.lltype(lane.ty)
+                ));
+                self.instruction(format!("store i64 0, ptr {chars_field}, align 1"));
+            }
+        }
+    }
+
     fn emit_collection_element(&mut self, collection_ty: Ty, pointer: &str, index: &str) -> String {
         let element = match self.program.types[collection_ty.0].kind {
             TTypeKind::Array { element, .. }
@@ -3861,6 +4539,16 @@ impl<'a> FunctionEmitter<'a> {
             TTypeKind::Map { value, .. } => value,
             _ => unreachable!(),
         };
+        if !collection_var_lanes(collection_ty, &self.program.types).is_empty() {
+            let bytes = stack_storage_size(element, &self.program.types);
+            let staged = self.entry_alloca_raw(&format!("[{bytes} x i8]"));
+            self.instruction(format!(
+                "store {} {value}, ptr {staged}, align 1",
+                self.lltype(element)
+            ));
+            self.emit_scatter_collection_element(collection_ty, pointer, index, &staged);
+            return;
+        }
         if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
             for (lane, field) in fields.iter().enumerate() {
                 let lane_value = self.temp();
@@ -3916,6 +4604,7 @@ impl<'a> FunctionEmitter<'a> {
             _ => unreachable!("collection element gather requires an indexed collection"),
         };
         if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
+            let mut extra_offset = 0usize;
             for (lane, field) in fields.iter().enumerate() {
                 if field.ty == Ty::Unit {
                     continue;
@@ -3931,7 +4620,19 @@ impl<'a> FunctionEmitter<'a> {
                     "{destination_field} = getelementptr inbounds {}, ptr {destination}, i32 0, i32 {lane}",
                     self.lltype(element)
                 ));
-                self.emit_copy_value_storage(&destination_field, &source, field.ty);
+                self.emit_copy_value_rooted(
+                    &destination_field,
+                    &source,
+                    field.ty,
+                    destination,
+                    element,
+                    extra_offset,
+                );
+                extra_offset = extra_offset.saturating_add(growing_value_extra(
+                    field.ty,
+                    &self.program.types,
+                    &mut vec![false; self.program.types.len()],
+                ));
             }
         } else {
             let source =
@@ -3957,6 +4658,14 @@ impl<'a> FunctionEmitter<'a> {
             TTypeKind::Map { value, .. } => value,
             _ => unreachable!("collection element scatter requires an indexed collection"),
         };
+        let staged = if collection_var_lanes(collection_ty, &self.program.types).is_empty() {
+            source.to_owned()
+        } else {
+            let bytes = stack_storage_size(element, &self.program.types);
+            let staged = self.entry_alloca_raw(&format!("[{bytes} x i8]"));
+            self.emit_copy_value_storage(&staged, source, element);
+            staged
+        };
         if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
             for (lane, field) in fields.iter().enumerate() {
                 if field.ty == Ty::Unit {
@@ -3964,7 +4673,7 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 let source_field = self.temp();
                 self.instruction(format!(
-                    "{source_field} = getelementptr inbounds {}, ptr {source}, i32 0, i32 {lane}",
+                    "{source_field} = getelementptr inbounds {}, ptr {staged}, i32 0, i32 {lane}",
                     self.lltype(element)
                 ));
                 let destination = self.emit_collection_lane_pointer(
@@ -3973,12 +4682,26 @@ impl<'a> FunctionEmitter<'a> {
                     index,
                     lane,
                 );
-                self.emit_copy_value_storage(&destination, &source_field, field.ty);
+                if collection_var_lane(collection_ty, &self.program.types, lane).is_some() {
+                    self.emit_store_var_lane(
+                        collection_ty,
+                        collection_pointer,
+                        index,
+                        lane,
+                        &source_field,
+                    );
+                } else {
+                    self.emit_copy_value_storage(&destination, &source_field, field.ty);
+                }
             }
         } else {
             let destination =
                 self.emit_collection_lane_pointer(collection_ty, collection_pointer, index, 0);
-            self.emit_copy_value_storage(&destination, source, element);
+            if collection_var_lane(collection_ty, &self.program.types, 0).is_some() {
+                self.emit_store_var_lane(collection_ty, collection_pointer, index, 0, &staged);
+            } else {
+                self.emit_copy_value_storage(&destination, &staged, element);
+            }
         }
     }
 
@@ -4629,8 +5352,13 @@ impl<'a> FunctionEmitter<'a> {
         ));
         if let Some(value_ty) = value_ty {
             let value_source = self.emit_map_entry_ptr(map_ty, pointer, &source, true);
-            let value_destination = self.emit_map_entry_ptr(map_ty, pointer, &destination, true);
-            self.emit_copy_value_storage(&value_destination, &value_source, value_ty);
+            if collection_var_lanes(map_ty, &self.program.types).is_empty() {
+                let value_destination =
+                    self.emit_map_entry_ptr(map_ty, pointer, &destination, true);
+                self.emit_copy_value_storage(&value_destination, &value_source, value_ty);
+            } else {
+                self.emit_copy_collection_element(pointer, pointer, map_ty, &destination, &source);
+            }
         }
         let active_destination =
             self.emit_map_array_ptr(map_ty, pointer, 2, capacity, Ty::Bool, &destination);
@@ -4871,6 +5599,7 @@ impl<'a> FunctionEmitter<'a> {
         ));
         let entry = self.temp();
         self.instruction(format!("{entry} = load i64, ptr {end_ptr}, align 1"));
+        self.emit_init_var_collection_element(map_ty, pointer, &entry);
         self.emit_map_store_key(map_ty, pointer, key_ty, &entry, key);
         let hash_ptr = self.emit_map_array_ptr(map_ty, pointer, 3, capacity, Ty::Long, &entry);
         self.instruction(format!("store i64 {hash}, ptr {hash_ptr}, align 1"));
@@ -4879,7 +5608,11 @@ impl<'a> FunctionEmitter<'a> {
         if let (Some(value_ty), Some(value)) = (value_ty, value) {
             let value_ptr = self.emit_map_entry_ptr(map_ty, pointer, &entry, true);
             if let Some(source) = value_storage {
-                self.emit_copy_value_storage(&value_ptr, source, value_ty);
+                if collection_var_lanes(map_ty, &self.program.types).is_empty() {
+                    self.emit_copy_value_storage(&value_ptr, source, value_ty);
+                } else {
+                    self.emit_scatter_collection_element(map_ty, pointer, &entry, source);
+                }
             } else {
                 self.instruction(format!(
                     "store {} {value}, ptr {value_ptr}, align 1",
@@ -4962,6 +5695,7 @@ impl<'a> FunctionEmitter<'a> {
                     let payload = self.emit_sum_payload_pointer(expr.ty, destination, 0, 0);
                     self.emit_copy_value_storage(&payload, &value_ptr, value_ty);
                     if op == MapOp::Remove {
+                        self.emit_clear_collection_element(map_ty, &pointer, &entry);
                         let active_ptr = self.emit_map_array_ptr(
                             map_ty,
                             &pointer,
@@ -5003,6 +5737,7 @@ impl<'a> FunctionEmitter<'a> {
                     self.lltype(value_ty)
                 ));
                 if op == MapOp::Remove {
+                    self.emit_clear_collection_element(map_ty, &pointer, &entry);
                     let active_ptr =
                         self.emit_map_array_ptr(map_ty, &pointer, 2, capacity, Ty::Bool, &entry);
                     self.instruction(format!("store i1 false, ptr {active_ptr}, align 1"));
@@ -5044,7 +5779,11 @@ impl<'a> FunctionEmitter<'a> {
                 self.start_block(&update);
                 let value_ptr = self.emit_map_entry_ptr(map_ty, &pointer, &entry, true);
                 if let Some(source) = value_storages[1].as_deref() {
-                    self.emit_copy_value_storage(&value_ptr, source, value_ty);
+                    if collection_var_lanes(map_ty, &self.program.types).is_empty() {
+                        self.emit_copy_value_storage(&value_ptr, source, value_ty);
+                    } else {
+                        self.emit_scatter_collection_element(map_ty, &pointer, &entry, source);
+                    }
                 } else {
                     self.instruction(format!(
                         "store {} {}, ptr {value_ptr}, align 1",
@@ -5435,6 +6174,7 @@ impl<'a> FunctionEmitter<'a> {
             let payload = self.emit_sum_payload_pointer(expr.ty, destination, 0, 0);
             self.emit_collection_element_storage(pool_ty, &pointer, &slot, &payload);
             if op == PoolOp::Remove {
+                self.emit_clear_collection_element(pool_ty, &pointer, &slot);
                 self.instruction(format!("store i1 false, ptr {occupied_ptr}, align 1"));
                 let active_ptr = self.emit_pool_meta_ptr(pool_ty, &pointer, 0);
                 let active = self.temp();
@@ -5507,6 +6247,7 @@ impl<'a> FunctionEmitter<'a> {
             }
             PoolOp::Remove => {
                 let value = self.emit_collection_element(pool_ty, &pointer, &slot);
+                self.emit_clear_collection_element(pool_ty, &pointer, &slot);
                 self.instruction(format!("store i1 false, ptr {occupied_ptr}, align 1"));
                 let active_ptr = self.emit_pool_meta_ptr(pool_ty, &pointer, 0);
                 let active = self.temp();
@@ -5582,6 +6323,9 @@ impl<'a> FunctionEmitter<'a> {
         slot_index: &str,
         virgin: bool,
     ) {
+        if virgin {
+            self.emit_init_var_collection_element(pool_ty, pointer, slot_index);
+        }
         if let Some(source) = value_storage {
             self.emit_scatter_collection_element(pool_ty, pointer, slot_index, source);
         } else {
@@ -5738,6 +6482,34 @@ impl<'a> FunctionEmitter<'a> {
             self.emit_expr_storage(receiver)
         };
         if op == CollectionOp::Clear {
+            let count = self.emit_collection_count(collection_ty, &pointer);
+            let cursor = self.entry_alloca(Ty::Long);
+            self.instruction(format!("store i64 0, ptr {cursor}, align 1"));
+            let condition = self.new_label("collection.clear.cond");
+            let body = self.new_label("collection.clear.body");
+            let done = self.new_label("collection.clear.done");
+            self.terminate(format!("br label %{condition}"));
+            self.start_block(&condition);
+            let index = self.temp();
+            self.instruction(format!("{index} = load i64, ptr {cursor}, align 1"));
+            let more = self.temp();
+            self.instruction(format!("{more} = icmp ult i64 {index}, {count}"));
+            self.terminate(format!("br i1 {more}, label %{body}, label %{done}"));
+            self.start_block(&body);
+            let physical = if matches!(
+                self.program.types[collection_ty.0].kind,
+                TTypeKind::Queue { .. } | TTypeKind::Ring { .. }
+            ) {
+                self.emit_queue_ring_physical_index(collection_ty, &pointer, &index)
+            } else {
+                index.clone()
+            };
+            self.emit_clear_collection_element(collection_ty, &pointer, &physical);
+            let next = self.temp();
+            self.instruction(format!("{next} = add i64 {index}, 1"));
+            self.instruction(format!("store i64 {next}, ptr {cursor}, align 1"));
+            self.terminate(format!("br label %{condition}"));
+            self.start_block(&done);
             let count_ptr = self.temp();
             self.instruction(format!(
                 "{count_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
@@ -5778,6 +6550,7 @@ impl<'a> FunctionEmitter<'a> {
                     if op == CollectionOp::Push && proven_success {
                         let physical =
                             self.emit_queue_ring_physical_index(collection_ty, &pointer, &count);
+                        self.emit_init_var_collection_element(collection_ty, &pointer, &physical);
                         self.emit_store_collection_element_value(
                             collection_ty,
                             &pointer,
@@ -5835,6 +6608,7 @@ impl<'a> FunctionEmitter<'a> {
                     self.start_block(&room_label);
                     let physical =
                         self.emit_queue_ring_physical_index(collection_ty, &pointer, &count);
+                    self.emit_init_var_collection_element(collection_ty, &pointer, &physical);
                     self.emit_store_collection_element_value(
                         collection_ty,
                         &pointer,
@@ -5888,6 +6662,10 @@ impl<'a> FunctionEmitter<'a> {
                             &pointer,
                             "0",
                         );
+                        let head_ptr = self.emit_queue_ring_meta_ptr(collection_ty, &pointer, 0);
+                        let head = self.temp();
+                        self.instruction(format!("{head} = load i64, ptr {head_ptr}, align 1"));
+                        self.emit_clear_collection_element(collection_ty, &pointer, &head);
                         let next_count = self.temp();
                         self.instruction(format!("{next_count} = sub i64 {count}, 1"));
                         let count_ptr = self.emit_queue_ring_meta_ptr(collection_ty, &pointer, 1);
@@ -5921,6 +6699,10 @@ impl<'a> FunctionEmitter<'a> {
                     self.terminate(format!("br label %{merge}"));
                     self.start_block(&some_label);
                     let value = self.emit_collection_element(collection_ty, &pointer, "0");
+                    let head_ptr = self.emit_queue_ring_meta_ptr(collection_ty, &pointer, 0);
+                    let head = self.temp();
+                    self.instruction(format!("{head} = load i64, ptr {head_ptr}, align 1"));
+                    self.emit_clear_collection_element(collection_ty, &pointer, &head);
                     let next_count = self.temp();
                     self.instruction(format!("{next_count} = sub i64 {count}, 1"));
                     let count_ptr = self.emit_queue_ring_meta_ptr(collection_ty, &pointer, 1);
@@ -5999,6 +6781,7 @@ impl<'a> FunctionEmitter<'a> {
                 let count = self.emit_collection_count(collection_ty, &pointer);
                 let result_ty = expr.ty;
                 if proven_success {
+                    self.emit_init_var_collection_element(collection_ty, &pointer, &count);
                     self.emit_store_collection_element_value(
                         collection_ty,
                         &pointer,
@@ -6035,6 +6818,7 @@ impl<'a> FunctionEmitter<'a> {
                 let fail_pred = self.current_label.clone();
                 self.terminate(format!("br label %{merge}"));
                 self.start_block(&success_label);
+                self.emit_init_var_collection_element(collection_ty, &pointer, &count);
                 self.emit_store_collection_element_value(
                     collection_ty,
                     &pointer,
@@ -6081,6 +6865,7 @@ impl<'a> FunctionEmitter<'a> {
                 let fail_pred = self.current_label.clone();
                 self.terminate(format!("br label %{merge}"));
                 self.start_block(&success_label);
+                self.emit_init_var_collection_element(collection_ty, &pointer, &count);
                 let cursor = self.entry_alloca(Ty::Long);
                 self.instruction(format!("store i64 {count}, ptr {cursor}, align 1"));
                 let cond = self.new_label("insert.shift.cond");
@@ -6158,6 +6943,7 @@ impl<'a> FunctionEmitter<'a> {
                         &pointer,
                         &index,
                     );
+                    self.emit_clear_collection_element(collection_ty, &pointer, &index);
                     let count_ptr = self.emit_collection_count_ptr(collection_ty, &pointer);
                     self.instruction(format!("store i64 {index}, ptr {count_ptr}, align 1"));
                     self.terminate(format!("br label %{merge}"));
@@ -6171,6 +6957,7 @@ impl<'a> FunctionEmitter<'a> {
                 let index = self.temp();
                 self.instruction(format!("{index} = sub i64 {count}, 1"));
                 let value = self.emit_collection_element(collection_ty, &pointer, &index);
+                self.emit_clear_collection_element(collection_ty, &pointer, &index);
                 let count_ptr = self.temp();
                 self.instruction(format!(
                     "{count_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
@@ -6232,6 +7019,8 @@ impl<'a> FunctionEmitter<'a> {
                 self.start_block(&done);
                 let new_count = self.temp();
                 self.instruction(format!("{new_count} = sub i64 {count}, 1"));
+                let last = new_count.clone();
+                self.emit_clear_collection_element(collection_ty, &pointer, &last);
                 let count_ptr = self.temp();
                 self.instruction(format!(
                     "{count_ptr} = getelementptr inbounds {}, ptr {pointer}, i32 0, i32 0",
@@ -6575,6 +7364,105 @@ impl<'a> FunctionEmitter<'a> {
         None
     }
 
+    fn emit_growing_field_address(
+        &mut self,
+        place: &TPlace,
+    ) -> Option<(Ty, String, String, usize)> {
+        let view = self.views.get(&place.root).cloned();
+        let view_lane = if place.path.len() == 1 {
+            match place.path[0] {
+                TProjection::Field(lane) => Some(lane),
+                _ => None,
+            }
+        } else if place.path.is_empty() {
+            Some(0)
+        } else {
+            None
+        };
+        if let (Some(view), Some(lane)) = (view.clone(), view_lane) {
+            if collection_var_lane(view.collection_ty, &self.program.types, lane)
+                .is_some_and(|layout| layout.ty == place.ty)
+            {
+                let counter = self.temp();
+                self.instruction(format!(
+                    "{counter} = load i64, ptr %local.{}, align 1",
+                    view.counter_id
+                ));
+                let index = if matches!(
+                    self.program.types[view.collection_ty.0].kind,
+                    TTypeKind::Queue { .. } | TTypeKind::Ring { .. }
+                ) {
+                    self.emit_queue_ring_physical_index(
+                        view.collection_ty,
+                        &view.collection_ptr,
+                        &counter,
+                    )
+                } else {
+                    counter
+                };
+                return Some((view.collection_ty, view.collection_ptr, index, lane));
+            }
+        }
+
+        let (index_position, lane) = match place.path.as_slice() {
+            [.., TProjection::Index { .. }] => (place.path.len() - 1, 0),
+            [.., TProjection::Index { .. }, TProjection::Field(lane)] => {
+                (place.path.len() - 2, *lane)
+            }
+            _ => return None,
+        };
+        let mut collection_ty = self.root_type(place.root);
+        for projection in &place.path[..index_position] {
+            collection_ty = match projection {
+                TProjection::Field(field) => match &self.program.types[collection_ty.0].kind {
+                    TTypeKind::Struct(fields) => fields.get(*field)?.ty,
+                    _ => return None,
+                },
+                TProjection::Index {
+                    is_map, is_pool, ..
+                } => match self.program.types[collection_ty.0].kind {
+                    TTypeKind::Array { element, .. }
+                    | TTypeKind::List { element, .. }
+                    | TTypeKind::Queue { element, .. }
+                    | TTypeKind::Ring { element, .. }
+                    | TTypeKind::Grid { element, .. }
+                    | TTypeKind::Pool { element, .. }
+                        if !*is_map && !*is_pool =>
+                    {
+                        element
+                    }
+                    TTypeKind::Map { value, .. } if *is_map => value,
+                    _ => return None,
+                },
+            };
+        }
+        let TProjection::Index {
+            index,
+            grid,
+            proven,
+            is_map,
+            ..
+        } = &place.path[index_position]
+        else {
+            return None;
+        };
+        collection_var_lane(collection_ty, &self.program.types, lane)
+            .filter(|layout| layout.ty == place.ty)?;
+        let mut collection_place = place.clone();
+        collection_place.path.truncate(index_position);
+        collection_place.ty = collection_ty;
+        let collection_pointer = self.emit_place_pointer(&collection_place);
+        let index = self.emit_projection_index(
+            collection_ty,
+            &collection_pointer,
+            index,
+            grid.as_ref(),
+            *proven,
+            *is_map,
+        );
+        Some((collection_ty, collection_pointer, index, lane))
+    }
+
     fn emit_struct_element_address(&mut self, place: &TPlace) -> Option<(Ty, String, String)> {
         let (collection_ty, projection, explicit_ptr) = self.place_struct_element(place)?;
         let has_explicit_pointer = !explicit_ptr.is_empty();
@@ -6723,8 +7611,19 @@ impl<'a> FunctionEmitter<'a> {
             .map(|definition| &definition.kind)
         {
             Some(TTypeKind::Ascii { max_bytes }) => Some(*max_bytes),
+            Some(TTypeKind::Text { max_bytes, .. } | TTypeKind::Bytes { max_bytes }) => {
+                Some(*max_bytes)
+            }
             _ => None,
         }
+    }
+
+    fn is_text_type(&self, ty: Ty) -> bool {
+        matches!(self.program.types[ty.0].kind, TTypeKind::Text { .. })
+    }
+
+    fn is_ascii_type(&self, ty: Ty) -> bool {
+        matches!(self.program.types[ty.0].kind, TTypeKind::Ascii { .. })
     }
 
     fn ascii_static_length(&self, expr: &TExpr) -> Option<usize> {
@@ -6857,6 +7756,27 @@ impl<'a> FunctionEmitter<'a> {
                 self.instruction(format!("{next} = add i64 {current}, {length}"));
                 self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
             }
+            TExprKind::TextUpper(value) => {
+                let descriptor = self.emit_ascii_descriptor(value);
+                if self.terminated {
+                    return;
+                }
+                let source = self.ascii_field(&descriptor, value.ty, 0);
+                let length = self.ascii_field(&descriptor, value.ty, 1);
+                let current = self.temp();
+                self.instruction(format!("{current} = load i64, ptr {offset_slot}, align 1"));
+                let target = self.temp();
+                self.instruction(format!(
+                    "{target} = getelementptr i8, ptr {destination}, i64 {current}"
+                ));
+                let written = self.temp();
+                self.instruction(format!(
+                    "{written} = call i64 @nl_text_upper_copy(ptr {source}, i64 {length}, ptr {target}, ptr null)"
+                ));
+                let next = self.temp();
+                self.instruction(format!("{next} = add i64 {current}, {written}"));
+                self.instruction(format!("store i64 {next}, ptr {offset_slot}, align 1"));
+            }
             TExprKind::AsciiFormat(value) => {
                 let raw = self.emit_expr(value);
                 if self.terminated {
@@ -6968,7 +7888,7 @@ impl<'a> FunctionEmitter<'a> {
                 target: CallTarget::Function(function_id),
                 args,
                 ..
-            } if self.ascii_max(expr.ty).is_some() => {
+            } if self.is_ascii_type(expr.ty) => {
                 self.emit_ascii_append_call(
                     *function_id,
                     args,
@@ -6982,9 +7902,7 @@ impl<'a> FunctionEmitter<'a> {
                 args,
                 params,
                 ..
-            } if self.ascii_max(expr.ty).is_some()
-                && self.function_type_supports_append(callee.ty) =>
-            {
+            } if self.is_ascii_type(expr.ty) && self.function_type_supports_append(callee.ty) => {
                 if !self.emit_ascii_append_indirect_call(
                     callee,
                     args,
@@ -7301,7 +8219,7 @@ impl<'a> FunctionEmitter<'a> {
         call_span: Span,
     ) {
         let function = self.program.functions[function_id].clone();
-        if self.ascii_max(function.result).is_none() {
+        if !self.is_ascii_type(function.result) {
             let mut call = TExpr {
                 kind: TExprKind::Call {
                     target: CallTarget::Function(function_id),
@@ -7555,6 +8473,10 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!(
             "{data} = getelementptr i8, ptr {destination}, i64 16"
         ));
+        self.emit_ascii_to_data(destination, expr, &data);
+    }
+
+    fn emit_ascii_to_data(&mut self, destination: &str, expr: &TExpr, data: &str) {
         let data_field = self.temp();
         self.instruction(format!(
             "{data_field} = getelementptr {}, ptr {destination}, i32 0, i32 0",
@@ -7575,6 +8497,344 @@ impl<'a> FunctionEmitter<'a> {
         let length = self.temp();
         self.instruction(format!("{length} = load i64, ptr {offset_slot}, align 1"));
         self.instruction(format!("store i64 {length}, ptr {length_field}, align 1"));
+    }
+
+    fn emit_text_to(&mut self, destination: &str, expr: &TExpr) {
+        if let TExprKind::TextConvert {
+            value,
+            conversion: StringConversion::AsciiToText,
+            ..
+        } = &expr.kind
+        {
+            let descriptor = self.emit_expr(value);
+            if self.terminated {
+                return;
+            }
+            let data = self.ascii_field(&descriptor, value.ty, 0);
+            let length = self.ascii_field(&descriptor, value.ty, 1);
+            let data_field = self.temp();
+            self.instruction(format!(
+                "{data_field} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+                self.lltype(expr.ty)
+            ));
+            self.instruction(format!("store ptr {data}, ptr {data_field}, align 1"));
+            let len_field = self.temp();
+            self.instruction(format!(
+                "{len_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+                self.lltype(expr.ty)
+            ));
+            self.instruction(format!("store i64 {length}, ptr {len_field}, align 1"));
+            let cp_field = self.temp();
+            self.instruction(format!(
+                "{cp_field} = getelementptr {}, ptr {destination}, i32 0, i32 2",
+                self.lltype(expr.ty)
+            ));
+            self.instruction(format!("store i64 {length}, ptr {cp_field}, align 1"));
+            return;
+        }
+        let data = self.temp();
+        self.instruction(format!(
+            "{data} = getelementptr i8, ptr {destination}, i64 24"
+        ));
+        self.emit_text_to_data(destination, expr, &data);
+    }
+
+    fn emit_text_to_data(&mut self, destination: &str, expr: &TExpr, data: &str) {
+        if matches!(
+            expr.kind,
+            TExprKind::TextConvert {
+                conversion: StringConversion::AsciiToText,
+                ..
+            }
+        ) {
+            self.emit_text_to(destination, expr);
+            return;
+        }
+        let data_field = self.temp();
+        self.instruction(format!(
+            "{data_field} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+            self.lltype(expr.ty)
+        ));
+        self.instruction(format!("store ptr {data}, ptr {data_field}, align 1"));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(expr.ty)
+        ));
+        let cp_field = self.temp();
+        self.instruction(format!(
+            "{cp_field} = getelementptr {}, ptr {destination}, i32 0, i32 2",
+            self.lltype(expr.ty)
+        ));
+        let offset_slot = self.entry_alloca(Ty::Long);
+        self.instruction(format!("store i64 0, ptr {offset_slot}, align 1"));
+        self.emit_ascii_stream(expr, &data, &offset_slot);
+        if self.terminated {
+            return;
+        }
+        let length = self.temp();
+        self.instruction(format!("{length} = load i64, ptr {offset_slot}, align 1"));
+        self.instruction(format!("store i64 {length}, ptr {length_field}, align 1"));
+        let count = self.entry_alloca(Ty::Long);
+        let valid = self.temp();
+        self.instruction(format!(
+            "{valid} = call i32 @nl_utf8_count(ptr {data}, i64 {length}, ptr {count})"
+        ));
+        let invalid = self.temp();
+        self.instruction(format!("{invalid} = icmp eq i32 {valid}, 0"));
+        self.guard(invalid, Failure::BadCast, expr.span);
+        if self.terminated {
+            return;
+        }
+        let codepoints = self.temp();
+        self.instruction(format!("{codepoints} = load i64, ptr {count}, align 1"));
+        self.instruction(format!("store i64 {codepoints}, ptr {cp_field}, align 1"));
+    }
+
+    fn emit_bytes_view_to(&mut self, destination: &str, expr: &TExpr, receiver: &TExpr) {
+        let descriptor = self.emit_expr(receiver);
+        if self.terminated {
+            return;
+        }
+        let data = self.ascii_field(&descriptor, receiver.ty, 0);
+        let length = self.ascii_field(&descriptor, receiver.ty, 1);
+        let data_field = self.temp();
+        self.instruction(format!(
+            "{data_field} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+            self.lltype(expr.ty)
+        ));
+        self.instruction(format!("store ptr {data}, ptr {data_field}, align 1"));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(expr.ty)
+        ));
+        self.instruction(format!("store i64 {length}, ptr {length_field}, align 1"));
+    }
+
+    fn emit_string_slice_to(
+        &mut self,
+        destination: &str,
+        expr: &TExpr,
+        receiver: &TExpr,
+        start_expr: &TExpr,
+        end_expr: &TExpr,
+        text: bool,
+    ) {
+        let descriptor = self.emit_expr(receiver);
+        if self.terminated {
+            return;
+        }
+        let start = self.emit_expr(start_expr);
+        if self.terminated {
+            return;
+        }
+        let end = self.emit_expr(end_expr);
+        if self.terminated {
+            return;
+        }
+        let source = self.ascii_field(&descriptor, receiver.ty, 0);
+        let source_length = self.ascii_field(&descriptor, receiver.ty, 1);
+        let source_count = if text {
+            self.ascii_field(&descriptor, receiver.ty, 2)
+        } else {
+            source_length.clone()
+        };
+        let start_nonnegative = self.temp();
+        self.instruction(format!("{start_nonnegative} = icmp sge i64 {start}, 0"));
+        let end_after_start = self.temp();
+        self.instruction(format!("{end_after_start} = icmp sge i64 {end}, {start}"));
+        let end_in_range = self.temp();
+        self.instruction(format!(
+            "{end_in_range} = icmp sle i64 {end}, {source_count}"
+        ));
+        let first_pair = self.temp();
+        self.instruction(format!(
+            "{first_pair} = and i1 {start_nonnegative}, {end_after_start}"
+        ));
+        let fits = self.temp();
+        self.instruction(format!("{fits} = and i1 {first_pair}, {end_in_range}"));
+        let bad = self.temp();
+        self.instruction(format!("{bad} = xor i1 {fits}, true"));
+        self.guard(bad, Failure::IndexOutOfRange, expr.span);
+        if self.terminated {
+            return;
+        }
+        let (start_byte, end_byte) = if text {
+            let start_byte = self.temp();
+            self.instruction(format!(
+                "{start_byte} = call i64 @nl_utf8_offset(ptr {source}, i64 {source_length}, i64 {start})"
+            ));
+            let end_byte = self.temp();
+            self.instruction(format!(
+                "{end_byte} = call i64 @nl_utf8_offset(ptr {source}, i64 {source_length}, i64 {end})"
+            ));
+            (start_byte, end_byte)
+        } else {
+            (start.clone(), end.clone())
+        };
+        let result_length = self.temp();
+        self.instruction(format!(
+            "{result_length} = sub i64 {end_byte}, {start_byte}"
+        ));
+        let source_start = self.temp();
+        self.instruction(format!(
+            "{source_start} = getelementptr i8, ptr {source}, i64 {start_byte}"
+        ));
+        let inline_offset = if text { 24 } else { 16 };
+        let result_data = self.temp();
+        self.instruction(format!(
+            "{result_data} = getelementptr i8, ptr {destination}, i64 {inline_offset}"
+        ));
+        let data_field = self.temp();
+        self.instruction(format!(
+            "{data_field} = getelementptr {}, ptr {destination}, i32 0, i32 0",
+            self.lltype(expr.ty)
+        ));
+        self.instruction(format!(
+            "store ptr {result_data}, ptr {data_field}, align 1"
+        ));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {destination}, i32 0, i32 1",
+            self.lltype(expr.ty)
+        ));
+        self.instruction(format!(
+            "store i64 {result_length}, ptr {length_field}, align 1"
+        ));
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {result_data}, ptr {source_start}, i64 {result_length}, i1 false)"
+        ));
+        if text {
+            let cp_count = self.temp();
+            self.instruction(format!("{cp_count} = sub i64 {end}, {start}"));
+            let cp_field = self.temp();
+            self.instruction(format!(
+                "{cp_field} = getelementptr {}, ptr {destination}, i32 0, i32 2",
+                self.lltype(expr.ty)
+            ));
+            self.instruction(format!("store i64 {cp_count}, ptr {cp_field}, align 1"));
+        }
+    }
+
+    fn emit_text_conversion_to(&mut self, destination: &str, expr: &TExpr) {
+        let TExprKind::TextConvert {
+            value,
+            target,
+            conversion,
+        } = &expr.kind
+        else {
+            unreachable!()
+        };
+        let source_descriptor = self.emit_expr(value);
+        if self.terminated {
+            return;
+        }
+        let source = self.ascii_field(&source_descriptor, value.ty, 0);
+        let length = self.ascii_field(&source_descriptor, value.ty, 1);
+        let codepoints = self.entry_alloca(Ty::Long);
+        let valid = match conversion {
+            StringConversion::BytesToText => self.temp(),
+            StringConversion::BytesToAscii | StringConversion::TextToAscii => self.temp(),
+            StringConversion::AsciiToText => unreachable!("borrowed conversion is not a Result"),
+        };
+        match conversion {
+            StringConversion::BytesToText => self.instruction(format!(
+                "{valid} = call i32 @nl_utf8_count(ptr {source}, i64 {length}, ptr {codepoints})"
+            )),
+            StringConversion::BytesToAscii | StringConversion::TextToAscii => self.instruction(
+                format!("{valid} = call i32 @nl_bytes_are_ascii(ptr {source}, i64 {length})"),
+            ),
+            StringConversion::AsciiToText => unreachable!(),
+        }
+        let okay = self.temp();
+        self.instruction(format!("{okay} = icmp ne i32 {valid}, 0"));
+        let ok_label = self.new_label("text.convert.ok");
+        let error_label = self.new_label("text.convert.error");
+        let merge_label = self.new_label("text.convert.merge");
+        let incoming_stack_top = self.stack_top.clone();
+        self.terminate(format!(
+            "br i1 {okay}, label %{ok_label}, label %{error_label}"
+        ));
+        self.start_block(&ok_label);
+        let result_storage = self.emit_runtime_region_alloc(*target, expr.span, None);
+        let data_offset = if self.is_text_type(*target) { 24 } else { 16 };
+        let data = self.temp();
+        self.instruction(format!(
+            "{data} = getelementptr i8, ptr {result_storage}, i64 {data_offset}"
+        ));
+        let data_field = self.temp();
+        self.instruction(format!(
+            "{data_field} = getelementptr {}, ptr {result_storage}, i32 0, i32 0",
+            self.lltype(*target)
+        ));
+        self.instruction(format!("store ptr {data}, ptr {data_field}, align 1"));
+        let length_field = self.temp();
+        self.instruction(format!(
+            "{length_field} = getelementptr {}, ptr {result_storage}, i32 0, i32 1",
+            self.lltype(*target)
+        ));
+        self.instruction(format!("store i64 {length}, ptr {length_field}, align 1"));
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {data}, ptr {source}, i64 {length}, i1 false)"
+        ));
+        if self.is_text_type(*target) {
+            let cp = self.temp();
+            self.instruction(format!("{cp} = load i64, ptr {codepoints}, align 1"));
+            let cp_field = self.temp();
+            self.instruction(format!(
+                "{cp_field} = getelementptr {}, ptr {result_storage}, i32 0, i32 2",
+                self.lltype(*target)
+            ));
+            self.instruction(format!("store i64 {cp}, ptr {cp_field}, align 1"));
+        }
+        let payload = self.temp();
+        self.instruction(format!(
+            "{payload} = load {}, ptr {result_storage}, align 1",
+            self.lltype(*target)
+        ));
+        let success_value = self.emit_construct_values(expr.ty, 0, vec![(*target, payload)]);
+        let success_pred = self.current_label.clone();
+        let success_stack_top = self.stack_top.clone();
+        self.terminate(format!("br label %{merge_label}"));
+
+        self.stack_top = incoming_stack_top.clone();
+        self.start_block(&error_label);
+        let error_ty = match self.program.types[expr.ty.0].kind {
+            TTypeKind::Result(_, error) => error,
+            _ => unreachable!("checked string conversion returns Result"),
+        };
+        let error_name = if *conversion == StringConversion::BytesToText {
+            "InvalidUtf8"
+        } else {
+            "NonAscii"
+        };
+        let error_index = self.program.types[error_ty.0]
+            .cases()
+            .iter()
+            .position(|case| case.name == error_name)
+            .expect("TextError contains conversion errors");
+        let error_value = self.emit_construct_values(error_ty, error_index, Vec::new());
+        let failure_value = self.emit_construct_values(expr.ty, 1, vec![(error_ty, error_value)]);
+        let failure_pred = self.current_label.clone();
+        let failure_stack_top = self.stack_top.clone();
+        self.terminate(format!("br label %{merge_label}"));
+
+        self.start_block(&merge_label);
+        let merged_stack_top = self.temp();
+        self.instruction(format!(
+            "{merged_stack_top} = phi ptr [ {success_stack_top}, %{success_pred} ], [ {failure_stack_top}, %{failure_pred} ]"
+        ));
+        self.stack_top = merged_stack_top;
+        let result = self.temp();
+        self.instruction(format!(
+            "{result} = phi {} [ {success_value}, %{success_pred} ], [ {failure_value}, %{failure_pred} ]",
+            self.lltype(expr.ty)
+        ));
+        self.instruction(format!(
+            "store {} {result}, ptr {destination}, align 1",
+            self.lltype(expr.ty)
+        ));
     }
 
     fn emit_ascii_fit_to(&mut self, destination: &str, expr: &TExpr, value: &TExpr, option_ty: Ty) {
@@ -8236,7 +9496,7 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!(
             "call void @llvm.memmove.p0.p0.i64(ptr {destination}, ptr {source}, i64 {bytes}, i1 false)"
         ));
-        self.emit_rebase_growing_payload(destination, source, ty, destination, ty);
+        self.emit_rebase_growing_payload(destination, source, ty, destination, ty, 0);
     }
 
     fn emit_copy_value_storage(&mut self, destination: &str, source: &str, ty: Ty) {
@@ -8270,9 +9530,11 @@ impl<'a> FunctionEmitter<'a> {
             self.instruction(format!(
                 "{source_len} = load i64, ptr {source_len_field}, align 1"
             ));
+            let text_value = self.is_text_type(ty);
             let destination_data = self.temp();
             self.instruction(format!(
-                "{destination_data} = getelementptr i8, ptr {destination}, i64 16"
+                "{destination_data} = getelementptr i8, ptr {destination}, i64 {}",
+                if text_value { 24 } else { 16 }
             ));
             let destination_data_field = self.temp();
             self.instruction(format!(
@@ -8293,6 +9555,25 @@ impl<'a> FunctionEmitter<'a> {
             self.instruction(format!(
                 "store i64 {source_len}, ptr {destination_len_field}, align 1"
             ));
+            if text_value {
+                let source_chars_field = self.temp();
+                self.instruction(format!(
+                    "{source_chars_field} = getelementptr {}, ptr {source}, i32 0, i32 2",
+                    self.lltype(ty)
+                ));
+                let source_chars = self.temp();
+                self.instruction(format!(
+                    "{source_chars} = load i64, ptr {source_chars_field}, align 1"
+                ));
+                let destination_chars_field = self.temp();
+                self.instruction(format!(
+                    "{destination_chars_field} = getelementptr {}, ptr {destination}, i32 0, i32 2",
+                    self.lltype(ty)
+                ));
+                self.instruction(format!(
+                    "store i64 {source_chars}, ptr {destination_chars_field}, align 1"
+                ));
+            }
             return;
         }
         if contains_growing_value(
@@ -8314,6 +9595,9 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_empty_storage(&mut self, destination: &str, ty: Ty) {
+        if collection_capacity(ty, &self.program.types).is_some() {
+            self.emit_empty_var_pools(ty, destination);
+        }
         match self.program.types[ty.0].kind.clone() {
             TTypeKind::Refinement { base, .. } => self.emit_empty_storage(destination, base),
             TTypeKind::Struct(fields) => {
@@ -8362,6 +9646,8 @@ impl<'a> FunctionEmitter<'a> {
             | TTypeKind::Long
             | TTypeKind::Bool
             | TTypeKind::Ascii { .. }
+            | TTypeKind::Text { .. }
+            | TTypeKind::Bytes { .. }
             | TTypeKind::Id { .. }
             | TTypeKind::Function { .. }
             | TTypeKind::Capability(_) => {
@@ -8436,41 +9722,200 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_init_collection_element(&mut self, collection_ty: Ty, pointer: &str, index: &str) {
+        self.emit_init_var_collection_element(collection_ty, pointer, index);
         let element = collection_element_type(collection_ty, &self.program.types);
         if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
             for (lane, field) in fields.iter().enumerate() {
+                if collection_var_lane(collection_ty, &self.program.types, lane).is_some() {
+                    continue;
+                }
                 let destination =
                     self.emit_collection_lane_pointer(collection_ty, pointer, index, lane);
                 self.emit_empty_storage(&destination, field.ty);
             }
         } else {
+            if collection_var_lane(collection_ty, &self.program.types, 0).is_some() {
+                return;
+            }
             let destination = self.emit_collection_lane_pointer(collection_ty, pointer, index, 0);
             self.emit_empty_storage(&destination, element);
         }
     }
 
+    fn emit_copy_struct_storage_rooted(
+        &mut self,
+        destination: &str,
+        source: &str,
+        ty: Ty,
+        root_destination: &str,
+        root_ty: Ty,
+        extra_offset: usize,
+    ) {
+        let TTypeKind::Struct(fields) = self.program.types[ty.0].kind.clone() else {
+            unreachable!("rooted struct copy requires a struct")
+        };
+        let mut offset = extra_offset;
+        for (index, field) in fields.iter().enumerate() {
+            if field.ty == Ty::Unit {
+                continue;
+            }
+            let destination_field = self.temp();
+            let source_field = self.temp();
+            self.instruction(format!(
+                "{destination_field} = getelementptr inbounds {}, ptr {destination}, i32 0, i32 {index}",
+                self.lltype(ty)
+            ));
+            self.instruction(format!(
+                "{source_field} = getelementptr inbounds {}, ptr {source}, i32 0, i32 {index}",
+                self.lltype(ty)
+            ));
+            match self.program.types[field.ty.0].kind.clone() {
+                TTypeKind::Struct(_) => self.emit_copy_struct_storage_rooted(
+                    &destination_field,
+                    &source_field,
+                    field.ty,
+                    root_destination,
+                    root_ty,
+                    offset,
+                ),
+                TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. } => {
+                    let bytes = type_size(
+                        field.ty,
+                        &self.program.types,
+                        &mut vec![None; self.program.types.len()],
+                    );
+                    self.instruction(format!(
+                        "call void @llvm.memmove.p0.p0.i64(ptr {destination_field}, ptr {source_field}, i64 {bytes}, i1 false)"
+                    ));
+                    self.emit_rebase_growing_payload(
+                        &destination_field,
+                        &source_field,
+                        field.ty,
+                        root_destination,
+                        root_ty,
+                        offset,
+                    );
+                }
+                _ if contains_lazy_collection(
+                    field.ty,
+                    &self.program.types,
+                    &mut vec![false; self.program.types.len()],
+                ) =>
+                {
+                    self.emit_copy_value_storage(&destination_field, &source_field, field.ty)
+                }
+                _ if growing_value_extra(
+                    field.ty,
+                    &self.program.types,
+                    &mut vec![false; self.program.types.len()],
+                ) > 0 =>
+                {
+                    let bytes = type_size(
+                        field.ty,
+                        &self.program.types,
+                        &mut vec![None; self.program.types.len()],
+                    );
+                    self.instruction(format!(
+                        "call void @llvm.memmove.p0.p0.i64(ptr {destination_field}, ptr {source_field}, i64 {bytes}, i1 false)"
+                    ));
+                    self.emit_rebase_growing_payload(
+                        &destination_field,
+                        &source_field,
+                        field.ty,
+                        root_destination,
+                        root_ty,
+                        offset,
+                    );
+                }
+                _ => self.emit_copy_value_storage(&destination_field, &source_field, field.ty),
+            }
+            offset = offset.saturating_add(growing_value_extra(
+                field.ty,
+                &self.program.types,
+                &mut vec![false; self.program.types.len()],
+            ));
+        }
+    }
+
+    fn emit_copy_value_rooted(
+        &mut self,
+        destination: &str,
+        source: &str,
+        ty: Ty,
+        root_destination: &str,
+        root_ty: Ty,
+        extra_offset: usize,
+    ) {
+        if matches!(self.program.types[ty.0].kind, TTypeKind::Struct(_)) {
+            self.emit_copy_struct_storage_rooted(
+                destination,
+                source,
+                ty,
+                root_destination,
+                root_ty,
+                extra_offset,
+            );
+            return;
+        }
+        let extra = growing_value_extra(
+            ty,
+            &self.program.types,
+            &mut vec![false; self.program.types.len()],
+        );
+        if extra == 0
+            || contains_lazy_collection(
+                ty,
+                &self.program.types,
+                &mut vec![false; self.program.types.len()],
+            )
+        {
+            self.emit_copy_value_storage(destination, source, ty);
+            return;
+        }
+        let bytes = type_size(
+            ty,
+            &self.program.types,
+            &mut vec![None; self.program.types.len()],
+        );
+        self.instruction(format!(
+            "call void @llvm.memmove.p0.p0.i64(ptr {destination}, ptr {source}, i64 {bytes}, i1 false)"
+        ));
+        self.emit_rebase_growing_payload(
+            destination,
+            source,
+            ty,
+            root_destination,
+            root_ty,
+            extra_offset,
+        );
+    }
+
     fn emit_copy_lazy_storage(&mut self, destination: &str, source: &str, ty: Ty) {
+        if destination == source {
+            return;
+        }
+        let is_collection = collection_capacity(ty, &self.program.types).is_some();
+        let collection_done = if is_collection {
+            let same = self.temp();
+            self.instruction(format!("{same} = icmp eq ptr {destination}, {source}"));
+            let copy = self.new_label("copy.lazy.collection");
+            let done = self.new_label("copy.lazy.collection.done");
+            self.terminate(format!("br i1 {same}, label %{done}, label %{copy}"));
+            self.start_block(&copy);
+            Some(done)
+        } else {
+            None
+        };
+        if is_collection {
+            self.emit_empty_var_pools(ty, destination);
+        }
         match self.program.types[ty.0].kind.clone() {
             TTypeKind::Refinement { base, .. } => {
                 self.emit_copy_value_storage(destination, source, base);
             }
             TTypeKind::Struct(fields) => {
-                for (index, field) in fields.iter().enumerate() {
-                    if field.ty == Ty::Unit {
-                        continue;
-                    }
-                    let destination_field = self.temp();
-                    let source_field = self.temp();
-                    self.instruction(format!(
-                        "{destination_field} = getelementptr inbounds {}, ptr {destination}, i32 0, i32 {index}",
-                        self.lltype(ty)
-                    ));
-                    self.instruction(format!(
-                        "{source_field} = getelementptr inbounds {}, ptr {source}, i32 0, i32 {index}",
-                        self.lltype(ty)
-                    ));
-                    self.emit_copy_value_storage(&destination_field, &source_field, field.ty);
-                }
+                let _ = fields;
+                self.emit_copy_struct_storage_rooted(destination, source, ty, destination, ty, 0);
             }
             TTypeKind::Array { capacity, .. } | TTypeKind::Grid { capacity, .. } => {
                 self.emit_copy_fixed_collection(destination, source, ty, capacity);
@@ -8532,6 +9977,10 @@ impl<'a> FunctionEmitter<'a> {
                     "call void @llvm.memmove.p0.p0.i64(ptr {destination}, ptr {source}, i64 {bytes}, i1 false)"
                 ));
             }
+        }
+        if let Some(done) = collection_done {
+            self.terminate(format!("br label %{done}"));
+            self.start_block(&done);
         }
     }
 
@@ -8654,27 +10103,187 @@ impl<'a> FunctionEmitter<'a> {
         source_index: &str,
     ) {
         let element = collection_element_type(collection_ty, &self.program.types);
-        if let TTypeKind::Struct(fields) = self.program.types[element.0].kind.clone() {
-            for (lane, field) in fields.iter().enumerate() {
-                if field.ty == Ty::Unit {
-                    continue;
-                }
-                let destination_field = self.emit_collection_lane_pointer(
+        if destination == source {
+            if destination_index == source_index {
+                return;
+            }
+            if !collection_var_lanes(collection_ty, &self.program.types).is_empty() {
+                self.instruction("call void @nl_test_var_storage_reset()".to_owned());
+            }
+            let equal = self.temp();
+            self.instruction(format!(
+                "{equal} = icmp eq i64 {destination_index}, {source_index}"
+            ));
+            let same = self.new_label("move.element.same");
+            let move_value = self.new_label("move.element.value");
+            let moved = self.new_label("move.element.done");
+            self.terminate(format!("br i1 {equal}, label %{same}, label %{move_value}"));
+            self.start_block(&same);
+            self.terminate(format!("br label %{moved}"));
+            self.start_block(&move_value);
+            let lanes = collection_lane_types(element, &self.program.types);
+            for (lane, lane_ty) in lanes.iter().enumerate() {
+                let destination_lane = self.emit_collection_lane_pointer(
                     collection_ty,
                     destination,
                     destination_index,
                     lane,
                 );
-                let source_field =
+                let source_lane =
                     self.emit_collection_lane_pointer(collection_ty, source, source_index, lane);
-                self.emit_copy_value_storage(&destination_field, &source_field, field.ty);
+                if collection_var_lane(collection_ty, &self.program.types, lane).is_some() {
+                    let value = self.temp();
+                    self.instruction(format!(
+                        "{value} = load {}, ptr {source_lane}, align 1",
+                        self.lltype(*lane_ty)
+                    ));
+                    let source_descriptor = self.emit_collection_lane_pointer(
+                        collection_ty,
+                        source,
+                        source_index,
+                        lane,
+                    );
+                    let source_data_field = self.temp();
+                    self.instruction(format!(
+                        "{source_data_field} = getelementptr {}, ptr {source_descriptor}, i32 0, i32 0",
+                        self.lltype(*lane_ty)
+                    ));
+                    let source_data = self.temp();
+                    self.instruction(format!(
+                        "{source_data} = load ptr, ptr {source_data_field}, align 1"
+                    ));
+                    let source_len_field = self.temp();
+                    self.instruction(format!(
+                        "{source_len_field} = getelementptr {}, ptr {source_descriptor}, i32 0, i32 1",
+                        self.lltype(*lane_ty)
+                    ));
+                    let source_len = self.temp();
+                    self.instruction(format!(
+                        "{source_len} = load i64, ptr {source_len_field}, align 1"
+                    ));
+                    let destination_descriptor = self.emit_collection_lane_pointer(
+                        collection_ty,
+                        destination,
+                        destination_index,
+                        lane,
+                    );
+                    let destination_data_field = self.temp();
+                    self.instruction(format!(
+                        "{destination_data_field} = getelementptr {}, ptr {destination_descriptor}, i32 0, i32 0",
+                        self.lltype(*lane_ty)
+                    ));
+                    let destination_data = self.temp();
+                    self.instruction(format!(
+                        "{destination_data} = load ptr, ptr {destination_data_field}, align 1"
+                    ));
+                    self.emit_free_var_lane_slot(
+                        collection_ty,
+                        destination,
+                        lane,
+                        &destination_data,
+                    );
+                    self.instruction(format!(
+                        "store {} {value}, ptr {destination_lane}, align 1",
+                        self.lltype(*lane_ty)
+                    ));
+                    if let Some(inline) =
+                        collection_var_lane(collection_ty, &self.program.types, lane).and_then(
+                            |layout| layout.classes.into_iter().find(|class| class.bytes <= 64),
+                        )
+                    {
+                        let destination_data = self.emit_collection_var_slot_ptr(
+                            collection_ty,
+                            destination,
+                            &inline,
+                            destination_index,
+                        );
+                        self.instruction(format!("call void @llvm.memmove.p0.p0.i64(ptr {destination_data}, ptr {source_data}, i64 {source_len}, i1 false)"));
+                        let destination_data_field = self.temp();
+                        self.instruction(format!(
+                            "{destination_data_field} = getelementptr {}, ptr {destination_descriptor}, i32 0, i32 0",
+                            self.lltype(*lane_ty)
+                        ));
+                        self.instruction(format!(
+                            "store ptr {destination_data}, ptr {destination_data_field}, align 1"
+                        ));
+                        self.instruction(format!(
+                            "store ptr {source_data}, ptr {source_data_field}, align 1"
+                        ));
+                    } else {
+                        self.instruction(format!(
+                            "store ptr {source_data}, ptr {destination_data_field}, align 1"
+                        ));
+                        self.instruction(format!(
+                            "store ptr null, ptr {source_data_field}, align 1"
+                        ));
+                    }
+                    let destination_len_field = self.temp();
+                    self.instruction(format!(
+                        "{destination_len_field} = getelementptr {}, ptr {destination_descriptor}, i32 0, i32 1",
+                        self.lltype(*lane_ty)
+                    ));
+                    self.instruction(format!(
+                        "store i64 {source_len}, ptr {destination_len_field}, align 1"
+                    ));
+                    self.instruction(format!("store i64 0, ptr {source_len_field}, align 1"));
+                    if self.is_text_type(*lane_ty) {
+                        let source_chars_field = self.temp();
+                        self.instruction(format!(
+                            "{source_chars_field} = getelementptr {}, ptr {source_descriptor}, i32 0, i32 2",
+                            self.lltype(*lane_ty)
+                        ));
+                        let source_chars = self.temp();
+                        self.instruction(format!(
+                            "{source_chars} = load i64, ptr {source_chars_field}, align 1"
+                        ));
+                        let destination_chars_field = self.temp();
+                        self.instruction(format!(
+                            "{destination_chars_field} = getelementptr {}, ptr {destination_descriptor}, i32 0, i32 2",
+                            self.lltype(*lane_ty)
+                        ));
+                        self.instruction(format!(
+                            "store i64 {source_chars}, ptr {destination_chars_field}, align 1"
+                        ));
+                        self.instruction(format!("store i64 0, ptr {source_chars_field}, align 1"));
+                    }
+                } else if *lane_ty == Ty::Unit {
+                    continue;
+                } else {
+                    self.emit_copy_value_storage(&destination_lane, &source_lane, *lane_ty);
+                    self.emit_empty_storage(&source_lane, *lane_ty);
+                }
             }
+            self.terminate(format!("br label %{moved}"));
+            self.start_block(&moved);
+            return;
+        }
+        let bytes = stack_storage_size(element, &self.program.types);
+        let staged = self.entry_alloca_raw(&format!("[{bytes} x i8]"));
+        self.emit_gather_collection_element(collection_ty, source, source_index, &staged);
+        self.emit_init_var_collection_element(collection_ty, destination, destination_index);
+        self.emit_scatter_collection_element(
+            collection_ty,
+            destination,
+            destination_index,
+            &staged,
+        );
+    }
+
+    fn emit_copy_map_value(
+        &mut self,
+        map_ty: Ty,
+        destination: &str,
+        source: &str,
+        index: &str,
+        value_ty: Ty,
+    ) {
+        let destination_value = self.emit_map_entry_ptr(map_ty, destination, index, true);
+        let source_value = self.emit_map_entry_ptr(map_ty, source, index, true);
+        if collection_var_lanes(map_ty, &self.program.types).is_empty() {
+            self.emit_copy_value_storage(&destination_value, &source_value, value_ty);
         } else {
-            let destination_item =
-                self.emit_collection_lane_pointer(collection_ty, destination, destination_index, 0);
-            let source_item =
-                self.emit_collection_lane_pointer(collection_ty, source, source_index, 0);
-            self.emit_copy_value_storage(&destination_item, &source_item, element);
+            self.emit_init_var_collection_element(map_ty, destination, index);
+            self.emit_scatter_collection_element(map_ty, destination, index, &source_value);
         }
     }
 
@@ -8834,9 +10443,7 @@ impl<'a> FunctionEmitter<'a> {
             "store i1 true, ptr {destination_active_ptr}, align 1"
         ));
         if let TTypeKind::Map { value, .. } = &self.program.types[ty.0].kind {
-            let source_value = self.emit_map_entry_ptr(ty, source, &index, true);
-            let destination_value = self.emit_map_entry_ptr(ty, destination, &index, true);
-            self.emit_copy_value_storage(&destination_value, &source_value, *value);
+            self.emit_copy_map_value(ty, destination, source, &index, *value);
         }
         self.terminate(format!("br label %{step}"));
         self.start_block(&step);
@@ -8858,9 +10465,10 @@ impl<'a> FunctionEmitter<'a> {
         ty: Ty,
         root_destination: &str,
         root_ty: Ty,
+        extra_offset: usize,
     ) {
         match self.program.types[ty.0].kind.clone() {
-            TTypeKind::Ascii { .. } => {
+            TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. } => {
                 let source_data_field = self.temp();
                 self.instruction(format!(
                     "{source_data_field} = getelementptr {}, ptr {source}, i32 0, i32 0",
@@ -8886,7 +10494,8 @@ impl<'a> FunctionEmitter<'a> {
                 );
                 let destination_data = self.temp();
                 self.instruction(format!(
-                    "{destination_data} = getelementptr i8, ptr {root_destination}, i64 {fixed_bytes}"
+                    "{destination_data} = getelementptr i8, ptr {root_destination}, i64 {}",
+                    fixed_bytes.saturating_add(extra_offset)
                 ));
                 self.instruction(format!(
                     "call void @llvm.memmove.p0.p0.i64(ptr {destination_data}, ptr {source_data}, i64 {source_len}, i1 false)"
@@ -8899,6 +10508,37 @@ impl<'a> FunctionEmitter<'a> {
                 self.instruction(format!(
                     "store ptr {destination_data}, ptr {destination_data_field}, align 1"
                 ));
+            }
+            TTypeKind::Struct(fields) => {
+                let mut offset = extra_offset;
+                for (index, field) in fields.iter().enumerate() {
+                    if field.ty == Ty::Unit {
+                        continue;
+                    }
+                    let source_field = self.temp();
+                    let destination_field = self.temp();
+                    self.instruction(format!(
+                        "{source_field} = getelementptr inbounds {}, ptr {source}, i32 0, i32 {index}",
+                        self.lltype(ty)
+                    ));
+                    self.instruction(format!(
+                        "{destination_field} = getelementptr inbounds {}, ptr {destination}, i32 0, i32 {index}",
+                        self.lltype(ty)
+                    ));
+                    self.emit_rebase_growing_payload(
+                        &destination_field,
+                        &source_field,
+                        field.ty,
+                        root_destination,
+                        root_ty,
+                        offset,
+                    );
+                    offset = offset.saturating_add(growing_value_extra(
+                        field.ty,
+                        &self.program.types,
+                        &mut vec![false; self.program.types.len()],
+                    ));
+                }
             }
             TTypeKind::Option(inner) => {
                 let tag_field = self.temp();
@@ -8933,6 +10573,7 @@ impl<'a> FunctionEmitter<'a> {
                     inner,
                     root_destination,
                     root_ty,
+                    extra_offset,
                 );
                 self.terminate(format!("br label %{merge_label}"));
                 self.start_block(&done_label);
@@ -8972,6 +10613,7 @@ impl<'a> FunctionEmitter<'a> {
                     ok,
                     root_destination,
                     root_ty,
+                    extra_offset,
                 );
                 self.terminate(format!("br label %{merge_label}"));
                 self.start_block(&err_label);
@@ -8991,6 +10633,7 @@ impl<'a> FunctionEmitter<'a> {
                     err,
                     root_destination,
                     root_ty,
+                    extra_offset,
                 );
                 self.terminate(format!("br label %{merge_label}"));
                 self.start_block(&merge_label);
@@ -9042,7 +10685,143 @@ impl<'a> FunctionEmitter<'a> {
         }
     }
 
+    fn emit_expr_to_growing_root(
+        &mut self,
+        destination: &str,
+        expr: &TExpr,
+        root_destination: &str,
+        root_ty: Ty,
+        extra_offset: usize,
+    ) {
+        if let TExprKind::StructConstruct { fields } = &expr.kind {
+            self.emit_empty_storage(destination, expr.ty);
+            let field_types = match self.program.types[expr.ty.0].kind.clone() {
+                TTypeKind::Struct(fields) => fields,
+                _ => unreachable!("struct construction has a struct type"),
+            };
+            let mut field_offsets = Vec::with_capacity(field_types.len());
+            let mut next_offset = extra_offset;
+            for field in &field_types {
+                field_offsets.push(next_offset);
+                next_offset = next_offset.saturating_add(growing_value_extra(
+                    field.ty,
+                    &self.program.types,
+                    &mut vec![false; self.program.types.len()],
+                ));
+            }
+            for (index, value) in fields {
+                let offset = field_offsets[*index];
+                let field_destination = self.temp();
+                self.instruction(format!(
+                    "{field_destination} = getelementptr inbounds {}, ptr {destination}, i32 0, i32 {index}",
+                    self.lltype(expr.ty)
+                ));
+                self.emit_expr_to_growing_root(
+                    &field_destination,
+                    value,
+                    root_destination,
+                    root_ty,
+                    offset,
+                );
+                if self.terminated {
+                    return;
+                }
+            }
+            return;
+        }
+
+        let extra = growing_value_extra(
+            expr.ty,
+            &self.program.types,
+            &mut vec![false; self.program.types.len()],
+        );
+        if extra == 0 {
+            self.emit_expr_to(destination, expr);
+            return;
+        }
+
+        let fixed_size = type_size(
+            root_ty,
+            &self.program.types,
+            &mut vec![None; self.program.types.len()],
+        );
+        let inline_offset = fixed_size.saturating_add(extra_offset);
+        let data = self.temp();
+        self.instruction(format!(
+            "{data} = getelementptr i8, ptr {root_destination}, i64 {inline_offset}"
+        ));
+        if self.is_text_type(expr.ty) {
+            self.emit_text_to_data(destination, expr, &data);
+            return;
+        }
+        if self.ascii_max(expr.ty).is_some() {
+            self.emit_ascii_to_data(destination, expr, &data);
+            return;
+        }
+
+        let source = self.emit_expr_storage(expr);
+        if self.terminated {
+            return;
+        }
+        if source != destination {
+            let bytes = type_size(
+                expr.ty,
+                &self.program.types,
+                &mut vec![None; self.program.types.len()],
+            );
+            self.instruction(format!(
+                "call void @llvm.memmove.p0.p0.i64(ptr {destination}, ptr {source}, i64 {bytes}, i1 false)"
+            ));
+            self.emit_rebase_growing_payload(
+                destination,
+                &source,
+                expr.ty,
+                root_destination,
+                root_ty,
+                extra_offset,
+            );
+        }
+    }
+
     fn emit_expr_to(&mut self, destination: &str, expr: &TExpr) {
+        match &expr.kind {
+            TExprKind::TextSlice {
+                receiver,
+                start,
+                end,
+            } => {
+                self.emit_string_slice_to(destination, expr, receiver, start, end, true);
+                return;
+            }
+            TExprKind::BytesSlice {
+                receiver,
+                start,
+                end,
+            } => {
+                self.emit_string_slice_to(destination, expr, receiver, start, end, false);
+                return;
+            }
+            TExprKind::BytesView(receiver) => {
+                self.emit_bytes_view_to(destination, expr, receiver);
+                return;
+            }
+            TExprKind::TextConvert {
+                conversion: StringConversion::AsciiToText,
+                ..
+            } => {
+                self.emit_text_to(destination, expr);
+                return;
+            }
+            TExprKind::TextConvert { .. } => {
+                self.emit_text_conversion_to(destination, expr);
+                return;
+            }
+            _ => {}
+        }
+        if self.is_text_type(expr.ty) {
+            self.emit_text_to(destination, expr);
+            return;
+        }
         if self.ascii_max(expr.ty).is_some() {
             self.emit_ascii_to(destination, expr);
             return;
@@ -9123,18 +10902,8 @@ impl<'a> FunctionEmitter<'a> {
                 );
             }
             TExprKind::StructConstruct { fields } => {
-                self.emit_empty_storage(destination, expr.ty);
-                for (index, value) in fields {
-                    let field_ptr = self.temp();
-                    self.instruction(format!(
-                        "{field_ptr} = getelementptr inbounds {}, ptr {destination}, i32 0, i32 {index}",
-                        self.lltype(expr.ty)
-                    ));
-                    self.emit_expr_to(&field_ptr, value);
-                    if self.terminated {
-                        return;
-                    }
-                }
+                let _ = fields;
+                self.emit_expr_to_growing_root(destination, expr, destination, expr.ty, 0);
             }
             TExprKind::Field {
                 receiver,
@@ -9257,6 +11026,7 @@ impl<'a> FunctionEmitter<'a> {
                 if self.terminated || *capacity == 0 {
                     return;
                 }
+                self.emit_empty_storage(destination, expr.ty);
                 let counter = self.entry_alloca(Ty::Long);
                 self.instruction(format!("store i64 0, ptr {counter}, align 1"));
                 let condition = self.new_label("fill.to.cond");
@@ -9447,7 +11217,7 @@ impl<'a> FunctionEmitter<'a> {
                             return;
                         }
                     }
-                    if self.ascii_max(*ty).is_some() && !self.reserved_ascii_locals.contains(id) {
+                    if self.is_ascii_type(*ty) && !self.reserved_ascii_locals.contains(id) {
                         if let Some(length) = self.ascii_static_length(value) {
                             let bytes = (16usize.saturating_add(length)).to_string();
                             let pointer = self.emit_runtime_region_alloc_dynamic(
@@ -9480,7 +11250,7 @@ impl<'a> FunctionEmitter<'a> {
                     );
                     self.emit_expr_to(&pointer, value);
                     if !self.terminated
-                        && self.ascii_max(*ty).is_some()
+                        && self.is_ascii_type(*ty)
                         && !self.reserved_ascii_locals.contains(id)
                     {
                         let descriptor = self.temp();
@@ -9514,7 +11284,27 @@ impl<'a> FunctionEmitter<'a> {
                 operator_span,
                 value,
             } => {
-                if self.ascii_max(*ty).is_some() {
+                if *op == AssignOp::Set {
+                    if let Some((collection_ty, collection_pointer, index, lane)) =
+                        self.emit_growing_field_address(place)
+                    {
+                        let saved_top = self.stack_top.clone();
+                        let scratch = self.emit_runtime_region_alloc(*ty, value.span, None);
+                        self.emit_expr_to(&scratch, value);
+                        if !self.terminated {
+                            self.emit_store_var_lane(
+                                collection_ty,
+                                &collection_pointer,
+                                &index,
+                                lane,
+                                &scratch,
+                            );
+                            self.restore_stack_top(&saved_top);
+                        }
+                        return;
+                    }
+                }
+                if self.is_ascii_type(*ty) {
                     if *op == AssignOp::Add {
                         self.emit_ascii_append_place(place, value);
                     } else if *op == AssignOp::Set {
@@ -11402,9 +13192,18 @@ impl<'a> FunctionEmitter<'a> {
         if kind == MethodKind::AsciiLen {
             return self.ascii_field(&value, receiver.ty, 1);
         }
+        if kind == MethodKind::TextLen {
+            return self.ascii_field(&value, receiver.ty, 2);
+        }
+        if matches!(kind, MethodKind::TextByteLen | MethodKind::BytesLen) {
+            return self.ascii_field(&value, receiver.ty, 1);
+        }
         let tag = self.emit_tag(receiver.ty, &value);
         match kind {
             MethodKind::AsciiLen => unreachable!("Ascii length was handled above"),
+            MethodKind::TextLen | MethodKind::TextByteLen | MethodKind::BytesLen => {
+                unreachable!("string length was handled above")
+            }
             MethodKind::IsNone | MethodKind::IsErr => {
                 let result = self.temp();
                 self.instruction(format!("{result} = icmp eq i32 {tag}, 1"));
@@ -13297,6 +15096,40 @@ impl<'a> FunctionEmitter<'a> {
             return result;
         }
 
+        if self.is_ascii_type(element_ty) {
+            let left_value = if large_element {
+                let value = self.temp();
+                self.instruction(format!(
+                    "{value} = load {}, ptr {left}, align 1",
+                    self.lltype(element_ty)
+                ));
+                value
+            } else {
+                left
+            };
+            let right_value = if large_element {
+                let value = self.temp();
+                self.instruction(format!(
+                    "{value} = load {}, ptr {right}, align 1",
+                    self.lltype(element_ty)
+                ));
+                value
+            } else {
+                right
+            };
+            let result = self.emit_binary(
+                BinaryOp::Lt,
+                element_ty,
+                &left_value,
+                &right_value,
+                call_span,
+            );
+            if large_element {
+                self.restore_stack_top(&saved_top);
+            }
+            return result;
+        }
+
         let ordered_ty = base_type(element_ty, &self.program.types);
         match &self.program.types[ordered_ty.0].kind {
             TTypeKind::Int | TTypeKind::Long | TTypeKind::Bool => {
@@ -13399,6 +15232,7 @@ impl<'a> FunctionEmitter<'a> {
         } else {
             let pointer = self.entry_alloca(collection_ty);
             self.sort_scratch.insert(collection_ty, pointer.clone());
+            self.emit_empty_storage(&pointer, collection_ty);
             pointer
         };
         if is_list {
@@ -13495,6 +15329,7 @@ impl<'a> FunctionEmitter<'a> {
         self.instruction(format!("{j} = load i64, ptr {j_ptr}, align 1"));
         let key_index = self.temp();
         self.instruction(format!("{key_index} = load i64, ptr {i_ptr}, align 1"));
+        self.emit_clear_collection_element(collection_ty, &collection_ptr, &j);
         self.emit_sort_copy_element(
             collection_ty,
             &scratch_ptr,
@@ -13503,6 +15338,7 @@ impl<'a> FunctionEmitter<'a> {
             &j,
             element_ty,
         );
+        self.emit_clear_collection_element(collection_ty, &scratch_ptr, &key_index);
         let i = self.temp();
         self.instruction(format!("{i} = load i64, ptr {i_ptr}, align 1"));
         let next = self.temp();
@@ -13737,6 +15573,7 @@ impl<'a> FunctionEmitter<'a> {
         self.start_block(&copy_body);
         let i = self.temp();
         self.instruction(format!("{i} = load i64, ptr {i_ptr}, align 1"));
+        self.emit_clear_collection_element(collection_ty, &collection_ptr, &i);
         self.emit_sort_copy_element(
             collection_ty,
             &scratch_ptr,
@@ -13745,6 +15582,7 @@ impl<'a> FunctionEmitter<'a> {
             &i,
             element_ty,
         );
+        self.emit_clear_collection_element(collection_ty, &scratch_ptr, &i);
         let next = self.temp();
         self.instruction(format!("{next} = add i64 {i}, 1"));
         self.instruction(format!("store i64 {next}, ptr {i_ptr}, align 1"));
@@ -14177,6 +16015,15 @@ impl<'a> FunctionEmitter<'a> {
         ) {
             let value = self.emit_expr(expr);
             (value, 1, 0)
+        } else if self.ascii_max(expr.ty).is_some() {
+            let pointer = if Self::expr_place(expr).is_some() {
+                self.emit_expr_storage(expr)
+            } else {
+                let pointer = self.entry_alloca(expr.ty);
+                self.emit_expr_to(&pointer, expr);
+                pointer
+            };
+            (pointer, 2, self.ascii_max(expr.ty).unwrap_or(0))
         } else {
             let TTypeKind::List { capacity, .. } = self.program.types[expr.ty.0].kind else {
                 unreachable!("checker validates I/O byte arguments")
@@ -14306,12 +16153,48 @@ impl<'a> FunctionEmitter<'a> {
                         if self.terminated {
                             return String::new();
                         }
-                        let TTypeKind::List { capacity, .. } =
+                        if let TTypeKind::List { capacity, .. } =
                             self.program.types[args[2].ty.0].kind
-                        else {
-                            unreachable!()
-                        };
-                        self.instruction(format!("call void @nl_fs_read(ptr {fs}, ptr {path}, i32 {path_is_arg}, i64 {path_capacity}, ptr {buffer}, i64 {capacity}, ptr {result_storage})"));
+                        {
+                            self.instruction(format!("call void @nl_fs_read(ptr {fs}, ptr {path}, i32 {path_is_arg}, i64 {path_capacity}, ptr {buffer}, i64 {capacity}, ptr {result_storage})"));
+                        } else {
+                            let is_text = self.is_text_type(args[2].ty);
+                            let byte_offset = if is_text { 24 } else { 16 };
+                            let output_data = self.temp();
+                            self.instruction(format!(
+                                "{output_data} = getelementptr i8, ptr {buffer}, i64 {byte_offset}"
+                            ));
+                            let data_field = self.temp();
+                            self.instruction(format!(
+                                "{data_field} = getelementptr {}, ptr {buffer}, i32 0, i32 0",
+                                self.lltype(args[2].ty)
+                            ));
+                            self.instruction(format!(
+                                "store ptr {output_data}, ptr {data_field}, align 1"
+                            ));
+                            let length_field = self.temp();
+                            self.instruction(format!(
+                                "{length_field} = getelementptr {}, ptr {buffer}, i32 0, i32 1",
+                                self.lltype(args[2].ty)
+                            ));
+                            if is_text {
+                                let cp_field = self.temp();
+                                self.instruction(format!(
+                                    "{cp_field} = getelementptr {}, ptr {buffer}, i32 0, i32 2",
+                                    self.lltype(args[2].ty)
+                                ));
+                                let (codepoints, _) = match self.program.types[args[2].ty.0].kind {
+                                    TTypeKind::Text {
+                                        max_codepoints,
+                                        max_bytes,
+                                    } => (max_codepoints, max_bytes),
+                                    _ => unreachable!(),
+                                };
+                                self.instruction(format!("call void @nl_fs_read_string(ptr {fs}, ptr {path}, i32 {path_is_arg}, i64 {path_capacity}, ptr {output_data}, i64 {}, i32 1, i64 {codepoints}, ptr {length_field}, ptr {cp_field}, ptr {result_storage})", self.ascii_max(args[2].ty).unwrap_or(0)));
+                            } else {
+                                self.instruction(format!("call void @nl_fs_read_string(ptr {fs}, ptr {path}, i32 {path_is_arg}, i64 {path_capacity}, ptr {output_data}, i64 {}, i32 0, i64 0, ptr {length_field}, ptr null, ptr {result_storage})", self.ascii_max(args[2].ty).unwrap_or(0)));
+                            }
+                        }
                     }
                     CallTarget::FsList => {
                         let output = self.emit_expr_storage(&args[2]);
@@ -14376,11 +16259,12 @@ impl<'a> FunctionEmitter<'a> {
                             }
                             self.instruction(format!("call void @nl_out_arg(ptr {output}, ptr {data}, i32 {}, ptr {result_storage})", i32::from(matches!(target, CallTarget::OutLine))));
                         } else {
-                            let (data, _, capacity) = self.emit_io_bytes_argument(&args[1]);
+                            let (data, data_is_arg, capacity) =
+                                self.emit_io_bytes_argument(&args[1]);
                             if self.terminated {
                                 return String::new();
                             }
-                            self.instruction(format!("call void @nl_out_write(ptr {output}, ptr {data}, i32 {}, i64 {capacity}, i32 {}, ptr {result_storage})", 0, i32::from(matches!(target, CallTarget::OutLine))));
+                            self.instruction(format!("call void @nl_out_write(ptr {output}, ptr {data}, i32 {data_is_arg}, i64 {capacity}, i32 {}, ptr {result_storage})", i32::from(matches!(target, CallTarget::OutLine))));
                         }
                     }
                     CallTarget::OutInt => {
@@ -14550,11 +16434,27 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_construct(expr.ty, *case_index, args)
             }
             TExprKind::Method { kind, receiver } => self.emit_method(expr, *kind, receiver),
-            TExprKind::AsciiEmpty => "zeroinitializer".to_owned(),
+            TExprKind::AsciiEmpty | TExprKind::TextEmpty | TExprKind::BytesEmpty => {
+                "zeroinitializer".to_owned()
+            }
             TExprKind::AsciiUpper(_)
+            | TExprKind::TextUpper(_)
             | TExprKind::AsciiFormat(_)
             | TExprKind::AsciiCast(_)
             | TExprKind::AsciiFit { .. } => {
+                let pointer = self.entry_alloca(expr.ty);
+                self.emit_expr_to(&pointer, expr);
+                let value = self.temp();
+                self.instruction(format!(
+                    "{value} = load {}, ptr {pointer}, align 1",
+                    self.lltype(expr.ty)
+                ));
+                value
+            }
+            TExprKind::TextSlice { .. }
+            | TExprKind::BytesSlice { .. }
+            | TExprKind::BytesView(_)
+            | TExprKind::TextConvert { .. } => {
                 let pointer = self.entry_alloca(expr.ty);
                 self.emit_expr_to(&pointer, expr);
                 let value = self.temp();

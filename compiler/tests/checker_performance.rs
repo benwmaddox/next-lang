@@ -36,6 +36,9 @@ fn assert_compiles_quickly(name: &str, source: &str) {
     let start = Instant::now();
     let result = compile_package(package.path());
     let elapsed = start.elapsed();
+    if std::env::var_os("NLC_TIMING").is_some() {
+        eprintln!("{name}: {elapsed:?}");
+    }
     result.unwrap_or_else(|error| panic!("{name} stress package failed to compile: {error}"));
     assert!(
         elapsed < Duration::from_secs(2),
@@ -91,4 +94,40 @@ fn nested_ascii_loop_growth_proofs_remain_quick() {
     }
     source.push_str("}\n");
     assert_compiles_quickly("nested-ascii-loop-growth", &source);
+}
+
+#[test]
+fn long_text_and_bytes_concatenations_and_many_fields_remain_linear() {
+    let terms = 1_000;
+    let text_sum = vec!["piece"; terms].join(" + ");
+    assert_compiles_quickly(
+        "long-text-sum",
+        &format!(
+            "fn main() {{\n    let piece: Text max 1 bytes max 4 = \"😀\"\n    let joined: Text max {terms} bytes max {} = {text_sum}\n    print(joined.len())\n}}\n",
+            terms * 4
+        ),
+    );
+
+    let bytes_sum = vec!["piece"; terms].join(" + ");
+    assert_compiles_quickly(
+        "long-bytes-sum",
+        &format!(
+            "fn main() {{\n    let piece: Bytes max 1 = b\"x\"\n    let joined: Bytes max {terms} = {bytes_sum}\n    print(joined.len())\n}}\n"
+        ),
+    );
+
+    let fields = (0..terms)
+        .map(|index| format!("field_{index}: Text max 1"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = (0..terms)
+        .map(|index| format!("field_{index}: \"x\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert_compiles_quickly(
+        "many-growing-fields",
+        &format!(
+            "struct Many {{ {fields} }}\nfn main() {{\n    let value = Many {{ {values} }}\n    print(value.field_999.len())\n}}\n"
+        ),
+    );
 }

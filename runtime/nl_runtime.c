@@ -13,6 +13,8 @@
 #include <sys/syscall.h>
 #include <linux/openat2.h>
 
+#include "nl_unicode_upper.h"
+
 #if defined(__linux__)
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -23,6 +25,16 @@ static const char **nl_files;
 static size_t nl_file_capacity;
 static int nl_test_mode;
 static int nl_print_fd = STDOUT_FILENO;
+
+#define NL_TEST_VAR_STORAGE_CAPACITY 131072
+static const void *nl_test_var_descriptors[NL_TEST_VAR_STORAGE_CAPACITY];
+static const void *nl_test_var_data[NL_TEST_VAR_STORAGE_CAPACITY];
+static uint64_t nl_test_var_lengths[NL_TEST_VAR_STORAGE_CAPACITY];
+static size_t nl_test_var_count;
+
+const char *nl_runtime_unicode_version(void) {
+    return nl_unicode_version;
+}
 
 typedef struct {
     void *mapping;
@@ -251,7 +263,51 @@ int32_t nl_test_selected_index(void) {
     return (int32_t)index;
 }
 
-void nl_set_test_mode(void) { nl_test_mode = 1; }
+void nl_set_test_mode(void) {
+    nl_test_var_count = 0;
+    nl_test_mode = 1;
+}
+
+void nl_test_var_storage_reset(void) {
+    if (nl_test_mode) nl_test_var_count = 0;
+}
+
+void nl_test_var_storage_note(const void *descriptor, const void *data, uint64_t length) {
+    if (!nl_test_mode || !descriptor) return;
+    size_t current = nl_test_var_count;
+    for (size_t index = 0; index < nl_test_var_count; ++index) {
+        if (nl_test_var_descriptors[index] == descriptor) {
+            current = index;
+            break;
+        }
+    }
+    for (size_t index = 0; index < nl_test_var_count; ++index) {
+        if (index == current) continue;
+        void *observed = NULL;
+        memcpy(&observed, nl_test_var_descriptors[index], sizeof(observed));
+        if (observed != nl_test_var_data[index]) {
+            fprintf(stderr,
+                    "test failure: updating one variable-size field moved another field's storage\n");
+            exit(70);
+        }
+    }
+    if (current < nl_test_var_count && length < nl_test_var_lengths[current] &&
+        data != nl_test_var_data[current]) {
+        fprintf(stderr,
+                "test failure: shrinking a variable-size field moved it to a different slot\n");
+        exit(70);
+    }
+    if (current == nl_test_var_count) {
+        if (nl_test_var_count == NL_TEST_VAR_STORAGE_CAPACITY) {
+            fprintf(stderr, "test failure: variable-size storage test hook capacity exceeded\n");
+            exit(70);
+        }
+        nl_test_var_descriptors[current] = descriptor;
+        ++nl_test_var_count;
+    }
+    nl_test_var_data[current] = data;
+    nl_test_var_lengths[current] = length;
+}
 
 _Bool nl_has_argument(int32_t argc, const char **argv, const char *wanted) {
     for (int32_t i = 1; i < argc; ++i) {
@@ -649,6 +705,134 @@ void nl_ascii_upper_copy(const unsigned char *source,
     }
 }
 
+static int nl_utf8_decode(const unsigned char *bytes, uint64_t length,
+                          uint64_t *offset, uint32_t *codepoint) {
+    if (*offset >= length) return 0;
+    uint64_t at = *offset;
+    unsigned char first = bytes[at++];
+    uint32_t value;
+    uint64_t extra;
+    if (first <= 0x7f) { value = first; extra = 0; }
+    else if (first >= 0xc2 && first <= 0xdf) { value = first & 0x1f; extra = 1; }
+    else if (first >= 0xe0 && first <= 0xef) { value = first & 0x0f; extra = 2; }
+    else if (first >= 0xf0 && first <= 0xf4) { value = first & 0x07; extra = 3; }
+    else return 0;
+    if (extra > length - at) return 0;
+    for (uint64_t index = 0; index < extra; ++index) {
+        unsigned char next = bytes[at++];
+        if ((next & 0xc0) != 0x80) return 0;
+        if (index == 0 && first == 0xe0 && next < 0xa0) return 0;
+        if (index == 0 && first == 0xed && next >= 0xa0) return 0;
+        if (index == 0 && first == 0xf0 && next < 0x90) return 0;
+        if (index == 0 && first == 0xf4 && next >= 0x90) return 0;
+        value = (value << 6) | (uint32_t)(next & 0x3f);
+    }
+    *offset = at;
+    *codepoint = value;
+    return 1;
+}
+
+int32_t nl_utf8_count(const unsigned char *bytes, uint64_t length,
+                      int64_t *codepoint_count) {
+    if (!codepoint_count || (length && !bytes)) return 0;
+    uint64_t offset = 0;
+    uint64_t count = 0;
+    while (offset < length) {
+        uint32_t codepoint;
+        if (!nl_utf8_decode(bytes, length, &offset, &codepoint)) return 0;
+        (void)codepoint;
+        if (count == INT64_MAX) return 0;
+        ++count;
+    }
+    *codepoint_count = (int64_t)count;
+    return 1;
+}
+
+int64_t nl_utf8_offset(const unsigned char *bytes, uint64_t length,
+                       int64_t codepoint_index) {
+    if (codepoint_index < 0 || (length && !bytes)) return -1;
+    uint64_t offset = 0;
+    int64_t count = 0;
+    while (count < codepoint_index) {
+        uint32_t codepoint;
+        if (!nl_utf8_decode(bytes, length, &offset, &codepoint)) return -1;
+        (void)codepoint;
+        ++count;
+    }
+    return offset <= INT64_MAX ? (int64_t)offset : -1;
+}
+
+static uint64_t nl_utf8_encode(uint32_t codepoint, unsigned char *destination) {
+    if (codepoint <= 0x7f) {
+        destination[0] = (unsigned char)codepoint;
+        return 1;
+    }
+    if (codepoint <= 0x7ff) {
+        destination[0] = (unsigned char)(0xc0 | (codepoint >> 6));
+        destination[1] = (unsigned char)(0x80 | (codepoint & 0x3f));
+        return 2;
+    }
+    if (codepoint <= 0xffff) {
+        destination[0] = (unsigned char)(0xe0 | (codepoint >> 12));
+        destination[1] = (unsigned char)(0x80 | ((codepoint >> 6) & 0x3f));
+        destination[2] = (unsigned char)(0x80 | (codepoint & 0x3f));
+        return 3;
+    }
+    destination[0] = (unsigned char)(0xf0 | (codepoint >> 18));
+    destination[1] = (unsigned char)(0x80 | ((codepoint >> 12) & 0x3f));
+    destination[2] = (unsigned char)(0x80 | ((codepoint >> 6) & 0x3f));
+    destination[3] = (unsigned char)(0x80 | (codepoint & 0x3f));
+    return 4;
+}
+
+static const typeof(nl_upper_map[0]) *nl_upper_mapping(uint32_t codepoint) {
+    size_t low = 0;
+    size_t high = sizeof(nl_upper_map) / sizeof(nl_upper_map[0]);
+    while (low < high) {
+        size_t middle = low + (high - low) / 2;
+        if (nl_upper_map[middle].source < codepoint) low = middle + 1;
+        else high = middle;
+    }
+    return low < sizeof(nl_upper_map) / sizeof(nl_upper_map[0]) &&
+                   nl_upper_map[low].source == codepoint
+               ? &nl_upper_map[low]
+               : NULL;
+}
+
+uint64_t nl_text_upper_copy(const unsigned char *source,
+                            uint64_t source_length,
+                            unsigned char *destination,
+                            int64_t *codepoint_count) {
+    uint64_t source_offset = 0;
+    uint64_t output_offset = 0;
+    int64_t output_count = 0;
+    while (source_offset < source_length) {
+        uint32_t codepoint;
+        if (!nl_utf8_decode(source, source_length, &source_offset, &codepoint))
+            return UINT64_MAX;
+        const typeof(nl_upper_map[0]) *mapping = nl_upper_mapping(codepoint);
+        if (mapping) {
+            for (uint8_t index = 0; index < mapping->length; ++index) {
+                output_offset += nl_utf8_encode(mapping->target[index], destination + output_offset);
+                ++output_count;
+            }
+        } else {
+            output_offset += nl_utf8_encode(codepoint, destination + output_offset);
+            ++output_count;
+        }
+    }
+    if (codepoint_count) *codepoint_count = output_count;
+    return output_offset;
+}
+
+int32_t nl_bytes_are_ascii(const unsigned char *bytes, uint64_t length) {
+    if (length && !bytes) return 0;
+    for (uint64_t index = 0; index < length; ++index) {
+        if (bytes[index] > 0x7f) return 0;
+    }
+    return 1;
+}
+
 void nl_print_set_fd(int32_t fd) {
     if (fd == STDOUT_FILENO || fd == STDERR_FILENO) nl_print_fd = fd;
 }
@@ -746,6 +930,8 @@ static void nl_io_error(void *result, int error_tag, int error_code) {
         if (error_tag == 7) words[2] = error_code;
     }
 }
+
+#define NL_IO_ERROR_INVALID_UTF8 8
 
 static int nl_errno_error(int error) {
     if (error == ENOENT) return 0;
@@ -846,11 +1032,23 @@ int32_t nl_arg_byte(void *value, int64_t index) {
 static int nl_extract_path(const void *value, int is_argument, uint64_t capacity,
                            char output[4097], int *error_tag, int *error_code) {
     uint64_t length;
-    if (is_argument) {
+    if (is_argument == 1) {
         if (!value) { *error_tag = 0; return 0; }
         length = strlen((const char *)value);
         if (length > 4096) { *error_tag = 2; return 0; }
         memcpy(output, value, (size_t)length);
+    } else if (is_argument == 2) {
+        if (!value) { *error_tag = 5; return 0; }
+        const unsigned char *bytes = *(const unsigned char *const *)value;
+        int64_t count = *(const int64_t *)((const unsigned char *)value + 8);
+        if (count < 0 || (uint64_t)count > capacity) { *error_tag = 5; return 0; }
+        length = (uint64_t)count;
+        if (length > 4096) { *error_tag = 2; return 0; }
+        if (length && !bytes) { *error_tag = 5; return 0; }
+        for (uint64_t i = 0; i < length; ++i) {
+            if (bytes[i] == 0) { *error_tag = 5; return 0; }
+            output[i] = (char)bytes[i];
+        }
     } else {
         if (!value) { *error_tag = 5; return 0; }
         int64_t count = *(const int64_t *)value;
@@ -874,10 +1072,22 @@ static int nl_extract_raw(const void *value, int is_argument, uint64_t capacity,
                           unsigned char scratch[4096],
                           const unsigned char **bytes, uint64_t *length,
                           int *error_tag, int *error_code) {
-    if (is_argument) {
+    if (is_argument == 1) {
         if (!value) { *error_tag = 0; return 0; }
         *bytes = (const unsigned char *)value;
         *length = strlen((const char *)value);
+        return 1;
+    }
+    if (is_argument == 2) {
+        if (!value) { *error_tag = 5; return 0; }
+        const unsigned char *data = *(const unsigned char *const *)value;
+        int64_t count = *(const int64_t *)((const unsigned char *)value + 8);
+        if (count < 0 || (uint64_t)count > capacity || (count && !data)) {
+            *error_tag = 5;
+            return 0;
+        }
+        *bytes = data;
+        *length = (uint64_t)count;
         return 1;
     }
     if (!value) { *error_tag = 5; return 0; }
@@ -987,6 +1197,79 @@ void nl_fs_read(void *handle, void *path_value, int path_is_argument, uint64_t p
     nl_io_error(result, -1, 0);
 }
 
+void nl_fs_read_string(void *handle, void *path_value, int path_is_argument,
+                       uint64_t path_capacity, unsigned char *output,
+                       uint64_t capacity, int is_text,
+                       uint64_t codepoint_capacity, int64_t *output_length,
+                       int64_t *output_codepoints, void *result) {
+    int error_tag = -1, error_code = 0;
+    char path[4097];
+    if (output_length) *output_length = 0;
+    if (output_codepoints) *output_codepoints = 0;
+    if (!output_length || (capacity && !output) || capacity > SIZE_MAX - 1) {
+        nl_io_error(result, 2, 0);
+        return;
+    }
+    if (!nl_extract_path(path_value, path_is_argument, path_capacity,
+                         path, &error_tag, &error_code)) {
+        nl_io_error(result, error_tag, error_code);
+        return;
+    }
+    int fd = nl_open_beneath(((nl_fs_handle *)handle)->root_fd,
+                             path, O_RDONLY | O_CLOEXEC, 0);
+    if (fd < 0) {
+        int error = errno;
+        nl_io_error(result, nl_errno_error(error), error);
+        return;
+    }
+    unsigned char *staged = malloc(capacity ? (size_t)capacity : 1);
+    if (!staged) {
+        close(fd);
+        nl_io_error(result, 7, ENOMEM);
+        return;
+    }
+    uint64_t total = 0;
+    int failure = 0;
+    while (total < capacity) {
+        size_t amount = (size_t)((capacity - total) < 8192 ? capacity - total : 8192);
+        ssize_t got = read(fd, staged + total, amount);
+        if (got < 0 && errno == EINTR) continue;
+        if (got < 0) { failure = errno; break; }
+        if (got == 0) break;
+        total += (uint64_t)got;
+    }
+    if (!failure && total == capacity) {
+        unsigned char extra;
+        for (;;) {
+            ssize_t got = read(fd, &extra, 1);
+            if (got < 0 && errno == EINTR) continue;
+            if (got < 0) failure = errno;
+            else if (got > 0) error_tag = 2;
+            break;
+        }
+    }
+    close(fd);
+    int64_t codepoints = 0;
+    if (!failure && error_tag != 2 && is_text) {
+        if (!nl_utf8_count(staged, total, &codepoints)) {
+            error_tag = NL_IO_ERROR_INVALID_UTF8;
+        } else if ((uint64_t)codepoints > codepoint_capacity) {
+            error_tag = 2;
+        }
+    }
+    if (failure || error_tag == 2 || error_tag == NL_IO_ERROR_INVALID_UTF8) {
+        free(staged);
+        nl_io_error(result, failure ? nl_errno_error(failure) : error_tag,
+                    failure ? failure : error_code);
+        return;
+    }
+    if (total) memcpy(output, staged, (size_t)total);
+    free(staged);
+    *output_length = (int64_t)total;
+    if (output_codepoints) *output_codepoints = codepoints;
+    nl_io_error(result, -1, 0);
+}
+
 typedef struct { char *name; size_t length; int kind; } nl_dir_item;
 static int nl_dir_compare(const void *left_value, const void *right_value) {
     const nl_dir_item *left = (const nl_dir_item *)left_value;
@@ -1076,7 +1359,7 @@ void nl_fs_write(void *handle, void *path_value, int path_is_argument, uint64_t 
     if (data_is_argument) {
         const unsigned char *bytes; uint64_t length;
         unsigned char scratch[4096];
-        if (nl_extract_raw(data_value, 1, data_capacity, scratch, &bytes, &length, &error_tag, &error_code)) failure = nl_write_all(fd, bytes, length);
+        if (nl_extract_raw(data_value, data_is_argument, data_capacity, scratch, &bytes, &length, &error_tag, &error_code)) failure = nl_write_all(fd, bytes, length);
         else failure = error_code ? error_code : EINVAL;
     } else {
         failure = nl_write_byte_list(fd, data_value, data_capacity);
@@ -1139,7 +1422,7 @@ void nl_out_write(void *handle, void *data_value, int data_is_argument, uint64_t
     if (data_is_argument) {
         const unsigned char *bytes; uint64_t length; int tag = -1, code = 0;
         unsigned char scratch[4096];
-        if (!nl_extract_raw(data_value, 1, data_capacity, scratch, &bytes, &length, &tag, &code)) error = code ? code : EINVAL;
+        if (!nl_extract_raw(data_value, data_is_argument, data_capacity, scratch, &bytes, &length, &tag, &code)) error = code ? code : EINVAL;
         else error = nl_write_all(out->fd, bytes, length);
     } else error = nl_write_byte_list(out->fd, data_value, data_capacity);
     if (!error && line) error = nl_write_all(out->fd, (const unsigned char *)"\n", 1);

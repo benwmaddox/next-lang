@@ -1,0 +1,1 @@
+main.nl:9:31: error: cannot pass storage containing a live collection view as write

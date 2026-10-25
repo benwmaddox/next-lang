@@ -1,0 +1,49 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 8 1 4 "borrowed"
+LParen 11 1 1 12 "("
+Ident 12 5 1 13 "value"
+Colon 17 1 1 18 ":"
+Ident 19 4 1 20 "Text"
+Ident 24 3 1 25 "max"
+Number 28 1 1 29 "4"
+RParen 29 1 1 30 ")"
+Arrow 31 2 1 32 "->"
+Ident 34 5 1 35 "Bytes"
+Ident 40 3 1 41 "max"
+Number 44 2 1 45 "16"
+LBrace 47 1 1 48 "{"
+Newline 48 1 1 49 "\n"
+Ident 53 6 2 5 "return"
+Ident 60 5 2 12 "value"
+Dot 65 1 2 17 "."
+Ident 66 5 2 18 "bytes"
+LParen 71 1 2 23 "("
+RParen 72 1 2 24 ")"
+Newline 73 1 2 25 "\n"
+RBrace 74 1 3 1 "}"
+Newline 75 1 3 2 "\n"
+Ident 77 2 5 1 "fn"
+Ident 80 4 5 4 "main"
+LParen 84 1 5 8 "("
+RParen 85 1 5 9 ")"
+LBrace 87 1 5 11 "{"
+RBrace 88 1 5 12 "}"
+Newline 89 1 5 13 "\n"
+Eof 90 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..90
+  Function 0..75 name="borrowed" recursive=false generics=[]
+    Parameter 12..29 name="value" mode=read
+      ParameterType 19..29 name="Text" range=none policy=checked
+        Integer 28..29 magnitude=4 negative=false long_suffix=false
+    ResultType 34..46 name="Bytes" range=none policy=checked
+      Integer 44..46 magnitude=16 negative=false long_suffix=false
+    Block 47..75
+      ReturnStatement 53..73
+        MethodCall 60..73 name="bytes"
+          Name 60..65 name="value"
+  Function 77..89 name="main" recursive=false generics=[]
+    Block 87..89

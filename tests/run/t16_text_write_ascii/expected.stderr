@@ -1,0 +1,1 @@
+main.nl:5:13: error: write argument needs exactly Text max 8 bytes max 32; found Ascii max 8

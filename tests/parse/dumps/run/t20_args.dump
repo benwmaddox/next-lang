@@ -275,7 +275,7 @@ Program 0..815
               Try 176..190
                 MethodCall 176..189 name="line"
                   Name 176..179 name="out"
-                  ByteString 185..188 value=""
+                  BytesLiteral 185..188 value=""
             ExpressionStatement 203..494
               Match 203..494
                 MethodCall 209..225 name="get"
@@ -294,7 +294,7 @@ Program 0..815
                       Try 317..331
                         MethodCall 317..330 name="line"
                           Name 317..320 name="out"
-                          ByteString 326..329 value=""
+                          BytesLiteral 326..329 value=""
                     Unit 352..354
                 MatchArm 390..480
                   CasePattern 390..394 name="none"
@@ -303,7 +303,7 @@ Program 0..815
                       Try 420..439
                         MethodCall 420..438 name="line"
                           Name 420..423 name="out"
-                          ByteString 429..437 value="empty"
+                          BytesLiteral 429..437 value="empty"
                     Unit 460..462
             ExpressionStatement 507..526
               Try 507..526
@@ -340,7 +340,7 @@ Program 0..815
         Try 712..726
           MethodCall 712..725 name="line"
             Name 712..715 name="out"
-            ByteString 721..724 value=""
+            BytesLiteral 721..724 value=""
       ExpressionStatement 731..751
         Try 731..751
           Call 731..750 name="show"

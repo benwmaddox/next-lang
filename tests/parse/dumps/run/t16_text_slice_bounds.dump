@@ -1,0 +1,46 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "let"
+Ident 20 4 2 9 "text"
+Colon 24 1 2 13 ":"
+Ident 26 4 2 15 "Text"
+Ident 31 3 2 20 "max"
+Number 35 1 2 24 "2"
+Eq 37 1 2 26 "="
+String 39 8 2 28 "\"é😀\""
+Newline 47 1 2 36 "\n"
+Ident 52 5 3 5 "print"
+LParen 57 1 3 10 "("
+Ident 58 4 3 11 "text"
+Dot 62 1 3 15 "."
+Ident 63 5 3 16 "slice"
+LParen 68 1 3 21 "("
+Number 69 1 3 22 "0"
+Range 70 2 3 23 ".."
+Number 72 1 3 25 "3"
+RParen 73 1 3 26 ")"
+RParen 74 1 3 27 ")"
+Newline 75 1 3 28 "\n"
+RBrace 76 1 4 1 "}"
+Newline 77 1 4 2 "\n"
+Eof 78 0 5 1 ""
+== tree ==
+file "main.nl"
+Program 0..78
+  Function 0..77 name="main" recursive=false generics=[]
+    Block 10..77
+      Let 16..47 mutable=false name="text"
+        Annotation 26..36 name="Text" range=none policy=checked
+          Integer 35..36 magnitude=2 negative=false long_suffix=false
+        ByteString 39..47 value="é😀"
+      Call 52..75 name="print"
+        MethodCall 58..74 name="slice"
+          Name 58..62 name="text"
+          Integer 69..70 magnitude=0 negative=false long_suffix=false
+          Integer 72..73 magnitude=3 negative=false long_suffix=false

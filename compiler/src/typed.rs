@@ -91,6 +91,13 @@ pub enum TTypeKind {
     Ascii {
         max_bytes: usize,
     },
+    Text {
+        max_codepoints: usize,
+        max_bytes: usize,
+    },
+    Bytes {
+        max_bytes: usize,
+    },
     Id {
         owner: usize,
     },
@@ -130,6 +137,80 @@ pub enum CapabilityKind {
 pub struct TField {
     pub name: String,
     pub ty: Ty,
+}
+
+#[derive(Clone, Debug)]
+pub struct GrowingCollectionLane {
+    pub lane: usize,
+    pub ty: Ty,
+    pub class_bytes: Vec<usize>,
+}
+
+pub fn growing_collection_lanes(
+    collection: Ty,
+    types: &[TType],
+) -> Option<Vec<GrowingCollectionLane>> {
+    let (element, capacity) = match &types.get(collection.0)?.kind {
+        TTypeKind::Array { element, capacity }
+        | TTypeKind::List { element, capacity }
+        | TTypeKind::Queue { element, capacity }
+        | TTypeKind::Ring { element, capacity }
+        | TTypeKind::Grid {
+            element, capacity, ..
+        }
+        | TTypeKind::Pool {
+            element, capacity, ..
+        } => (*element, *capacity),
+        TTypeKind::Map {
+            value, capacity, ..
+        } => (*value, *capacity),
+        TTypeKind::Set { .. } => return Some(Vec::new()),
+        _ => return Some(Vec::new()),
+    };
+    if capacity == 0 {
+        return Some(Vec::new());
+    }
+    let lanes = match &types.get(element.0)?.kind {
+        TTypeKind::Struct(fields) => fields.iter().map(|field| field.ty).collect::<Vec<_>>(),
+        _ => vec![element],
+    };
+    let mut result = Vec::new();
+    for (lane, ty) in lanes.into_iter().enumerate() {
+        let mut base = ty;
+        while let Some(TTypeKind::Refinement { base: inner, .. }) =
+            types.get(base.0).map(|definition| &definition.kind)
+        {
+            base = *inner;
+        }
+        let maximum = match &types.get(base.0)?.kind {
+            TTypeKind::Ascii { max_bytes } | TTypeKind::Bytes { max_bytes } => *max_bytes,
+            TTypeKind::Text { max_bytes, .. } => *max_bytes,
+            _ => continue,
+        };
+        if maximum == 0 {
+            continue;
+        }
+        let class_bytes = if maximum <= 64 {
+            vec![maximum]
+        } else {
+            let mut classes = Vec::new();
+            let mut size = 128usize;
+            loop {
+                classes.push(size);
+                if size >= maximum {
+                    break;
+                }
+                size = size.checked_mul(2)?;
+            }
+            classes
+        };
+        result.push(GrowingCollectionLane {
+            lane,
+            ty,
+            class_bytes,
+        });
+    }
+    Some(result)
 }
 
 pub fn base_type(mut ty: Ty, types: &[TType]) -> Ty {
@@ -504,6 +585,9 @@ pub enum Effect {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MethodKind {
     AsciiLen,
+    TextLen,
+    TextByteLen,
+    BytesLen,
     IsNone,
     IsSome,
     IsOk,
@@ -602,7 +686,10 @@ pub enum TExprKind {
         receiver: Box<TExpr>,
     },
     AsciiEmpty,
+    TextEmpty,
+    BytesEmpty,
     AsciiUpper(Box<TExpr>),
+    TextUpper(Box<TExpr>),
     AsciiFormat(Box<TExpr>),
     AsciiTryAppend {
         receiver: Box<TExpr>,
@@ -612,6 +699,22 @@ pub enum TExprKind {
     AsciiFit {
         value: Box<TExpr>,
         option_ty: Ty,
+    },
+    TextSlice {
+        receiver: Box<TExpr>,
+        start: Box<TExpr>,
+        end: Box<TExpr>,
+    },
+    BytesSlice {
+        receiver: Box<TExpr>,
+        start: Box<TExpr>,
+        end: Box<TExpr>,
+    },
+    BytesView(Box<TExpr>),
+    TextConvert {
+        value: Box<TExpr>,
+        target: Ty,
+        conversion: StringConversion,
     },
     Take(Box<TExpr>),
     OptionalCall {
@@ -727,6 +830,14 @@ pub enum TExprKind {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringConversion {
+    AsciiToText,
+    BytesToText,
+    BytesToAscii,
+    TextToAscii,
+}
+
 pub fn llvm_type(ty: Ty, types: &[TType]) -> String {
     let ty = base_type(ty, types);
     if matches!(types[ty.0].kind, TTypeKind::Id { .. }) {
@@ -735,9 +846,23 @@ pub fn llvm_type(ty: Ty, types: &[TType]) -> String {
     if matches!(types[ty.0].kind, TTypeKind::Ascii { .. }) {
         return "%nl.ascii".to_owned();
     }
+    if matches!(types[ty.0].kind, TTypeKind::Text { .. }) {
+        return "%nl.text".to_owned();
+    }
+    if matches!(types[ty.0].kind, TTypeKind::Bytes { .. }) {
+        return "%nl.bytes".to_owned();
+    }
     if matches!(types[ty.0].kind, TTypeKind::Option(inner) if matches!(types[inner.0].kind, TTypeKind::Ascii { .. }))
     {
         return "%nl.option.ascii".to_owned();
+    }
+    if matches!(types[ty.0].kind, TTypeKind::Option(inner) if matches!(types[inner.0].kind, TTypeKind::Text { .. }))
+    {
+        return "%nl.option.text".to_owned();
+    }
+    if matches!(types[ty.0].kind, TTypeKind::Option(inner) if matches!(types[inner.0].kind, TTypeKind::Bytes { .. }))
+    {
+        return "%nl.option.bytes".to_owned();
     }
     match ty {
         Ty::Int => "i32".to_owned(),

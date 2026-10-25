@@ -1,4 +1,4 @@
 fn main() {
-    let invalid = "cafÉ"
+    let invalid: Ascii max 8 = "cafÉ"
     print(invalid)
 }

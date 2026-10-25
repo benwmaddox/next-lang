@@ -360,7 +360,7 @@ Program 0..976
           MethodCall 347..386 name="write"
             Name 347..349 name="fs"
             ByteString 356..363 value="a.txt"
-            ByteString 365..385 value="one\ntwo\nthree\n"
+            BytesLiteral 365..385 value="one\ntwo\nthree\n"
       ExpressionStatement 392..424
         Call 392..424 name="print"
           Try 398..423

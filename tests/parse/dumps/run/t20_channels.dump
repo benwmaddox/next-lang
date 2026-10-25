@@ -78,11 +78,11 @@ Program 0..150
         Try 91..111
           MethodCall 91..110 name="line"
             Name 91..94 name="out"
-            ByteString 100..109 value="stdout"
+            BytesLiteral 100..109 value="stdout"
       ExpressionStatement 116..136
         Try 116..136
           MethodCall 116..135 name="line"
             Name 116..119 name="err"
-            ByteString 125..134 value="stderr"
+            BytesLiteral 125..134 value="stderr"
       Call 141..147 name="ok"
         Unit 144..146

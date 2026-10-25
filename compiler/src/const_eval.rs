@@ -324,8 +324,13 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
             value: receiver, ..
         }
         | TExprKind::AsciiUpper(receiver)
+        | TExprKind::TextUpper(receiver)
         | TExprKind::AsciiFormat(receiver)
         | TExprKind::AsciiCast(receiver)
+        | TExprKind::BytesView(receiver)
+        | TExprKind::TextConvert {
+            value: receiver, ..
+        }
         | TExprKind::Take(receiver)
         | TExprKind::Cast {
             value: receiver, ..
@@ -353,6 +358,20 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
             }
         }
         TExprKind::Fill { value, .. } => collect_constant_references_expr(value, references),
+        TExprKind::TextSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::BytesSlice {
+            receiver,
+            start,
+            end,
+        } => {
+            collect_constant_references_expr(receiver, references);
+            collect_constant_references_expr(start, references);
+            collect_constant_references_expr(end, references);
+        }
         TExprKind::CollectionOp { receiver, args, .. } => {
             collect_constant_references_expr(receiver, references);
             for arg in args {
@@ -418,7 +437,9 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
         | TExprKind::EmptyQueue
         | TExprKind::EmptyRing
         | TExprKind::LoopExit(_)
-        | TExprKind::AsciiEmpty => {}
+        | TExprKind::AsciiEmpty
+        | TExprKind::TextEmpty
+        | TExprKind::BytesEmpty => {}
         TExprKind::AsciiFit { value, .. } => collect_constant_references_expr(value, references),
         TExprKind::AsciiTryAppend { receiver, argument } => {
             collect_constant_references_expr(receiver, references);
@@ -534,8 +555,13 @@ fn expression_reads_global(expr: &TExpr) -> bool {
             value: receiver, ..
         }
         | TExprKind::AsciiUpper(receiver)
+        | TExprKind::TextUpper(receiver)
         | TExprKind::AsciiFormat(receiver)
         | TExprKind::AsciiCast(receiver)
+        | TExprKind::BytesView(receiver)
+        | TExprKind::TextConvert {
+            value: receiver, ..
+        }
         | TExprKind::Take(receiver)
         | TExprKind::Cast {
             value: receiver, ..
@@ -559,6 +585,20 @@ fn expression_reads_global(expr: &TExpr) -> bool {
                 })
         }
         TExprKind::Fill { value, .. } => expression_reads_global(value),
+        TExprKind::TextSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::BytesSlice {
+            receiver,
+            start,
+            end,
+        } => {
+            expression_reads_global(receiver)
+                || expression_reads_global(start)
+                || expression_reads_global(end)
+        }
         TExprKind::AsciiFit { value, .. } => expression_reads_global(value),
         TExprKind::AsciiTryAppend { receiver, argument } => {
             expression_reads_global(receiver) || expression_reads_global(argument)
@@ -607,7 +647,9 @@ fn expression_reads_global(expr: &TExpr) -> bool {
         | TExprKind::EmptyGrid
         | TExprKind::EmptyQueue
         | TExprKind::EmptyRing
-        | TExprKind::AsciiEmpty => false,
+        | TExprKind::AsciiEmpty
+        | TExprKind::TextEmpty
+        | TExprKind::BytesEmpty => false,
     }
 }
 
@@ -860,6 +902,20 @@ fn collect_calls_expr(
             }
         }
         TExprKind::Fill { value, .. } => collect_calls_expr(value, calls, effects),
+        TExprKind::TextSlice {
+            receiver,
+            start,
+            end,
+        }
+        | TExprKind::BytesSlice {
+            receiver,
+            start,
+            end,
+        } => {
+            collect_calls_expr(receiver, calls, effects);
+            collect_calls_expr(start, calls, effects);
+            collect_calls_expr(end, calls, effects);
+        }
         TExprKind::CollectionOp { receiver, args, .. } => {
             collect_calls_expr(receiver, calls, effects);
             for arg in args {
@@ -883,8 +939,11 @@ fn collect_calls_expr(
         | TExprKind::Fit { value, .. }
         | TExprKind::Try { value, .. }
         | TExprKind::AsciiUpper(value)
+        | TExprKind::TextUpper(value)
         | TExprKind::AsciiFormat(value)
         | TExprKind::AsciiCast(value)
+        | TExprKind::BytesView(value)
+        | TExprKind::TextConvert { value, .. }
         | TExprKind::Take(value)
         | TExprKind::Cast { value, .. }
         | TExprKind::Unary { value, .. } => collect_calls_expr(value, calls, effects),
@@ -940,7 +999,9 @@ fn collect_calls_expr(
         | TExprKind::EmptyQueue
         | TExprKind::EmptyRing
         | TExprKind::LoopExit(_)
-        | TExprKind::AsciiEmpty => {}
+        | TExprKind::AsciiEmpty
+        | TExprKind::TextEmpty
+        | TExprKind::BytesEmpty => {}
     }
 }
 
@@ -2895,11 +2956,18 @@ impl Evaluator<'_> {
             | TExprKind::Cast { .. }
             | TExprKind::Unary { .. } => return self.eval_misc_expr(expr, locals),
             TExprKind::AsciiEmpty
+            | TExprKind::TextEmpty
+            | TExprKind::BytesEmpty
             | TExprKind::AsciiUpper(_)
+            | TExprKind::TextUpper(_)
             | TExprKind::AsciiFormat(_)
             | TExprKind::AsciiTryAppend { .. }
             | TExprKind::AsciiCast(_)
             | TExprKind::AsciiFit { .. }
+            | TExprKind::TextSlice { .. }
+            | TExprKind::BytesSlice { .. }
+            | TExprKind::BytesView(_)
+            | TExprKind::TextConvert { .. }
             | TExprKind::Take(_) => {
                 return Err(self.failure(
                     expr.span,
@@ -3047,6 +3115,12 @@ impl Evaluator<'_> {
                 return Err(self.failure(
                     span,
                     "Ascii values are not supported during compile-time evaluation",
+                ));
+            }
+            MethodKind::TextLen | MethodKind::TextByteLen | MethodKind::BytesLen => {
+                return Err(self.failure(
+                    span,
+                    "Text and Bytes values are not supported during compile-time evaluation",
                 ));
             }
             MethodKind::IsNone => ConstValue::Bool(case_index == 1),

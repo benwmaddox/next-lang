@@ -1,0 +1,1 @@
+main.nl:6:36: error: cannot call 'list<Row, 2>.pop' while a collection view is live; move the operation after the loop

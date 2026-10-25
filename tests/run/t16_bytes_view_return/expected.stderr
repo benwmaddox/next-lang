@@ -1,0 +1,1 @@
+main.nl:2:12: error: a .bytes() view is temporary and cannot be stored or returned

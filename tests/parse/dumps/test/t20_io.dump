@@ -1969,7 +1969,7 @@ Program 0..6343
           MethodCall 1492..1518 name="write"
             Name 1492..1494 name="fs"
             ByteString 1501..1509 value="source"
-            ByteString 1511..1517 value="abc"
+            BytesLiteral 1511..1517 value="abc"
           MatchArm 1521..1532
             CasePattern 1521..1526 name="ok"
               IgnoredPatternBinding 1524..1525
@@ -2039,7 +2039,7 @@ Program 0..6343
           Call 2022..2080 name="write_through_callback"
             Name 2045..2047 name="fs"
             ByteString 2049..2059 value="callback"
-            ByteString 2061..2067 value="abc"
+            BytesLiteral 2061..2067 value="abc"
             Name 2069..2079 name="write_data"
           MatchArm 2091..2102
             CasePattern 2091..2096 name="ok"
@@ -2183,7 +2183,7 @@ Program 0..6343
           MethodCall 3149..3174 name="write"
             Name 3149..3151 name="fs"
             ByteString 3158..3165 value="exact"
-            ByteString 3167..3173 value="abc"
+            BytesLiteral 3167..3173 value="abc"
           MatchArm 3185..3196
             CasePattern 3185..3190 name="ok"
               IgnoredPatternBinding 3188..3189
@@ -2218,7 +2218,7 @@ Program 0..6343
           MethodCall 3367..3393 name="write"
             Name 3367..3369 name="fs"
             ByteString 3376..3383 value="large"
-            ByteString 3385..3392 value="abcd"
+            BytesLiteral 3385..3392 value="abcd"
           MatchArm 3404..3415
             CasePattern 3404..3409 name="ok"
               IgnoredPatternBinding 3407..3408
@@ -2264,7 +2264,7 @@ Program 0..6343
           MethodCall 3734..3752 name="write"
             Name 3734..3736 name="fs"
             ByteString 3743..3746 value="z"
-            ByteString 3748..3751 value=""
+            BytesLiteral 3748..3751 value=""
           MatchArm 3763..3774
             CasePattern 3763..3768 name="ok"
               IgnoredPatternBinding 3766..3767
@@ -2279,7 +2279,7 @@ Program 0..6343
           MethodCall 3822..3840 name="write"
             Name 3822..3824 name="fs"
             ByteString 3831..3834 value="a"
-            ByteString 3836..3839 value=""
+            BytesLiteral 3836..3839 value=""
           MatchArm 3851..3862
             CasePattern 3851..3856 name="ok"
               IgnoredPatternBinding 3854..3855
@@ -2371,7 +2371,7 @@ Program 0..6343
           MethodCall 4463..4481 name="write"
             Name 4463..4465 name="fs"
             ByteString 4472..4475 value="a"
-            ByteString 4477..4480 value=""
+            BytesLiteral 4477..4480 value=""
           MatchArm 4484..4495
             CasePattern 4484..4489 name="ok"
               IgnoredPatternBinding 4487..4488
@@ -2386,7 +2386,7 @@ Program 0..6343
           MethodCall 4531..4549 name="write"
             Name 4531..4533 name="fs"
             ByteString 4540..4543 value="b"
-            ByteString 4545..4548 value=""
+            BytesLiteral 4545..4548 value=""
           MatchArm 4552..4563
             CasePattern 4552..4557 name="ok"
               IgnoredPatternBinding 4555..4556
@@ -2432,7 +2432,7 @@ Program 0..6343
           MethodCall 4862..4883 name="write"
             Name 4862..4864 name="fs"
             ByteString 4871..4877 value="only"
-            ByteString 4879..4882 value=""
+            BytesLiteral 4879..4882 value=""
           MatchArm 4886..4897
             CasePattern 4886..4891 name="ok"
               IgnoredPatternBinding 4889..4890
@@ -2486,7 +2486,7 @@ Program 0..6343
           MethodCall 5259..5282 name="write"
             Name 5259..5261 name="fs"
             ByteString 5268..5275 value="short"
-            ByteString 5277..5281 value="a"
+            BytesLiteral 5277..5281 value="a"
           MatchArm 5285..5296
             CasePattern 5285..5290 name="ok"
               IgnoredPatternBinding 5288..5289
@@ -2550,7 +2550,7 @@ Program 0..6343
           Name 5723..5726 name="env"
       Let 5734..5770 mutable=false name="expected"
         Annotation 5748..5752 name="Path" range=none policy=checked
-        ByteString 5755..5770 value="folder/child"
+        BytesLiteral 5755..5770 value="folder/child"
       Let 5775..5804 mutable=true name="long_path"
         Annotation 5790..5794 name="Path" range=none policy=checked
         ListLiteral 5797..5804

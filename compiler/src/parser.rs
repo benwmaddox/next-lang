@@ -540,6 +540,26 @@ impl Parser<'_> {
             self.next();
             const_args.push(self.expression(8)?);
         }
+        if name == "Bytes" && self.word_is("max") {
+            self.next();
+            const_args.push(self.expression(8)?);
+        }
+        if name == "Text" {
+            if self.word_is("max") {
+                self.next();
+                const_args.push(self.expression(8)?);
+                if self.word_is("bytes") {
+                    self.next();
+                    self.expect_word("max", "expected 'max' after 'Text bytes'")?;
+                    const_args.push(self.expression(8)?);
+                }
+            } else if self.word_is("bytes") {
+                self.next();
+                self.expect_word("max", "expected 'max' after 'Text bytes'")?;
+                name = "TextBytes".to_owned();
+                const_args.push(self.expression(8)?);
+            }
+        }
         let mut array_caps = Vec::new();
         while self.take(&TokenKind::LBracket) {
             array_caps.push(self.expression(8)?);
@@ -1192,7 +1212,7 @@ impl Parser<'_> {
                     unreachable!()
                 };
                 self.postfix(Expr {
-                    kind: ExprKind::ByteString(value.into_bytes()),
+                    kind: ExprKind::BytesLiteral(value.into_bytes()),
                     span: Span {
                         end_offset: string.end_offset,
                         ..span
@@ -1656,7 +1676,25 @@ impl Parser<'_> {
             });
         }
         if self.take(&TokenKind::LParen) {
-            let args = self.arguments_after_lparen()?;
+            let args = if method == "slice" {
+                self.skip_newlines();
+                if self.at(&TokenKind::RParen) {
+                    Vec::new()
+                } else {
+                    let start = self.expression(0)?;
+                    if !self.take(&TokenKind::Range) && !self.take(&TokenKind::RangeInclusive) {
+                        return Err(self.error_here("slice expects a range: slice(start..end)"));
+                    }
+                    self.skip_newlines();
+                    let end = self.expression(0)?;
+                    vec![start, end]
+                }
+            } else {
+                self.arguments_after_lparen()?
+            };
+            if method == "slice" {
+                self.expect(&TokenKind::RParen, "expected ')' after the slice range")?;
+            }
             let span = Span {
                 end_offset: self.last_consumed_end(),
                 ..expr.span
@@ -2334,6 +2372,7 @@ fn expression_nesting_exceeded(root: &Expr, limit: usize) -> Option<Span> {
                     | ExprKind::Integer { .. }
                     | ExprKind::Bool(_)
                     | ExprKind::ByteString(_)
+                    | ExprKind::BytesLiteral(_)
                     | ExprKind::Name(_)
                     | ExprKind::ListLiteral
                     | ExprKind::PoolLiteral

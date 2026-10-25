@@ -259,6 +259,7 @@ pub enum ExprKind {
     },
     Bool(bool),
     ByteString(Vec<u8>),
+    BytesLiteral(Vec<u8>),
     Take(Box<Expr>),
     Name(String),
     Call {

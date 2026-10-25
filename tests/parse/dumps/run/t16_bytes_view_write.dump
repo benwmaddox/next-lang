@@ -1,0 +1,59 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 9 1 4 "overwrite"
+LParen 12 1 1 13 "("
+Ident 13 5 1 14 "value"
+Colon 18 1 1 19 ":"
+Ident 20 5 1 21 "write"
+Ident 26 5 1 27 "Bytes"
+Ident 32 3 1 33 "max"
+Number 36 1 1 37 "8"
+RParen 37 1 1 38 ")"
+LBrace 39 1 1 40 "{"
+RBrace 40 1 1 41 "}"
+Newline 41 1 1 42 "\n"
+Ident 43 2 3 1 "fn"
+Ident 46 4 3 4 "main"
+LParen 50 1 3 8 "("
+RParen 51 1 3 9 ")"
+LBrace 53 1 3 11 "{"
+Newline 54 1 3 12 "\n"
+Ident 59 3 4 5 "let"
+Ident 63 4 4 9 "text"
+Colon 67 1 4 13 ":"
+Ident 69 4 4 15 "Text"
+Ident 74 3 4 20 "max"
+Number 78 1 4 24 "2"
+Eq 80 1 4 26 "="
+String 82 4 4 28 "\"ok\""
+Newline 86 1 4 32 "\n"
+Ident 91 9 5 5 "overwrite"
+LParen 100 1 5 14 "("
+Ident 101 4 5 15 "text"
+Dot 105 1 5 19 "."
+Ident 106 5 5 20 "bytes"
+LParen 111 1 5 25 "("
+RParen 112 1 5 26 ")"
+RParen 113 1 5 27 ")"
+Newline 114 1 5 28 "\n"
+RBrace 115 1 6 1 "}"
+Newline 116 1 6 2 "\n"
+Eof 117 0 7 1 ""
+== tree ==
+file "main.nl"
+Program 0..117
+  Function 0..41 name="overwrite" recursive=false generics=[]
+    Parameter 13..37 name="value" mode=write
+      ParameterType 26..37 name="Bytes" range=none policy=checked
+        Integer 36..37 magnitude=8 negative=false long_suffix=false
+    Block 39..41
+  Function 43..116 name="main" recursive=false generics=[]
+    Block 53..116
+      Let 59..86 mutable=false name="text"
+        Annotation 69..79 name="Text" range=none policy=checked
+          Integer 78..79 magnitude=2 negative=false long_suffix=false
+        ByteString 82..86 value="ok"
+      Call 91..114 name="overwrite"
+        MethodCall 101..113 name="bytes"
+          Name 101..105 name="text"
