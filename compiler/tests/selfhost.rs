@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 #[test]
-fn selfhosted_lexer_matches_the_rust_lexer() {
+fn selfhosted_lexer_and_parser_match_the_rust_reference() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler crate has a workspace root");
@@ -28,21 +28,23 @@ fn selfhosted_lexer_matches_the_rust_lexer() {
         String::from_utf8_lossy(&build.stderr)
     );
 
-    let comparison = Command::new(root.join("scripts/compare-selfhost.sh"))
-        .arg("--tokens")
-        .arg("--reference")
-        .arg(nlc)
-        .arg("--selfhost")
-        .arg(&selfhost)
-        .current_dir(root)
-        .output()
-        .expect("run the selfhost lexer comparison harness");
+    for (mode, label) in [("--tokens", "lexer"), ("--parse", "parser")] {
+        let comparison = Command::new(root.join("scripts/compare-selfhost.sh"))
+            .arg(mode)
+            .arg("--reference")
+            .arg(nlc)
+            .arg("--selfhost")
+            .arg(&selfhost)
+            .current_dir(root)
+            .output()
+            .unwrap_or_else(|error| panic!("run the selfhost {label} comparison harness: {error}"));
+        assert!(
+            comparison.status.success(),
+            "selfhost {label} comparison failed (status {:?}):\n{}\n{}",
+            comparison.status.code(),
+            String::from_utf8_lossy(&comparison.stdout),
+            String::from_utf8_lossy(&comparison.stderr)
+        );
+    }
     let _ = fs::remove_dir_all(&temp);
-    assert!(
-        comparison.status.success(),
-        "selfhost lexer comparison failed (status {:?}):\n{}\n{}",
-        comparison.status.code(),
-        String::from_utf8_lossy(&comparison.stdout),
-        String::from_utf8_lossy(&comparison.stderr)
-    );
 }

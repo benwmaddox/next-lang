@@ -1,3 +1,4 @@
 [package]
-name = "selfhost-lexer"
+name = "selfhost-parser"
 capabilities = ["fs", "out", "env"]
+recursion_budget = 3900KiB

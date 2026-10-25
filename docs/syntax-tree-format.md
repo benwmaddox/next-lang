@@ -6,6 +6,8 @@ If both dump options are supplied, the command writes `== tokens ==`, the token 
 
 The parser accepts at most 256 source files per package, 16 MiB per file, 64 MiB total source bytes, 1,000,000 tokens per file, and 4,000,000 tokens per package. A tree has at most 2,000,000 nodes and 2,000,000 child edges per package. The lexer limits `()` and `[]` delimiter nesting to 2,048. The parser limits grouped-expression parentheses, type nesting, and active block nesting to 1,000; a function or test body is block level one. The parser's recursive expression paths also stop at 1,000 nested expression constructs, while a terminal value at that boundary is allowed.
 
+Each source file contributes one `Program` node, and every other node contributes one child edge. Thus package edges equal package nodes minus source files. Since both limits are 2,000,000, the node limit always fires first; an edge-only overflow cannot occur.
+
 The completed expression-tree walk enforces expression nesting at 1,000 for all expression shapes. Its root starts at depth zero for a root `print(...)` call and depth one otherwise. Calls, accesses, unary and binary operators, casts, `if`, `match`, and the other expression nodes with expression children add a level along the visited child path. The branch block of an `if` or `match` adds one level for its contents, so that construct and its branch block together count as one. An `else if` chain counts its initial `if` as clause one, with at most 1,000 clauses.
 
 Nesting diagnostics use the byte position of the token that crosses the limit: the 1,001st grouped-parenthesis opener, cast opener, block opener, or type start; the operator token of the first over-limit unary or binary node found by the walk; and the start token for other expression nodes. An overlong `else if` chain is rejected at the `if` keyword of clause 1,001, while parsing. The completed-tree walk pushes expression children in a fixed order for each node kind and visits them last-in-first-out; it reports the first over-limit expression node it visits. Diagnostics use `expression nesting limit of 1000 exceeded`, `type nesting limit of 1000 exceeded`, or `block nesting limit of 1000 exceeded`, according to the exhausted limit. Parse work is bounded by 72,000,000 units, counted as source bytes + tokens + tree nodes + child edges. The parser reports only its first diagnostic, so the diagnostic limit is one. Empty source files are valid and produce an empty `Program` node.
@@ -47,13 +49,13 @@ Fields are written in the order below. Boolean values are `true` or `false`; nam
 - `Const name="..."`: a `DeclaredType` child followed by the value expression. `Global name="..." prefault=true|false` also records whether the `prefault` modifier was written.
 - `Function name="..." recursive=true|false generics=[...]`: children are `Parameter` nodes, an optional `ResultType`, then the `Block` body.
 - `Test name="..."`: children are `Parameter` nodes followed by the `Block` body.
-- `Parameter name="..." mode=read|write`: one `ParameterType` child.
+- `Parameter name="..." mode=read|write|grow`: one `ParameterType` child. `grow` marks a parameter that appends to a caller-owned growing value.
 - `Block`: statement children followed by its optional tail expression.
 - `StructField name="..."`: a `FieldType` child and optional default expression.
 - `EnumCase name="..."`: zero or more `PayloadType` children.
 - `InitializerField name="..."`: one value expression.
 - `MatchArm`: a pattern child followed by its body `Block`.
-- `FunctionType`: `FunctionTypeParameter mode=read|write` children, an optional `ResultType`, then `Effect` children.
+- `FunctionType`: `FunctionTypeParameter mode=read|write|grow` children, an optional `ResultType`, then `Effect` children.
 - `Effect kind=out|env|fs.read|fs.write`: no child. `reads` and `writes` effects also have `path="..."`.
 
 The following labels are `Type` nodes and have fields `name="..." range=... policy=checked|wrap|clamp`: `ParameterType`, `ResultType`, `Annotation`, `FieldType`, `PayloadType`, `AliasedType`, `DeclaredType`, `TypeArgument`, `FitType`, and `CastType`. A type without an integer refinement has `range=none`; otherwise range is printed in decimal as `lower..upper` or `lower..=upper`. Type children are generic type arguments, generic constant expressions, an optional `FunctionType`, then array capacities, in source order. `pool` arguments retain their written type, capacity, owner order.
@@ -69,6 +71,7 @@ The following labels are `Type` nodes and have fields `name="..." range=... poli
 - `Discard`: one expression. `Expect source="..."`: one expression.
 - `BreakStatement`, `ContinueStatement`: no fields or children.
 - `Unit`, `ListLiteral`, `PoolLiteral`, `MapLiteral`, `SetLiteral`, `QueueLiteral`, `RingLiteral`: no fields or children.
+- `Take`: one value expression child.
 - `Integer magnitude=N negative=true|false long_suffix=true|false`: magnitude is the decoded, unsigned decimal value; sign and `L`/`l` suffix are separate fields.
 - `Bool value=true|false`, `ByteString value="..."`, `BytesLiteral value="..."`, `Name name="..."`: literal or name value. `BytesLiteral` is written with the `b"..."` prefix.
 - `ArrayLiteral`: children are the literal's element expressions in source order. The same syntax is checked as an array or list from its expected type; a trailing comma adds no node.
@@ -82,6 +85,10 @@ The following labels are `Type` nodes and have fields `name="..." range=... poli
 - Pattern nodes are `WildcardPattern`, `BoolPattern value=true|false`, `CasePattern name="..." [enum="..."]`, and integer patterns (printed using the `Integer` node). Case payload positions are `PatternBinding name="..."` or `IgnoredPatternBinding`.
 
 The parser decodes decimal, `0x` hexadecimal, and `0b` binary integer literals, removes underscores, and stores the magnitude as `u128`. The dump prints that magnitude before the checker applies `int` or `long` range rules. A magnitude through `2^128 - 1` therefore appears as its exact unsigned decimal value, even when a later check rejects it; a larger value is a syntax error. For example, `-0x80000000000000000000000000000000` is represented with magnitude `170141183460469231731687303715884105728`, `negative=true`, and `long_suffix=false`.
+
+The S1 encoding stores nodes in postorder. Each node carries its subtree size, so its direct children are the contiguous preceding subtrees; the package root is stored last for each file. Token indexes always refer to the immutable lexer token list. Parser-only virtual `>` pieces from `>>` and `>>=` retain the originating token index and byte offsets and never alter token dumps or token counts. Integer magnitudes use four unsigned 32-bit limbs. Decoded string and byte-string values are reconstructed from the original string token when printed; a test name's `\xNN` escape is decoded as the Unicode scalar U+00NN, while a byte-string keeps the raw byte NN.
+
+The parser reconstructs exceptional tree fields as follows. Ordinary identifiers use their original identifier token. A `Test` name uses the decoded string value, including `\xNN` as U+00NN. Dotted type names join identifier components with literal dots and no source whitespace; grouping copies the inner type name while extending its span, `()` synthesizes the name `()`, and a function type synthesizes `fn`. `Text bytes max M` synthesizes the name `TextBytes`; `Text max N bytes max M` keeps the name `Text` and its two written capacity expressions. `reads` and `writes` effect paths join identifier components with dots and no whitespace. An `Expect` source is the literal prefix `expect ` followed by the original source slice of its expression, preserving whitespace inside that slice while discarding spacing between the keyword and the first expression token. A typed `let` without an initializer synthesizes `Call name="default"` at the zero-width position immediately after its annotation. Byte-string values retain decoded raw bytes for JSON escaping, and the non-ASCII-hex-escape origin flag remains stored even though this dump does not display it.
 
 String literals support `\"`, `\\`, `\n`, `\t`, `\0`, and `\xNN`, where `NN` is exactly two hexadecimal digits and `\xNN` contributes one byte. In a `Text` or `Ascii` literal, a `\xNN` escape above `0x7F` is a build error; write that character as UTF-8 or use a byte-string literal instead.
 
