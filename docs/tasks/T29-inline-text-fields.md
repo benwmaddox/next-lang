@@ -1,0 +1,11 @@
+# T29: inline text fields in structs and payloads (no stored pointers)
+
+Same rules (docs/PLAN.md). From the 2026-10-25 discussion with Ben: stored data should be inline or index-based, with no addresses inside stored values.
+
+Today a local struct, an `Option`/`Result` payload or an enum payload holding an `Ascii`, `Text` or `Bytes` field stores it as `{ptr, len}` (`%nl.ascii = type <{ ptr, i64 }>`, emit.rs:217), with the bytes placed after the value's fixed part and reached through that absolute pointer; every copy moves the bytes and patches the pointer (`emit_rebase_growing_payload`, emit.rs:12092). Collections already store such fields inline (64 bytes or less) or in size-class slots by index (T16).
+
+- **Stored values:** a text or byte field (or payload) inside a struct, enum, `Option` or `Result` stored anywhere (locals, regions, results, globals and constants) holds its length (and, for Text, its code-point count) plus its bytes at a fixed offset inside the value, sized by its declared maximum, with no pointer. Copies copy the fixed part and the live bytes (T23's rule), with no rebasing. Inside collections, keep T16's layout (inline up to 64 bytes, size classes above).
+- **Transient references keep `{ptr, len}`:** read parameters (including Ascii passed as Text without copying), slices and `.bytes()` views, literals in constant data, and builders' descriptors while a function runs. Accessing a stored field for reading produces such a reference to the bytes in place, without copying.
+- `emit_rebase_growing_payload` and every other rebasing path go away (state which), and `inspect memory`/`inspect contracts` sizes reflect the smaller fixed parts (no 8-byte pointer per field).
+- Tests: the existing suite unchanged; new fixtures for structs, enums, `Option`/`Result` holding text and bytes fields copied, returned, compared, printed, stored in globals and constants, nested (a struct holding a struct holding Text), and passed as read and `write` parameters; a dirtied-page test (T23) on copies; and the self-hosted comparison still byte-identical. Measure the benchmark (~/nlprobe-style bench and the selfhost lexer/parser times) before and after.
+- Report: docs/tasks/T29-report.md, including the list of remaining places that hold a data-stack address (for the X1 decision).
