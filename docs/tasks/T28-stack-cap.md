@@ -1,6 +1,6 @@
 # T28: capped data-stack reservations (Linux)
 
-**On hold (2026-10-25):** waiting for X1 (docs/tasks/X1-offset-stack-spike.md), which measures a relocatable, offset-addressed data stack; if X1 is adopted, this cap is replaced.
+**Superseded (2026-10-25):** not to be implemented. Ben chose a stack that starts small and grows by moving (offsets); O7 turns the cap into a growth limit (docs/PLAN.md "One approach at a time"). Kept for the record.
 
 Same rules (docs/PLAN.md). Depends on T27. Implements the first part of DESIGN.md "The job's data stack" as decided 2026-10-25 ("Reserve generously, commit only what's used", Reservation and Past the reservation bullets), following docs/reviews/sol-stack-policy-r1.md point 10. Pooling, demand histories, trimming, `clear_stacks_between_jobs`, admission and suspension wait for the job scheduler; Windows commit and `strict_stack` are separate later tasks.
 
