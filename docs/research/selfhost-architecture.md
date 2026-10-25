@@ -1,11 +1,59 @@
 # Self-hosted compiler architecture for next-lang (research report)
 
-Oct 24, 2026. Written for Ben. It replaces a rejected draft. Facts about other projects carry a link in the Sources section (section 9), each fetched while writing this. Facts about next-lang come from this repository at commit `612245e` (T14 prompt) and from probes run in WSL. The probes used an `nlc` debug binary copied from `~/.cache/next-lang/target/debug/` and lived in `~/shprobe`, outside the repository. Numbers I estimated, rather than measured or fetched, say so.
+Oct 24, 2026. Written for Ben. It replaces a rejected draft.
+
+- **Sources:** facts about other projects carry a link in section 9, each fetched while writing this.
+- **next-lang facts** come from this repository and from probes run in WSL:
+  - Revision 1 was checked against commit `612245e`; revision 2 against `7734ecd`, with T15 in progress in the working tree.
+  - The probes used an `nlc` debug binary copied from `~/.cache/next-lang/target/debug/` (built mid-T14) and lived in `~/shprobe`, outside the repository.
+- **Estimates:** numbers I estimated, rather than measured or fetched, say so.
+
+## Revision 2 (after docs/reviews/sol-selfhost-arch-r1.md)
+
+Every one of Sol's 13 findings is addressed:
+
+1. **"No heap anywhere" is qualified.** Compiler tables need no application heap, but the C runtime itself allocates its contexts and directory listings with `calloc`, `realloc` and `strdup` (2.3h).
+2. **Maps.** Their 8-byte bucket array must be initialised, not just occupancy flags. Copies keep buckets, tombstones (markers for deleted entries), hashes and insertion order (2.3b, 6).
+3. **A complete live-elements rule** (2.3b), covering:
+   - pool high-water guards in lookup, iteration, equality and printing;
+   - whole-value loads and stores;
+   - queues and rings, nested collections, enum payloads;
+   - the runtime's `fs.read` and `fs.list`.
+4. **The memory map is rebuilt** (4.6). It gains:
+   - the token-to-name-id array, the file table, side tables (extra data);
+   - the 16 MiB read temporary and a measured printer-stack breadth;
+   - wave-bounded worker outputs that coexist with joined results.
+
+   It now separates reserved space, live payload and peak pages touched. The totals change: about 2.43 GiB reserved, 54.3 MiB peak touched, 27.8 MiB live.
+5. **S1's limit order now follows `driver.rs` exactly** (4.3, 5.1). S1b picks errors by sequential file-and-phase order (5.1).
+6. **Recursion.**
+   - `else if` chains recurse in the Rust parser with no counter; a probe parsed a 123,999-deep chain.
+   - S1 parses them with explicit frames.
+   - The other paths' counters are listed, with a native-stack budget argument and test.
+   - The completed-tree nesting walk is reproduced in its exact visiting order (5.1).
+7. **The node encoding is specified** (5.1):
+   - extra data for generic names, indexes, decoded strings, magnitudes and refinement endpoints;
+   - synthetic nodes;
+   - the 2-nodes-per-token bound, argued and then tested;
+   - file-relative offsets;
+   - no hidden scope-marker nodes.
+8. **Exit status 2/3** (now PLAN's "Exit status for tools (before S1)"), and raw UTF-8 output through byte buffers, not `Ascii` (5.1, 6).
+9. **Literal limbs** (32-bit pieces of a large number): overflow detection and the boundary tests (5.1).
+10. **S2 phases now mirror the reference's order.** Registration comes first. Constants and recursion contracts are evaluated after bodies, from bounded pending lists. Merging rewrites every reference, and 10,000 is call *depth* (5.2).
+11. **The smallest-position error rule is replaced** by a documented phase, function and traversal order compatible with the reference (5.2).
+12. **S3** now specifies:
+    - module ownership of globals, entry initialisation and generic copies;
+    - cross-module declarations and stable symbols;
+    - a driver bridge that keeps the frame-size measurement and recursion-check patching (5.3).
+13. **Precise bootstrap claims.** Stage 2 equals stage 3 is a stability check. A diverse double-compiling check needs a named candidate, a trusted seed and a trusted toolchain, and binaries, not IR (3.5, 5.4).
+
+    Section 6 is re-ranked into hard S1 blockers and conveniences with workarounds. Section 8 no longer proposes the two items PLAN already has: live elements (line 33) and exit status (line 34).
 
 Terms used throughout:
 
 - **Reserved:** address space set aside but not yet backed by RAM.
-- **Touched** (or committed-and-used): pages actually written, so they cost RAM.
+- **Touched:** pages actually written, which then cost RAM.
+- **Live payload:** bytes that hold data still in use.
 - **Postorder:** children are stored before their parent.
 - **Interning:** storing each distinct name once and using a small number for it after that.
 - **Stage N:** the compiler binary produced at bootstrap step N.
@@ -14,62 +62,59 @@ Terms used throughout:
 
 ## 1. Recommendation (one page)
 
-**The core idea:** keep every compiler table in a local collection on the compiling job's data stack. Reserve each table at a stated limit, and pay RAM only for what a program actually uses. Today that idea is blocked by implementation facts found while writing this (section 2.3):
+**The core idea:** keep every compiler table in a local collection on the compiling job's data stack. Reserve each table at a stated limit, and pay RAM only for what a program actually uses.
 
-- **Globals are touched in full at startup**, with or without `--allow-overcommit`.
-- **The emitter writes whole collections, not just their live elements.** That happens when it creates an empty `list` or `pool`, builds a struct holding one, and returns or copies one.
-- **`byte` takes 4 bytes.**
-- **The data stack is fixed at 64 MiB.**
+**What blocks that today** (2.3):
 
-Three conditions remove the blocks (section 4.1):
+- Globals are touched in full at startup, with or without `--allow-overcommit`.
+- The emitter and runtime write whole collections, not just their live elements. That happens on empty literals, struct and enum construction, copies, returns, and `fs.read` and `fs.list`.
+- `byte` takes 4 bytes.
+- The data stack is fixed at 64 MiB.
 
-1. No emitter path writes or copies a collection past its live elements.
-2. Byte buffers take 1 byte per byte.
-3. T17 sizes data stacks past 64 MiB.
+**Conditions** (4.1):
 
-With those in place, a 50,000-line program needs about 1.3 GiB of reserved address space and about 35 MiB of touched RAM (section 4.6). The design has no heap anywhere.
+- **Hard:** S1 is incorrect or can't run without these.
+  - The data stack must be sized past 64 MiB (T17).
+  - `main` needs an exit-status facility (PLAN line 34).
+  - Output must go through raw byte buffers (`Bytes`, T16, or `list<byte, N>` today).
+- **For the memory goal:**
+  - PLAN's live-elements task (line 33);
+  - 1-byte bytes.
 
-**S1, split in two:**
+**With all of these in place,** a 50,000-line program needs about 2.43 GiB of reserved address space, about 54 MiB of pages touched at peak and about 28 MiB of live payload (4.6). Compiler tables need no application heap; the C runtime's own small allocations remain (2.3h).
 
-- **S1a (sequential), right after M3 plus the fixes in section 6.** A lexer and parser in next-lang that reproduce `nlc parse --tokens --tree` byte for byte, including stderr and exit status. The comparison runs over every package under `tests/`, the parse cases, and generated limit and fuzz inputs.
-  - **Data:** one source buffer per package, a token list and a postorder node list. Nodes are linked by `int` indexes, with a subtree size per node, so there is no child-edge array. These follow Carbon's and Zig's layouts.
-  - **Parsing:** recursive descent marked `recursive`, mirroring `parser.rs` function by function, so the first error and the order in which limits trigger come out the same as in Rust.
-  - **Output:** the printer is an explicit-stack loop, not recursion. Output is streamed through a 1 MiB buffer.
-- **S1b (parallel), once DESIGN step 6 exists** (builders, `batch`, `freeze`, `parallel for`; not yet scheduled as T-tasks). The same parser runs one file per chunk into per-file builders, which are then frozen into one batch. This is the validation plan's "parallel tool" program, measured against the Rust parser.
+**S1, in two parts:**
+
+- **S1a (sequential), after M3 and the hard items.** A lexer and parser in next-lang that reproduce `nlc parse --tokens --tree` byte for byte, including stderr and exit status. The comparison runs over every package under `tests/`, the parse cases, and generated limit and fuzz inputs.
+  - **Data:** one source buffer per package; a token list; a postorder node list with subtree sizes and a Zig-style extra-data list.
+  - **Order:** limit checks in `driver.rs`'s exact order.
+  - **Parsing:** recursive descent marked `recursive` where Rust's counters bound the depth, and explicit frames for `else if` chains, which Rust doesn't bound.
+  - **Output:** the printer and the completed-tree nesting walk are explicit-stack loops in Rust's visiting order.
+- **S1b (parallel), once DESIGN step 6 exists** (builders, `batch`, `freeze`, `parallel for`). Files are read sequentially, parsed in parallel, and errors are picked by sequential file-and-phase order. This is the validation plan's parallel-tool program.
 
 **S2, the checker:**
 
-- **No deep recursion.** Explicit work stacks, and linear passes over postorder node arrays, as the T19 review already advised.
-- **Interning:** one sequential interning pass right after parsing gives every name a package-wide id. That beats per-job tables merged later, because it is simple, deterministic and cheap (section 4.4).
-- **Phases:**
-  1. Declarations and signatures are checked sequentially and the results are frozen.
-  2. Function bodies are checked in parallel. Each job keeps its own scratch, and its results go back through `collect` in function-index order.
-  3. Any new types or generic copies a job finds are merged after the join, in that same order.
-- **Comparison with Rust:** typed dumps and the first diagnostic. This needs a new `nlc check --dump` format and a documented error order (section 8).
+- **Interning:** one sequential interning pass.
+- **Phases, in the Rust checker's order:**
+  1. Registration.
+  2. Global initialisers.
+  3. Function bodies, in parallel waves, picking the lowest-index failing function.
+  4. Tests and constant expressions.
+  5. Call graph and recursion, then constant evaluation.
+- **Comparison:** typed dumps, plus a documented "first error" order, against a new `nlc check --dump`.
 
 **S3, code generation:**
 
-- Keep emitting LLVM IR text and building it with clang, as Rust `nlc` does, so behaviour can be compared directly.
-- Emit one module per source file. Run modules in parallel waves, each wave collected in index order and written out before the next starts. That bounds memory to the wave, not the program.
-- Until a process capability exists, have the Rust driver (or a script) run clang on the files S3 writes.
-- A fast debug backend (QBE, Cranelift, TPDE or similar) waits until measurements show clang is what breaks the 3-second aim.
+- LLVM IR text, one module per source file, emitted in parallel waves.
+- One module owns the global state and entry initialisation. Generic copies belong to the first module that requests one.
+- Until a process capability exists, a Rust-side bridge links the modules and runs clang, keeping the frame-size and recursion-check patching steps.
 
 **Bootstrap:**
 
-1. The pinned Rust `nlc` (stage 0) builds stage 1.
-2. Stage 1 builds stage 2, and stage 2 builds stage 3.
-3. Require stage 2's IR text to equal stage 3's IR text byte for byte. Then compare binaries built with the pinned clang.
-
-Because stage 1 was compiled by a different compiler (Rust `nlc`), step 3 is in effect Wheeler's diverse double-compiling check. The Rust `nlc` stays the behavioural reference until Ben decides to retire it.
-
-**Most important PLAN changes** (all in section 8):
-
-- O(1) empty collections.
-- Data stacks above 64 MiB.
-- Real 8-bit storage for `byte`.
-- Capacity generics inferred from `list` arguments.
-- The S1a/S1b split.
-- A typed-dump task before S2.
+- **Steps:** Rust `nlc` (stage 0) builds stage 1, stage 1 builds stage 2, and stage 2 builds stage 3.
+- **Stability check:** stage 2 must equal stage 3, comparing binaries built with the pinned clang and runtime (IR first, for diagnosis).
+- **A real diverse double-compiling check** needs more than that: a named candidate binary, Rust `nlc` as the trusted seed, and a trusted clang, runtime and linker (5.4).
+- **Reference:** behavioural comparison against Rust `nlc` stays.
 
 ---
 
@@ -80,104 +125,144 @@ Because stage 1 was compiled by a different compiler (Rust `nlc`), step 3 is in 
 | Item | State |
 | --- | --- |
 | M0, M1, M2 (T01 to T12) | done |
-| M3 T13: data stack, regions, destination emission | done (claude-T13-review.md) |
-| S0: T19 `recursive fn` with native-stack budget; T20 files, arguments and output through capabilities; T21 `nlc parse` and docs/syntax-tree-format.md | done (claude-T21-review.md: "With T19 and T20 this completes S0") |
-| M3 T14: `Ascii` values in regions | in progress (prompt committed in `612245e`; another agent is editing compiler/ now) |
-| T15 append mode and loop growth; T16 `Text`, `Bytes`, growing values in collections; T17 per-entry-point reservations and `inspect stacks`; T18 number parsing and formatting | to do, in that order |
-| Layout follow-up (nested lanes flattened) and array/list literals | scheduled before M4 / before S1 |
-| Builders, `freeze`, `batch`, `parallel for` (DESIGN first step 6) | designed, not scheduled as a T-task |
-| Process capability (run clang) | effects step, "M5-ish" in the prerequisites table |
-| S1, S2, S3 | after M3 |
+| M3 T13 data stack, regions, destination emission | done |
+| S0: T19 `recursive fn`; T20 files, arguments, output; T21 `nlc parse` and docs/syntax-tree-format.md | done (claude-T21-review.md: "With T19 and T20 this completes S0") |
+| M3 T14 `Ascii` values | done (`dc1acc8`) |
+| T15 append mode | in progress |
+| T16 `Text`/`Bytes`, T17 reservations and `inspect stacks`, T18 number parsing and formatting | to do |
+| Live-elements task; exit status for tools | in PLAN (lines 33 and 34), from revision 1 of this report and Sol's review |
+| Layout follow-up; array/list literals | before M4 / before S1 |
+| Builders, `freeze`, `batch`, `parallel for` (DESIGN step 6) | designed, no T-task |
+| Process capability | effects step, "M5-ish" |
 
-Sol's S0 review said S0 plus M3 supports only a **sequential** S1. The parallel frozen-pool S1 needs step 6 (sol-S0-r1.md, verdict). That is why this report splits S1.
+Sol's S0 review (sol-S0-r1.md) said S0 plus M3 supports only a **sequential** S1. That is why S1 is split here.
 
 ### 2.2 What next-lang gives a compiler writer today
 
-All of the following were checked against fixtures, or compiled with `nlc` in my probes:
+All of the following were checked against fixtures or probes:
 
-- **Declarations:** `struct` with field defaults; `enum` with payloads; exhaustive `match`; `Option` and `Result` with `?` and `??` (including `?? break`, `?? continue` and `?? return`); `const` with compile-time evaluation.
-- **Collections:** `list<T, N>`, `pool<T, N>` and `pool<T, N, Owner>`, `map<K, V, N>`, `set<K, N>`, `queue`, `ring`, `grid`, `T[N]`. Collections of structs are stored as one array per field, which is Zig's MultiArrayList layout for free.
-- **Methods and loops:** `push`, `pop`, `get`, `set`, `remove`, `count`, `sort_by` and `binary_search`. Loops are `for i in a..b` and `for x, i in xs`, with `break` and `continue`.
+- **Types and control flow:**
+  - `struct` with defaults; `enum` with payloads; exhaustive `match`;
+  - `Option` and `Result` with `?` and `??` (including `?? break`, `?? continue` and `?? return`);
+  - `const` with compile-time evaluation.
+- **Collections:** `list`, `pool` (including `pool<T, N, Owner>`), `map`, `set`, `queue`, `ring`, `grid` and `T[N]`. Collections of structs are stored one array per field, which is Zig's MultiArrayList layout.
+- **Methods and loops:** `push`, `pop`, `get`, `set`, `remove`, `count`, `sort_by` and `binary_search`; `for i in a..b` and `for x, i in xs`, with `break` and `continue`.
 - **Parameters and functions:**
-  - `write` parameters;
-  - large values passed by pointer and large results built in the caller's destination (T13);
-  - function values without closures (T11);
-  - `recursive fn` with a native-stack byte budget (T19).
-- **Capabilities and I/O (T20):** `fn main(env: Env) -> Result<(), E>`, with `env.fs`, `env.out` and `env.args()`. `fs.read` and `fs.list` fill bounded `list`s; `fs.list` sorts by raw bytes. `out.write` and `out.line` return `Result`.
-- **Arithmetic:** wrapping operators `+%`, `-%`, `*%`, and `^`, `&`, `|`, `<<`, `>>`. That is enough for a hand-written FNV-1a hash (verified: FNV-1a of `"ab"` printed 1294271946, which is 0x4D2505CA).
-- **Limits machinery:** `nlc inspect memory`, `nlc inspect contracts`, and the manifest keys `job_headroom`, `globals_budget` and `recursion_budget`.
+  - `write` parameters, plus large values passed by pointer and large results built in the caller's destination (T13);
+  - function values (T11);
+  - `recursive fn` with a native-stack budget (T19).
+- **Capabilities and I/O (T20):** `fn main(env: Env) -> Result<(), E>`, with `env.fs`, `env.out` and `env.args()`. Filesystem access is rooted at the working directory: absolute paths and escaping symlinks return `Outside`.
+- **Bit and wrapping operators:** `+%`, `-%`, `*%`, `^`, `&`, `|`, `<<` and `>>`. A hand-written FNV-1a hash works: `"ab"` printed 1294271946.
 
-There is no `while` or `loop`. A loop of unknown length is a counted loop with `break`: `for step in 0..LIMIT { let top = stack.pop() ?? break ... }`. That loop also serves as the step budget DESIGN asks for (PLAN's "steps" limit).
+There is no `while`. A loop of unknown length is a counted loop with `break`, which doubles as the step budget:
+
+```
+for step in 0..LIMIT {
+    let top = stack.pop() ?? break
+    ...
+}
+```
 
 ### 2.3 Facts that change the memory design
 
 **(a) Globals cost RAM in full from startup, in every mode.**
 
-- DESIGN "Static allocation" says globals are "reserved and committed" at startup. Outside strict overcommit, the runtime "touches the state's pages before scheduling any job".
-- T08's report says "All globals are touched at startup on Linux".
-- In the code, `nl_claim_memory` in `runtime/nl_runtime.c` runs its page-touch loop whether or not `--allow-overcommit` is given. The flag skips only the policy checks.
-- Probe: a `global` holding a 48,000,000-byte `list<long, 6000000>` with nothing in it ran at 48,400 KB maximum resident memory (RSS), with and without `--allow-overcommit`. An empty program ran at 1,584 KB.
+- DESIGN "Static allocation" says globals are "reserved and committed", and the runtime "touches the state's pages before scheduling any job".
+- T08's report: "All globals are touched at startup on Linux".
+- `nl_claim_memory` (`runtime/nl_runtime.c`) runs its touch loop even with `--allow-overcommit`, which only skips the policy checks.
+- Probe: a global holding an empty 48,000,000-byte list ran at 48,400 KB maximum resident memory (RSS) in both modes, against 1,584 KB for an empty program.
 
-The brief behind this report assumed globals are committed only when touched. That isn't so: DESIGN, T08 and the runtime all say otherwise. Lazy commit holds today only for the **job data stack**. `nl_context_create` maps it with `PROT_NONE` and `MAP_NORESERVE`, then makes it writable, and the kernel backs pages on first touch.
+Only the job data stack is committed on touch: it is mapped with `MAP_NORESERVE`. So compiler tables belong in locals, not globals.
 
-So a compiler's big tables belong in **locals** on the data stack, or later in builders and frozen batches, which DESIGN also commits as used. They don't belong in globals.
+DESIGN does promise that large local collections are "committed only as [they're] used" (DESIGN, Collections). What follows are implementation defects against that promise.
 
-**(b) Today an empty collection touches its whole capacity.**
+**(b) Collections are written past their live elements.**
 
-- In `compiler/src/emit.rs`, the emitter's destination path handles `EmptyList`, `EmptyMap`, `EmptySet`, `EmptyQueue` and `EmptyRing` with an `llvm.memset` over the full type size.
-- `EmptyPool` also loops over every slot, writing its free-list entry and generation (`pool.init.to.cond`).
-- Probes:
-  - A local `list<long, 6000000> = list {}` holding one element: 48,224 KB RSS.
-  - A local `pool<Node, 2000000>` of a 12-byte struct (21 bytes per slot with its flag, generation and free-list entry): 42,416 KB RSS.
+*The emitter.* Its destination path memsets the whole type size for `EmptyList`, `EmptyMap`, `EmptySet`, `EmptyQueue` and `EmptyRing`. `EmptyPool` also loops over every slot, writing generation 1 and a free-list entry. `StructConstruct`, `Construct` (enum payloads) and `Fill` memset their whole destination, and copies and returns move the full type size.
 
-The literal isn't the only path. In the same file:
+Probes, each holding one element:
 
-- `StructConstruct`, `Construct` (enum payloads) and `Fill` memset their whole destination.
-- Copies and returns `memmove` the full type size.
-- Probes:
-  - A struct `Tables { xs: list<long, 6000000>, n: int }` built with a struct literal and holding one element: 48,224 KB RSS.
-  - A function returning a `list<long, 2000000>` (16 MB) holding one element: 32,736 KB, i.e. both the callee's local and the caller's destination touched in full.
-  - `inspect contracts` shows why: at 3,000,000 elements, the callee needs 24,000,008 bytes for its own local and the caller reserves another 24,000,008 for the destination. That's because returning a local collection isn't yet built in the caller's destination. T14 does that only for `Ascii`.
-- **What is already right:** list equality walks only up to `count()` (`emit_collection_equal`).
-- **What needs care:** maps and sets probe arbitrary slots, so their occupancy flags (1 byte per slot) must stay zero-initialised even when keys and values aren't.
+| Case | Peak memory (RSS) |
+| --- | ---: |
+| Local `list<long, 6000000>` | 48,224 KB |
+| Local `pool<Node, 2000000>` of a 12-byte struct (21 B per slot) | 42,416 KB |
+| The same list as a struct field built with a struct literal | 48,224 KB |
+| A returned 16 MB list (callee's local and caller's destination both touched) | 32,736 KB |
 
-DESIGN's rule that a large local collection "is committed only as it's used" therefore isn't implemented yet. The fix is one emitter-wide rule: **no path writes, copies, compares or hashes a collection past its live elements**, except a map's or set's occupancy flags. This is the single most important fix for the compiler (section 6, item 1).
+`inspect contracts` shows why the returned list costs twice. At 3,000,000 elements the callee needs 24,000,008 bytes for its local, and the caller reserves another 24,000,008 for the destination, because a returned local collection isn't yet built in place.
 
-**(c) `byte` is stored in 4 bytes.**
+*The runtime.* `fs.read` and `fs.list` clear their whole destination buffer on entry and on failure (Sol, `nl_runtime.c:946–980`, `:1003`).
 
-`byte` is defined in `checker.rs` as a refinement of `int` (0..=255). Refinements are laid out at their base type's width (`type_size` in emit.rs), so `list<byte, N>` takes 4N bytes.
+What "live elements" must mean, per representation (Sol's findings 2 and 3; PLAN line 33 now carries these rules):
 
-DESIGN's "ranges pick storage" (a field `int 0..=1000` stored in 16 bits) isn't implemented either. Every `int`-based field is 4 bytes, `long` 8 and `bool` 1.
+- **`list`, `queue`, `ring`:**
+  - Only `count` (and a queue's or ring's head) is initialised.
+  - Elements are live from head for `count` positions, wrapping.
+  - Copies, equality, `print` and hashing visit only those positions.
+- **`map`, `set`:**
+  - Lookup first reads an 8-byte bucket entry (0 = empty, negative = tombstone, positive = entry + 1; `emit.rs`, map probe code), so the **bucket array must be zeroed**, or probing redesigned. Zeroing just occupancy flags isn't enough.
+  - Insertion-order entry records past the entry count stay untouched.
+  - Copies preserve or rebuild buckets, tombstones, hashes and insertion order.
+- **`pool`:**
+  - A **high-water mark** is the end of the slots ever initialised. Slots at or above it are implicitly free with generation 1.
+  - Lookup (today it checks only capacity), iteration, equality and printing must check the mark before reading flags or generations.
+  - Removed slots' generations, retired slots and free-list order survive copies and resets (DESIGN, Pools and their ids).
+- **Arrays and grids** are always fully live: `fill` is a real cost, so keep them small.
+- **Nested collections and enum payloads:**
+  - A collection inside a struct, an array element or an enum payload follows its own rule.
+  - An enum writes its tag and only the active case's payload.
+  - A struct literal initialises each field by its type's rule, never by one memset.
+- **Whole-value loads and stores:** equality and printing currently load whole operands first (Sol, `emit.rs:9666–9675`, `:8288–8293`). These must become pointer-based walks, or a 48 MB operand is read in full.
 
-The implementation has only `int`, `long` and `bool` as number types. There are no unsigned or 8-bit or 16-bit types yet, and no 128-bit type. Yet S1 must print integer-literal magnitudes up to 2^128 − 1 exactly (syntax-tree-format.md).
+Tests use dirtied destinations (reused stack pages full of stale bytes) with:
 
-**(d) The data stack is 64 MiB, fixed.**
+- stale pool ids and slot retirement;
+- map tombstones;
+- equality, hashing and printing.
 
-`nl_data_stack_reservation()` returns 67,108,864 bytes. T17 replaces this with a per-entry-point computed worst case, and section 4 needs that number to go well past 64 MiB.
+They report peak pages touched. Equal lists alone don't establish safety.
 
-**(e) Capacity generics and constants.**
+**(c) `byte` is 4 bytes.** It is an `int` refinement (`checker.rs`), and refinements keep their base width. DESIGN's "ranges pick storage" isn't implemented. The only number types today are `int`, `long` and `bool`: no unsigned, 8- or 16-bit, or 128-bit types.
 
-- `fn total<N>(xs: list<int, N>)` fails with "cannot infer generic parameter 'N'; pass a pool or id that determines it". Inference works from pools and ids, not lists.
-- A capacity must be "a constant integer expression; use a literal or const value". `const MAX_NODES: long = 1000L` works as a capacity; a field of a `const` struct (`LIMITS.max_nodes`) doesn't.
+**(d) The data stack is 64 MiB, fixed** (`nl_data_stack_reservation`).
 
-Both matter, because a compiler wants its limits in one struct (section 6).
+**(e) Generics and capacities.**
 
-**(f) The Rust reference itself.**
+- `fn total<N>(xs: list<int, N>)` fails with "cannot infer generic parameter 'N'".
+- Capacities must be literals or scalar `const`s, not fields of a `const` struct.
+- Both are conveniences: concrete `const` capacities work (5.1's sample uses them).
 
-- `compiler/src/` is about 34,900 lines: checker 13,421, emitter 11,647, parser 2,572, lexer 455.
-- It uses heap vectors, boxed trees and hash maps.
-- The whole compile runs on one thread with a 1 GiB stack (`COMPILER_STACK_SIZE`), reserved but not touched. T19 measured debug-build frames of 5 to 80 KB per nesting level (parser 12 KB and checker 15 KB per level after the frame split).
-- The checker returns a single `CheckError`, and the parser reports only its first diagnostic.
+**(f) The Rust reference.**
 
-**(g) Size and speed baselines, measured in WSL** on an Intel Core Ultra 9 185H, 22 logical cores, `vm.overcommit_memory = 0`:
+- About 34,900 lines: checker 13,421, emitter 11,647, parser 2,572, lexer 455.
+- It uses heap vectors and boxed trees.
+- It compiles on one 1 GiB-stack thread. T19 measured 5 to 80 KB debug frames per nesting level.
+- It reports a single error.
 
-- *Parse-able test corpus* (269 packages, generated stress fixtures excluded): 3,808 lines, 99,634 bytes, 31,187 tokens and 13,982 nodes.
-- *A 54,145-line benchmark* (that corpus concatenated 13 times into 13 files, 1,327,053 bytes):
-  - 410,163 tokens and 182,416 tree nodes, i.e. 24.5 bytes/line, 7.6 tokens/line and 0.44 nodes/token;
-  - the dump is 20,516,871 bytes, about 24 bytes per token line and 47 per node line;
-  - debug Rust `nlc parse --tokens --tree` takes 0.45 s at 52,872 KB maximum RSS.
-- *Generated LLVM IR*: a 6,130-byte fixed prelude, then about 360 to 920 bytes per source line on four fixtures. The map-heavy `t09_maps_sets` is the outlier, at about 6,300 bytes per line (1,005,082 bytes for 159 lines).
-- *clang 18.1.3 on that 1 MB IR file*: 0.08 s at `-O0`, 0.56 s at `-O1` and 0.68 s at `-O2`. That is one sample, three functions, single-threaded.
+**(g) Baselines** (WSL, Intel Core Ultra 9 185H, 22 logical cores, `vm.overcommit_memory = 0`):
+
+- *Parse-able test corpus:* 3,808 lines, 99,634 bytes, 31,187 tokens, 13,982 nodes.
+- *A 54,145-line benchmark* (that corpus repeated 13 times into 13 files, 1,327,053 bytes):
+  - 410,163 tokens and 182,416 nodes, i.e. 24.5 bytes/line, 7.6 tokens/line and 0.44 nodes/token;
+  - a 20,516,871-byte dump;
+  - debug Rust `nlc parse --tokens --tree` took 0.45 s at 52,872 KB maximum RSS;
+  - its printer would need at most 888 pending entries (the most children of one node is 871, the deepest node is at depth 13).
+- *Generated IR:* a 6,130-byte prelude, then 360 to 920 bytes per source line on four fixtures, with an outlier at about 6,300 (`t09_maps_sets`).
+- *clang 18.1.3 on 1 MB of that IR:* 0.08 s at `-O0`, 0.56 s at `-O1`, 0.68 s at `-O2` (one sample).
+- *Deep `else if` chains:*
+
+  | Chain depth | Peak memory | Time | Result |
+  | ---: | ---: | ---: | --- |
+  | 1,000 | | | parses |
+  | 1,001 | | | exit 2, "expression nesting limit of 1000 exceeded" |
+  | 20,000 | 220,176 KB | | exit 2, same message |
+  | 100,000 | 1,083,280 KB | 1.17 s | exit 2, same message |
+  | 123,999 (about 992,000 tokens, under the 1M-per-file limit) | 1,342,176 KB | 1.53 s | exit 2, same message |
+
+  So Rust parses arbitrarily deep chains and rejects them only afterwards, in the completed-tree walk.
+- *2,049 nested `!` or `-`:* rejected at the 2,049th operator by the 2,048-deep expression parser counter, which reports the "1000" message.
+
+**(h) The runtime heap.** `nl_context_create` allocates its context with `calloc`. The test environment uses `calloc` and `strdup`, the file-name table `realloc`, and `fs.list` `calloc`, `realloc` and `strdup`. These are small and outside the compiler's tables. A no-heap claim covers application data, not the C runtime.
 
 ---
 
@@ -188,46 +273,34 @@ Both matter, because a compiler wants its limits in one struct (section 6).
 **Zig.**
 
 - *AST layout:* PR #7920 (merged February 2021) stores tokens and AST nodes as struct-of-arrays.
-  - A token is 5 bytes (a 1-byte tag and a 4-byte offset).
-  - A node is 13 bytes: a 1-byte tag, a 4-byte `main_token` and an 8-byte `lhs`/`rhs` pair.
-  - Anything bigger goes into an `extra_data` array.
-  - The PR's own line is that "the only purpose of an AST is to bring a tree structure to a list of tokens."
-  - Measured with `zig fmt` on the standard library: 19.3% less peak memory and 11.4% faster wall-clock time. The rework had 34.5% more cache misses, yet fewer cycles.
-- *Index types:* in today's `lib/std/zig/Ast.zig`, `TokenIndex = u32` and `Node.Index = enum(u32)`. The tree holds `source`, `tokens`, `nodes` and `extra_data: []u32`.
-- *Speed:* the 0.8.0 release notes report tokenize, parse and ZIR together at 8.9 million lines per second on the standard library (292,458 lines in 33 ms, 8-core i9-9980HK). A later ZIR layout change cut a synthetic benchmark's peak memory from 645 MiB to 386 MiB.
-- *InternPool:* `src/InternPool.zig` is "self-contained". It is sharded per thread ("one item per thread, indexed by `tid`"), with atomically published shared parts.
-- *Bootstrap:* "Goodbye to the C++ Implementation of Zig" (December 7, 2022) replaced an 80,000-line C++ compiler with `zig1.wasm` (2.6 MiB, 2.4 MiB after `wasm-opt`, 637 KB compressed) and about 4,000 lines of portable C. `wasm2c` turns `zig1.wasm` into C, the system C compiler builds `zig1`, `zig1` builds `zig2.c`, and `zig2` builds the final compiler. Debug-build peak RSS fell from 11.3 GiB to 3.8 GiB.
+  - A token is 5 bytes: a 1-byte tag and a 4-byte offset.
+  - A node is 13 bytes: a 1-byte tag, a 4-byte `main_token` and an 8-byte `lhs`/`rhs` pair. Anything larger goes into `extra_data`.
+  - In the PR's words: "the only purpose of an AST is to bring a tree structure to a list of tokens."
+  - Measured with `zig fmt` on the standard library: 19.3% less peak memory and 11.4% faster wall-clock time, despite 34.5% more cache misses.
+- *Index types:* in `lib/std/zig/Ast.zig`, `TokenIndex = u32`, `Node.Index = enum(u32)` and `extra_data: []u32`.
+- *Speed:* the 0.8.0 notes report tokenize, parse and ZIR at 8.9 million lines/s (292,458 lines in 33 ms on an 8-core i9-9980HK). A ZIR change cut one benchmark's peak memory from 645 MiB to 386 MiB.
+- *InternPool* (`src/InternPool.zig`): sharded per thread ("one item per thread, indexed by `tid`"), with atomically published shared parts.
+- *Bootstrap:* "Goodbye to the C++ Implementation of Zig" (December 7, 2022) replaced an 80,000-line C++ compiler with `zig1.wasm` (2.6 MiB; 637 KB compressed) plus about 4,000 lines of C. `wasm2c`, then `zig1`, then `zig2.c`, then the final compiler. Debug-build peak RSS fell from 11.3 GiB to 3.8 GiB.
 
-**Copy from Zig:** struct-of-arrays tokens and nodes, 32-bit indexes, and a side array for variable-length data.
+Copy: struct-of-arrays, 32-bit indexes, an extra-data side array. Don't copy: an atomically shared interner (next-lang has no shared mutable state), and the wasm seed (Zig's goal was deleting a second compiler; next-lang keeps one as reference).
 
-**Don't copy from Zig:**
+**Carbon.**
 
-- *The atomically shared InternPool.* next-lang has no shared mutable state outside a writer.
-- *The wasm bootstrap, for now.* Zig's motive was deleting a second compiler. next-lang wants to keep its second compiler, the Rust `nlc`, as the reference.
+- *Storage:* "Data is stored in vectors and flyweights are passed around, avoiding more typical heap allocation with pointers".
+- *Postorder tree:* "The parse tree's storage layout is in postorder", with `subtree_size` per node, because it's "most efficient to process the parsed output in postorder; this affects checking."
+- *No recursion:* the parser pops states off a stack, because "Complex code must not cause recursion issues. We have experience in Clang seeing stack frame recursion limits being hit in unexpected ways".
+- *Speed:* PR #4124 measured lexing at about 5.02M lines/s, parsing at 1.73M and checking at 705K (262,144 lines), "2x behind on lex and check, 5x on parse" of its goals.
 
-**Carbon.** Carbon's toolchain docs:
-
-- *Storage:* "Data is stored in vectors and flyweights are passed around, avoiding more typical heap allocation with pointers". A parse node is a 32-bit index.
-- *Postorder tree:* "The parse tree's storage layout is in postorder", with a `subtree_size` per node. It is "most efficient to process the parsed output in postorder; this affects checking."
-- *No recursion:* the parser is a state stack. The loop "pops the next state off the stack, and dispatches to the appropriate `Handle` function", because "Complex code must not cause recursion issues. We have experience in Clang seeing stack frame recursion limits being hit in unexpected ways".
-- *Speed:* Carbon PR #4124, which added end-to-end benchmarks, measured lexing at about 5.02 million lines/s, parsing at 1.73 million and checking at 705 thousand at 262,144 lines, and called that "2x behind on lex and check, 5x on parse" of its goals.
-
-**Copy from Carbon:**
-
-- postorder plus subtree size;
-- checking as a linear walk over postorder nodes;
-- for S2, the state-stack idea for walks whose depth isn't capped.
-
-**Don't copy from Carbon, yet:** a state-machine parser for S1. Reproducing Rust's diagnostics byte for byte is far easier with the same recursive structure, and nesting is already capped at 1,000 (section 5.1).
+Copy: postorder plus subtree sizes; checking as a linear postorder walk; explicit stacks wherever depth isn't bounded. Revision 2 adopts this for `else if` chains (5.1).
 
 **TypeScript's Go port.**
 
-- *Results:* the announcement (March 11, 2025) measured VS Code (1,505,000 lines) going from 77.8 s to 7.5 s, with "roughly half" the memory.
-- *Parallel design:* the 7.0 beta post (April 21, 2026) says it "performs many steps in parallel, including parsing, type-checking, and emitting", with "a fixed number of type-checker workers with their own view of the world" (four by default). Workers "may end up duplicating some common work, but given the same input files, they will always divide them identically and produce the same results."
+- *Results:* VS Code (1,505,000 lines) went from 77.8 s to 7.5 s at "roughly half" the memory (March 11, 2025).
+- *Parallel design:* the 7.0 beta (April 21, 2026) "performs many steps in parallel, including parsing, type-checking, and emitting". It uses "a fixed number of type-checker workers with their own view of the world", four by default. Given the same inputs, they "will always divide them identically and produce the same results."
 
-**Copy from TypeScript:** this is exactly next-lang's per-job caches, with a fixed, deterministic division of work.
+Copy: per-job caches with a fixed, deterministic division of work.
 
-**Odin and Jai:** I found no primary source on their compiler internals worth citing, so I've left them out.
+**Odin and Jai:** no primary source on compiler internals found, so they're omitted.
 
 ### 3.2 Static allocation and fixed limits
 
@@ -236,74 +309,70 @@ Both matter, because a compiler wants its limits in one struct (section 6).
   - "Put a limit on everything because, in reality, this is what we expect—everything has a limit."
   - "Do not use recursion to ensure that all executions that should be bounded are bounded."
 
-  Its blog states "TigerBeetle allocates no memory after startup", with memory "calculated with a bit of addition and multiplication at startup" from limits such as the most client connections.
-- **NASA/JPL Power of Ten (Holzmann, 2006):**
+  Its blog: "TigerBeetle allocates no memory after startup", with memory "calculated with a bit of addition and multiplication at startup".
+- **Power of Ten (Holzmann, 2006):**
   - Rule 1 forbids "direct or indirect recursion".
   - Rule 2: "Give all loops a fixed upper bound".
   - Rule 3: "Do not use dynamic memory allocation after initialization."
 
-  JPL's 2009 C coding standard repeats both the recursion rule and the allocation rule.
-- **MISRA C:2012 Rule 21.3** (quoted by MathWorks; the standard itself is paywalled): "The memory allocation and deallocation functions of <stdlib.h> shall not be used."
-- **What next-lang already does better:** these rules are conventions checked by review. next-lang makes the equivalents compiler rules:
-  - every collection has a capacity in its type;
-  - recursion is opt-in, with a budget;
-  - unbounded loops carry a step budget;
-  - a full collection is a `Result`.
+  JPL's 2009 C standard repeats the recursion and allocation rules.
+- **MISRA C:2012 Rule 21.3** (via MathWorks; the standard is paywalled): "The memory allocation and deallocation functions of <stdlib.h> shall not be used."
+- **What next-lang does differently:** it makes these rules compiler checks: capacities in types, opt-in recursion with a budget, step budgets, `Full` as a `Result`. A job's memory is also reserved at its worst case and paid as used, once 2.3(b) is fixed.
+- **Shipped limits elsewhere:**
+  - C11 (N1570 §5.2.4.1) requires at least "127 nesting levels of blocks", "63 nesting levels of parenthesized expressions within a full expression", "4095 external identifiers in one translation unit" and "4095 characters in a logical source line".
+  - MSVC's compound-statement nesting is "generally between 100 and 110".
+  - GCC's preprocessor docs: "It is intended that there should be as few limits as possible."
+  - Zig's indexes are `u32`.
 
-  It also differs in one useful way: a job's memory is **reserved** at its worst case and **paid** as used, rather than paid at startup. Fixing 2.3(b) is what makes that real.
-- **Limits that real compilers ship:**
-  - *The C standard.* C11 (N1570 §5.2.4.1) only requires implementations to accept at least "127 nesting levels of blocks", "63 nesting levels of parenthesized expressions within a full expression", "4095 external identifiers in one translation unit" and "4095 characters in a logical source line".
-  - *MSVC* documents nesting of compound statements as "generally between 100 and 110".
-  - *GCC* says of its preprocessor: "It is intended that there should be as few limits as possible."
-  - *Zig* caps tokens and nodes at 2^32 through its `u32` indexes.
-
-  next-lang's published limits (1,000 nesting levels, 4M tokens and 2M nodes per package) are generous by these standards. What's unusual is only that they are documented and reported by name.
-- **Small fixed-memory compilers:**
-  - *tcc*'s page reports compiling the Links browser (1,950,947 lines) at 859,000 lines/s, against 98,000 for GCC 3.2 at `-O0`, with an executable of about 100 KB.
-  - I couldn't verify table sizes or design details for Wirth's Oberon compiler or Turbo Pascal from primary sources, so I make no claims about them.
+  next-lang's documented limits are generous by comparison.
+- **tcc** reports 859,000 lines/s on the 1,950,947-line Links browser, against 98,000 for GCC 3.2 `-O0`. I couldn't verify Oberon or Turbo Pascal table sizes from primary sources, so I make no claims about them.
 
 ### 3.3 Regions and arenas
 
-- **Tofte and Talpin's regions** (1997) follow stack discipline: `letregion ρ in e end` creates a region, evaluates, then frees it, last in, first out.
-- **MLKit** scaled this to large programs only by adding separate compilation and "a hybrid technique combining region inference with tracing garbage collection". Results ranged "between 10 times faster and four times slower" depending on how "region-friendly" the program was. Regions can hold dead data until freed ("leaks").
-- **Cyclone** added explicit regions to a safe C dialect.
-- next-lang's data-stack regions are Tofte-Talpin regions with the lifetimes written by the compiler's scope rules instead of inferred.
-- **The leak risk applies to the compiler too:** tables live until the compile's scope ends. That's fine for a batch compile, but a long-running language server must run each compile as its own job, so the job's end frees everything.
-- **Arenas elsewhere:** rustc allocates "from a global memory pool... from a long-lived arena". LLVM's `BumpPtrAllocator` objects "cannot be deallocated. Their lifetime is tied to the lifetime of the allocator." next-lang's design reaches the same bulk-free behaviour with no allocator call at all, since a region is a pointer bump.
+- **Regions** (summarised from a secondary source, Wikipedia):
+  - Tofte and Talpin's `letregion ρ in e end` creates, evaluates in, then frees a region, last in, first out.
+  - MLKit scaled to large programs only with "a hybrid technique combining region inference with tracing garbage collection", with results "between 10 times faster and four times slower" depending on how "region-friendly" a program was. Regions can hold dead data until freed ("leaks").
+  - Cyclone added explicit regions to a safe C dialect.
+- **next-lang's data-stack regions** are such regions with scope-written lifetimes. The leak lesson: a long-running language server must run each compile as its own job.
+- **Arenas:** rustc allocates "from a global memory pool... from a long-lived arena". LLVM's `BumpPtrAllocator` objects' "lifetime is tied to the lifetime of the allocator."
 
-### 3.4 Operating-system facts the design relies on
+### 3.4 Operating-system facts
 
-- **Linux:** the overcommit modes are 0 (heuristic), 1 (always) and 2 ("Don't overcommit... not permitted to exceed swap + a configurable amount (default is 50%) of physical RAM"). `mmap(2)` documents `MAP_NORESERVE` as "Do not reserve swap space for this mapping", and an anonymous mapping's "contents are initialized to zero". That pages are backed only when first touched is shown by the probes, not by a quote: 1,584 KB versus 48,224 KB.
-- **Windows:** `MEM_RESERVE` "Reserves a range... without allocating any actual physical storage". `MEM_COMMIT` "Allocates memory charges (from the overall size of memory and the paging files on disk)... Actual physical pages are not allocated unless/until the virtual addresses are actually accessed."
-
-  So on Windows a large reservation is free, but committing it all up front charges the commit limit. The Windows data stack will need to commit in chunks as its top grows. That's runtime work for the Windows port, not a design change.
+- **Linux overcommit:**
+  - mode 0 is "Heuristic overcommit handling... This is the default";
+  - mode 1 is "Always overcommit";
+  - mode 2 is "Don't overcommit... not permitted to exceed swap + a configurable amount (default is 50%) of physical RAM".
+- **`mmap(2)`:** `MAP_NORESERVE` means "Do not reserve swap space for this mapping", and an anonymous mapping's "contents are initialized to zero". That pages are backed only when touched is shown by the probes, not by a quote.
+- **Windows:** `MEM_RESERVE` "Reserves a range... without allocating any actual physical storage". `MEM_COMMIT` "Allocates memory charges (from the overall size of memory and the paging files on disk)", and "Actual physical pages are not allocated unless/until the virtual addresses are actually accessed". So the Windows data stack must commit as it grows.
 
 ### 3.5 Bootstrap practice
 
-- **Go 1.5:** the compiler "was actually moved by automatic translation of the C code into Go. It is in effect the same program in a different language". Building it needed "Any Go 1.4 or later distribution". Today: "Go version 1.N will require a Go 1.M compiler, where M is N-2 rounded down to an even number."
-- **Rust:** stage 0 is a downloaded beta `rustc`. It compiles the sources into stage 1, and stage 1 rebuilds them into stage 2.
-- **OCaml** keeps `boot/` ("a version of ocamlrun and all the *.cm* files of the standard library") and re-bootstraps when bytecode or `.cmi` formats change.
-- **Wheeler's diverse double-compiling (DDC):** "source code is compiled twice: once with a second (trusted) compiler... and then the compiler source code is compiled using the result of the first compilation. If the result is bit-for-bit identical with the untrusted executable, then the source code accurately represents the executable."
+- **Go 1.5:** the compiler "was actually moved by automatic translation of the C code into Go"; building it needed "Any Go 1.4 or later distribution". Today: "Go version 1.N will require a Go 1.M compiler, where M is N-2 rounded down to an even number."
+- **Rust:** stage 0 (a beta `rustc`) builds stage 1, and stage 1 builds stage 2.
+- **OCaml** keeps `boot/` ("a version of ocamlrun and all the *.cm* files of the standard library") and re-bootstraps when formats change.
+- **Wheeler's diverse double-compiling (DDC):** "source code is compiled twice: once with a second (trusted) compiler (using the source code of the compiler's parent), and then the compiler source code is compiled using the result of the first compilation. If the result is bit-for-bit identical with the untrusted executable, then the source code accurately represents the executable."
 - **Reproducible builds:** "Timestamps make the biggest source of reproducibility issues."
 
-**Copy from these:** Go's discipline that the compiler's source may use only what the pinned previous compiler accepts; Rust's stage numbering; and stage 2 equals stage 3 as a DDC-style check with Rust `nlc` as the diverse compiler.
+What this means for next-lang:
 
-**Don't copy, for now:** a checked-in binary seed like OCaml's or Zig's. The Rust compiler is a better seed while it's maintained.
+- **Stage equality is a stability check.** PLAN's stage 2 equals stage 3 shows the compiler reproduces itself.
+- **It becomes a DDC check only when stated precisely** (5.4):
+  - name the candidate executable;
+  - treat Rust `nlc`, and the `rustc` that built it, as the trusted seed;
+  - trust clang, the runtime and the linker;
+  - compare executables.
+- **Copy:** Go's rule that the compiler's source uses only what the pinned stage 0 accepts, and Rust's stage numbering.
 
 ### 3.6 Backends and incremental compilation
 
 - **QBE** "aims to provide 70% of the performance of industrial optimizing compilers in 10% of the code".
 - **rustc_codegen_cranelift** "has the potential to improve compilation times in debug mode".
-- **Zig 0.15** made its own x86-64 backend the Debug default ("around a 5x decrease compared to LLVM in most cases"), except on NetBSD, OpenBSD and Windows.
-- **TPDE-LLVM** (June 2025) reports an LLVM-IR back end "10-20x faster than the LLVM -O0 back-end", with 10 to 30% larger code. It is a drop-in for `-O0` LLVM IR on x86-64 and AArch64.
-- **Incremental compilation:**
-  - rustc's queries are "memoized" and loaded from disk, with a red-green dependency graph ("If all the inputs to query Q are colored green... need not be re-executed").
-  - Zig's incremental mode reanalysed a half-million-line codebase in 63 ms after an edit, against 14 s for a full check (0.14.0 notes). It is still "experimental" in 0.15.
+- **Zig 0.15** defaults to its own x86-64 backend in Debug ("around a 5x decrease compared to LLVM in most cases"), except on NetBSD, OpenBSD and Windows.
+- **TPDE-LLVM** (June 2025): "10-20x faster than the LLVM -O0 back-end", with 10 to 30% larger code, on x86-64 and AArch64.
+- **rustc queries** are "memoized" with a red-green graph ("If all the inputs to query Q are colored green... need not be re-executed").
+- **Zig incremental** reanalysed a half-million-line codebase in 63 ms after an edit, against 14 s for a full check, and is still "experimental" in 0.15.
 
-**What this means for next-lang:**
-
-- LLVM IR text keeps the outputs of the Rust and self-hosted compilers comparable, and costs nothing new.
-- The 1 MB sample in 2.3(g) took 0.56 s at `-O1` against 0.08 s at `-O0`. That suggests the optimization level, not the IR producer, is where dev-build time goes, so the first fix to try is DESIGN's own open question (`-O0` or FastISel for dev builds). TPDE accepts the same IR text and is a cheap later experiment. A home-made backend is the last resort.
+For next-lang: keep LLVM IR text. The one sample suggests the `-O1` versus `-O0` choice dominates dev-build time, so try `-O0` or FastISel first, then TPDE, which reads the same IR.
 
 ---
 
@@ -311,216 +380,215 @@ Both matter, because a compiler wants its limits in one struct (section 6).
 
 ### 4.1 The answer, plainly
 
-Yes: S1 to S3 can run with no heap, entirely on next-lang locals on the compiling job's data stack (and later on frozen batches), under three conditions:
+S1 to S3 can keep all their tables in next-lang locals on the compiling job's data stack (later in frozen batches), with no application heap. The conditions:
 
-1. **No emitter path touches a collection past its live elements** (section 6, item 1). Otherwise every reserved table is paid in full the moment it's declared.
+1. **Hard: the data-stack reservation is sized from the computed worst case** (T17), not capped at 64 MiB. The tables at S1's documented limits reserve about 567 MiB (4.6).
+2. **Hard: exit status and raw byte output** (5.1).
+3. **For the memory goal: PLAN's live-elements task** (2.3b; PLAN line 33), and 1-byte buffers (`Bytes`, T16).
+   - Without them, S1 still works on a large enough data stack, but touches about 1.1 GB at declaration (4.6).
+   - Until struct literals, copies and returns follow the rule, each table must be its own local declared with `list {}` in `main` and passed by pointer: no `Tables { … }` literal, and no helper returning a table.
 
-   Until that holds for struct literals, returns and copies too, each table must be its own local, declared with `list {}` in `main` and passed by pointer. Don't wrap tables in a constructed `Tables { … }` struct or return them from helpers.
-2. **The data-stack reservation is sized from the computed worst case** (T17), with no 64 MiB cap. Address space is plentiful: DESIGN cites 128 TiB per process, and the whole compiler needs about 1.3 GiB (section 4.6).
-3. **Byte buffers use 1 byte per byte** (`Bytes`, T16; or real `byte` storage). Otherwise source text costs four times its size.
-
-**Globals aren't needed and should be avoided.** They are touched in full at startup and they count against `globals_budget`. The compiler's `main(env: Env)` declares its tables as locals and passes them down as `write` parameters, then as read parameters, which pass by pointer for large values (T13), so nothing is copied.
+**Globals aren't needed.** They are touched at startup and count against `globals_budget`. `main(env: Env)` declares the tables and passes them down as `write` parameters, then read parameters. Both are passed by pointer for large values (T13), so nothing is copied.
 
 ### 4.2 What must outlive which phase
 
-| Data | Made by | Read by | Lives in | Sized by |
-| --- | --- | --- | --- | --- |
-| Source bytes, all files | driver (sequential I/O) | lexer, parser, dump printer, diagnostics, S2 (spellings), S3 (string constants) | one package buffer, local in `main` | fixed limit: 64 MiB per package + one 16 MiB file of slack |
-| Tokens `{kind, start, len}` | lexer | parser, interning pass, printer | package list, local in `main` | fixed limit (4M per package + 1M per file of slack); derived bound: tokens of a file ≤ its bytes + 1 |
-| Nodes, postorder | parser | printer, S2, S3 | package list | fixed limit (2M per package) + one file's worst case (bound to verify: ≤ 2 nodes per token) |
-| Integer magnitudes (`u128` as two `long`s) | parser | printer, S2 | side list | ≤ number tokens |
-| Decoded string bytes | parser | printer, S3 | side buffer | ≤ source bytes |
-| Name table and hash slots | interning pass (start of S2) | S2, S3 | `main` locals | names ≤ identifier tokens; slot count = next power of two ≥ 2 × identifier tokens, chosen at run time (4.3) |
-| Symbols, scopes, types, generic copies | S2 declaration phase | S2 bodies (read only), S3 | `main` locals | fixed manifest limits (assumed in 4.6) |
-| Per-node facts (type, resolution) | S2 body jobs | S3 | `main` locals, filled at join | = node limit |
-| Typed instructions | S2 body jobs | S3 | `main` locals, filled at join | fixed limit |
-| Per-function scratch (scope stack, local maps, worklist) | each S2 or S3 job | that job | the job's own data stack | fixed per-job limit |
-| IR text | S3 jobs | the file writer, then clang | per-job buffers, then a wave buffer; never the whole program | per-module limit × wave size |
+| Data | Made by | Read by | Sized by |
+| --- | --- | --- | --- |
+| Source bytes, all files (file-relative offsets, plus a per-file base in the file table) | driver loop | lexer, parser, printer, diagnostics, S2, S3 | package limit, 64 MiB (no slack needed; 4.3) |
+| File table `{name, base, length, first token, token count, first node, node count}` | driver loop | everything | 256 files + 1 |
+| Read temporary | driver loop | copied into the source buffer | 16 MiB file limit |
+| Tokens `{kind, start, len}` | lexer | parser, interning, printer | 4M package + 1M current-file slack |
+| Nodes (postorder), plus an extra-data list | parser | printer, S2, S3 | 2M package + current file (≤ 2 per token + 1) |
+| Literal values (integer magnitudes, refinement endpoints) | parser | printer, S2 | ≤ number tokens |
+| Decoded string bytes | parser | printer, S3 | ≤ source bytes |
+| Token-to-name-id array; name table; hash slots | interning (start of S2) | S2, S3 | per token; names ≤ identifier tokens; a measured prefix (4.3) |
+| Symbols, types, generic copies, pending tasks | S2 | S2, S3 | proposed limits (4.6) |
+| Per-node facts, typed instructions | S2 body waves, copied in at each join | S3 | node limit; instruction limit |
+| Per-function scratch and outputs | each S2/S3 chunk | its join | per-chunk limits × wave size |
+| IR text | S3 chunks, then the wave result | file writer, then the bridge | per-module limit × wave size |
 
-**Phase hand-off without copying.** A phase gets its outputs as `write` parameters and passes them on as read parameters. Read mode is enforced by the checker, so the "freeze" is a type-level fact even before `freeze` exists. Large read parameters are passed by pointer (T13 report), so no table is ever copied between phases.
+**Phase hand-off without copying.** Phases hand tables on as read parameters, so the "freeze" is enforced by the checker. With step 6, S1b's per-file builders are frozen "with no copy" (DESIGN, Frozen pools).
 
-Once step 6 lands (S1b), the parser's tables become per-file builders, and `freeze` turns each into a read-only partition "with no copy" (DESIGN, Frozen pools). Ids then become 64-bit partition-and-row ids, `b.Node.Id`.
+### 4.3 How each table is sized
 
-### 4.3 How each table is sized, given that untouched reservation is free
+1. **Fixed limits** (syntax-tree-format.md), with capacity set by **when Rust checks**. Per file, `driver.rs` checks in this order:
+   1. read the file;
+   2. bytes per file;
+   3. package bytes, including this file;
+   4. UTF-8;
+   5. lex, which includes delimiter nesting and the per-file token limit;
+   6. package tokens;
+   7. parse;
+   8. per-file tree counts in the dump writer;
+   9. package nodes;
+   10. package edges;
+   11. work units.
 
-Three kinds of sizing, and when to use each:
+   Before the loop come "package has no .nl source files" and the 256-file limit. So:
+   - The package source buffer needs exactly 64 MiB. The file is read into the 16 MiB temporary first. A larger file fails at step 2, and steps 3 and 4 happen before it's copied in.
+   - The token list needs 4M + 1M. Rust lexes the whole file (at most 1M tokens) before step 6.
+   - The node list needs 2M plus the current file's worst case. The tree is counted only after a successful parse, so a later syntax error in the same file still wins.
 
-1. **Fixed limits, written as constants.**
-   - The limits S1 must reproduce are fixed by syntax-tree-format.md: 256 files, 16 MiB per file, 64 MiB per package, 1M tokens per file, 4M per package, 2M nodes, 2M child edges, delimiter nesting 2,048, parser nesting 1,000, 72M work units, 1 diagnostic.
-   - S2's and S3's limits are new and should be documented the same way.
-   - The capacity is the limit plus whatever **slack** is needed to reproduce Rust's timing of the check. `driver.rs` adds a file's bytes, tokens, nodes and edges to the package totals only *after* parsing that file. So if a later file has a syntax error, Rust reports the syntax error, not the node limit.
-   - To match that exactly, S1's package lists need room for one more whole file past the package limit, then the same after-file check. That slack is reserved, not touched, so it costs nothing.
-2. **Bounds derived from input,** proved by construction:
-   - tokens ≤ source bytes + 1 (the `Eof` token);
-   - magnitudes ≤ number tokens;
-   - decoded string bytes ≤ source bytes;
-   - names ≤ identifier tokens.
+   That slack is reserved, not touched.
+2. **Derived bounds:**
+   - tokens ≤ bytes + 1;
+   - literal values ≤ number tokens (plus two endpoints per refined type, each with its own number token);
+   - decoded bytes ≤ source bytes;
+   - names ≤ identifier tokens;
+   - nodes ≤ 2 × tokens + 1 per file (argued in 5.1, and asserted).
+3. **Measured prefix:** hash tables use a power-of-two prefix at least twice the number of identifier tokens, so only that prefix is touched.
 
-   These choose capacities or check the fixed ones. They're the "formula its parser proves" DESIGN allows for builders.
-3. **Measured, then used as a prefix.** Some structures should *use* only part of their reservation, chosen at run time. Hash tables are the main case: a hash spreads entries over all its slots, so 10,000 names in a 2M-slot table touch nearly every page of it.
+**Errors.** Limit messages are byte-identical to Rust's, for example "token limit of 4000000 per package exceeded". A `push` returning `err(Full)` maps to the named limit; an unused `Result` is a build error.
 
-   The technique: reserve the table at its limit, count identifier tokens after lexing, and use only a power-of-two prefix twice that count, with the mask held in a variable. Today that is a `list<int, N>` grown to the chosen length, plus a mask. Only that prefix is ever touched.
+### 4.4 Interning
 
-**Overflow is a named error, never truncation.** Each limit's message names the limit and its value, as Rust's do:
+A shared mutable interner is off the table (DESIGN, Frozen pools).
 
-- "token limit of 4000000 per package exceeded";
-- "node limit of 2000000 per package exceeded";
-- "expression nesting limit of 1000 exceeded".
+**Recommended: one sequential pass after parsing.** It walks the identifier tokens in file order and writes a dense `name_id` per token (an `int` array the size of the token list), building the name table and its hash prefix. The ids are first-occurrence order, so it's deterministic with no merge.
 
-For S1 these must be byte-identical to Rust's. For S2 and S3, write each message into the format document. A `push` that returns `err(Full)` is mapped to the limit's message at its call site. The rule "an unused `Result` is a build error" (T20) means none can be silently dropped.
+**Cost (estimate, not measured):** about 200,000 lookups at an assumed 50 ns is 10 ms. Measure it in S1a's benchmark.
 
-### 4.4 Interning and shared tables under "nothing mutable is shared"
+If it shows in profiles: per-file tables merged in file order, with a rewrite pass over each file's `name_id` slice.
 
-DESIGN's frozen-pools section already rules out a shared mutable interner: it must "live on a writer, or be per-thread and merged after the phase". The options:
+### 4.5 Parallel checking and emission
 
-1. **Per-job tables merged afterwards with deterministic renumbering** (sort by first occurrence in file order). This works, but every id produced in parallel must then be rewritten, which costs a pass over all the trees.
-2. **A writer** serialises every lookup through a queue, which is the bottleneck Sol warned about.
-3. **One sequential interning pass after parsing (recommended).**
-   - A single loop over all identifier tokens in file order builds the package's name table and writes a name id per identifier token into a side array.
-   - It's deterministic by construction: ids are first-occurrence order.
-   - It needs no merge, and every later phase reads the table frozen.
+- **Chunk rules:** chunks read caller tables through views and write only their own scratch and result slot (DESIGN, Parallel loops).
+- **When outputs are copied:** chunks of unknown output size build outputs "on its own stack and the join copies the pieces in index order before those stacks are reset". So **every chunk's outputs stay alive until the join**, alongside the joined copy.
+- **Waves:** run each phase in waves of W chunks (W = 64 for S2, 8 modules for S3). Peak = one wave's chunk stacks, plus the package tables the joins copy into.
+- **Determinism:** `collect` joins in index order, and `reduce` combines in a fixed tree order. Chunks can't do I/O or read the clock, so output is a function of input.
+- **Generic copies:** a bounded fixed point in waves. Check the known set, gather requests in requester order, deduplicate, repeat. A copy-count limit and a work limit both apply.
 
-   **Cost estimate** (not measured): 50,000 lines at 10 tokens/line and 40% identifiers is 200,000 lookups, each a hash of about 8 bytes plus one or two probes. At an assumed 50 ns each that's about 10 ms, well inside the 3-second aim.
+**Cost versus a heap design.** Allocation becomes a pointer bump, and layout is struct-of-arrays. The prices:
 
-   S1b can keep this pass sequential after the parallel parse. If it ever shows up in profiles, files can be interned in parallel into per-file tables, then merged in file order, which is option 1 restricted to names.
-
-S2's declaration phase (symbols, struct layouts, signatures) is sequential for the same reason, and its output is frozen before bodies run in parallel. Bodies that discover new types (a `list<Foo, 8>` written only inside a body) or new generic copies record them in job-local lists with job-local ids. After the join, the coordinator appends them to the package tables in function-index order and rewrites the job-local ids. That rewrite touches only the new entries, not whole trees.
-
-### 4.5 Parallel checking and emission with per-job stacks
-
-- **Chunk rules:** each `parallel for` chunk "runs on stacks of its own" and may read the caller's tables through read-only views. It "may have no effects, and may write only what it owns: its own scratch and its slot of the result" (DESIGN, Parallel loops).
-- **S2 bodies:** chunk *i* checks function *i*. Its scratch (scope stack, local symbol map, worklist) is on its own data stack. Its results are its slot of `collect`: per-node facts for its body, typed instructions, discovered types and generic copies, and its first diagnostic.
-- **Join order is the determinism rule:** `collect` "copies the pieces in index order", and `reduce` combines "in a fixed tree order, whatever the scheduling". Since chunk bodies can't do I/O, read the clock, or write shared state, the output is a function of the input alone. Work stealing changes only the timing.
-- **S3 emission:** chunk *i* emits module *i* (one per source file, matching DESIGN's per-module cache unit) into its own IR buffer. Chunks can't write files, so the caller writes each wave's collected modules to disk in index order, then reuses the wave buffer. Memory is bounded by wave size × per-module limit, not program size.
-- **Generic copies:** they form a worklist that can grow while it's processed (checking a copy can request more copies). Run it in waves:
-  1. Check the current set in parallel.
-  2. Collect the new requests and deduplicate them in index order.
-  3. Repeat until no new requests appear, or a named limit ("generic copy limit of N exceeded") is hit.
-
-  That's the bounded fixed point Sol asked for (storage and step limits both).
-
-**Cost versus a heap design.** Allocation cost disappears: every table is a pointer bump. Layout is the struct-of-arrays layout Zig measured as smaller and faster. What it costs:
-
-1. **Limits must be stated** and raised by rebuilding.
-2. **Every table reserves address space at its limit:** about 1.3 GiB here, against a 128 TiB address space.
-3. **Hash tables need the prefix trick** above.
-4. **Each parallel job reserves its own scratch.** That's address space again; touched memory stays proportional to the work.
-
-The Rust compiler's heap design pays per-object allocation and pointer-sized links instead. On the measured baseline it used 52.9 MB maximum RSS just to parse and dump 54,145 lines (debug build).
+1. Stated limits, raised by rebuilding.
+2. Address space at each limit (about 2.4 GiB here, out of a 128 TiB address space).
+3. The hash-prefix trick.
+4. Per-wave chunk stacks.
 
 ### 4.6 Memory map for a 50,000-line program
 
-**Assumptions.** Each is rounded up from the 54,145-line measurement in 2.3(g):
+**Assumptions,** rounded up from 2.3(g):
 
 | Quantity | Assumed | Measured |
 | --- | --- | --- |
 | Bytes per line | 40 | 24.5 |
 | Tokens per line | 10 | 7.6 |
 | Nodes per token | 0.5 | 0.44 |
-| Integer literals | 1 per 10 lines | not measured |
+| Literal values | 7,000 (5,000 integer literals + 2,000 refinement endpoints) | not measured |
 | Decoded string bytes | 5% of source | not measured |
 | Identifier tokens | 40% of tokens | not measured |
 | Distinct names | 10,000 | not measured |
 | Symbols | 20,000 | not measured |
 | Types | 10,000 | not measured |
-| Typed instructions | 1.5 per node (1 per node, + 50% for generic copies) | not measured |
-| IR text | 1,000 bytes per line, about 50 modules of 1 MB | 360 to 920 typical, 6,300 worst on four fixtures |
-| Parallel jobs | 8 | |
+| Extra-data entries | 0.5 per node | not measured |
+| Typed instructions | 1.5 per node | not measured |
+| Files | 50, the largest 200,000 bytes, names about 16 bytes | not measured |
+| IR | 1,000 bytes per line, i.e. 50 modules of 1 MB | 360 to 920 typical, 6,300 worst |
+| Printer stack | 888 entries | measured on 2.3(g)'s benchmark |
 
-**Derived counts:**
+**Derived counts:** source 2,000,000 B; tokens 500,000; nodes 250,000; identifier tokens 200,000; extra-data entries 125,000; typed instructions 375,000.
 
-- source = 50,000 × 40 = 2,000,000 bytes;
-- tokens = 50,000 × 10 = 500,000;
-- nodes = 500,000 × 0.5 = 250,000;
-- integer literals = 50,000 / 10 = 5,000;
-- typed instructions = 250,000 × 1.5 = 375,000;
-- identifier tokens = 500,000 × 0.4 = 200,000;
-- IR = 50,000 × 1,000 = 50,000,000 bytes.
-
-**Record sizes, from today's emitter rules** (`int` 4 bytes, `long` 8, refined fields at base width, an enum without payload 4):
+**Record sizes** (today's rules: `int` 4, `long` 8, `bool` 1, struct = sum of fields, one array per field):
 
 | Record | Fields | Size |
 | --- | --- | --- |
 | Token | `{kind, start, len}` | 12 B |
-| Node | `{kind, flags, token, start, end, subtree}` | 24 B |
-| Magnitude | `{lo: long, hi: long}` | 16 B |
+| Node | `{kind, flags, token, start, end, subtree, extra}` | 28 B |
+| File entry | 8 ints | 32 B |
+| Literal value | four 32-bit limbs in `long`s, plus `negative: bool` | 33 B |
 | Name | `{start, len, hash}` | 12 B |
-| Hash slot | `int` | 4 B |
 | Symbol | assumed | 24 B |
 | Type | assumed | 32 B |
-| Per-node fact | `{type, resolution}` | 8 B |
+| Per-node fact | | 8 B |
 | Typed instruction | assumed | 16 B |
-| Byte buffers | with `Bytes` (T16) | 1 B per byte |
+| Pending task | | 8 B |
+| Byte buffers | `Bytes` | 1 B per byte |
 
-Each table below is one `list` local in `main` (or in a per-job function), with O(1) empty initialisation.
+"Peak touched" counts bytes written; page rounding adds at most 4 KiB per array lane. The tables assume the live-elements rule, `Bytes`, and `fs.read` no longer clearing its whole buffer.
 
-**S1: lexing and parsing**
+**S1**
 
-| Table | Capacity | Reserved bytes | Used | Touched bytes |
-| --- | --- | ---: | --- | ---: |
-| Source buffer | 64 MiB + 16 MiB slack | 83,886,080 | 2,000,000 B | 2,000,000 |
-| Tokens | 5,000,000 × 12 | 60,000,000 | 500,000 × 12 | 6,000,000 |
-| Nodes | 4,000,000 × 24 | 96,000,000 | 250,000 × 24 | 6,000,000 |
-| Magnitudes | 5,000,000 × 16 | 80,000,000 | 5,000 × 16 | 80,000 |
-| Decoded strings | = source capacity | 83,886,080 | 5% of source | 100,000 |
-| Printer stack `{node, depth}` | 4,000,000 × 8 | 32,000,000 | a few pages | 4,096 |
-| Delimiter stack | 2,048 × 4 | 8,192 | one page | 4,096 |
-| Output buffer | 1 MiB | 1,048,576 | all, reused per flush | 1,048,576 |
-| **S1 total** | | **436,828,928 (416.6 MiB)** | | **15,236,768 (14.5 MiB)** |
+| Table | Capacity | Reserved | Live payload at end | Peak touched |
+| --- | --- | ---: | ---: | ---: |
+| Source buffer | 64 MiB + 16 MiB | 83,886,080 | 2,000,000 | 2,000,000 |
+| Read temporary | 16 MiB | 16,777,216 | 0 | 200,000 |
+| File table | 257 × 32 | 8,224 | 1,600 | 1,600 |
+| File names | 256 × 255 | 65,280 | 800 | 800 |
+| Tokens | 5,000,000 × 12 | 60,000,000 | 6,000,000 | 6,000,000 |
+| Nodes | 4,000,002 × 28 | 112,000,056 | 7,000,000 | 7,000,000 |
+| Extra data | 8,000,000 × 4 | 32,000,000 | 500,000 | 500,000 |
+| Literal values | 5,000,000 × 33 | 165,000,000 | 231,000 | 231,000 |
+| Decoded strings | 80 MiB | 83,886,080 | 100,000 | 100,000 |
+| Printer stack `{node, depth}` | 4,000,002 × 8 | 32,000,016 | 0 | 7,104 |
+| `else if` frames | 1,000,000 × 8 | 8,000,000 | 0 | 160 |
+| Delimiter stack | 2,048 × 4 | 8,192 | 0 | 80 |
+| Output buffer | 1 MiB | 1,048,576 | 0 | 1,048,576 |
+| **S1 total** | | **594,679,720 (567.1 MiB)** | **15,833,400** | **17,089,320 (16.3 MiB)** |
 
-Page rounding adds at most one 4 KiB page per array lane. That's about 20 lanes, under 0.1 MiB. The dump itself (about 24 MB for this program, scaling 2.3(g)'s 20.5 MB) is streamed out through the 1 MiB buffer, never held.
+Notes on the S1 table:
 
-**S2: checking** (the limits here are proposals; the Rust checker has none to match)
+- **Source buffer:** revision 2 keeps 80 MiB to be safe; 4.3 shows 64 MiB suffices, which would save 16 MiB of reservation.
+- **Printer stack:** 4,000,002 entries is the worst case, a node with every other node as its child. The measured breadth was 888 entries (7,104 bytes).
+- **The dump** (about 25 MB here) streams through the 1 MiB buffer and is never held.
+- **The output buffer and printer exist only in `parse` mode;** a full compile doesn't run them.
+- **Today's runtime** `fs.read` touches the full 16 MiB temporary on every read (it clears it), so the peak rises by 16,577,216 bytes.
 
-| Table | Capacity | Reserved bytes | Used | Touched bytes |
-| --- | --- | ---: | --- | ---: |
-| Names | 1,048,576 × 12 | 12,582,912 | 10,000 × 12 | 120,000 |
-| Name hash slots | 2,097,152 × 4 | 8,388,608 | prefix of 524,288 (next power of two ≥ 2 × 200,000) × 4 | 2,097,152 |
-| Symbols | 1,048,576 × 24 | 25,165,824 | 20,000 × 24 | 480,000 |
-| Types | 1,048,576 × 32 | 33,554,432 | 10,000 × 32 | 320,000 |
-| Per-node facts | 4,000,000 × 8 | 32,000,000 | 250,000 × 8 | 2,000,000 |
-| Typed instructions | 8,000,000 × 16 | 128,000,000 | 375,000 × 16 | 6,000,000 |
-| Generic copies | 65,536 × 16 | 1,048,576 | 2,000 × 16 | 32,000 |
-| Work list | 1,048,576 × 4 | 4,194,304 | 10,000 × 4 | 40,000 |
-| Diagnostics | 1,000 × 32 | 32,000 | 1 | 32 |
-| Per-job scratch | 8 jobs × 4 MiB | 33,554,432 | 8 × 64 KiB | 524,288 |
-| **S2 total** | | **278,521,088 (265.6 MiB)** | | **11,613,472 (11.1 MiB)** |
+**S2** (the limits are proposals)
 
-**S3: emission**
+| Table | Capacity | Reserved | Live payload | Peak touched |
+| --- | --- | ---: | ---: | ---: |
+| Token name ids | 5,000,000 × 4 | 20,000,000 | 2,000,000 | 2,000,000 |
+| Names | 1,048,576 × 12 | 12,582,912 | 120,000 | 120,000 |
+| Name hash slots | 2,097,152 × 4 (a 524,288-slot prefix used) | 8,388,608 | 2,097,152 | 2,097,152 |
+| Symbols | 1,048,576 × 24 | 25,165,824 | 480,000 | 480,000 |
+| Types | 1,048,576 × 32 | 33,554,432 | 320,000 | 320,000 |
+| Per-node facts | 4,000,002 × 8 | 32,000,016 | 2,000,000 | 2,000,000 |
+| Typed instructions | 8,000,000 × 16 | 128,000,000 | 6,000,000 | 6,000,000 |
+| Generic copies | 65,536 × 16 | 1,048,576 | 32,000 | 32,000 |
+| Pending tasks | 1,048,576 × 8 | 8,388,608 | 80,000 | 80,000 |
+| First diagnostic | 1,000 × 32 | 32,000 | 32 | 32 |
+| Body-wave chunk stacks | 64 × 8 MiB (4 MiB scratch + 4 MiB outputs) | 536,870,912 | 0 | 8,388,608 |
+| **S2 total** | | **806,031,888 (768.7 MiB)** | **13,129,184** | **21,517,792 (20.5 MiB)** |
 
-| Table | Capacity | Reserved bytes | Used | Touched bytes |
-| --- | --- | ---: | --- | ---: |
-| Per-job function IR buffer | 8 × 16 MiB | 134,217,728 | 8 × 256 KiB (largest function; assumed) | 2,097,152 |
-| Wave buffer | 8 modules × 64 MiB | 536,870,912 | 8 × 1 MB, reused per wave | 8,000,000 |
-| Symbol and mangling text | 4 MiB | 4,194,304 | assumed | 200,000 |
-| **S3 total** | | **675,282,944 (644.0 MiB)** | | **10,297,152 (9.8 MiB)** |
+The chunk stacks' peak assumes each of the 64 reused stack sets reaches a 128 KiB high-water mark (estimate). The outputs a wave holds on its chunk stacks are inside that figure; their joined copies are in the per-node fact and typed instruction rows.
 
-**All three live at once.** S1's tables are still read by S3, for string constants and spans in messages.
+**S3** (waves of 8 modules)
 
-- Reserved: 436,828,928 + 278,521,088 + 675,282,944 = **1,390,632,960 bytes (1,326.2 MiB, about 1.3 GiB) of address space**.
-- Touched: 15,236,768 + 11,613,472 + 10,297,152 = **37,147,392 bytes (35.4 MiB) of RAM**, plus the binary and runtime.
-- The 50 MB of IR goes to disk, and clang runs as a separate process with its own memory.
-- The native stack for a recursive parser is a separate, much smaller amount (5.1).
+| Table | Capacity | Reserved | Live payload | Peak touched |
+| --- | --- | ---: | ---: | ---: |
+| Chunk stacks | 8 × (64 MiB module + 16 MiB function buffer) | 671,088,640 | 0 | 10,097,152 (8 × (1,000,000 + 262,144)) |
+| Wave result (collect destination) | 8 × 64 MiB | 536,870,912 | 0 | 8,000,000 |
+| Symbol and mangling text | 4 MiB | 4,194,304 | 200,000 | 200,000 |
+| **S3 total** | | **1,212,153,856 (1,156.0 MiB)** | **200,000** | **18,297,152 (17.4 MiB)** |
 
-**The same S1 tables under today's implementation,** with empty collections touching their capacity and `list<byte, N>` at 4 bytes per byte:
+During each join a wave's module text exists twice, once on the chunk stacks and once in the wave result; both are counted.
 
-- source and decoded strings: 83,886,080 × 4 = 335,544,320 bytes each;
-- everything else as above, 269,056,768 bytes;
-- total 940,145,408 bytes (896.6 MiB), **all touched at declaration**.
+**Totals**
 
-That also doesn't fit today's fixed 64 MiB data stack. As globals, it would be touched at startup and trip the 64 MiB `globals_budget` warning. This gap, 897 MiB touched against 14.5 MiB, is the whole case for section 6's first three items.
+- Reserved: 594,679,720 + 806,031,888 + 1,212,153,856 = **2,612,865,464 bytes (2,491.8 MiB, 2.43 GiB)**.
+- Peak pages touched: 17,089,320 + 21,517,792 + 18,297,152 = **56,904,264 bytes (54.3 MiB)**. This is an upper estimate: data-stack pages stay mapped once touched, and if S3 reuses S2's stack sets from the worker pool, its chunk peak lands on pages already counted.
+- Live payload at the end: 15,833,400 + 13,129,184 + 200,000 = **29,162,584 bytes (27.8 MiB)**.
+- clang runs as a separate process.
 
-**Where the limits bind.** At the measured 7.6 tokens per line, the 4M-token package limit is reached near 526,000 lines in one package; at the assumed 10, at 400,000 lines. Both are far past the 50,000 lines DESIGN's 3-second aim covers.
+**S1 under today's implementation:**
+
+- The three byte buffers at 4 bytes per byte become 335,544,320 + 67,108,864 + 335,544,320 = 738,197,504 bytes.
+- The other S1 tables reserve 410,130,344 bytes.
+- Total: **1,148,327,848 bytes (1,095.1 MiB), all touched at declaration.**
+
+That doesn't fit the 64 MiB data stack at all, and as globals it would be touched at startup.
+
+**Where the limits bind:** the 4M-token package limit is reached at about 526,000 lines at the measured 7.6 tokens/line, and 400,000 at the assumed 10.
 
 ---
 
 ## 5. Per-stage design
 
-Code labelled **accepted today** was compiled and run with `nlc` in `~/shprobe/s1sample`. Code labelled **DESIGN syntax** uses decided but unimplemented features.
+Code labelled **accepted today** was compiled and run with `nlc` in `~/shprobe`.
 
 ### 5.1 S1: lexer, parser, dumps
 
-**Data (accepted today).** Capacities must be `const` values or literals; a `const` struct field isn't accepted (2.3e).
+**Data (accepted today).** Capacities must be scalar `const`s.
 
 ```
 const MAX_NODES: long = 4000000L        // package limit plus one file's slack
@@ -556,26 +624,99 @@ fn child_count(nodes: list<Node, MAX_NODES>, i: long) -> long {
 }
 ```
 
-**Spans and lines.** Line and column aren't stored. The token dump prints them, and the printer computes them with a running counter as it walks tokens in order. A diagnostic computes its one position by scanning from the file's start. That saves 8 bytes per token.
+The real `Node` adds `extra: int`, an index into the extra-data list or −1, for 28 bytes in total. The sample omits it.
 
-**Spans are stored, not derived.** The format's synthetic nodes are the reason: zero-width `default` calls, match-arm blocks, `else if` blocks, and `Program` spanning to EOF all have spans that differ from their tokens.
+**Offsets.**
 
-**Lexer:** one flat loop per file, with the delimiter stack as a `list<int, 2048>`. It's a straight translation of `lexer.rs`'s state machine: no recursion, one pass.
+- Token starts and node spans are **file-relative**, which is what the dump prints (syntax-tree-format.md).
+- The file table holds each file's base in the package buffer, so the source byte at a file-relative offset is `source[base + offset]`.
+- Line and column are computed by the printer with a running counter, and for a diagnostic by scanning from the file's start.
 
-**Parser: recursive descent, marked `recursive`, mirroring `parser.rs`.** The reasons:
+**Node encoding.** Every field in syntax-tree-format.md and `syntax_dump.rs` maps to one of these:
 
-1. **Byte-identical diagnostics.** S1 must reproduce the *first* error. That depends on the exact order in which `parser.rs` tries alternatives (including its statement "candidates") and checks its nesting limits. The same function structure gives the same order. A state-machine rewrite would have to prove equivalence error by error.
-2. **The depth is already bounded.** Parser nesting is capped at 1,000 and delimiter nesting at 2,048 by the format.
-   - Every recursive call checks the native-stack budget (T19). The default is the thread's usable stack less an 80 KiB margin, and it fails the job by name.
-   - next-lang frames are built by clang at `-O1`, not Rust debug frames. **Estimate** (to be measured by T17's `inspect stacks`): 4 to 6 frames per nesting level of 100 to 400 bytes, about 2 KB per level, about 2 MB at 1,000 levels.
-3. **T19's region rule is satisfied naturally.** The parser holds only fixed-size indexes across recursive calls. The large lists are caller-owned and passed as `write` parameters, which T19 allows ("Caller-owned large values borrowed through parameters remain valid across recursive calls").
+| Field | Encoded as |
+| --- | --- |
+| `name` fields (functions, structs, lets, parameters, calls, fields, cases) | the node's main token, an identifier; printed from its source text with JSON escaping |
+| A second name (`QualifiedCase enum` and `case`; `CasePattern enum`) | a token index in extra data |
+| Booleans (`recursive`, `mutable`, `inclusive`, `prefault`, `negative`, `long_suffix`, `value`) | `flags` bits |
+| Small enums (`mode`, `Binary op`, `Assign op`, `Unary op`, `LoopExit kind`, `Effect kind`, `policy`) | `flags` bit fields |
+| `generics=[...]` (functions, structs) and `indexes=[...]` (`ForEach`) | extra data: a count, then token indexes |
+| `Integer magnitude` | an index into the literal-value list |
+| Type `range=lower..upper` | extra data: two literal-value indexes (a signed value: magnitude and negative flag, within Rust's i128 rule) plus the inclusive bit; `range=none` when absent |
+| `ByteString value` | extra data: start and length in the decoded-string buffer |
+| `Effect path`, `Expect source` | extra data: a source byte range |
+| Synthetic nodes (zero-width `Call name="default"`, a match-arm `Block`, an `else if` `Block`) | a `synthetic` flag with the explicit spans the format gives; `Program` spans the whole file |
 
-**Expression parsing** follows Rust's precedence climbing (`expression(min_precedence)`), which recurses once per operand. A shunting-yard loop with an explicit operator stack (`list<int, 1000>`) avoids even that. Keep it in reserve, if measurement shows the native stack matters, and note that it must then reproduce Rust's "expression nesting limit" checks at the same points.
+Children are created in **dump order**, which is written order. That includes `pool<T, N, Owner>`, which the Rust AST stores split and the dump restores. Every subtree is contiguous.
 
-**The printer: an explicit stack, no recursion (accepted-today idiom).**
+A sentence in syntax-tree-format.md should name this encoding the S1 contract, and every field should have a corpus case.
+
+**The 2-nodes-per-token bound** (argument, then a check). Every non-synthetic node owns a distinct main token: a keyword, a name, an operator, `{` or a number. Rust's tree has a few places where a second node shares a token:
+
+- synthetic blocks;
+- a shorthand initializer field;
+- a type node under a parameter name.
+
+None has more than one extra node per token, plus one `Program` per file, so nodes ≤ 2 × tokens + 1 per file. S1 asserts this as it builds. A fuzz test and the corpus check it. If it ever failed, the node list's `Full` would report as an internal error, never as a wrong limit message.
+
+**No hidden nodes.** S2 finds where a scope opens from subtree sizes: block *i* opens at index *i* − subtree(*i*) + 1. Nothing is added that would change Rust's node, edge or work counts.
+
+**Lexer:** one flat loop per file, with a `list<int, 2048>` delimiter stack.
+
+**Parser: where it may recurse.** Rust's counters (Sol's finding 6):
+
+- **Expressions:** `expression()` is limited to depth 2,048 (`EXPRESSION_PARSER_STACK_LIMIT`), but the error message says 1000. A probe rejected 2,049 nested `!` at the 2,049th operator.
+- **Blocks:** `block()` is limited to depth 1,000.
+- **Parentheses:** 1,000 (in `grouped_expression`).
+- **Types:** 1,000.
+- **`else if`:** `if_expression` calls itself for `else if` with **no counter**. Rust parses chains of any depth up to the token limit (123,999 levels in the 2.3g probe), then rejects them in the completed-tree walk.
+
+S1 therefore:
+
+- **Recurses (marked `recursive`) only along counted paths.** Expression depth is at most 2,048 and block depth at most 1,000, so the recursion depth is bounded by about (2,048 + 1,000) levels × the functions per level (about 4).
+- **Native-stack estimate,** to be measured: 12,000 frames at about 300 bytes is about 3.6 MB. That fits the process's default 8 MiB main stack, minus T19's 80 KiB margin.
+- **Acceptance:** a fixture combining 2,048 nested prefix operators, 1,000 nested blocks, 1,000 parentheses and 1,000-deep types runs under S1's recursion budget with at least a 2× margin reported. A path that misses the margin moves to explicit frames.
+- **Parses `else if` chains with explicit frames.** A loop consumes `else if cond { … }` repeatedly, pushing a pending frame per level. Each frame holds the `If` node's first-node index, its start byte and its then-block's end. After the final `else { … }` (or none), it closes the frames innermost-first, emitting each synthetic `Block` and its `If` in postorder.
+
+  Tokens are consumed in the same order as Rust, so syntax errors inside the chain come out identically. The frame list is bounded by tokens per file / 2, since each `else if` takes at least 2 tokens; the map reserves it at 1,000,000.
+
+**The completed-tree nesting walk.** After each outermost expression (depth 0), Rust runs `expression_nesting_exceeded`, an explicit-stack depth-first walk over the expression tree:
+
+- the root's depth is 0 for a `print` call, else 1;
+- "nesting" kinds add 1;
+- children are pushed in a fixed order per kind and popped last-first;
+- it reports the first node found deeper than 1,000, at `expression_diagnostic_span` (the operator span for binary nodes).
+
+S1 ports this walk task for task over the expression's contiguous postorder range, pushing children in the same order, and runs it at the same moment, before parsing continues. Node `token` holds the operator for binary and unary nodes, so the span is available. A depth summary computed differently would need its own equivalence argument, so don't.
+
+**Literal limbs** (32-bit pieces of a large number).
+
+- *Storage:* each magnitude is four 32-bit limbs kept in non-negative `long`s.
+- *Accumulating digits* is `limb * base + carry`, which never exceeds 2^36 for base 16, so it can't overflow a `long`. A carry out of the top limb, or an empty digit string after `0x` or `0b`, gives Rust's "integer literal is too large to represent; use a smaller value".
+- *Range endpoints* additionally check Rust's i128 rule ("range bound is too large to represent").
+- *Printing* divides by 10^9 limb by limb; intermediates stay under 2^62.
+- *Tests:* decimal, hex and binary at 2^64 − 1, 2^64, 2^127, 2^128 − 1 and 2^128; underscores; `L` and `l` suffixes; negative literals; refinement endpoints at the i128 edges.
+
+**Package flow and errors**, in `driver.rs`'s order (4.3):
+
+- **Listing:** Rust keeps directory entries whose extension is exactly `nl` and for which `is_file()` is true. That follows symlinks, so a dotfile named `.nl` has no extension and isn't kept. It then sorts the paths. S1's `fs.list` sorts by raw bytes, but classifies symlinks as `Other`, so S1 must stat symlink entries, or the corpus must forbid them. Add a test either way.
+- **Paths:** filesystem access is rooted at the working directory, so S1 takes a relative package path and the comparison script runs from the repository root.
+- **UTF-8:** check before lexing, reproducing Rust's column for the first invalid byte (`invalid_utf8_span`): a one-based byte column from the last newline, `valid_up_to` semantics.
+- **Tool failures** print `nlc: tool failure: …` and exit 3. Read errors include Rust's I/O error text (for example `Permission denied (os error 13)`), which needs an errno-to-text table. Until then, compare tool failures by exit status and prefix only.
+- **Syntax and limit errors** print `file:line:col: error: …` and exit 2. Nothing goes to stdout unless every file succeeds.
+- **Exit status:** today `main` can only exit 0 or 1, and prints an `error:` prefix. S1 needs PLAN's "Exit status for tools (before S1)" item.
+
+**Output.** Dumps contain raw UTF-8 (names and decoded strings), so the 1 MiB output buffer is a byte buffer:
+
+- `list<byte, N>` with `out.write` works today, at 4 bytes per byte;
+- `Bytes` after T16.
+
+`Ascii` can't hold it.
+
+**The printer** walks preorder from postorder with an explicit `{node, depth}` stack. Starting from each file's root (its last node), it finds each node's children right to left by subtree sizes and pushes them, so the first child pops first. The pattern (accepted today):
 
 ```
-var stack: list<long, 64> = list {}      // {node, depth} pairs in the real printer
+var stack: list<long, 64> = list {}
 stack.push(2L)?
 for step in 0..64 {
     let top = stack.pop() ?? break
@@ -583,183 +724,187 @@ for step in 0..64 {
 }
 ```
 
-The tree is in postorder, but the dump is preorder with two spaces per depth. So the printer:
-
-1. starts at each file's root (its last node);
-2. finds the root's children right to left by subtree sizes;
-3. pushes them, so the first child comes out first;
-4. repeats.
-
-A field that the dump lists in an order different from creation order (the format's `pool` type-argument rule) is handled in the printer, as `syntax_dump.rs` does.
-
-**Package flow.** It follows Rust: read the file list (`fs.list`, already sorted by raw bytes like Rust's filename order), then for each file:
-
-1. read it into the package buffer;
-2. lex, then parse;
-3. add its counts to the package totals and check them in Rust's order: bytes, tokens, nodes, edges, work. Edges are counted, not stored: every node except a file's root has one parent edge.
-
-Only after every file succeeds does anything go to stdout, because Rust prints nothing on a syntax error. Then print tokens and/or tree by streaming through the 1 MiB buffer with `out.write`. On error, print one `file:line:col: error: message` to stderr and exit 2.
-
-**Integer magnitudes.** Up to 2^128 − 1 is printed in decimal with no 128-bit type. Store the magnitude as two 64-bit halves (or as four 32-bit limbs in `long`s to stay clear of sign problems) and format it by repeated division by 10^9. That's about 30 lines of code, and a test pins 0, 2^64 and 2^128 − 1 against Rust.
-
 **Checking S1:**
 
-- byte-identical stdout, stderr and exit status against the **live** Rust `nlc parse --tokens --tree` (and each flag alone) on every package under `tests/run`, `tests/test` and `tests/parse/cases`;
-- every limit at exactly N and N + 1, generated;
-- the 54,145-line benchmark from 2.3(g);
-- a byte-level fuzzer (random edits of corpus files), comparing both outputs until the first difference.
+- byte-identical stdout, stderr and exit status against **live** `nlc parse` (tokens, tree, both, and neither) on `tests/run`, `tests/test` and `tests/parse/cases`;
+- every limit at N and N + 1, in each position of the check order (for example, a package-byte overflow in a file that also has a syntax error);
+- `else if` chains at 1,000, 1,001 and 123,999 levels;
+- the 54,145-line benchmark;
+- byte-level fuzzing of corpus files.
 
-The comparison script runs both compilers and `cmp`s their outputs, so the stored dumps (which leave out the over-100 KB stress cases) aren't the only reference.
+**S1b.** Files are read sequentially, because chunks can't do I/O, and reading stops at the first read error or byte-limit failure, exactly as in Rust. Then a `parallel for` lexes and parses one file per builder. Each chunk records its counts and its first error.
 
-**Speed target:** report lines/s against the Rust release build (the Rust build of the same commit, release mode). Carbon's lexing at about 5M lines/s and parsing at 1.7M (3.1) show what array layouts reach.
+A sequential pass in file order then replays steps 4 to 11 of 4.3 with the cumulative counts, and reports the first failure in (file, step) order. Jobs that finish out of order can't change the result.
 
-**S1b.** S1b adds `batch(max 256)`, one builder per file with derived row and byte limits, a `parallel for` over files that moves each builder to one chunk, then `freeze`. Interning stays a sequential pass after the join. Files are read sequentially before the loop, since chunks can't do I/O. It's measured against Rust with the same thread count, as the validation plan's parallel-tool row asks: 0.9x of Rust's time and 3x on 4 cores.
+Then the freeze and the sequential interning pass. It's measured against Rust with equal threads, as the validation plan's parallel-tool row asks.
 
 ### 5.2 S2: the checker
 
-**Prerequisite (a PLAN change):** a `nlc check --dump` typed-output format, documented like syntax-tree-format.md, plus a stated rule for which error is "first" when there are several. Today `check_package` returns one `CheckError`, chosen by the Rust checker's traversal order, and S2 can't match an unspecified order. Two choices:
+**Before S2, two contracts:**
 
-1. document Rust's order as the contract;
-2. better: make the Rust checker report the error with the smallest (file, byte offset), so the order is independent of traversal and parallel S2 can reproduce it with a `reduce` that takes the minimum.
+1. `nlc check --dump`, a typed-output format documented like syntax-tree-format.md.
+2. **A documented first-error order compatible with the reference.** Rust aborts each phase at its first error. Within the body phase it stops at the first failing function in index order, and within a function at the traversal-first error (`checker.rs`, `run`).
 
-**Phases:**
+S2 reproduces that order. A global smallest-position rule isn't used: an earlier body error may never be discovered once a later signature error stops the run, and making it work would need error recovery and tie-breaking, a separate tooling change.
 
-1. **Interning pass** (sequential, 4.4).
-2. **Declaration phase** (sequential): one linear loop over each file's top-level nodes collects declarations into the symbol table. Package files see each other's declarations, so this phase must complete before any body is checked. Then resolve type expressions in signatures, struct fields, enum payloads and constants, compute struct layouts, check function contracts (modes, effects bounds, `recursive` cycles over the call graph) and evaluate constants. Freeze the result.
-3. **Bodies** (parallel per function): a linear postorder pass over each body's nodes, with an explicit value stack of partial types. Postorder means operands are typed before their operator; that's Carbon's checking design.
-4. **Whole-program analyses** after the join: effects, may-suspend, stack contracts and noalias facts over the call graph. These are graph walks; use explicit worklists, never recursion (T19 review: "S2's self-hosted checker should be designed with explicit work stacks rather than deep recursion").
+**Phases, in the reference's order** (`checker.rs`, `run`):
 
-**Two places where a pure postorder pass needs care:**
+1. **Registration** (sequential):
+   1. type names, aliases, enum cases, struct fields and globals;
+   2. recursive value types and type sizes;
+   3. constant declarations.
+2. **Global initialisers** (sequential).
+3. **Function bodies**, in parallel waves (4.5). Each chunk:
+   - walks its function's postorder nodes linearly with an explicit value stack;
+   - opens scopes at subtree starts;
+   - gives an unsuffixed literal a provisional type that its parent resolves;
+   - returns its first error, its facts and instructions, its job-local new types and generic-copy requests, and its call edges.
 
-1. **Scopes must open before their children are checked.** Have the parser emit zero-width "begin" marker nodes at block and function starts, as Carbon does with introducer nodes. The printer skips them (a flag bit), so the dump format is unchanged.
-2. **Literals take their type from context.** For example, `count += 1` on a `long`, or a loop counter typed by its use. Give an unsuffixed literal a provisional "integer literal" type and fix it when the parent node is reached. Where a type flows down further, record a pending constraint resolved by the parent. Ranges proved by the refinement contract follow the same parent-resolves rule.
+   The wave's error is the one from the lowest-index function. Waves run in index order, so a later wave's error matters only if every earlier function passed.
 
-**Interfaces with the Rust checker:**
+   Generic copies are appended in requester order and checked in later waves. That matches the Rust loop over a growing function list (`while id < self.ast_functions.len()`), provided Rust appends requests in check order. A test compares the typed dumps' numbering.
+4. **Tests,** then **constant expressions** (sequential).
+5. **Whole-program analyses:**
+   - effect paths, then the call graph and indirect targets;
+   - the recursion check and recursive regions;
+   - **constant evaluation**;
+   - global finishing and initialisation order, then access contracts.
 
-- Effects use the closed set (`out`, `env`, `fs.read`, `fs.write` and the rest).
-- Refinement facts and range analysis mirror `checker.rs`.
-- Constant evaluation runs as an explicit-frame interpreter with the same 10,000-call and 10,000,000-step limits. The T19 report shows why it must not recurse: 250 KB per evaluated call in Rust debug before the split.
+   Constants can call functions (`tests/run/t05_constants`), which is why evaluation comes after bodies and the call graph. Graph walks use explicit worklists.
 
-**Checking S2:** typed dumps and first diagnostics equal Rust's on every test package and on a mutated corpus (seeded slips, as DESIGN's mutation harness plans).
+   The constant evaluator is an explicit-frame interpreter with the reference's limits: a **call depth** of 10,000 (`CALL_DEPTH_LIMIT`, not a count of calls) and 10,000,000 steps.
+
+**Merging job-local results.** A job-local type or copy id can appear in that job's facts, instructions, requests and call edges. The merge assigns package ids in function order, deduplicating against existing entries, then rewrites **every** reference in that job's outputs. That costs work proportional to the job's output, and is counted against a named work limit.
+
+**Checking S2:** typed dumps and the first error equal Rust's on every test package, plus a seeded-slip corpus.
 
 ### 5.3 S3: code generation
 
-- **Input:** S2's typed instructions and facts, read-only.
-- **Output:** LLVM IR text per module (one per source file), produced in parallel waves (4.5). Each function's text is built in its own `Ascii` buffer in append mode, then appended to its module's slot of the wave.
-- **Determinism inside the text:**
-  - names come from declaration order;
-  - the `; generated by nlc` header and `source_filename = "next-lang"` stay fixed, as `emit.rs` does today;
-  - no temp-directory names, PIDs or times appear (`driver.rs`'s temp directories, named from the PID and a counter, must never reach output);
-  - debug info, when added, uses package-relative paths.
-- **Running clang:** until the process capability exists, S3 writes `.ll` files (`fs.write`) or streams IR to stdout, and a thin driver (the Rust `nlc`, or a shell script during bootstrap) runs clang and links the runtime. That keeps S3 inside today's effects.
-- **Checking S3:** for every test program, the behaviour of the S3-built binary (stdout, stderr, exit status) equals the Rust-built one's, at the development level and at `NLC_OPT_LEVEL=3`. The IR text needn't equal Rust's: it's a different emitter, and only behaviour is compared.
+- **Modules:** one per source file, matching DESIGN's cache unit. Rust emits one module today (`emit.rs`), so IR isn't compared; behaviour is.
+- **Ownership:**
+  - module 0, the first file, owns the global state block and the startup and entry initialisation;
+  - each generic copy belongs to the module whose function first requested it, in S2's deterministic order;
+  - every other module `declare`s what it uses.
+- **Symbols:** derived from S2's package-wide function, type and copy ids (`nl_fn_<id>`, as today), so they are stable for a given input.
+- **Emission:** in waves of 8 (4.5). Each function's text is built in an `Ascii` buffer in append mode, and the caller writes each wave's modules in index order.
+- **Determinism:**
+  - fixed header and `source_filename = "next-lang"`;
+  - no temp-directory names, process ids or times;
+  - package-relative paths in any future debug info.
+- **The bridge,** until a process capability exists. A Rust-side `nlc` subcommand (proposed: `nlc link-ir <dir> -o <file>`) takes S3's `.ll` files, links them with `llvm-link`, and runs the existing pipeline in `driver.rs`:
+  1. a probe build;
+  2. reading `.stack_sizes` frame sizes;
+  3. patching the recursion checks (`nlc.recursion.targets=`);
+  4. rebuilding until the frames stabilise, up to 3 times;
+  5. linking the runtime.
+
+  Merely running clang would drop T19's native-stack guarantee. The second clang pass also counts toward build time: T19 measured 0.4 s against 0.18 s for a small program.
+- **Checking S3:** stdout, stderr and exit status of every test program equal the Rust-built binaries', at the development level and at `NLC_OPT_LEVEL=3`.
 
 ### 5.4 Bootstrap and the Rust reference
 
-1. Stage 0 is the Rust `nlc` at a tagged commit, with clang pinned (18.1.3 in today's WSL), the runtime, target level, flags and paths fixed.
-2. Stage 0 builds stage 1 from the next-lang compiler's source. Stage 1 builds stage 2; stage 2 builds stage 3.
-3. **IR(stage 3 build) must equal IR(stage 2 build), byte for byte,** then the binaries. Stage 1 was compiled by Rust `nlc` and stage 2 by stage 1, so the same source compiled by two different compilers must produce identical outputs. That's the DDC check, with Rust `nlc` as the trusted second compiler.
-4. Identical stages show stability, not correctness (PLAN says so). The S1 to S3 comparisons over valid, invalid, generated and limit-boundary inputs stay in CI.
+**Steps:**
 
-**Source discipline, Go-style:** the compiler's own source may use only features the pinned stage 0 accepts. Bump stage 0 deliberately, in its own commit, after the feature lands in both compilers.
+1. Pin stage 0: Rust `nlc` at a tag, with clang 18.1.3, the runtime, target level, flags and paths fixed.
+2. Stage 0 builds stage 1; stage 1 builds stage 2; stage 2 builds stage 3.
+3. **Stability check:** compare stage 2 and stage 3, IR first for diagnosis, then executables. PLAN calls this stability, not correctness.
+4. **Correctness evidence** stays the S1 to S3 comparisons against Rust over valid, invalid, generated and limit-boundary inputs.
 
-**Real sources of nondeterminism to rule out.** Run time and machine load aren't among them: a compiler's output is a function of its input.
+**What a diverse double-compiling claim needs,** stated precisely:
 
-- *Hash iteration order:* T09 maps and sets iterate in insertion order, and hand-written hash tables are never iterated for output.
-- *Parallel join order:* `collect` joins in index order, `reduce` uses a fixed tree, and new types and generic copies merge in function-index order.
-- *Directory order:* `fs.list` sorts by raw bytes.
-- *Timestamps, absolute paths, temp names:* none are emitted.
-- *Uninitialised memory:* once collections are no longer zeroed in full, reused data-stack pages keep old bytes past `count()`. Then any path that reads past the live elements makes output depend on earlier jobs. This includes equality, `print`, structural hashing, copying, and a pool slot above the high-water mark.
+- **The candidate:** a named executable claimed to be built from source S. Here that is stage 3, the self-built binary that is shipped.
+- **The trusted seed:** Rust `nlc`, and with it the `rustc` that built it, and its source.
+- **The trusted toolchain:** clang, the runtime, the linker and the OS.
+- **The check:** compile S with the seed (stage 1), compile S with stage 1 (stage 2), and require stage 2 to be bit-identical to the candidate's executable.
 
-  List equality already stops at `count()`. The section 6 item 1 task must check every such path, keep map and set occupancy flags zeroed, and test it: compare two equal lists, built after a job that dirtied the same stack pages.
-- *Tool versions:* the LLVM/clang version and the target level are part of the build's identity (DESIGN). They're pinned for the binary comparison; the IR comparison doesn't depend on them.
+If stage 2 equals stage 3, stage 3 reproduces itself and matches the seed-derived build. Under those trust assumptions, that shows stage 3 corresponds to S. It doesn't show that S is correct.
 
-### 5.5 Room for incremental compilation later
+IR equality alone doesn't show executable correspondence: clang and the runtime sit between them. A candidate built elsewhere is checked by rebuilding stage 2 here and comparing executables.
 
-Nothing in S1 to S3 needs incremental compilation. Rustc's query system and Zig's 63 ms reanalysis (3.6) show where it pays. To leave room for it:
+**Source discipline:** the compiler's source uses only features the pinned stage 0 accepts (Go's discipline). Bumping stage 0 is its own commit.
 
-- **Per-file partitions (S1b's batch):** ids are (file, row), so one file's tree can be replaced without renumbering others.
-- **Content hashes:** a hash of each file's bytes and of each declaration's interface (types, effects, refinements, stack contract), as DESIGN's per-module cache keys already need.
-- **Stable symbol identity by (package, declaration name)** across builds; package-wide indexes stay an in-memory detail.
-- **Name ids:** first-occurrence numbering changes when an earlier file changes. An incremental mode would key caches by spelling or hash, not by name id.
-- **Side tables kept per file,** so they can be invalidated per file.
+**Real sources of nondeterminism to rule out.** Machine load isn't one; output depends only on input.
+
+- *Hash order:* T09 iterates in insertion order, and hand-written tables are never iterated for output.
+- *Parallel joins:* index order and fixed reduce trees.
+- *Directory order:* raw-byte sort.
+- *Timestamps and paths:* none emitted.
+- *Stale bytes past live elements* (2.3b) leaking into equality, hashing or output.
+- *Tool versions:* pinned.
+
+### 5.5 Room for incremental compilation
+
+- Per-file partitions (S1b), so one file's tree can be replaced.
+- Content hashes per file and per declaration interface, as DESIGN's cache keys need.
+- Stable identity by (package, declaration name), not by first-occurrence name ids.
+- Side tables kept per file.
 
 ---
 
-## 6. Language and runtime features the compiler needs, ranked
+## 6. Features the compiler needs, ranked
 
-Each item is checked against PLAN's prerequisites table and the T-tasks.
+**Hard S1a blockers** (no workaround that keeps parity):
 
-1. **Collections touched only as far as they're used (not scheduled; blocks the memory design).**
-   - `list {}`, `queue {}` and `ring {}` should write only their counts and headers.
-   - `map {}` and `set {}` should write only headers and their 1-byte-per-slot occupancy flags.
-   - `pool {}` should keep a high-water mark: slots at or above it are free with generation 1, and the free list holds only slots below it.
-   - Struct and enum construction must initialise collection fields the same way, not memset them.
-   - Copies and returns must move only the live elements.
-   - Returning a local collection should build it in the caller's destination, as T14 does for `Ascii`.
-   - Equality, `print` and hashing must stop at the live elements; list equality already does.
-   - *Suggestion:* an M3 follow-up task before T17. Its acceptance tests:
-     - maximum RSS for a 48 MB local list holding one element (48,224 KB today);
-     - the same list as a struct field (48,224 KB today) and as a returned value (16 MB list: 32,736 KB today);
-     - a determinism test comparing lists built on dirtied stack pages.
-2. **Data-stack reservation sized past 64 MiB (T17).** T17 should drop the 64 MiB constant as an upper bound, size from the computed worst case, and report reserved versus touched. *Suggestion:* add an acceptance case to T17 with a 1 GiB worst-case entry point that touches 10 MB.
-3. **Real 8-bit storage.** `Bytes` (T16) solves source buffers. Token kinds, flags and the many small fields of a compiler want 1- and 2-byte lanes. *Suggestion:* implement DESIGN's "ranges pick storage" for collection lanes, and make `byte` a real 8-bit type (C#'s `byte`, already a decided name) in the layout follow-up before M4.
-4. **Capacity generics inferred from `list` arguments, and capacities from `const` struct fields.**
-   - Today a helper over `list<T, N>` must name a concrete capacity.
-   - Ben prefers grouping limits in one config struct over many separate constants, which a capacity like `LIMITS.max_tokens` would allow.
-   - *Suggestion:* a small task with the generics work.
-5. **`Ascii`, `Text`, `Bytes`, append mode, number formatting (T14 to T16, T18).** All scheduled. S1 needs `Ascii` builders for dump lines and JSON escaping, and `str` for numbers.
-6. **Array and list literals (scheduled before S1).** For keyword and operator tables.
-7. **128-bit magnitudes.** No `u128` is planned. *Suggestion:* don't add one for this. S1 implements limb arithmetic (5.1), and a `ulong` (decided name, unimplemented) would make the limbs simpler.
-8. **Builders, `batch`, `freeze`, `parallel for` (DESIGN step 6, no T-number).** Needed for S1b and parallel S2/S3. *Suggestion:* schedule them as T-tasks right after S1a, with S1b as their acceptance program.
-9. **Reading a file into the tail of a list.** `fs.read` fills a whole list; S1 wants to append each file to the package buffer without a temporary copy. *Suggestion:* an `fs.read_append(path, buffer)` or an offset argument. Until then, read into a 16 MiB temporary and copy; that's cheap.
-10. **A process capability (effects step).** Needed only when S3 drives clang itself. Bridge with the Rust driver or a script until then (5.3).
-11. **Chunked file writing.** `fs.write` writes a whole file from one list. S3's per-wave writes work with whole module files; streaming one huge module would need file handles (PLAN puts bounded writers with the effects work).
-12. **Typed index types.** Plain `int` node indexes can be mixed up with token indexes. An `Id<P>`-style owner check needs pools or batches, and a pool costs 9 bytes per slot of overhead (flag, generation, free-list entry) plus initialisation. *Suggestion:* for S1a, wrap indexes in one-field structs (`struct NodeIx { at: int }`). Later, consider newtypes (DESIGN mentions them; unimplemented), or append-only `list` ids with an owner parameter.
-13. **Interfaces (`Eq`, `Hash`, `Ordered`).** Not needed: the compiler's hash tables are hand-written over spelling ranges, which a structural `Hash` of `{start, len}` would get wrong anyway.
+1. **Exit status for tools.** In PLAN (line 34). S1 must exit 2 and 3.
+2. **A data stack sized past 64 MiB (T17).** The tables at the documented limits reserve about 567 MiB. A temporary workaround is a larger hard-coded reservation behind a manifest key.
+3. **Raw byte output and byte buffers.** Works today with `list<byte, N>` at 4 bytes per byte; `Bytes` (T16) fixes the cost.
+4. **Explicit-frame `else if` parsing and the ported nesting walk.** Design work in S1, not a language feature.
 
-**Not needed:** `while`. Counted loops with `break` express every explicit-stack walk and double as step budgets.
+**Hard for the memory goal** (S1 runs without them, at about 1.1 GB touched):
+
+5. **The live-elements task.** In PLAN (line 33) with Sol's rules. Revision 2 adds:
+   - report peak pages touched separately from live payload;
+   - update the byte-buffer layout shared with the C runtime when `byte` or `Bytes` storage changes.
+6. **1-byte buffers** (`Bytes`, T16). A primitive 8-bit `byte` type is a separate decision from packed lanes: DESIGN's "ranges pick storage" already keeps declared arithmetic while narrowing storage, so it would also shrink `byte` lists. Either suffices.
+
+**Conveniences with workarounds:**
+
+7. **Capacity inference from `list` arguments.** Workaround: concrete `const` capacities.
+8. **Capacities from `const` struct fields.** Workaround: scalar `const`s.
+9. **Array and list literals** (scheduled before S1). Workaround: `fill` plus element writes, or `match` tables for keywords.
+10. **128-bit integers.** Workaround: limbs (5.1).
+11. **Typed indexes.** Workaround: one-field wrapper structs; later, newtypes or owner-typed append-only ids.
+12. **Reading into the tail of a buffer.** Workaround: the 16 MiB temporary plus a copy.
+13. **A process capability.** Workaround: the Rust bridge (5.3).
+14. **Chunked file writing.** Workaround: per-module whole-file writes.
+15. **Builders, `freeze`, `parallel for`.** Needed for S1b, S2 and S3 parallelism only; schedule them after S1a.
+
+**Not needed:** `while` (counted loops with `break` cover it), and interfaces (hash tables over spelling ranges are hand-written).
 
 ---
 
 ## 7. Risks and open questions for Ben
 
-1. **Should globals ever be committed lazily?** The brief assumed so; the design says no (2.3a).
-   - *Recommendation:* keep DESIGN's rule. Globals are meant for state that really lives for the whole run, and the startup guarantee is valuable. The compiler doesn't need globals.
-2. **First-error parity in S2.**
-   - *Recommendation:* before S2, change the Rust checker to report the smallest-position error and document it. Without this, a parallel S2 can't match Rust deterministically.
-3. **Limits are compile-time.** Raising one means rebuilding the compiler.
-   - *Recommendation:* document every limit with its message in a format file, as syntax-tree-format.md does. Ship generous values (reservations are free once item 1 of section 6 lands), and add a test per limit at N and N + 1.
-4. **Recursive parser versus explicit stack in S1.**
-   - *Recommendation:* recursive for S1a (parity with Rust), measured with T17. An explicit stack only if the native stack proves costly.
-5. **Windows.** Commit charging means data stacks must commit as they grow, not at reservation (3.4).
-   - *Recommendation:* note it in the scheduler follow-ups. S1 to S3 run on Linux first, as PLAN already says.
-6. **The 3-second aim.** One sample suggests clang `-O1` dominates (0.56 s versus 0.08 s at `-O0` for 1 MB of IR). At 1,000 bytes per line, a 50,000-line program is about 50 MB of IR.
-   - *Recommendation:* measure per-module rebuilds once S3 runs. Try `-O0` (or FastISel) for development builds before any new backend; TPDE is the next experiment after that.
-7. **Language changes while the compiler is written in it.**
-   - *Recommendation:* Go's discipline (5.4). Also keep S1a small and start it only after T14 to T17 and section 6's items 1 to 4.
-8. **Bugs that reinforce each other.** A bug in the Rust compiler and the same bug in S1 to S3 would agree with each other.
-   - *Recommendation:* keep the fuzzed and limit-boundary comparisons, plus the language's own test suite, run on both compilers.
-9. **A language server later.** Region "leaks" (3.3) mean a long-running process must run each compile as a job.
-   - *Recommendation:* design the language server as a job per request from the start.
+1. **Lazy globals?** The brief assumed them; the design says no. *Recommendation:* keep DESIGN's rule. The compiler doesn't need globals.
+2. **The first-error order in S2.** *Recommendation:* document the reference's phase, function and traversal order (5.2) before S2. Treat any smallest-position rule as a separate later change.
+3. **The native stack in S1.** Rust's counters bound it except for `else if`. *Recommendation:* use explicit frames there, measure the rest with T17 against a 2× margin, and convert any path that misses it.
+4. **The reference's own deep-chain cost.** Debug Rust used 1.34 GB peak memory on the 123,999-level `else if` probe, on its 1 GiB-stack thread. *Recommendation:* give Rust's `else if` path a counter or a loop too, if Ben agrees. That would change the reference's behaviour (an earlier diagnostic), so it needs a format-document note and new dumps.
+5. **Limits are compile-time.** *Recommendation:* document every limit and message, and ship generous values; reservations cost nothing once the live-elements task lands.
+6. **Windows** commit charging (3.4). *Recommendation:* the data stack commits as it grows; Linux comes first.
+7. **The 3-second aim.** *Recommendation:* measure per-module rebuilds once S3 runs, including the bridge's second clang pass; try `-O0` or FastISel before any new backend.
+8. **A moving language.** *Recommendation:* the stage-0 discipline, and start S1a only after the hard items.
+9. **Bugs that reinforce each other.** *Recommendation:* keep fuzzed, boundary and test-suite comparisons, and keep reference changes (like item 4) explicit.
 
 ---
 
 ## 8. Proposed PLAN.md changes
 
-Listed only; PLAN.md is not edited here.
+Listed only; PLAN.md is not edited here. Items PLAN already has are not repeated: live elements (line 33) and exit status (line 34).
 
-1. **New M3 follow-up, before T17:** no emitter path touches a collection past its live elements. That covers empty literals (count-only lists; occupancy flags only for maps and sets; a high-water mark for pools), struct and enum construction, copies, returns built in the destination, and equality, print and hash. Tests: maximum RSS, plus determinism on dirtied pages.
-2. **T17:** no 64 MiB ceiling on computed reservations, and an acceptance case with a 1 GiB reservation that touches about 10 MB. `inspect stacks` shows reserved and touched separately.
-3. **Layout follow-up (before M4):** real 8-bit `byte` storage, and ranges picking lane widths.
-4. **Generics task:** infer capacity parameters from `list` arguments, and allow capacities from `const` struct fields.
-5. **Split S1** into **S1a** (sequential; after T14 to T18 and items 1 to 4; byte-identical against live `nlc parse`) and **S1b** (parallel with builders, `batch`, `freeze`, `parallel for`; the validation plan's parallel-tool program).
-6. **Schedule DESIGN step 6** (builders, freeze, parallel loops) as T-tasks right after S1a, with S1b as their acceptance program.
-7. **Before S2:** `nlc check --dump` with docs/typed-tree-format.md. Make the Rust checker report the smallest (file, offset) error, and document it.
-8. **S1 design note:** record the compiler's limits table, its sizing classes (fixed, derived, measured-prefix) and the after-file check order (4.3) as the answer to the prerequisites row "Limits for a compiler's own inputs".
-9. **S3:** state that the Rust driver (or a script) runs clang until the process capability exists.
-10. **Bootstrapping:** add the Go-style rule (compiler source uses only stage-0 features), and name the stage 2 equals stage 3 IR comparison as the first check, before binaries.
-11. **Scheduler follow-ups:** Windows data stacks commit as they grow.
+1. **Live-elements task (line 33):** add acceptance for reporting peak pages touched separately from live payload, and for the C runtime's byte-buffer layout when `byte` or `Bytes` storage changes.
+2. **T17:** no 64 MiB cap; a case with a computed reservation over 600 MiB that touches about 20 MB.
+3. **Split S1** into S1a (sequential; after T16 to T18 and items 1 to 4 of section 6; byte-identical against live `nlc parse`) and S1b (parallel; with step 6; the parallel-tool validation program).
+4. **Schedule DESIGN step 6** as T-tasks right after S1a, with S1b as their acceptance program.
+5. **An S1 contract note in syntax-tree-format.md:**
+   - the check order of 4.3;
+   - the node encoding of 5.1;
+   - the nodes ≤ 2 × tokens + 1 bound;
+   - the `else if` behaviour.
+6. **Before S2:** `nlc check --dump`, and a documented first-error order (phase, then function index, then traversal).
+7. **S3:** a Rust-side `nlc link-ir` bridge that keeps frame-size measurement and recursion-check patching.
+8. **Bootstrapping:** state the stability check (stage 2 equals stage 3, executables) separately from a diverse double-compiling claim with its trust assumptions (5.4). Add the stage-0 source rule.
+9. **Optional, Ben's call:** a counter or loop for `else if` in the Rust parser (risk 4).
+10. **Scheduler follow-ups:** Windows data stacks commit as they grow.
 
 ---
 
@@ -769,7 +914,7 @@ Fetched while writing this report (October 24, 2026):
 
 **Zig**
 
-- Zig PR #7920, AST memory layout: https://github.com/ziglang/zig/pull/7920
+- Zig PR #7920: https://github.com/ziglang/zig/pull/7920
 - Zig `Ast.zig`: https://raw.githubusercontent.com/ziglang/zig/master/lib/std/zig/Ast.zig
 - Zig `InternPool.zig`: https://raw.githubusercontent.com/ziglang/zig/master/src/InternPool.zig
 - Zig 0.8.0 release notes: https://ziglang.org/download/0.8.0/release-notes.html
@@ -781,22 +926,22 @@ Fetched while writing this report (October 24, 2026):
 
 - Carbon toolchain docs: https://docs.carbon-lang.dev/toolchain/docs/
 - Carbon parse docs: https://docs.carbon-lang.dev/toolchain/docs/parse.html
-- Carbon PR #4124, compile benchmarks: https://github.com/carbon-language/carbon-lang/pull/4124
-- TypeScript native port announcement: https://devblogs.microsoft.com/typescript/typescript-native-port/
-- Announcing TypeScript 7.0 Beta: https://devblogs.microsoft.com/typescript/?p=5152
+- Carbon PR #4124: https://github.com/carbon-language/carbon-lang/pull/4124
+- TypeScript native port: https://devblogs.microsoft.com/typescript/typescript-native-port/
+- TypeScript 7.0 Beta: https://devblogs.microsoft.com/typescript/?p=5152
 
 **Static allocation and coding rules**
 
-- TigerBeetle TIGER_STYLE.md: https://raw.githubusercontent.com/tigerbeetle/tigerbeetle/main/docs/TIGER_STYLE.md
+- TIGER_STYLE.md: https://raw.githubusercontent.com/tigerbeetle/tigerbeetle/main/docs/TIGER_STYLE.md
 - TigerBeetle, A Database Without Dynamic Memory Allocation: https://tigerbeetle.com/blog/2022-10-12-a-database-without-dynamic-memory/
-- Power of Ten rules (quoted from): https://en.wikipedia.org/wiki/The_Power_of_10:_Rules_for_Developing_Safety-Critical_Code; the paper: https://spinroot.com/gerard/pdf/P10.pdf
+- Power of Ten (quoted from): https://en.wikipedia.org/wiki/The_Power_of_10:_Rules_for_Developing_Safety-Critical_Code; the paper: https://spinroot.com/gerard/pdf/P10.pdf
 - MISRA C:2012 Rule 21.3 (MathWorks): https://www.mathworks.com/help/bugfinder/ref/misrac2012rule21.3.html
-- JPL Institutional Coding Standard for C (2009): https://www.slideshare.net/slideshow/jpl-coding-standard-for-the-c-programming-language/226808547
+- JPL C coding standard: https://www.slideshare.net/slideshow/jpl-coding-standard-for-the-c-programming-language/226808547
 
 **Regions and arenas**
 
-- Region-based memory management (the source for the Tofte-Talpin, MLKit and Cyclone statements; a secondary source): https://en.wikipedia.org/wiki/Region-based_memory_management
-- rustc memory management: https://rustc-dev-guide.rust-lang.org/memory.html
+- Region-based memory management (secondary source for the Tofte-Talpin, MLKit and Cyclone statements): https://en.wikipedia.org/wiki/Region-based_memory_management
+- rustc memory: https://rustc-dev-guide.rust-lang.org/memory.html
 - LLVM `Allocator.h`: https://llvm.org/docs/doxygen/Allocator_8h.html
 
 **Operating systems**
@@ -807,18 +952,18 @@ Fetched while writing this report (October 24, 2026):
 
 **Compiler limits and small compilers**
 
-- C11 draft N1570 §5.2.4.1: https://port70.net/~nsz/c/c11/n1570.html
+- C11 draft N1570: https://port70.net/~nsz/c/c11/n1570.html
 - MSVC compiler limits: https://learn.microsoft.com/en-us/cpp/cpp/compiler-limits?view=msvc-170
-- GCC preprocessor implementation limits: https://gcc.gnu.org/onlinedocs/cpp/Implementation-limits.html
+- GCC preprocessor limits: https://gcc.gnu.org/onlinedocs/cpp/Implementation-limits.html
 - Tiny C Compiler: https://bellard.org/tcc/
 
 **Bootstrap and reproducibility**
 
-- Go 1.5 release notes: https://go.dev/doc/go1.5
-- Installing Go from source (bootstrap rule): https://go.dev/doc/install/source
+- Go 1.5: https://go.dev/doc/go1.5
+- Go from source: https://go.dev/doc/install/source
 - rustc bootstrapping: https://rustc-dev-guide.rust-lang.org/building/bootstrapping/what-bootstrapping-does.html
 - OCaml BOOTSTRAP.adoc: https://raw.githubusercontent.com/ocaml/ocaml/trunk/BOOTSTRAP.adoc
-- David A. Wheeler, diverse double-compiling: https://dwheeler.com/trusting-trust/
+- Wheeler, DDC: https://dwheeler.com/trusting-trust/
 - Reproducible Builds, timestamps: https://reproducible-builds.org/docs/timestamps/
 
 **Backends and incremental compilation**
@@ -827,6 +972,10 @@ Fetched while writing this report (October 24, 2026):
 - rustc_codegen_cranelift: https://github.com/rust-lang/rustc_codegen_cranelift
 - TPDE-LLVM: https://discourse.llvm.org/t/tpde-llvm-10-20x-faster-llvm-o0-back-end/86664
 - rustc queries: https://rustc-dev-guide.rust-lang.org/query.html
-- rustc incremental compilation: https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation.html
+- rustc incremental: https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation.html
 
-**Local sources** (this repository at `612245e`): docs/DESIGN.md, docs/PLAN.md, docs/syntax-tree-format.md, docs/tasks/T08-report.md, T13-report.md, T19-report.md, T20-report.md, T21-report.md, docs/reviews/claude-selfhost.md, sol-selfhost-r1.md, sol-S0-r1.md, claude-T13-review.md, claude-T19-review.md, claude-T20-review.md, claude-T21-review.md, compiler/src/emit.rs, checker.rs, driver.rs, typed.rs, runtime/nl_runtime.c.
+**Local sources** (this repository):
+
+- docs: DESIGN.md, PLAN.md, syntax-tree-format.md; tasks/T08, T13, T19, T20 and T21 reports; reviews/claude-selfhost.md, sol-selfhost-r1.md, sol-S0-r1.md, sol-selfhost-arch-r1.md, and claude-T13, T19, T20 and T21 reviews;
+- compiler/src: emit.rs, checker.rs, const_eval.rs, parser.rs, driver.rs, syntax_dump.rs, typed.rs, main.rs;
+- runtime/nl_runtime.c.
