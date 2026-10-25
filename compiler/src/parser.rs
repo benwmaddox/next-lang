@@ -253,8 +253,8 @@ impl Parser<'_> {
     fn test(&mut self) -> Result<Test, ParseError> {
         let start = self.expect_word("test", "expected 'test'")?.span;
         let token = self.next().clone();
-        let name = if let TokenKind::String(name) = token.kind {
-            name
+        let name = if let TokenKind::String { value, .. } = token.kind {
+            value
         } else {
             return Err(ParseError {
                 span: token.span,
@@ -1142,7 +1142,7 @@ impl Parser<'_> {
             None
         };
         self.expect_word("in", "expected 'in' after the loop counter")?;
-        let first = self.expression(0)?;
+        let first = self.head_expression()?;
         self.skip_newlines();
         let inclusive = self.take(&TokenKind::RangeInclusive);
         let is_range = inclusive || self.take(&TokenKind::Range);
@@ -1153,11 +1153,7 @@ impl Parser<'_> {
                     message: "range loops have one counter; use 'for value, index in collection' for collection iteration".to_owned(),
                 });
             }
-            let allow_struct_literals = self.allow_struct_literals;
-            self.allow_struct_literals = false;
-            let end = self.expression(0);
-            self.allow_struct_literals = allow_struct_literals;
-            let end = end?;
+            let end = self.head_expression()?;
             self.skip_newlines();
             let body = self.block()?;
             Ok(Stmt {
@@ -1286,24 +1282,51 @@ impl Parser<'_> {
             }
             TokenKind::Ident(name)
                 if name == "b"
-                    && matches!(self.peek().kind, TokenKind::String(_))
+                    && matches!(self.peek().kind, TokenKind::String { .. })
                     && self.peek().span.line == span.line
                     && self.peek().span.col == span.col + 1 =>
             {
                 let string = self.next().clone();
-                let TokenKind::String(value) = string.kind else {
+                let TokenKind::String { bytes, .. } = string.kind else {
                     unreachable!()
                 };
                 self.postfix(Expr {
-                    kind: ExprKind::BytesLiteral(value.into_bytes()),
+                    kind: ExprKind::BytesLiteral(bytes),
                     span: Span {
                         end_offset: string.end_offset,
                         ..span
                     },
                 })
             }
+            TokenKind::LBracket => self.array_literal(span),
             kind => self.prefix_leaf_postfix(kind, span),
         }
+    }
+
+    fn array_literal(&mut self, span: Span) -> Result<Expr, ParseError> {
+        let mut values = Vec::new();
+        self.skip_newlines();
+        if !self.at(&TokenKind::RBracket) {
+            loop {
+                values.push(self.expression(0)?);
+                self.skip_newlines();
+                if !self.take(&TokenKind::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+                if self.at(&TokenKind::RBracket) {
+                    break;
+                }
+            }
+        }
+        let close = self.expect(&TokenKind::RBracket, "expected ']' after the array literal")?;
+        Ok(Expr {
+            kind: ExprKind::ArrayLiteral(values),
+            span: Span {
+                end_offset: close.end_offset,
+                ..span
+            },
+        })
     }
 
     fn prefix_negation_postfix(&mut self, span: Span) -> Result<Expr, ParseError> {
@@ -1410,8 +1433,12 @@ impl Parser<'_> {
     fn prefix_leaf(&mut self, kind: TokenKind, span: Span) -> Result<Expr, ParseError> {
         Ok(match kind {
             TokenKind::Number(raw) => self.integer(raw, span, false)?,
-            TokenKind::String(value) => Expr {
-                kind: ExprKind::ByteString(value.into_bytes()),
+            TokenKind::String {
+                bytes,
+                has_non_ascii_hex_escape,
+                ..
+            } => Expr {
+                kind: ExprKind::ByteString(bytes, has_non_ascii_hex_escape),
                 span,
             },
             TokenKind::Ident(name) if name == "true" => Expr {
@@ -1496,6 +1523,14 @@ impl Parser<'_> {
             })
         })();
         self.cast_depth -= 1;
+        parsed
+    }
+
+    fn head_expression(&mut self) -> Result<Expr, ParseError> {
+        let allow_struct_literals = self.allow_struct_literals;
+        self.allow_struct_literals = false;
+        let parsed = self.expression(0);
+        self.allow_struct_literals = allow_struct_literals;
         parsed
     }
 
@@ -1862,6 +1897,8 @@ impl Parser<'_> {
                 message: format!("expression nesting limit of {EXPRESSION_NESTING_LIMIT} exceeded"),
             });
         }
+        let allow_struct_literals = self.allow_struct_literals;
+        self.allow_struct_literals = true;
         let parsed = (|| {
             let inner = self.expression(0)?;
             let close = self.expect(&TokenKind::RParen, "expected ')' after this expression")?;
@@ -1873,6 +1910,7 @@ impl Parser<'_> {
                 ..inner
             })
         })();
+        self.allow_struct_literals = allow_struct_literals;
         self.parenthesis_depth -= 1;
         parsed
     }
@@ -1931,7 +1969,7 @@ impl Parser<'_> {
     }
 
     fn match_expression(&mut self, span: Span) -> Result<Expr, ParseError> {
-        let scrutinee = self.expression(0)?;
+        let scrutinee = self.head_expression()?;
         self.skip_newlines();
         self.expect(&TokenKind::LBrace, "expected '{' after the match value")?;
         self.skip_separators();
@@ -2064,7 +2102,7 @@ impl Parser<'_> {
         let mut clause_count = 1;
 
         loop {
-            let condition = self.expression(0)?;
+            let condition = self.head_expression()?;
             let then_block = self.block()?;
             let saved = self.pos;
             self.skip_newlines();
@@ -2135,11 +2173,12 @@ impl Parser<'_> {
             TokenKind::Ident(name) if name.chars().next().is_some_and(char::is_uppercase) => {
                 self.expression_has_postfix_at(1, true)
             }
-            TokenKind::Ident(_) | TokenKind::Number(_) | TokenKind::String(_) => {
+            TokenKind::Ident(_) | TokenKind::Number(_) | TokenKind::String { .. } => {
                 let byte_string = matches!(&self.peek().kind, TokenKind::Ident(name) if name == "b")
-                    && matches!(self.peek_n(1).kind, TokenKind::String(_));
+                    && matches!(self.peek_n(1).kind, TokenKind::String { .. });
                 self.expression_has_postfix_at(if byte_string { 2 } else { 1 }, false)
             }
+            TokenKind::LBracket => true,
             _ => false,
         }
     }
@@ -2383,6 +2422,7 @@ fn expression_nesting_exceeded(root: &Expr, limit: usize) -> Option<Span> {
                         | ExprKind::OptionalCall { .. }
                         | ExprKind::Field { .. }
                         | ExprKind::StructInit { .. }
+                        | ExprKind::ArrayLiteral(_)
                         | ExprKind::GridIndex { .. }
                         | ExprKind::Fit { .. }
                         | ExprKind::Try(_)
@@ -2426,6 +2466,13 @@ fn expression_nesting_exceeded(root: &Expr, limit: usize) -> Option<Span> {
                             fields
                                 .iter()
                                 .map(|field| NestingTask::Expr(&field.value, child_depth)),
+                        );
+                    }
+                    ExprKind::ArrayLiteral(values) => {
+                        pending.extend(
+                            values
+                                .iter()
+                                .map(|value| NestingTask::Expr(value, child_depth)),
                         );
                     }
                     ExprKind::GridIndex { receiver, x, y, .. } => {
@@ -2472,7 +2519,7 @@ fn expression_nesting_exceeded(root: &Expr, limit: usize) -> Option<Span> {
                     ExprKind::Unit
                     | ExprKind::Integer { .. }
                     | ExprKind::Bool(_)
-                    | ExprKind::ByteString(_)
+                    | ExprKind::ByteString(..)
                     | ExprKind::BytesLiteral(_)
                     | ExprKind::Name(_)
                     | ExprKind::ListLiteral

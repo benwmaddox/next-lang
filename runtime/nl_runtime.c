@@ -1202,6 +1202,16 @@ void *nl_env_out(void *value, int fd) {
     nl_environment *environment = (nl_environment *)value;
     return &environment->out[fd == STDERR_FILENO ? 1 : 0];
 }
+
+_Noreturn void nl_env_exit(int32_t code) {
+    (void)fflush(stdout);
+    (void)fflush(stderr);
+    if (nl_test_mode) {
+        fprintf(stderr, "Env.exit(%d) cannot be used in a test; this test process failed\n", code);
+        exit(70);
+    }
+    exit(code);
+}
 int64_t nl_args_count(void *value) { return ((nl_args_view *)value)->argc; }
 void *nl_args_get(void *value, int64_t index) {
     nl_args_view *args = (nl_args_view *)value;

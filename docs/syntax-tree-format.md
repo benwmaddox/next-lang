@@ -10,6 +10,8 @@ The completed expression-tree walk enforces expression nesting at 1,000 for all 
 
 Nesting diagnostics use the byte position of the token that crosses the limit: the 1,001st grouped-parenthesis opener, cast opener, block opener, or type start; the operator token of the first over-limit unary or binary node found by the walk; and the start token for other expression nodes. An overlong `else if` chain is rejected at the `if` keyword of clause 1,001, while parsing. The completed-tree walk pushes expression children in a fixed order for each node kind and visits them last-in-first-out; it reports the first over-limit expression node it visits. Diagnostics use `expression nesting limit of 1000 exceeded`, `type nesting limit of 1000 exceeded`, or `block nesting limit of 1000 exceeded`, according to the exhausted limit. Parse work is bounded by 72,000,000 units, counted as source bytes + tokens + tree nodes + child edges. The parser reports only its first diagnostic, so the diagnostic limit is one. Empty source files are valid and produce an empty `Program` node.
 
+In control-flow heads, a capitalised name immediately followed by `{` is parsed as the name; the brace starts the loop body, `if` body, or `match` arms. This applies to collection and range expressions in `for` heads, `if` conditions, and `match` scrutinees. Parenthesize a struct literal to use it in a head, for example `for item in (P { items: values }).items { ... }` or `if (P { enabled: true }).enabled { ... }`. Outside these heads, capitalised names can still start struct literals without parentheses.
+
 ## Token lines
 
 After a file header, each token occupies one line:
@@ -68,7 +70,8 @@ The following labels are `Type` nodes and have fields `name="..." range=... poli
 - `BreakStatement`, `ContinueStatement`: no fields or children.
 - `Unit`, `ListLiteral`, `PoolLiteral`, `MapLiteral`, `SetLiteral`, `QueueLiteral`, `RingLiteral`: no fields or children.
 - `Integer magnitude=N negative=true|false long_suffix=true|false`: magnitude is the decoded, unsigned decimal value; sign and `L`/`l` suffix are separate fields.
-- `Bool value=true|false`, `ByteString value="..."`, `Name name="..."`: literal or name value.
+- `Bool value=true|false`, `ByteString value="..."`, `BytesLiteral value="..."`, `Name name="..."`: literal or name value. `BytesLiteral` is written with the `b"..."` prefix.
+- `ArrayLiteral`: children are the literal's element expressions in source order. The same syntax is checked as an array or list from its expected type; a trailing comma adds no node.
 - `Call name="..."`, `QualifiedCase enum="..." case="..."`, `MethodCall name="..."`, `OptionalCall name="..."`: argument expressions follow in order; receiver is first for method and optional calls.
 - `IndirectCall`: callee expression then argument expressions. `Index`: receiver then index. `GridIndex`: receiver, x index, y index. `Field name="..."`: receiver.
 - `StructInit name="..."`: `InitializerField` children in written order.
@@ -80,4 +83,6 @@ The following labels are `Type` nodes and have fields `name="..." range=... poli
 
 The parser decodes decimal, `0x` hexadecimal, and `0b` binary integer literals, removes underscores, and stores the magnitude as `u128`. The dump prints that magnitude before the checker applies `int` or `long` range rules. A magnitude through `2^128 - 1` therefore appears as its exact unsigned decimal value, even when a later check rejects it; a larger value is a syntax error. For example, `-0x80000000000000000000000000000000` is represented with magnitude `170141183460469231731687303715884105728`, `negative=true`, and `long_suffix=false`.
 
-`ByteString` contains the decoded string bytes. Its value uses the JSON escaping above; since source files must be valid UTF-8 and the lexer decodes supported escapes to Unicode, the byte-string value is also valid UTF-8. An invalid UTF-8 source byte is reported at that byte's one-based byte column.
+String literals support `\"`, `\\`, `\n`, `\t`, `\0`, and `\xNN`, where `NN` is exactly two hexadecimal digits and `\xNN` contributes one byte. In a `Text` or `Ascii` literal, a `\xNN` escape above `0x7F` is a build error; write that character as UTF-8 or use a byte-string literal instead.
+
+`ByteString` and `BytesLiteral` contain decoded bytes. Their `value` uses the JSON escaping above for valid UTF-8; an invalid byte is written as `\u00xx` with lowercase hexadecimal digits, preserving the byte value in the dump. The `\u00xx` spelling here is the tree dump's representation of a byte and does not mean that the source escape was a Unicode escape. An invalid UTF-8 source byte is reported at that byte's one-based byte column.

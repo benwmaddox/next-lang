@@ -366,6 +366,11 @@ fn collect_constant_references_expr(expr: &TExpr, references: &mut Vec<(usize, S
             }
         }
         TExprKind::Fill { value, .. } => collect_constant_references_expr(value, references),
+        TExprKind::CollectionLiteral(values) => {
+            for value in values {
+                collect_constant_references_expr(value, references);
+            }
+        }
         TExprKind::AsciiSlice {
             receiver,
             start,
@@ -605,6 +610,7 @@ fn expression_reads_global(expr: &TExpr) -> bool {
                 })
         }
         TExprKind::Fill { value, .. } => expression_reads_global(value),
+        TExprKind::CollectionLiteral(values) => values.iter().any(expression_reads_global),
         TExprKind::AsciiSlice {
             receiver,
             start,
@@ -868,6 +874,7 @@ fn collect_calls_expr(
                 | CallTarget::OutInt
                 | CallTarget::OutLong => effects.push((expr.span, "out")),
                 CallTarget::EnvArgs
+                | CallTarget::EnvExit
                 | CallTarget::ArgsCount
                 | CallTarget::ArgsGet
                 | CallTarget::ArgLength
@@ -929,6 +936,11 @@ fn collect_calls_expr(
             }
         }
         TExprKind::Fill { value, .. } => collect_calls_expr(value, calls, effects),
+        TExprKind::CollectionLiteral(values) => {
+            for value in values {
+                collect_calls_expr(value, calls, effects);
+            }
+        }
         TExprKind::AsciiSlice {
             receiver,
             start,
@@ -2209,6 +2221,7 @@ impl Evaluator<'_> {
                 | CallTarget::OutInt
                 | CallTarget::OutLong
                 | CallTarget::EnvArgs
+                | CallTarget::EnvExit
                 | CallTarget::ArgsCount
                 | CallTarget::ArgsGet
                 | CallTarget::ArgLength
@@ -2227,6 +2240,7 @@ impl Evaluator<'_> {
                         | CallTarget::OutInt
                         | CallTarget::OutLong => "out",
                         CallTarget::EnvArgs
+                        | CallTarget::EnvExit
                         | CallTarget::ArgsCount
                         | CallTarget::ArgsGet
                         | CallTarget::ArgLength
@@ -2358,6 +2372,22 @@ impl Evaluator<'_> {
             TExprKind::EmptyArray => ConstValue::Array(Vec::new()),
             TExprKind::EmptyGrid => ConstValue::Grid(Vec::new()),
             TExprKind::EmptyList => ConstValue::List(Vec::new()),
+            TExprKind::CollectionLiteral(values) => {
+                let mut items = Vec::with_capacity(values.len());
+                for item in values {
+                    items.push(value_or_flow!(self.eval_expr(item, locals)));
+                }
+                match self.types[expr.ty.0].kind {
+                    TTypeKind::Array { .. } => ConstValue::Array(items),
+                    TTypeKind::List { .. } => ConstValue::List(items),
+                    _ => {
+                        return Err(self.failure(
+                            expr.span,
+                            "collection literal had a non-array or non-list type",
+                        ));
+                    }
+                }
+            }
             TExprKind::EmptyQueue => ConstValue::Queue(Vec::new()),
             TExprKind::EmptyRing => ConstValue::Ring(Vec::new()),
             TExprKind::EmptyPool => {
@@ -2933,12 +2963,18 @@ impl Evaluator<'_> {
             TExprKind::Unit => ConstValue::Unit,
             TExprKind::Integer(value) => ConstValue::Integer(*value),
             TExprKind::Bool(value) => ConstValue::Bool(*value),
-            TExprKind::ByteString(bytes) => ConstValue::List(
-                bytes
-                    .iter()
-                    .map(|byte| ConstValue::Integer(i128::from(*byte)))
-                    .collect(),
-            ),
+            TExprKind::ByteString(bytes) => {
+                if matches!(&self.types[expr.ty.0].kind, TTypeKind::List { .. }) {
+                    ConstValue::List(
+                        bytes
+                            .iter()
+                            .map(|byte| ConstValue::Integer(i128::from(*byte)))
+                            .collect(),
+                    )
+                } else {
+                    ConstValue::String(bytes.clone())
+                }
+            }
             TExprKind::FunctionValue(id) => ConstValue::Function(*id),
             TExprKind::Local(id) => {
                 if let Some(view) = self.views.get(id).cloned() {
@@ -3004,7 +3040,8 @@ impl Evaluator<'_> {
             | TExprKind::PoolOp { .. }
             | TExprKind::MapOp { .. }
             | TExprKind::SetOp { .. }
-            | TExprKind::StructConstruct { .. } => return self.eval_collection_expr(expr, locals),
+            | TExprKind::StructConstruct { .. }
+            | TExprKind::CollectionLiteral(_) => return self.eval_collection_expr(expr, locals),
             TExprKind::Convert { .. }
             | TExprKind::Fit { .. }
             | TExprKind::Try { .. }

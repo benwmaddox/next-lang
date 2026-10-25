@@ -258,7 +258,10 @@ pub enum ExprKind {
         long_suffix: bool,
     },
     Bool(bool),
-    ByteString(Vec<u8>),
+    /// A Unicode source string represented as its UTF-8 bytes. The flag records
+    /// whether a non-ASCII byte came from a `\xNN` escape, which is not allowed
+    /// when this value is used as Text or Ascii.
+    ByteString(Vec<u8>, bool),
     BytesLiteral(Vec<u8>),
     Take(Box<Expr>),
     Name(String),
@@ -303,6 +306,7 @@ pub enum ExprKind {
         name: String,
         fields: Vec<StructInitField>,
     },
+    ArrayLiteral(Vec<Expr>),
     ListLiteral,
     PoolLiteral,
     MapLiteral,

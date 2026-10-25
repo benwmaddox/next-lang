@@ -1,0 +1,36 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "let"
+Ident 20 6 2 9 "values"
+Colon 26 1 2 15 ":"
+Ident 28 3 2 17 "int"
+LBracket 31 1 2 20 "["
+Number 32 1 2 21 "3"
+RBracket 33 1 2 22 "]"
+Eq 35 1 2 24 "="
+LBracket 37 1 2 26 "["
+Number 38 1 2 27 "1"
+Comma 39 1 2 28 ","
+Number 41 1 2 30 "2"
+RBracket 42 1 2 31 "]"
+Newline 43 1 2 32 "\n"
+RBrace 44 1 3 1 "}"
+Newline 45 1 3 2 "\n"
+Eof 46 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..46
+  Function 0..45 name="main" recursive=false generics=[]
+    Block 10..45
+      Let 16..43 mutable=false name="values"
+        Annotation 28..34 name="int" range=none policy=checked
+          Integer 32..33 magnitude=3 negative=false long_suffix=false
+        ArrayLiteral 37..43
+          Integer 38..39 magnitude=1 negative=false long_suffix=false
+          Integer 41..42 magnitude=2 negative=false long_suffix=false

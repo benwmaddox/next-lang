@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -44,10 +45,13 @@ fn main() -> ExitCode {
                     Ok(dump) => {
                         match (want_tokens, want_tree) {
                             (true, true) => {
-                                print!("== tokens ==\n{}== tree ==\n{}", dump.tokens, dump.tree);
+                                write_stdout(format_args!(
+                                    "== tokens ==\n{}== tree ==\n{}",
+                                    dump.tokens, dump.tree
+                                ));
                             }
-                            (true, false) => print!("{}", dump.tokens),
-                            (false, true) => print!("{}", dump.tree),
+                            (true, false) => write_stdout(format_args!("{}", dump.tokens)),
+                            (false, true) => write_stdout(format_args!("{}", dump.tree)),
                             (false, false) => {}
                         }
                         ExitCode::SUCCESS
@@ -103,6 +107,10 @@ fn report_error(error: PackageError) -> ExitCode {
             ExitCode::from(3)
         }
     }
+}
+
+fn write_stdout(args: std::fmt::Arguments<'_>) {
+    let _ = std::io::stdout().lock().write_fmt(args);
 }
 
 fn usage() {

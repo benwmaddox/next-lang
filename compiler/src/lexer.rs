@@ -7,7 +7,11 @@ pub const MAX_DELIMITER_NESTING: usize = 2_048;
 pub enum TokenKind {
     Ident(String),
     Number(String),
-    String(String),
+    String {
+        value: String,
+        bytes: Vec<u8>,
+        has_non_ascii_hex_escape: bool,
+    },
     Newline,
     LParen,
     RParen,
@@ -165,6 +169,8 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             pos += 1;
             col += 1;
             let mut value = String::new();
+            let mut string_bytes = Vec::new();
+            let mut has_non_ascii_hex_escape = false;
             let mut closed = false;
             while pos < bytes.len() {
                 match bytes[pos] {
@@ -181,17 +187,35 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
                             break;
                         };
                         match escaped {
-                            b'"' => value.push('"'),
-                            b'\\' => value.push('\\'),
-                            b'n' => value.push('\n'),
-                            b't' => value.push('\t'),
-                            b'0' => value.push('\0'),
+                            b'"' => push_string_char(&mut value, &mut string_bytes, '"'),
+                            b'\\' => push_string_char(&mut value, &mut string_bytes, '\\'),
+                            b'n' => push_string_char(&mut value, &mut string_bytes, '\n'),
+                            b't' => push_string_char(&mut value, &mut string_bytes, '\t'),
+                            b'0' => push_string_char(&mut value, &mut string_bytes, '\0'),
+                            b'x' => {
+                                let Some(first) = bytes.get(pos + 1).copied() else {
+                                    return Err(invalid_hex_escape(span));
+                                };
+                                let Some(second) = bytes.get(pos + 2).copied() else {
+                                    return Err(invalid_hex_escape(span));
+                                };
+                                let (Some(high), Some(low)) = (hex_value(first), hex_value(second))
+                                else {
+                                    return Err(invalid_hex_escape(span));
+                                };
+                                let byte = high * 16 + low;
+                                has_non_ascii_hex_escape |= byte > 0x7f;
+                                value.push(char::from(byte));
+                                string_bytes.push(byte);
+                                pos += 3;
+                                col += 3;
+                                continue;
+                            }
                             _ => {
                                 return Err(LexError {
                                     span,
-                                    message:
-                                        "unsupported string escape; use \", \\\\, \\n, \\t, or \\0"
-                                            .to_owned(),
+                                    message: "unsupported string escape; use \", \\\\, \\n, \\t, \\0, or \\xNN"
+                                        .to_owned(),
                                 });
                             }
                         }
@@ -207,7 +231,7 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
                     }
                     _ => {
                         let ch = source[pos..].chars().next().expect("valid UTF-8 source");
-                        value.push(ch);
+                        push_string_char(&mut value, &mut string_bytes, ch);
                         let width = ch.len_utf8();
                         pos += width;
                         col += width;
@@ -223,7 +247,11 @@ pub fn lex(source: &str, file: usize) -> Result<Vec<Token>, LexError> {
             push_token(
                 &mut out,
                 Token {
-                    kind: TokenKind::String(value),
+                    kind: TokenKind::String {
+                        value,
+                        bytes: string_bytes,
+                        has_non_ascii_hex_escape,
+                    },
                     span: Span {
                         end_offset: pos,
                         ..span
@@ -340,6 +368,28 @@ fn push_token(out: &mut Vec<Token>, token: Token) -> Result<(), LexError> {
     }
     out.push(token);
     Ok(())
+}
+
+fn push_string_char(value: &mut String, bytes: &mut Vec<u8>, ch: char) {
+    value.push(ch);
+    let mut encoded = [0; 4];
+    bytes.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn invalid_hex_escape(span: Span) -> LexError {
+    LexError {
+        span,
+        message: "\\x escape needs exactly two hexadecimal digits".to_owned(),
+    }
 }
 
 fn push_newline(out: &mut Vec<Token>, span: Span, offset: usize) -> Result<(), LexError> {

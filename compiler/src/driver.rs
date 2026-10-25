@@ -8,6 +8,23 @@ use crate::ast::Span;
 use crate::emit::{EntryStackReservation, StackContract};
 use crate::{checker, emit, lexer, parser, syntax_dump};
 
+// Rust's print macros panic on a broken pipe. CLI output is optional once a
+// caller has closed its reader, so these wrappers drop stdout write errors.
+macro_rules! println {
+    () => {{
+        let _ = writeln!(io::stdout().lock());
+    }};
+    ($($arg:tt)*) => {{
+        let _ = writeln!(io::stdout().lock(), $($arg)*);
+    }};
+}
+
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        let _ = write!(io::stdout().lock(), $($arg)*);
+    }};
+}
+
 static TEMP_ID: AtomicUsize = AtomicUsize::new(0);
 const COMPILER_STACK_SIZE: usize = 1024 * 1024 * 1024;
 const MAX_PARSE_FILES: usize = 256;
@@ -84,6 +101,22 @@ pub struct GlobalMemory {
 pub enum PackageError {
     Compile(CompileError),
     Tool(String),
+}
+
+fn stdout_write_all(bytes: &[u8], operation: &str) -> Result<(), PackageError> {
+    match io::stdout().write_all(bytes) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(PackageError::Tool(format!("{operation}: {error}"))),
+    }
+}
+
+fn stdout_flush(operation: &str) -> Result<(), PackageError> {
+    match io::stdout().flush() {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(PackageError::Tool(format!("{operation}: {error}"))),
+    }
 }
 
 impl std::fmt::Display for PackageError {
@@ -414,8 +447,9 @@ fn compile_package_on_worker(
         .iter()
         .map(|function| function.recursive)
         .collect();
+    let llvm_ir = emit::emit(&typed);
     Ok(CompileOutput {
-        llvm_ir: emit::emit(&typed),
+        llvm_ir,
         files,
         tests: typed.tests.iter().map(|test| test.name.clone()).collect(),
         memory,
@@ -568,9 +602,7 @@ pub fn test_package(package: &Path) -> Result<u8, PackageError> {
                 print!("{failure}");
             }
             failed += 1;
-            io::stdout()
-                .flush()
-                .map_err(|e| PackageError::Tool(format!("cannot write test status: {e}")))?;
+            stdout_flush("cannot write test status")?;
             continue;
         }
         let output = Command::new(&binary)
@@ -590,15 +622,9 @@ pub fn test_package(package: &Path) -> Result<u8, PackageError> {
                 _ => {}
             }
         }
-        io::stdout()
-            .flush()
-            .map_err(|e| PackageError::Tool(format!("cannot write test status: {e}")))?;
-        io::stdout()
-            .write_all(&output.stdout)
-            .map_err(|e| PackageError::Tool(format!("cannot forward test stdout: {e}")))?;
-        io::stdout()
-            .flush()
-            .map_err(|e| PackageError::Tool(format!("cannot flush forwarded test stdout: {e}")))?;
+        stdout_flush("cannot write test status")?;
+        stdout_write_all(&output.stdout, "cannot forward test stdout")?;
+        stdout_flush("cannot flush forwarded test stdout")?;
         io::stderr()
             .write_all(&output.stderr)
             .map_err(|e| PackageError::Tool(format!("cannot forward test stderr: {e}")))?;

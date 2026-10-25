@@ -1,0 +1,1 @@
+main.nl:1:24: error: collection capacity must be a constant integer expression; use a literal or const value; for an array of parameterised Ascii, parenthesize the type first, e.g. '(Ascii max 8)[3]'

@@ -1,1 +1,1 @@
-main.nl:1:19: error: unsupported string escape; use ", \\, \n, \t, or \0
+main.nl:1:19: error: unsupported string escape; use ", \\, \n, \t, \0, or \xNN

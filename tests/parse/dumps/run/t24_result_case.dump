@@ -1,0 +1,83 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "let"
+Ident 20 5 2 9 "value"
+Colon 25 1 2 14 ":"
+Ident 27 6 2 16 "Result"
+Lt 33 1 2 22 "<"
+Ident 34 3 2 23 "int"
+Comma 37 1 2 26 ","
+Ident 39 3 2 28 "int"
+Gt 42 1 2 31 ">"
+Eq 44 1 2 33 "="
+Ident 46 3 2 35 "err"
+LParen 49 1 2 38 "("
+Number 50 1 2 39 "0"
+RParen 51 1 2 40 ")"
+Newline 52 1 2 41 "\n"
+Ident 57 5 3 5 "match"
+Ident 63 5 3 11 "value"
+LBrace 69 1 3 17 "{"
+Newline 70 1 3 18 "\n"
+Ident 79 4 4 9 "some"
+LParen 83 1 4 13 "("
+Ident 84 1 4 14 "_"
+RParen 85 1 4 15 ")"
+FatArrow 87 2 4 17 "=>"
+LBrace 90 1 4 20 "{"
+RBrace 91 1 4 21 "}"
+Comma 92 1 4 22 ","
+Newline 93 1 4 23 "\n"
+Ident 102 2 5 9 "ok"
+LParen 104 1 5 11 "("
+Ident 105 1 5 12 "_"
+RParen 106 1 5 13 ")"
+FatArrow 108 2 5 15 "=>"
+LBrace 111 1 5 18 "{"
+RBrace 112 1 5 19 "}"
+Comma 113 1 5 20 ","
+Newline 114 1 5 21 "\n"
+Ident 123 3 6 9 "err"
+LParen 126 1 6 12 "("
+Ident 127 1 6 13 "_"
+RParen 128 1 6 14 ")"
+FatArrow 130 2 6 16 "=>"
+LBrace 133 1 6 19 "{"
+RBrace 134 1 6 20 "}"
+Newline 135 1 6 21 "\n"
+RBrace 140 1 7 5 "}"
+Newline 141 1 7 6 "\n"
+RBrace 142 1 8 1 "}"
+Newline 143 1 8 2 "\n"
+Eof 144 0 9 1 ""
+== tree ==
+file "main.nl"
+Program 0..144
+  Function 0..143 name="main" recursive=false generics=[]
+    Block 10..143
+      Let 16..52 mutable=false name="value"
+        Annotation 27..43 name="Result" range=none policy=checked
+          TypeArgument 34..37 name="int" range=none policy=checked
+          TypeArgument 39..42 name="int" range=none policy=checked
+        Call 46..52 name="err"
+          Integer 50..51 magnitude=0 negative=false long_suffix=false
+      Match 57..141
+        Name 63..68 name="value"
+        MatchArm 79..92
+          CasePattern 79..86 name="some"
+            IgnoredPatternBinding 84..85
+          Block 90..92
+        MatchArm 102..113
+          CasePattern 102..107 name="ok"
+            IgnoredPatternBinding 105..106
+          Block 111..113
+        MatchArm 123..135
+          CasePattern 123..129 name="err"
+            IgnoredPatternBinding 127..128
+          Block 133..135

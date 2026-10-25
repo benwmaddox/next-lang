@@ -1,0 +1,1 @@
+main.nl:1:14: error: constant values with enum payloads containing Ascii, Text, or Bytes cannot be emitted as static data; construct the enum at runtime instead

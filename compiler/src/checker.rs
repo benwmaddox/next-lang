@@ -655,6 +655,12 @@ impl Checker {
 
     fn check_constant_expr(&mut self, id: usize) -> Result<TConstExpr, CheckError> {
         let declaration = self.ast_constants[id].clone();
+        if self.type_has_unsupported_static_string_sum(self.constant_types[id]) {
+            return Err(CheckError {
+                span: declaration.ty.span,
+                message: "constant values with enum payloads containing Ascii, Text, or Bytes cannot be emitted as static data; construct the enum at runtime instead".to_owned(),
+            });
+        }
         self.current_function = 0;
         self.current_return = self.constant_types[id];
         self.current_is_test = false;
@@ -908,7 +914,14 @@ impl Checker {
         } else {
             match ty.name.as_str() {
                 "Ascii" if ty.args.is_empty() && ty.const_args.len() == 1 && ty.range.is_none() => {
-                    let raw_max = self.capacity_value(&ty.const_args[0])?;
+                    let raw_max = self.capacity_value(&ty.const_args[0]).map_err(|mut error| {
+                        if matches!(&ty.const_args[0].kind, ExprKind::Index { .. }) {
+                            error.message.push_str(
+                                "; for an array of parameterised Ascii, parenthesize the type first, e.g. '(Ascii max 8)[3]'",
+                            );
+                        }
+                        error
+                    })?;
                     if raw_max < 0 {
                         return Err(CheckError {
                             span: ty.const_args[0].span,
@@ -1693,6 +1706,81 @@ impl Checker {
                 _ => false,
             }
         }
+        visit(self, ty, &mut std::collections::HashSet::new())
+    }
+
+    fn type_has_unsupported_static_string_sum(&self, ty: Ty) -> bool {
+        fn contains_string(
+            checker: &Checker,
+            ty: Ty,
+            seen: &mut std::collections::HashSet<Ty>,
+        ) -> bool {
+            if !seen.insert(ty) {
+                return false;
+            }
+            match &checker.types[ty.0].kind {
+                TTypeKind::Ascii { .. } | TTypeKind::Text { .. } | TTypeKind::Bytes { .. } => true,
+                TTypeKind::Refinement { base, .. } => contains_string(checker, *base, seen),
+                TTypeKind::Struct(fields) => fields
+                    .iter()
+                    .any(|field| contains_string(checker, field.ty, seen)),
+                TTypeKind::Enum(cases) => cases
+                    .iter()
+                    .flat_map(|case| &case.payload)
+                    .any(|field| contains_string(checker, *field, seen)),
+                TTypeKind::Option(inner) => contains_string(checker, *inner, seen),
+                TTypeKind::Result(ok, err) => {
+                    contains_string(checker, *ok, seen) || contains_string(checker, *err, seen)
+                }
+                TTypeKind::Array { element, .. }
+                | TTypeKind::List { element, .. }
+                | TTypeKind::Queue { element, .. }
+                | TTypeKind::Ring { element, .. }
+                | TTypeKind::Grid { element, .. }
+                | TTypeKind::Pool { element, .. } => contains_string(checker, *element, seen),
+                TTypeKind::Map { key, value, .. } => {
+                    contains_string(checker, *key, seen) || contains_string(checker, *value, seen)
+                }
+                TTypeKind::Set { key, .. } => contains_string(checker, *key, seen),
+                _ => false,
+            }
+        }
+
+        fn visit(checker: &Checker, ty: Ty, seen: &mut std::collections::HashSet<Ty>) -> bool {
+            if !seen.insert(ty) {
+                return false;
+            }
+            match &checker.types[ty.0].kind {
+                TTypeKind::Option(inner) => {
+                    contains_string(checker, *inner, &mut std::collections::HashSet::new())
+                }
+                TTypeKind::Result(ok, err) => {
+                    contains_string(checker, *ok, &mut std::collections::HashSet::new())
+                        || contains_string(checker, *err, &mut std::collections::HashSet::new())
+                }
+                TTypeKind::Enum(cases) => {
+                    cases.iter().flat_map(|case| &case.payload).any(|field| {
+                        contains_string(checker, *field, &mut std::collections::HashSet::new())
+                    })
+                }
+                TTypeKind::Refinement { base, .. } => visit(checker, *base, seen),
+                TTypeKind::Struct(fields) => {
+                    fields.iter().any(|field| visit(checker, field.ty, seen))
+                }
+                TTypeKind::Array { element, .. }
+                | TTypeKind::List { element, .. }
+                | TTypeKind::Queue { element, .. }
+                | TTypeKind::Ring { element, .. }
+                | TTypeKind::Grid { element, .. }
+                | TTypeKind::Pool { element, .. } => visit(checker, *element, seen),
+                TTypeKind::Map { key, value, .. } => {
+                    visit(checker, *key, seen) || visit(checker, *value, seen)
+                }
+                TTypeKind::Set { key, .. } => visit(checker, *key, seen),
+                _ => false,
+            }
+        }
+
         visit(self, ty, &mut std::collections::HashSet::new())
     }
 
@@ -2974,7 +3062,7 @@ impl Checker {
             return true;
         }
         match &expr.kind {
-            ExprKind::ByteString(_) | ExprKind::BytesLiteral(_) => true,
+            ExprKind::ByteString(..) | ExprKind::BytesLiteral(_) => true,
             ExprKind::Name(name) => self
                 .visible_value_type(name)
                 .is_some_and(|ty| self.is_string_type(ty)),
@@ -3147,7 +3235,7 @@ impl Checker {
         }
         if matches!(
             expr.kind,
-            ExprKind::ByteString(_) | ExprKind::BytesLiteral(_)
+            ExprKind::ByteString(..) | ExprKind::BytesLiteral(_)
         ) && self.is_byte_list(target)
         {
             return self.check_expr(expr, Some(target));
@@ -3251,7 +3339,7 @@ impl Checker {
             return true;
         }
         match &expr.kind {
-            ExprKind::ByteString(_) => true,
+            ExprKind::ByteString(..) => true,
             ExprKind::Name(name) => self
                 .visible_value_type(name)
                 .is_some_and(|ty| self.is_ascii(ty)),
@@ -3866,6 +3954,15 @@ impl Checker {
                 });
             }
             let ty = self.global_types[id].expect("registered global type");
+            if effects.reads.is_empty() && self.type_has_unsupported_static_string_sum(ty) {
+                return Err(CheckError {
+                    span: declaration.value.span,
+                    message: format!(
+                        "global '{}' has enum payloads containing Ascii, Text, or Bytes that cannot be emitted as static data; construct the enum at runtime instead",
+                        declaration.name
+                    ),
+                });
+            }
             let initializer = if effects.reads.is_empty() {
                 TGlobalInitializer::Constant(crate::const_eval::evaluate_expression(
                     &declaration.name,
@@ -5431,7 +5528,7 @@ impl Checker {
             } => Some(Ty::Long),
             ExprKind::Integer { .. } => None,
             ExprKind::Bool(_) => Some(Ty::Bool),
-            ExprKind::ByteString(_) | ExprKind::BytesLiteral(_) => None,
+            ExprKind::ByteString(..) | ExprKind::BytesLiteral(_) => None,
             ExprKind::Name(name) if shadowed_counter == Some(name.as_str()) => None,
             ExprKind::Name(name) if self.current_generic_capacities.contains_key(name) => {
                 let value = self.current_generic_capacities[name];
@@ -5447,7 +5544,8 @@ impl Checker {
             | ExprKind::MapLiteral
             | ExprKind::SetLiteral
             | ExprKind::QueueLiteral
-            | ExprKind::RingLiteral => None,
+            | ExprKind::RingLiteral
+            | ExprKind::ArrayLiteral(_) => None,
             ExprKind::Call { name, .. } => {
                 if name == "print" {
                     Some(Ty::Unit)
@@ -5712,7 +5810,7 @@ impl Checker {
             ExprKind::Take(value) => {
                 self.collect_loop_constraints_expr(value, counter, expected, constraints)
             }
-            ExprKind::ByteString(_) | ExprKind::BytesLiteral(_) => {}
+            ExprKind::ByteString(..) | ExprKind::BytesLiteral(_) => {}
             ExprKind::Call { name, args, .. } => {
                 let parameters = self
                     .signatures
@@ -5802,6 +5900,17 @@ impl Checker {
             | ExprKind::SetLiteral
             | ExprKind::QueueLiteral
             | ExprKind::RingLiteral => {}
+            ExprKind::ArrayLiteral(values) => {
+                let element = expected.and_then(|ty| match self.types[ty.0].kind {
+                    TTypeKind::Array { element, .. } | TTypeKind::List { element, .. } => {
+                        Some(element)
+                    }
+                    _ => None,
+                });
+                for value in values {
+                    self.collect_loop_constraints_expr(value, counter, element, constraints);
+                }
+            }
             ExprKind::StructInit { fields, .. } => {
                 for field in fields {
                     self.collect_loop_constraints_expr(&field.value, counter, None, constraints);
@@ -6528,6 +6637,35 @@ impl Checker {
         }
         if let TTypeKind::Capability(kind) = self.types[typed_collection.ty.0].kind {
             match kind {
+                CapabilityKind::Env if name == "exit" => {
+                    if args.len() != 1 {
+                        return Err(CheckError {
+                            span: method_span,
+                            message: "Env.exit(code) takes one int from 0 through 125".to_owned(),
+                        });
+                    }
+                    self.require_manifest_capability("env", method_span)?;
+                    let code_ty = self.intern_refinement(
+                        Ty::Int,
+                        TypeRangeAst {
+                            lower: 0,
+                            upper: 125,
+                            inclusive: true,
+                            span: method_span,
+                        },
+                        RefinePolicy::Checked,
+                        method_span,
+                    )?;
+                    let code = self.check_expr(&args[0], Some(code_ty))?;
+                    return Ok((
+                        TExprKind::Call {
+                            target: CallTarget::EnvExit,
+                            args: vec![typed_collection, code],
+                            effect: Effect::None,
+                        },
+                        Ty::Never,
+                    ));
+                }
                 CapabilityKind::Env if name == "args" => {
                     if !args.is_empty() {
                         return Err(CheckError {
@@ -6622,7 +6760,7 @@ impl Checker {
                 CapabilityKind::Fs => {
                     self.require_manifest_capability("fs", method_span)?;
                     let path = |checker: &mut Checker, expr: &Expr| -> Result<TExpr, CheckError> {
-                        if matches!(expr.kind, ExprKind::ByteString(_)) {
+                        if matches!(expr.kind, ExprKind::ByteString(..)) {
                             return checker.check_expr(expr, Some(checker.type_ids["Path"]));
                         }
                         let typed = checker.check_expr(expr, None)?;
@@ -6848,7 +6986,7 @@ impl Checker {
                                 message: format!("out.{}(data) takes one byte list", name),
                             });
                         }
-                        if matches!(arg.kind, ExprKind::ByteString(_)) {
+                        if matches!(arg.kind, ExprKind::ByteString(..)) {
                             self.check_expr(arg, Some(self.type_ids["Path"]))?
                         } else {
                             let typed = self.check_expr(arg, None)?;
@@ -9631,7 +9769,15 @@ impl Checker {
                     (TExprKind::ByteString(bytes.clone()), ty)
                 }
             }
-            ExprKind::ByteString(bytes) => {
+            ExprKind::ByteString(bytes, has_non_ascii_hex_escape) => {
+                let byte_destination = expected
+                    .is_some_and(|ty| self.is_byte_list(ty) || self.bytes_max(ty).is_some());
+                if *has_non_ascii_hex_escape && !byte_destination {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "non-ASCII \\xNN escapes are not allowed in Text or Ascii literals; write the character as UTF-8 or use a byte-string literal".to_owned(),
+                    });
+                }
                 if let Some(ty) = expected.filter(|ty| self.is_byte_list(*ty)) {
                     let TTypeKind::List { capacity, .. } = self.types[ty.0].kind else {
                         unreachable!()
@@ -10050,6 +10196,49 @@ impl Checker {
                     },
                     element,
                 )
+            }
+            ExprKind::ArrayLiteral(values) => {
+                let Some(ty) = expected.filter(|ty| {
+                    matches!(
+                        self.types[ty.0].kind,
+                        TTypeKind::Array { .. } | TTypeKind::List { .. }
+                    )
+                }) else {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "cannot infer whether this literal is an array or list; add a T[N] or list<T, N> annotation".to_owned(),
+                    });
+                };
+                let (element, capacity, is_list) = match self.types[ty.0].kind {
+                    TTypeKind::Array { element, capacity } => (element, capacity, false),
+                    TTypeKind::List { element, capacity } => (element, capacity, true),
+                    _ => unreachable!(),
+                };
+                if is_list && values.len() > capacity {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: format!(
+                            "list literal has {} element(s), exceeding its capacity of {}; remove elements or increase the capacity",
+                            values.len(),
+                            capacity
+                        ),
+                    });
+                }
+                if !is_list && values.len() != capacity {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: format!(
+                            "array literal has {} element(s), but its array type requires exactly {}; add or remove elements",
+                            values.len(),
+                            capacity
+                        ),
+                    });
+                }
+                let elements = values
+                    .iter()
+                    .map(|value| self.check_expr(value, Some(element)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                (TExprKind::CollectionLiteral(elements), ty)
             }
             ExprKind::ListLiteral => {
                 let Some(ty) =
@@ -10807,7 +10996,28 @@ impl Checker {
                     }
                     let Some((case_index, case)) = self.find_case_in_type(scrutinee.ty, name)
                     else {
-                        return Err(self.unknown_case(name, *name_span));
+                        let message = match self.types[scrutinee.ty.0].kind {
+                            TTypeKind::Option(_) if matches!(name.as_str(), "ok" | "err") => {
+                                Some(format!(
+                                    "value has type {}; use some(_) or none",
+                                    self.type_name(scrutinee.ty)
+                                ))
+                            }
+                            TTypeKind::Result(..) if matches!(name.as_str(), "some" | "none") => {
+                                Some(format!(
+                                    "value has type {}; use ok(_) or err(_)",
+                                    self.type_name(scrutinee.ty)
+                                ))
+                            }
+                            _ => None,
+                        };
+                        return Err(message.map_or_else(
+                            || self.unknown_case(name, *name_span),
+                            |message| CheckError {
+                                span: *name_span,
+                                message,
+                            },
+                        ));
                     };
                     if bindings.len() != case.payload.len() {
                         return Err(CheckError {
@@ -11765,6 +11975,11 @@ impl Checker {
                     self.collect_expr_write_candidates(value, candidates);
                 }
             }
+            ExprKind::ArrayLiteral(values) => {
+                for value in values {
+                    self.collect_expr_write_candidates(value, candidates);
+                }
+            }
             ExprKind::Name(_)
             | ExprKind::ListLiteral
             | ExprKind::PoolLiteral
@@ -11775,7 +11990,7 @@ impl Checker {
             | ExprKind::Unit
             | ExprKind::Integer { .. }
             | ExprKind::Bool(_)
-            | ExprKind::ByteString(_)
+            | ExprKind::ByteString(..)
             | ExprKind::BytesLiteral(_)
             | ExprKind::LoopExit(_) => {}
         }
@@ -11869,6 +12084,13 @@ impl Checker {
                         fields: Vec::new(),
                         path: Vec::new(),
                         ty: self.global_types[id].expect("registered global type"),
+                    })
+                } else if let Some(id) = self.constant_ids.get(name).copied() {
+                    Ok(TPlace {
+                        root: constant_root(id),
+                        fields: Vec::new(),
+                        path: Vec::new(),
+                        ty: self.constant_types[id],
                     })
                 } else {
                     Err(self.unknown_local(name, expr.span))
@@ -12420,12 +12642,15 @@ impl Checker {
                 ExprKind::StructInit { fields, .. } => fields
                     .iter()
                     .all(|field| expr(checker, &field.value, counts)),
+                ExprKind::ArrayLiteral(values) => {
+                    values.iter().all(|value| expr(checker, value, counts))
+                }
                 ExprKind::Return(Some(value)) => expr(checker, value, counts),
                 ExprKind::Return(None)
                 | ExprKind::Unit
                 | ExprKind::Integer { .. }
                 | ExprKind::Bool(_)
-                | ExprKind::ByteString(_)
+                | ExprKind::ByteString(..)
                 | ExprKind::BytesLiteral(_)
                 | ExprKind::Name(_)
                 | ExprKind::ListLiteral
@@ -12597,6 +12822,12 @@ impl Checker {
             TExpr {
                 kind: TExprKind::Global(global),
                 ty: self.global_types[global].expect("registered global type"),
+                span,
+            }
+        } else if let Some(constant) = constant_from_root(place.root) {
+            TExpr {
+                kind: TExprKind::Constant(constant),
+                ty: self.constant_types[constant],
                 span,
             }
         } else {
@@ -13202,6 +13433,9 @@ impl Checker {
     }
 
     fn coerce_store_hint(&self, value: TExpr, target: Ty, hint: &str) -> Result<TExpr, CheckError> {
+        if value.ty == Ty::Never {
+            return Ok(value);
+        }
         if self.is_function_type(value.ty) || self.is_function_type(target) {
             self.type_mismatch(value.ty, target, value.span)?;
             return Ok(TExpr {
@@ -13926,6 +14160,7 @@ fn typed_expr_contains_take(expr: &TExpr) -> bool {
         TExprKind::Binary { left, right, .. } => {
             typed_expr_contains_take(left) || typed_expr_contains_take(right)
         }
+        TExprKind::CollectionLiteral(values) => values.iter().any(typed_expr_contains_take),
         _ => false,
     }
 }
@@ -14016,6 +14251,11 @@ fn check_recursive_region_expr(
             }
         }
         TExprKind::Fill { value, .. } => recurse(value, active_regions)?,
+        TExprKind::CollectionLiteral(values) => {
+            for value in values {
+                recurse(value, active_regions)?;
+            }
+        }
         TExprKind::AsciiSlice {
             receiver,
             start,
@@ -14106,7 +14346,7 @@ fn check_recursive_region_expr(
         TExprKind::Unit
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
-        | TExprKind::ByteString(_)
+        | TExprKind::ByteString(..)
         | TExprKind::Local(_)
         | TExprKind::Global(_)
         | TExprKind::Constant(_)
@@ -14588,7 +14828,8 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
                 | CallTarget::ArgsCount
                 | CallTarget::ArgsGet
                 | CallTarget::ArgLength
-                | CallTarget::ArgByte => effects.env = true,
+                | CallTarget::ArgByte
+                | CallTarget::EnvExit => effects.env = true,
                 CallTarget::FsRead => effects.fs_read = true,
                 CallTarget::FsWrite => effects.fs_write = true,
                 CallTarget::FsList => effects.fs_read = true,
@@ -14720,6 +14961,11 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
             collect_global_expr_effects(argument, effects, functions);
         }
         TExprKind::Fill { value, .. } => collect_global_expr_effects(value, effects, functions),
+        TExprKind::CollectionLiteral(values) => {
+            for value in values {
+                collect_global_expr_effects(value, effects, functions);
+            }
+        }
         TExprKind::StructConstruct { fields } => {
             for (_, value) in fields {
                 collect_global_expr_effects(value, effects, functions);
@@ -14797,7 +15043,7 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
         TExprKind::Unit
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
-        | TExprKind::ByteString(_)
+        | TExprKind::ByteString(..)
         | TExprKind::Local(_)
         | TExprKind::Constant(_)
         | TExprKind::FunctionValue(_)
@@ -14977,6 +15223,11 @@ fn visit_global_calls_expr(
             }
         }
         TExprKind::Fill { value, .. } => visit_global_calls_expr(value, active_views, check)?,
+        TExprKind::CollectionLiteral(values) => {
+            for value in values {
+                visit_global_calls_expr(value, active_views, check)?;
+            }
+        }
         TExprKind::AsciiFit { value, .. } => visit_global_calls_expr(value, active_views, check)?,
         TExprKind::AsciiSlice {
             receiver,
@@ -15048,7 +15299,7 @@ fn visit_global_calls_expr(
         TExprKind::Unit
         | TExprKind::Integer(_)
         | TExprKind::Bool(_)
-        | TExprKind::ByteString(_)
+        | TExprKind::ByteString(..)
         | TExprKind::Local(_)
         | TExprKind::Global(_)
         | TExprKind::Constant(_)

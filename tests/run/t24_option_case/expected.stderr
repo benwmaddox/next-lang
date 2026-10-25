@@ -1,0 +1,1 @@
+main.nl:4:9: error: value has type Option<int>; use some(_) or none

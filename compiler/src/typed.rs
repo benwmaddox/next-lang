@@ -308,6 +308,7 @@ pub struct TProgram {
 }
 
 pub const GLOBAL_ROOT_START: usize = usize::MAX / 2;
+pub const CONSTANT_ROOT_START: usize = usize::MAX / 4;
 
 pub fn global_root(id: usize) -> usize {
     GLOBAL_ROOT_START + id
@@ -315,6 +316,14 @@ pub fn global_root(id: usize) -> usize {
 
 pub fn global_from_root(root: usize) -> Option<usize> {
     (root >= GLOBAL_ROOT_START).then(|| root - GLOBAL_ROOT_START)
+}
+
+pub fn constant_root(id: usize) -> usize {
+    CONSTANT_ROOT_START + id
+}
+
+pub fn constant_from_root(root: usize) -> Option<usize> {
+    (root >= CONSTANT_ROOT_START && root < GLOBAL_ROOT_START).then(|| root - CONSTANT_ROOT_START)
 }
 
 #[derive(Clone, Debug)]
@@ -357,6 +366,7 @@ pub enum ConstValue {
     Unit,
     Integer(i128),
     Bool(bool),
+    String(Vec<u8>),
     Struct(Vec<ConstValue>),
     Array(Vec<ConstValue>),
     List(Vec<ConstValue>),
@@ -552,6 +562,7 @@ pub enum CallTarget {
     EnvFs,
     EnvOut,
     EnvErr,
+    EnvExit,
     ArgsCount,
     ArgsGet,
     ArgLength,
@@ -781,6 +792,7 @@ pub enum TExprKind {
         value: Box<TExpr>,
         capacity: usize,
     },
+    CollectionLiteral(Vec<TExpr>),
     EmptyArray,
     EmptyGrid,
     EmptyList,

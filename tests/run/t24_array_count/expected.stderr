@@ -1,0 +1,1 @@
+main.nl:2:26: error: array literal has 2 element(s), but its array type requires exactly 3; add or remove elements

@@ -1,0 +1,1 @@
+main.nl:2:30: error: non-ASCII \xNN escapes are not allowed in Text or Ascii literals; write the character as UTF-8 or use a byte-string literal

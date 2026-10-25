@@ -1,0 +1,116 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+Ident 8 3 1 9 "env"
+Colon 11 1 1 12 ":"
+Ident 13 3 1 14 "Env"
+RParen 16 1 1 17 ")"
+Arrow 18 2 1 19 "->"
+Ident 21 6 1 22 "Result"
+Lt 27 1 1 28 "<"
+LParen 28 1 1 29 "("
+RParen 29 1 1 30 ")"
+Comma 30 1 1 31 ","
+Ident 32 7 1 33 "IoError"
+Gt 39 1 1 40 ">"
+LBrace 41 1 1 42 "{"
+Newline 42 1 1 43 "\n"
+Ident 47 3 2 5 "let"
+Ident 51 5 2 9 "first"
+Colon 56 1 2 14 ":"
+Ident 58 3 2 16 "int"
+Eq 62 1 2 20 "="
+Ident 64 5 2 22 "match"
+Ident 70 4 2 28 "true"
+LBrace 75 1 2 33 "{"
+Newline 76 1 2 34 "\n"
+Ident 85 4 3 9 "true"
+FatArrow 90 2 3 14 "=>"
+Number 93 1 3 17 "1"
+Newline 94 1 3 18 "\n"
+Ident 103 5 4 9 "false"
+FatArrow 109 2 4 15 "=>"
+Ident 112 3 4 18 "env"
+Dot 115 1 4 21 "."
+Ident 116 4 4 22 "exit"
+LParen 120 1 4 26 "("
+Number 121 1 4 27 "6"
+RParen 122 1 4 28 ")"
+Newline 123 1 4 29 "\n"
+RBrace 128 1 5 5 "}"
+Newline 129 1 5 6 "\n"
+Ident 134 5 6 5 "print"
+LParen 139 1 6 10 "("
+Ident 140 5 6 11 "first"
+RParen 145 1 6 16 ")"
+Newline 146 1 6 17 "\n"
+Ident 151 5 7 5 "match"
+Ident 157 5 7 11 "false"
+LBrace 163 1 7 17 "{"
+Newline 164 1 7 18 "\n"
+Ident 173 4 8 9 "true"
+FatArrow 178 2 8 14 "=>"
+Ident 181 3 8 17 "env"
+Dot 184 1 8 20 "."
+Ident 185 4 8 21 "exit"
+LParen 189 1 8 25 "("
+Number 190 1 8 26 "7"
+RParen 191 1 8 27 ")"
+Newline 192 1 8 28 "\n"
+Ident 201 5 9 9 "false"
+FatArrow 207 2 9 15 "=>"
+Ident 210 3 9 18 "env"
+Dot 213 1 9 21 "."
+Ident 214 4 9 22 "exit"
+LParen 218 1 9 26 "("
+Number 219 1 9 27 "4"
+RParen 220 1 9 28 ")"
+Newline 221 1 9 29 "\n"
+RBrace 226 1 10 5 "}"
+Newline 227 1 10 6 "\n"
+RBrace 228 1 11 1 "}"
+Newline 229 1 11 2 "\n"
+Eof 230 0 12 1 ""
+== tree ==
+file "main.nl"
+Program 0..230
+  Function 0..229 name="main" recursive=false generics=[]
+    Parameter 8..16 name="env" mode=read
+      ParameterType 13..16 name="Env" range=none policy=checked
+    ResultType 21..40 name="Result" range=none policy=checked
+      TypeArgument 28..30 name="()" range=none policy=checked
+      TypeArgument 32..39 name="IoError" range=none policy=checked
+    Block 41..229
+      Let 47..129 mutable=false name="first"
+        Annotation 58..61 name="int" range=none policy=checked
+        Match 64..129
+          Bool 70..74 value=true
+          MatchArm 85..94
+            BoolPattern 85..89 value=true
+            Block 93..94
+              Integer 93..94 magnitude=1 negative=false long_suffix=false
+          MatchArm 103..123
+            BoolPattern 103..108 value=false
+            Block 112..123
+              MethodCall 112..123 name="exit"
+                Name 112..115 name="env"
+                Integer 121..122 magnitude=6 negative=false long_suffix=false
+      ExpressionStatement 134..146
+        Call 134..146 name="print"
+          Name 140..145 name="first"
+      Match 151..227
+        Bool 157..162 value=false
+        MatchArm 173..192
+          BoolPattern 173..177 value=true
+          Block 181..192
+            MethodCall 181..192 name="exit"
+              Name 181..184 name="env"
+              Integer 190..191 magnitude=7 negative=false long_suffix=false
+        MatchArm 201..221
+          BoolPattern 201..206 value=false
+          Block 210..221
+            MethodCall 210..221 name="exit"
+              Name 210..213 name="env"
+              Integer 219..220 magnitude=4 negative=false long_suffix=false

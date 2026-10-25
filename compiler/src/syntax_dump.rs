@@ -501,24 +501,18 @@ impl TreeWriter {
                 &format!("magnitude={magnitude} negative={negative} long_suffix={long_suffix}"),
             ),
             ExprKind::Bool(value) => self.row(depth, expr.span, "Bool", &format!("value={value}")),
-            ExprKind::ByteString(value) => {
-                let string = std::str::from_utf8(value).expect("parsed source strings are UTF-8");
-                self.row(
-                    depth,
-                    expr.span,
-                    "ByteString",
-                    &format!("value={}", quote(string)),
-                )
-            }
-            ExprKind::BytesLiteral(value) => {
-                let string = String::from_utf8_lossy(value);
-                self.row(
-                    depth,
-                    expr.span,
-                    "BytesLiteral",
-                    &format!("value={}", quote(&string)),
-                )
-            }
+            ExprKind::ByteString(value, _) => self.row(
+                depth,
+                expr.span,
+                "ByteString",
+                &format!("value={}", quote_bytes(value)),
+            ),
+            ExprKind::BytesLiteral(value) => self.row(
+                depth,
+                expr.span,
+                "BytesLiteral",
+                &format!("value={}", quote_bytes(value)),
+            ),
             ExprKind::Take(value) => {
                 self.row(depth, expr.span, "Take", "")?;
                 self.expr(value, depth + 1)
@@ -607,6 +601,10 @@ impl TreeWriter {
                     self.expr(&field.value, depth + 2)?;
                 }
                 Ok(())
+            }
+            ExprKind::ArrayLiteral(values) => {
+                self.row(depth, expr.span, "ArrayLiteral", "")?;
+                self.exprs(values, depth + 1)
             }
             ExprKind::ListLiteral => self.row(depth, expr.span, "ListLiteral", ""),
             ExprKind::PoolLiteral => self.row(depth, expr.span, "PoolLiteral", ""),
@@ -741,7 +739,7 @@ fn token_kind(kind: &TokenKind) -> &'static str {
     match kind {
         TokenKind::Ident(_) => "Ident",
         TokenKind::Number(_) => "Number",
-        TokenKind::String(_) => "String",
+        TokenKind::String { .. } => "String",
         TokenKind::Newline => "Newline",
         TokenKind::LParen => "LParen",
         TokenKind::RParen => "RParen",
@@ -797,19 +795,57 @@ fn quote(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
     for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\0' => out.push_str("\\u0000"),
-            ch if ch <= '\u{001f}' => write!(out, "\\u{:04x}", ch as u32).unwrap(),
-            ch => out.push(ch),
+        push_quoted_char(&mut out, ch);
+    }
+    out.push('"');
+    out
+}
+
+fn quote_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() + 2);
+    out.push('"');
+    let mut offset = 0;
+    while offset < bytes.len() {
+        match std::str::from_utf8(&bytes[offset..]) {
+            Ok(valid) => {
+                for ch in valid.chars() {
+                    push_quoted_char(&mut out, ch);
+                }
+                offset = bytes.len();
+            }
+            Err(error) => {
+                let valid_end = offset + error.valid_up_to();
+                let valid = std::str::from_utf8(&bytes[offset..valid_end])
+                    .expect("valid_up_to identifies UTF-8");
+                for ch in valid.chars() {
+                    push_quoted_char(&mut out, ch);
+                }
+                offset = valid_end;
+                let invalid_len = error
+                    .error_len()
+                    .unwrap_or_else(|| bytes.len().saturating_sub(offset));
+                for byte in &bytes[offset..offset + invalid_len] {
+                    out.push_str(&format!("\\u{byte:04x}"));
+                }
+                offset += invalid_len;
+            }
         }
     }
     out.push('"');
     out
+}
+
+fn push_quoted_char(out: &mut String, ch: char) {
+    match ch {
+        '"' => out.push_str("\\\""),
+        '\\' => out.push_str("\\\\"),
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\t' => out.push_str("\\t"),
+        '\0' => out.push_str("\\u0000"),
+        ch if ch <= '\u{001f}' => write!(out, "\\u{:04x}", ch as u32).unwrap(),
+        ch => out.push(ch),
+    }
 }
 
 fn string_array(values: &[String]) -> String {

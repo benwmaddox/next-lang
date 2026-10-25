@@ -1,0 +1,4 @@
+FAIL exit only fails this test process
+  test 'exit only fails this test process' ended with a runtime failure (exit code 70)
+ok   runner continues after an exit
+1 passed, 1 failed
