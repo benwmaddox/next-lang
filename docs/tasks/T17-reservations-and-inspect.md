@@ -20,3 +20,11 @@ Depends on T16. Same rules. Read DESIGN.md "The job's data stack" (reservations 
 
 
 - `inspect stacks` also lists each reserved region over 64 KB (address space reserved ahead) and any slide-down sites the compiler chose as an optimisation.
+
+## Corrections after S0, T23 and the self-hosting research (2026-10-25), binding; they override the text above where they differ
+
+- **Recursion exists now (T19):** an entry point that reaches a `recursive` cycle has a native-stack bound of its non-recursive worst case plus the recursion budget (T19's frame-size protocol); its data-stack bound is still computable, because T19 forbids keeping a region alive across a recursive call. Report recursive entry points as such in `inspect stacks`; don't call them unbounded.
+- **No 64 MiB ceiling on computed reservations:** reserve exactly the computed worst case rounded up to a page, however large (the 64 MiB constant stays only as the default for an entry point the analysis can't bound). Reservation costs address space; T23 made sure only live data is touched. Acceptance: an entry point whose computed worst case is about 1 GiB (e.g. large local collections it barely fills) runs, touching only about 10 MB, and `inspect stacks` shows reserved and touched separately (touched measured by a test hook or RSS).
+- **No slide-down:** DESIGN.md's reserve-ahead decision replaced slide-down; drop "slide-down sites" from `inspect stacks`. List reserved regions over 64 KB and copy-down sites (reassignments that build a temporary and copy it back) instead.
+- **Startup check:** a reservation that can't be made (address-space limits, `ulimit -v`) is a clear startup failure naming the entry point and size, never a later crash; test it with a lowered `ulimit -v`.
+- **Timing:** run checker-performance style timing on a large generated program (many functions, long loops) so the analysis stays linear.
