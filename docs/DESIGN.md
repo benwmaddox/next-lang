@@ -199,7 +199,7 @@ global app: App                              // the program's state, reserved on
 | `queue<T, N>`, `ring<T, N>` | first in, first out; a ring overwrites its oldest | position |
 | `grid<T, W, H>` | a W × H fixed array with 2-D indexing | `(x, y)` |
 
-Adding to a full collection (or writing a field past its maximum) returns `Result`, which the code must handle, unless the compiler proves it can't happen there (a loop pushing at most 500 items into a fresh `list<T, 500>`, say). A failed write leaves the collection unchanged. A ring is the exception: it overwrites, by definition. When dropping the value is the intended outcome, `discard g.rocks.add(fragment)` says so (decided 2026-10-24): it accepts only a collection's expected errors (`Full`), so any other error still has to be handled, and it's a word, never silent.
+Adding to a full collection (or writing a field past its maximum) returns `Result`, which the code must handle (an unused `Result` is a build error; `main` and tests may return `Result`, and an `err` there prints the error and exits 1), unless the compiler proves it can't happen there (a loop pushing at most 500 items into a fresh `list<T, 500>`, say). A failed write leaves the collection unchanged. A ring is the exception: it overwrites, by definition. When dropping the value is the intended outcome, `discard g.rocks.add(fragment)` says so (decided 2026-10-24): it accepts only a collection's expected errors (`Full`), so any other error still has to be handled, and it's a word, never silent.
 
 **Layout: structure of arrays, as Stasis lowers it**
 
@@ -757,7 +757,7 @@ How code is organised, how servers produce pages, and how games talk to the scre
 ### Packages
 
 - **A package is a directory.** Every file in it sees every other's declarations, with no imports (crudspec's rule); files are read in name order only for error messages.
-- **Using another package:** a package lists its dependencies in its manifest (`package.toml`: name, version, dependencies, and the capabilities it may be granted). Their declarations are reached by package name, `chat.Room`, never by file.
+- **Using another package:** a package lists its dependencies in its manifest (`package.toml`: name, version, dependencies, and the capabilities it may be granted). Their declarations are reached by package name, `chat.Room`, never by file. A manifest without a `capabilities` key (or no manifest at all) grants `out` only, so a program can print without one; `fs`, `env` and the rest are listed explicitly, and an explicit list replaces the default (decided 2026-10-24).
 - **Visibility:** a declaration is private to its package unless marked `pub`. A `pub` declaration's whole interface (types, effects, refinements, the stack contract) is what other packages compile against, and what a module's cache key hashes (Development experience). A module, the unit the build compiles and caches, is a file; its cache key includes the interfaces of the private declarations it uses from sibling files (and their stack contracts, effects and refinements), so changing a private declaration in one file rebuilds the files that use it, along with the generic copies and compile-time inputs already in the key (Development experience).
 - **The standard library** is a package written in the language where possible (`std`), with C bindings for crypto, compression and SQLite (no home-made crypto).
 - **Versions:** v1 resolves exact versions from a lock file; no package registry yet (a non-goal).
