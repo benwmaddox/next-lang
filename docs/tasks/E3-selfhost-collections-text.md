@@ -30,6 +30,7 @@ E3 is split into steps. Each is sized for about one session, but a step is done 
 | **E3c** | `byte`; `Ascii`, `Text` and `Bytes` as stored values in locals, struct fields and payloads; literals, `len`, byte access, slicing (with the inclusive-range fix), comparisons, `print`, `str` and the formatting functions, conversions with `Utf8Error` and `TextError`, `fit<Ascii max N>()`; fresh-result destinations; `Text` validated once, with the test-build assertion | E3b |
 | **E3d1** | builders: append transactions with checkpoints, `+=`, `try_append`, `Bytes.push`, `take`; `grow` parameters (with the width fix); iteration scopes and the loop-growth bound rule; the in-place reassignment rule (T30) | E3c |
 | **E3d2** | unbounded local collections and builders at the stack's tail (rows layout for structs); the typical-run starting size; the `expected` harness class | E3d1 |
+| **E3d3** | interpolated strings `$"..."` (DESIGN "Interpolated strings"): lexing and parsing, bounds from the holes, one-pass lowering into the destination and straight into builders, format options | E3d2 |
 | **E3e** | `const` and constant arrays; retiring the core state block (into the job context) and constants-as-functions; nested collections in the flattened layout; text and byte fields in collection lanes; emitting only reachable functions | E3d2 |
 | **E3f1** | `Env`, `Fs` and `Out` as far as file I/O needs them; `Path`, `DirEntry`, `IoError` and `FileKind`; `main` and tests returning `Result`; file reads, writes, listings and joins in the core library; the atomic write; the test-build temporary root; the Bytes-only read fix and the zero-byte-write fix; core memory-function speed | E3e |
 | **E3f2** | the streaming file writer, with its uniqueness, borrowing, exit and fault-plan rules | E3f1 |
@@ -335,6 +336,17 @@ A use of `push` or `insert` other than under `discard`, and `pop`, is the typed 
 - a Text-heavy benchmark (concatenating, slicing and printing) is measured for the report, against stage 0.
 
 **E3d1: builders.** Stage 0's surface: `+=` on `Ascii` only (on `Text` and `Bytes` it is stage 0's numeric-operator error), `try_append` on all three (`Result<(), Full>`), `Bytes.push(byte)`, `take` with its move rules and texts, and append-mode variants only for functions returning `Ascii` or `Result<Ascii, E>`. The self-hosted compiler matches that surface. It builds them with append transactions (see "`grow` parameters and append transactions"), reserve-ahead regions for builders over the residence threshold, tight packing of temporaries finished before anything is placed above them, iteration scopes, and the loop-growth bound rule: a value a loop keeps growing must have a bound from its type or from a counted loop over bounded input, else stage 0's error naming the value and the loop. The DESIGN worked example (`render` and `line`) is a fixture with its output.
+
+## Interpolated strings (E3d3)
+
+As DESIGN "Interpolated strings" says. A new step because stage 0 has no interpolation: every fixture is `expected` class (hand-written expected output, reviewed), and the self-hosted compiler's own source keeps using concatenation until B1.
+
+- **Syntax:** `$"..."` with `{expr}` holes and `{{`/`}}` for literal braces; holes may hold any expression of a printable type; format options `{e:N}`, `{e:0N}`, `{e:x}`, `{e:b}` on integers only (others are a build error).
+- **Type:** `Ascii max N` when every literal piece and every hole is ASCII-only (numbers, bools, `Ascii`, structs and enums whose printed form is ASCII), else `Text` with the summed code-point maximum; N is the sum of the literal lengths and each hole's maximum (with its width option). Overflow of the sum is a build error.
+- **Lowering:** exactly the concatenation path from E3c and E3d1, with no intermediate values: a fresh result built in its destination region; `x += $"..."` in append mode straight into the builder, with E3d1's checkpoint and rollback if a later piece fails; the `Text` code-point count summed as pieces are written. Holes use the existing formatters and print helpers, so `$"{s}"` prints exactly what `print(s)` prints.
+- **Evaluation:** holes are evaluated once, left to right, under "Evaluation of arguments and operands".
+- **Fixtures:** every hole type; each format option, including a width wider than the type's maximum; `{{` and `}}`; an empty `$""`; the bound exactly fitting and one over (build error); `+=` into a builder near capacity (the `try_append` failure leaves the builder unchanged); `Text` holes with four-byte characters; holes with side effects in order; a struct and an enum hole matching `print`.
+- **Measurement:** the `text_format` pair in bench/vs-rust rewritten with `$"..."` (as a second next-lang version) must be no slower than the concatenation version.
 
 ## `const` (E3e)
 
