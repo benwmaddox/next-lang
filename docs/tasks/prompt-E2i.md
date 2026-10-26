@@ -1,0 +1,9 @@
+You are the implementer (Luna) for the next-lang project, in this repository (/mnt/d/code/next-lang). Claude is the manager and reviewer.
+
+Do **E2i**, the shared-interfaces step, as specified in docs/tasks/E3-selfhost-collections-text.md (section "E2i"; read the whole spec for context, especially "Parallel work and the merge", "The location descriptor" and "Evaluation of arguments and operands"). E2a has just landed (docs/tasks/E2a-report.md). After E2i, two lines of work run in parallel: E2b/E2c in this checkout and E3a1/E3a2 in a separate worktree, so the interfaces you create are the boundary they both build on. Keep them small, documented in the code, and with the ownership table the spec asks for.
+
+E2i must not change behaviour: the build comparison stays at zero mismatches with the same classification, plus the source-scan test the spec describes. It also includes the stage-0 argument-timing audit (fixtures for struct-element gather timing and unsnapshotted large read arguments; fix stage 0 only if they show a mismatch, as the spec says). Stage 0 (compiler/) is otherwise frozen.
+
+Read docs/PLAN.md ("Stage 0 freeze", "Order of work"), docs/tasks/E2-selfhost-structs-enums.md, E2a-report.md, selfhost/ and core/. Always set CARGO_TARGET_DIR=$HOME/.cache/next-lang/target; run large builds under `ulimit -v 8000000` and `timeout`. Both full suites (NLC_FRONTEND=rust and selfhost) must pass, and `cargo fmt --all -- --check`. No network, no external crates. Work in steps and keep the suite passing after each. Delete any scratch files you create in the repository root when done.
+
+Rules: never run git commit, never create or switch branches, never stash or reset; never edit docs/DESIGN.md, docs/PLAN.md, docs/research/ or docs/reviews/. When done, write docs/tasks/E2i-report.md.
