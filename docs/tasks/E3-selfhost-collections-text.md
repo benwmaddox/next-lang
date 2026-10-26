@@ -358,7 +358,18 @@ A use of `push` or `insert` other than under `discard`, and `pop`, is the typed 
 - the system-call context in error text;
 - the `sys` operations this needs (`openat2`, `read`, `getdents64`, `fsync`, `renameat2`, `unlinkat`, `mkdirat`, `getrandom`), each with its E2c wrapper, or its offset-taking stack-buffer function where it takes a data-stack buffer.
 
-**Core memory-function speed** (PLAN small fixes, E3f1): tune `memcpy` and `memset` (wider moves, function multiversioning for x86-64-v3 and v4 where it pays) and measure against the 1.25x bar with bench/memfn. The closure rules and the post-link call-graph test stay.
+**Core memory-function speed** (PLAN small fixes, E3f1): tune `memcpy` and `memset` (wider moves, function multiversioning for x86-64-v3 and v4 where it pays) and measure against the 1.25x bar with bench/memfn. The closure rules and the post-link call-graph test stay. Also block-wise `copy_backward` and an overlapping tail in place of the byte loops.
+
+**Specialised copies** (E3a2 for collections and structs, E3c for text, E3e for globals and nested lanes). Where the code generator knows a copy's facts, it emits the copy inline instead of calling `memcpy`, `memmove` or `memset`. The generic functions remain for copies of unknown shape and for LLVM's own calls. The facts and what each allows:
+
+- **Fixed or bounded size.** A copy whose size is a compile-time constant of at most 64 bytes is straight-line loads and stores with no size test. A bounded copy (a lane's live part, a text's live bytes) uses only the tiers its maximum can reach.
+- **Alignment.** Native slots, region starts and lanes have the alignment the layout section gives them; the emitted moves declare it.
+- **No overlap.** A copy between two places the checker proved distinct (separate values, `write` arguments after the overlap check, a fresh hidden result) is a forward copy with no direction test. Copies between places it hasn't proved distinct keep `memmove`.
+- **Padded copies.** When both the source and destination slots have room, a live length is rounded up to the move width and copied without a tail. The rounding never reads or writes past either slot's capacity (not just past the live data), and the bytes beyond the live length are never observed: equality, printing, hashing and writes use live lengths only. A fixture fills a slot, shrinks it, copies it and checks that equality, printing and a file write show no stale bytes.
+- **Collections copy as one loop over their lanes** (each lane's live part, same count), not one call per lane.
+- **Zeroing fresh memory.** A fill to zero is skipped only for bytes above the data stack's high-water mark, which the operating system gave zeroed and nothing has written since. Memory below the mark has been used and reused by earlier scopes, so it is filled as normal. If the high-water mark isn't tracked exactly, this item is skipped, not approximated.
+
+Acceptance: the comparison and relocation checks unchanged; a bench/memfn variant timing each specialised form against the generic call at sizes 8, 40, 64, 256 and 4,096 bytes and on a list copy of a three-field struct (8, 64 and 1,024 elements); the report lists each form, how often the self-hosted compiler's own build emits it, and its speed-up. A form that isn't faster than the generic call is dropped.
 
 **E3f2: the streaming file writer.** Its own step, because it is a unique resource with borrowing and exit rules no other feature has. It follows core-library.md: what the writer holds, `write`, uniqueness (no copy, no store, no return, moves only by `take`), the exclusive borrow of its buffer, `close` as the commit and `abort` that never publishes, an `abort` cleanup registered with E2i's exit function on every early exit, the failed state, and the per-job list of open writers linked by offsets. Its fixtures are `expected` class. The control-flow fixtures (each exit kind, nested scopes, loops, `?` inside a callee taking `write FileWriter`), the lifetime fixtures (a copy, a store, a use of the borrowed buffer, a buffer with a shorter scope, a second `close`, each refused at build time) and the fault-plan runtime fixtures must all pass. The self-hosted compiler's own IR output keeps its single `Bytes` write until B1: its source may use only what stage 0 accepts, and stage 0 has no streaming writer.
 
@@ -427,6 +438,7 @@ As E2's rules (release builds, `ulimit -v 8000000`, the bench lock, best of five
 - E3c and E3d1: the Text-heavy benchmark and a builder benchmark, both compilers;
 - E3d2: a large unbounded push loop: wall time, `initial`, `reserved` and `peak_used` from the stats line, and peak RSS, each labelled with its measure;
 - E3e: IR bytes per source byte before and after reachable-only emission, on the self-hosted compiler's own source compiled as a package if the subset allows it by then, else on the generated benchmark; the nested-loop benchmark with descriptor arithmetic;
+- E3a2, E3c and E3e: the specialised-copy benchmark (see "Specialised copies"), for the forms each step adds;
 - E3f1: bench/memfn before and after; a file-heavy program, both compilers;
 - every step: bootstrap time and `nlc inspect stacks selfhost` (what its tables add).
 
