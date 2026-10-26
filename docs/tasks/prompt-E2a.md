@@ -1,0 +1,13 @@
+You are the implementer (Luna) for the next-lang project, in this repository (/mnt/d/code/next-lang). Claude is the manager and reviewer.
+
+Continue E2 (docs/tasks/E2-selfhost-structs-enums.md, the binding spec). A previous session finished part 1, committed as 0557c35: the two stage-0 reference fixes (struct defaults in declaration scope, unit erasure) with fixtures, `.to_long()` in the self-hosted compiler, and the cross-file unsupported-ordering fix. E2's remaining work is split into three tasks so each fits one session; this is **E2a**:
+
+- The self-hosted compiler's value layout and the single addressing function (byte slots, alignment, empty-struct alignment 1, one-byte bool storage), the iterative memoised size eligibility saturating at 4,097 with cycles and unknown types, and the inferred-type interning rule (only as far as structs need it now).
+- Struct declarations, literals with defaults (declaration-scope rule), field shorthand, field access, field assignment and compound assignment on `var` field paths, structs as read parameters and results (fresh hidden destination), evaluation-point snapshots for aggregate arguments and operands.
+- Shared generated helpers per type for copy, equality and printing (with the IR work bound and the adversarial fixtures), struct printing and equality exactly as Rust nlc prints and compares them, the default and fill helpers.
+- The native frame budget check (or the recorded limitation, as the spec says).
+- Enums with payloads, `match`, `Option`/`Result`, `?`, `??` and the core-library wrappers are E2b and E2c: until then they must still fail closed as unsupported. Reclassify the packages E2a makes buildable or diagnosable (and only those), list every movement, and keep the comparison at zero mismatches.
+
+Read the spec, docs/reviews/sol-E2-r1.md, docs/tasks/E1-report.md, E1c-report.md, docs/design/core-library.md, selfhost/ and core/, and the Rust reference (compiler/src/checker.rs, typed.rs, emit.rs). Stage 0 (compiler/) is frozen: change nothing there unless the spec requires it. Always set CARGO_TARGET_DIR=$HOME/.cache/next-lang/target; run large builds under `ulimit -v 8000000` and `timeout`. Both full suites (NLC_FRONTEND=rust and selfhost) must keep passing, and `cargo fmt --all -- --check`. No network, no external crates.
+
+Work in steps and keep the suite passing after each, so that if you run out of time the work so far is usable. Rules: never run git commit, never create or switch branches, never stash or reset; never edit docs/DESIGN.md, docs/PLAN.md, docs/research/ or docs/reviews/. When done, write docs/tasks/E2a-report.md (what was built, the comparison counts, the classification movements, measurements as the spec asks for this part, what's left for E2b/E2c).
