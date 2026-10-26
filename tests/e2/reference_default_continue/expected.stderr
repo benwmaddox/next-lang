@@ -1,0 +1,1 @@
+main.nl:1:21: error: 'continue' is only valid inside a loop (in the default for field 'S.x')

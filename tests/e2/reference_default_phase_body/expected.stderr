@@ -1,0 +1,1 @@
+main.nl:1:21: error: expected int, found bool; cast explicitly with (int)value (in the default for field 'S.x')

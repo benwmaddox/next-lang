@@ -1,0 +1,1 @@
+main.nl:2:5: error: 'expect' is only valid inside a test block (in the default for field 'S.x')

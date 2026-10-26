@@ -1,0 +1,1 @@
+main.nl:1:25: error: return is not allowed in a field default (in the default for field 'S.value')

@@ -18,11 +18,13 @@ build	tests/e1/manifest_fsenv
 build	tests/e1/multifile_runtime
 diagnose	tests/e1/no_out
 diagnose	tests/e1/order_entry
+unsupported	tests/e1/order_file_precedence
 diagnose	tests/e1/order_registration
 build	tests/e1/overflowassign
 diagnose	tests/e1/parameter_assign
 build	tests/e1/smoke
 build	tests/e1/test_semantics
+build	tests/e1/tolong
 diagnose	tests/e1/unknown_type
 unsupported	tests/e1/unsupported_assign_shr_test
 unsupported	tests/e1/unsupported_assign_shr_unreachable
@@ -125,7 +127,7 @@ unsupported	tests/run/arithmetic
 diagnose	tests/run/assign_let
 build	tests/run/bad_cast
 unsupported	tests/run/bad_shift
-unsupported	tests/run/bad_to_long_method
+diagnose	tests/run/bad_to_long_method
 unsupported	tests/run/bool_match_non_exhaustive
 diagnose	tests/run/break_outside_loop
 diagnose	tests/run/call_cycle

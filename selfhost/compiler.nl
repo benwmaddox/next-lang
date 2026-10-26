@@ -977,7 +977,7 @@ fn unsupported_category_for_node(
         NodeKind.QueueLiteral => UNSUPPORTED_NODE,
         NodeKind.RingLiteral => UNSUPPORTED_NODE,
         NodeKind.GridIndex => UNSUPPORTED_NODE,
-        NodeKind.ToLong => UNSUPPORTED_NODE,
+        NodeKind.ToLong => 0L,
         NodeKind.WildcardPattern => UNSUPPORTED_NODE,
         NodeKind.BoolPattern => UNSUPPORTED_NODE,
         NodeKind.CasePattern => UNSUPPORTED_NODE,
@@ -1072,7 +1072,6 @@ fn unsupported_node_message(kind: NodeKind) -> Ascii max 160 {
         NodeKind.Fit => "fit expressions",
         NodeKind.Try => "? propagation",
         NodeKind.MethodCall => "method calls",
-        NodeKind.ToLong => "to_long methods",
         NodeKind.IndirectCall => "indirect calls",
         NodeKind.Index => "indexing",
         NodeKind.OptionalCall => "optional calls",
@@ -1169,7 +1168,7 @@ fn check_package_eligibility(
         let category = unsupported_category_for_node(source, tokens, files, tables, compiler, node, file_index)
         if category == 0L { continue }
         let start = if category == UNSUPPORTED_OPERATOR { tables.nodes[node].anchor } else { tables.nodes[node].start }
-        let is_earlier = !hit.found || start < hit.offset || (start == hit.offset && (tables.nodes[node].end > tables.nodes[hit.node].end || (tables.nodes[node].end == tables.nodes[hit.node].end && node > hit.node)))
+        let is_earlier = !hit.found || file_index < hit.file || (file_index == hit.file && (start < hit.offset || (start == hit.offset && (tables.nodes[node].end > tables.nodes[hit.node].end || (tables.nodes[node].end == tables.nodes[hit.node].end && node > hit.node)))))
         if is_earlier {
             hit = UnsupportedHit { found: true, file: file_index, node, offset: start, category, token: tables.nodes[node].token }
         }
@@ -1849,6 +1848,7 @@ fn natural_node_type(
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "long") { TY_LONG }
             else { -1L }
         },
+        NodeKind.ToLong => TY_LONG,
         NodeKind.Unary => -1L,
         NodeKind.Binary => if value.flags >= 8L && value.flags <= 15L { TY_BOOL } else { -1L },
         _ => -1L,
@@ -2372,6 +2372,13 @@ fn check_one_body(
                 compiler.work[frame_index] = frame
                 continue
             }
+            if kind == NodeKind.ToLong {
+                frame.child0 = compiler.child_first[node]
+                frame.cursor = frame.child0
+                frame.phase = 1L
+                compiler.work[frame_index] = frame
+                continue
+            }
             if kind == NodeKind.Unary {
                 frame.child0 = compiler.child_first[node]
                 frame.cursor = frame.child0
@@ -2507,7 +2514,7 @@ fn check_one_body(
                 if frame.cursor == 0L { child = frame.child0; frame.cursor = 1L }
                 else if frame.cursor == 1L { child = frame.child1; frame.cursor = 2L }
                 else { () }
-            } else if kind == NodeKind.Return || kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Expect || kind == NodeKind.Unary || kind == NodeKind.Cast {
+            } else if kind == NodeKind.Return || kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Expect || kind == NodeKind.Unary || kind == NodeKind.Cast || kind == NodeKind.ToLong {
                 child = frame.cursor
                 frame.cursor = -1L
             } else if kind == NodeKind.Binary {
@@ -2663,6 +2670,20 @@ fn check_one_body(
                 require_type(env, files, compiler, file_index, node, frame.expected, target_ty, tables)
             }
             compiler.facts[node] = NodeFact { ty: target_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+        } else if kind == NodeKind.ToLong {
+            let value_ty = compiler.facts[frame.child0].ty
+            if value_ty != TY_INT {
+                let message: Ascii max 160 = if value_ty == TY_LONG { "no method 'to_long' on long; 'to_long' is available on int" }
+                    else if value_ty == TY_BOOL { "no method 'to_long' on bool; 'to_long' is available on int" }
+                    else if value_ty == TY_UNIT { "no method 'to_long' on (); 'to_long' is available on int" }
+                    else if value_ty == TY_ADDR { "no method 'to_long' on sys.Addr; 'to_long' is available on int" }
+                    else { "no method 'to_long' on never; 'to_long' is available on int" }
+                fail_at_message(env, files, compiler, file_index, syntax.anchor, message)
+            }
+            if frame.expected >= 0L && frame.expected != TY_LONG {
+                require_type(env, files, compiler, file_index, node, frame.expected, TY_LONG, tables)
+            }
+            compiler.facts[node] = NodeFact { ty: TY_LONG, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.Unary {
             let child = frame.child0
             let value = compiler.facts[child]
@@ -3297,6 +3318,13 @@ fn emit_expr_linear(
                 if frame.child0 >= 0L {
                     compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
                 }
+            } else if kind == NodeKind.ToLong {
+                frame.child0 = compiler.child_first[current]
+                frame.phase = 1L
+                compiler.expr_work[frame_index] = frame
+                if frame.child0 >= 0L {
+                    compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+                }
             } else if kind == NodeKind.If {
                 frame.child0 = compiler.child_first[current]
                 frame.child1 = compiler.child_next[frame.child0]
@@ -3349,6 +3377,9 @@ fn emit_expr_linear(
             } else {
                 ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", -2147483648\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 2147483647\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler.file_id_base); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.anchor, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.anchor, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n")
             }
+            match compiler.expr_work.pop() { some(_) => (), none => () }
+        } else if kind == NodeKind.ToLong && frame.phase == 1L {
+            ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = sext i32 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i64\n")
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.Return && frame.phase == 17L {
             ir_write_ascii(compiler, ir, "  ret "); ir_write_ascii(compiler, ir, llvm_type_name(return_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, "\n")

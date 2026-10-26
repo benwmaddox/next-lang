@@ -102,6 +102,10 @@ struct Checker {
     type_ids: HashMap<String, Ty>,
     preferred_type_names: HashMap<Ty, String>,
     struct_decls: HashMap<Ty, StructDecl>,
+    struct_default_stack: Vec<(Ty, usize)>,
+    struct_default_dependencies: HashMap<(Ty, usize), Vec<(Ty, usize)>>,
+    checking_struct_default: bool,
+    checking_struct_default_precheck: bool,
     generic_struct_owners: HashMap<Ty, HashMap<String, usize>>,
     specialized_struct_base: HashMap<Ty, Ty>,
     specialized_struct_owners: HashMap<Ty, Vec<usize>>,
@@ -218,6 +222,10 @@ impl Checker {
             type_ids: HashMap::new(),
             preferred_type_names: HashMap::new(),
             struct_decls: HashMap::new(),
+            struct_default_stack: Vec::new(),
+            struct_default_dependencies: HashMap::new(),
+            checking_struct_default: false,
+            checking_struct_default_precheck: false,
             generic_struct_owners: HashMap::new(),
             specialized_struct_base: HashMap::new(),
             specialized_struct_owners: HashMap::new(),
@@ -577,6 +585,7 @@ impl Checker {
         if self.require_main || self.signatures.contains_key("main") {
             self.check_entry()?;
         }
+        self.check_struct_defaults()?;
         let mut global_init_exprs = Vec::with_capacity(self.ast_globals.len());
         for id in 0..self.ast_globals.len() {
             global_init_exprs.push(self.check_global_initializer(id)?);
@@ -3638,6 +3647,187 @@ impl Checker {
         Ok(())
     }
 
+    fn check_struct_defaults(&mut self) -> Result<(), CheckError> {
+        let mut default_order = Vec::new();
+        let declarations = self
+            .programs
+            .iter()
+            .flat_map(|program| program.structs.iter().cloned())
+            .collect::<Vec<_>>();
+        for declaration in declarations {
+            // Generic defaults are checked after their type arguments are known,
+            // as they are in the existing generic specialization path.
+            if !declaration.generic_params.is_empty() {
+                continue;
+            }
+            let Some(ty) = self.type_ids.get(&declaration.name).copied() else {
+                continue;
+            };
+            let fields = match self.types[ty.0].kind.clone() {
+                TTypeKind::Struct(fields) => fields,
+                _ => continue,
+            };
+            for (index, field) in declaration.fields.iter().enumerate() {
+                if let Some(default) = &field.default {
+                    self.check_struct_field_default(ty, index, fields[index].ty, default, true)?;
+                    default_order.push((ty, index));
+                }
+            }
+        }
+        let mut states = HashMap::new();
+        for field in default_order {
+            if states.get(&field).copied() == Some(2) {
+                continue;
+            }
+            states.insert(field, 1);
+            let mut stack = vec![(field, 0usize)];
+            while let Some((current, dependency_index)) = stack.last().copied() {
+                let dependency = self
+                    .struct_default_dependencies
+                    .get(&current)
+                    .and_then(|dependencies| dependencies.get(dependency_index))
+                    .copied();
+                if let Some(dependency) = dependency {
+                    stack.last_mut().expect("default walk has a frame").1 += 1;
+                    match states.get(&dependency).copied().unwrap_or(0) {
+                        2 => continue,
+                        1 => {
+                            let (struct_ty, field_index) = dependency;
+                            let declaration = &self.struct_decls[&struct_ty];
+                            let field_decl = &declaration.fields[field_index];
+                            return Err(CheckError {
+                                span: field_decl
+                                    .default
+                                    .as_ref()
+                                    .map_or(field_decl.span, |value| value.span),
+                                message: format!(
+                                    "field defaults form a cycle through {}.{}; give one of these fields an explicit value",
+                                    self.types[struct_ty.0].name, field_decl.name
+                                ),
+                            });
+                        }
+                        _ => {
+                            states.insert(dependency, 1);
+                            stack.push((dependency, 0));
+                        }
+                    }
+                } else {
+                    states.insert(current, 2);
+                    stack.pop();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn record_struct_default_dependency(&mut self, target: (Ty, usize)) {
+        if let Some(owner) = self.struct_default_stack.last().copied() {
+            let dependencies = self.struct_default_dependencies.entry(owner).or_default();
+            if !dependencies.contains(&target) {
+                dependencies.push(target);
+            }
+        }
+    }
+
+    fn check_struct_field_default(
+        &mut self,
+        struct_ty: Ty,
+        field_index: usize,
+        field_ty: Ty,
+        default: &Expr,
+        precheck: bool,
+    ) -> Result<TExpr, CheckError> {
+        if self
+            .struct_default_stack
+            .iter()
+            .any(|entry| *entry == (struct_ty, field_index))
+        {
+            let declaration = self
+                .struct_decls
+                .get(&struct_ty)
+                .expect("default's struct declaration exists");
+            let field = &declaration.fields[field_index];
+            return Err(CheckError {
+                span: field
+                    .default
+                    .as_ref()
+                    .map_or(field.span, |value| value.span),
+                message: format!(
+                    "field defaults form a cycle through {}.{}; give one of these fields an explicit value",
+                    self.types[struct_ty.0].name, field.name
+                ),
+            });
+        }
+
+        self.struct_default_stack.push((struct_ty, field_index));
+        let saved_locals = std::mem::replace(&mut self.locals, vec![HashMap::new()]);
+        let saved_scope_ids = std::mem::replace(&mut self.scope_ids, vec![0]);
+        let saved_next_local = self.next_local;
+        let saved_next_scope = self.next_scope;
+        let saved_current_return = self.current_return;
+        let saved_current_is_test = self.current_is_test;
+        let saved_loop_depth = self.loop_depth;
+        let saved_loop_names = std::mem::take(&mut self.loop_names);
+        let saved_loop_outer_depths = std::mem::take(&mut self.loop_outer_depths);
+        let saved_conditional_depth = self.conditional_depth;
+        let saved_checking_constant = self.checking_constant;
+        let saved_checking_global_initializer = self.checking_global_initializer;
+        let saved_checking_struct_default = self.checking_struct_default;
+        let saved_precheck = self.checking_struct_default_precheck;
+        let saved_edges = self.edges.len();
+
+        self.next_local = if precheck { 0 } else { saved_next_local };
+        self.next_scope = if precheck { 1 } else { saved_next_scope };
+        self.current_return = Ty::Unit;
+        self.current_is_test = false;
+        self.loop_depth = 0;
+        self.loop_names.clear();
+        self.loop_outer_depths.clear();
+        self.conditional_depth = 0;
+        self.checking_constant = false;
+        self.checking_global_initializer = false;
+        self.checking_struct_default = true;
+        self.checking_struct_default_precheck = precheck || saved_precheck;
+
+        let checked = self.check_store(default, field_ty);
+        let next_local = self.next_local;
+        self.locals = saved_locals;
+        self.scope_ids = saved_scope_ids;
+        self.next_local = if precheck {
+            saved_next_local
+        } else {
+            next_local
+        };
+        self.next_scope = saved_next_scope;
+        self.current_return = saved_current_return;
+        self.current_is_test = saved_current_is_test;
+        self.loop_depth = saved_loop_depth;
+        self.loop_names = saved_loop_names;
+        self.loop_outer_depths = saved_loop_outer_depths;
+        self.conditional_depth = saved_conditional_depth;
+        self.checking_constant = saved_checking_constant;
+        self.checking_global_initializer = saved_checking_global_initializer;
+        self.checking_struct_default = saved_checking_struct_default;
+        self.checking_struct_default_precheck = saved_precheck;
+        self.struct_default_stack.pop();
+        if precheck {
+            self.edges.truncate(saved_edges);
+        }
+
+        checked.map_err(|mut error| {
+            let has_default_context = error.message.contains("(in the default for field '");
+            let suffix = format!(
+                " (in the default for field '{}.{}')",
+                self.types[struct_ty.0].name,
+                self.struct_decls[&struct_ty].fields[field_index].name
+            );
+            if !has_default_context && !error.message.starts_with("field defaults form a cycle") {
+                error.message.push_str(&suffix);
+            }
+            error
+        })
+    }
+
     fn is_printable_type(&self, ty: Ty) -> bool {
         let ty = self.base_type(ty);
         matches!(ty, Ty::Int | Ty::Long | Ty::Bool)
@@ -4627,7 +4817,7 @@ impl Checker {
                 if typed_expr_contains_bytes_view(&typed_value) {
                     return Err(bytes_view_escape_error(value.span));
                 }
-                if typed_value.ty == Ty::Unit || typed_value.ty == Ty::Never {
+                if typed_value.ty == Ty::Never {
                     return Err(CheckError { span: value.span, message: "a binding needs a value; functions and if expressions used here must return int, long, or bool".to_owned() });
                 }
                 let ty = annotated.unwrap_or(typed_value.ty);
@@ -4988,6 +5178,12 @@ impl Checker {
                 }
             }
             StmtKind::Return(value) => {
+                if self.checking_struct_default {
+                    return Err(CheckError {
+                        span: stmt.span,
+                        message: "return is not allowed in a field default".to_owned(),
+                    });
+                }
                 if self.current_is_test {
                     return Err(CheckError {
                         span: stmt.span,
@@ -8394,7 +8590,17 @@ impl Checker {
                 let mut values = Vec::new();
                 for (index, field) in fields.iter().enumerate() {
                     if let Some(default) = declaration.fields[index].default.as_ref() {
-                        values.push((index, self.check_store(default, field.ty)?));
+                        let base_ty = self.specialized_struct_base.get(&ty).copied().unwrap_or(ty);
+                        if self.checking_struct_default_precheck {
+                            self.record_struct_default_dependency((base_ty, index));
+                        } else {
+                            values.push((
+                                index,
+                                self.check_struct_field_default(
+                                    base_ty, index, field.ty, default, false,
+                                )?,
+                            ));
+                        }
                     } else if matches!(
                         self.types[field.ty.0].kind,
                         TTypeKind::Array { .. }
@@ -10780,7 +10986,16 @@ impl Checker {
                     }
                     let default = declaration.fields[index].default.as_ref();
                     if let Some(default) = default {
-                        typed_fields.push((index, self.check_store(default, field.ty)?));
+                        if self.checking_struct_default_precheck {
+                            self.record_struct_default_dependency((base_ty, index));
+                        } else {
+                            typed_fields.push((
+                                index,
+                                self.check_struct_field_default(
+                                    base_ty, index, field.ty, default, false,
+                                )?,
+                            ));
+                        }
                     } else if matches!(
                         self.types[field.ty.0].kind,
                         TTypeKind::Array { .. }
@@ -10998,6 +11213,12 @@ impl Checker {
                                 .to_owned(),
                     });
                 }
+                if self.checking_struct_default {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "'?' is not allowed in a field default".to_owned(),
+                    });
+                }
                 let typed = self.check_expr(value, None)?;
                 let (success_ty, error_ty) = match self.types[typed.ty.0].kind {
                     TTypeKind::Option(inner) => {
@@ -11049,6 +11270,12 @@ impl Checker {
                 )
             }
             ExprKind::Return(value) => {
+                if self.checking_struct_default {
+                    return Err(CheckError {
+                        span: expr.span,
+                        message: "return is not allowed in a field default".to_owned(),
+                    });
+                }
                 if self.checking_constant {
                     return Err(CheckError {
                         span: expr.span,

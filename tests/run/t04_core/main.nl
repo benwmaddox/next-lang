@@ -11,11 +11,12 @@ struct Core {
 }
 struct Child { value: int }
 struct Defaults {
-    first: int = next(count)
-    second: int = next(count)
+    first: int = later()
+    second: int = later()
     skipped: int = 1 / 0
 }
 
+fn later() -> int { 2 }
 fn next(n: write int) -> int { n += 1; n }
 fn set(c: write Core) { c.size = 3; c.child.value = 9 }
 fn forward(c: write Core) { set(c) }
@@ -44,6 +45,7 @@ fn main() {
     one += 0
     var count = 0
     let d = Defaults { second: next(count), skipped: 7 }
+    next(count)
     var full: long -9223372036854775808..=9223372036854775807 wrap = -9223372036854775808L
     full += 1
     let opt: Option<Core> = some(c)

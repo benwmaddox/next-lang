@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare stage-zero selfhost builds against Rust nlc on the E1 package table."""
+"""Compare stage-zero selfhost builds against Rust nlc on the checked package table."""
 
 from __future__ import annotations
 
@@ -183,6 +183,9 @@ def main() -> int:
                             raise Mismatch("unsupported package produced an IR artifact", reference_result, self_result)
                         if not is_unsupported(self_result):
                             raise Mismatch("unsupported package did not get the exact unsupported diagnostic", reference_result, self_result)
+                        expected_selfhost = root / package / "expected.selfhost.stderr"
+                        if expected_selfhost.is_file() and self_result.stderr != expected_selfhost.read_bytes():
+                            raise Mismatch("selfhost unsupported diagnostic differs from its explicit oracle", reference_result, self_result)
                         counts[level]["unsupported"] += 1
 
                     if package == "tests/test/harness" and kind == "build":

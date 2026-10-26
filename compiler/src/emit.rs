@@ -6626,6 +6626,7 @@ impl<'a> FunctionEmitter<'a> {
             self.function
                 .params
                 .iter()
+                .filter(|param| param.ty != Ty::Unit)
                 .zip(signature.params.iter())
                 .map(|(p, ty)| format!("{ty} %arg.{}", p.id)),
         );
@@ -6661,7 +6662,8 @@ impl<'a> FunctionEmitter<'a> {
         self.prologue_end = self.lines.len();
         self.alloca_end = self.prologue_end;
         for param in &self.function.params {
-            if param.mode == ParamMode::Read
+            if param.ty != Ty::Unit
+                && param.mode == ParamMode::Read
                 && !self.is_pool_param(param.id)
                 && (!is_large_type(param.ty, &self.program.types)
                     || self.is_read_string_param(param.id))
@@ -7427,6 +7429,9 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn record_slot(&mut self, id: usize, ty: Ty) {
+        if ty == Ty::Unit {
+            return;
+        }
         if self.slots.len() <= id {
             self.slots.resize(id + 1, None);
         }
@@ -12419,6 +12424,13 @@ impl<'a> FunctionEmitter<'a> {
         ];
         let mut regions = Vec::new();
         for (arg, param) in args.iter().zip(&function.params) {
+            if param.ty == Ty::Unit {
+                self.emit_expr(arg);
+                if self.terminated {
+                    return;
+                }
+                continue;
+            }
             let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
             else {
                 return;
@@ -12466,6 +12478,13 @@ impl<'a> FunctionEmitter<'a> {
         ];
         let mut regions = Vec::new();
         for (arg, param) in args.iter().zip(&function.params) {
+            if param.ty == Ty::Unit {
+                self.emit_expr(arg);
+                if self.terminated {
+                    return None;
+                }
+                continue;
+            }
             let value = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)?;
             call_args.push(value);
         }
@@ -12521,6 +12540,13 @@ impl<'a> FunctionEmitter<'a> {
         let mut lowered_args = Vec::with_capacity(args.len());
         let mut regions = Vec::new();
         for (arg, param) in args.iter().zip(params) {
+            if param.ty == Ty::Unit {
+                self.emit_expr(arg);
+                if self.terminated {
+                    return None;
+                }
+                continue;
+            }
             let value = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)?;
             lowered_args.push(value);
         }
@@ -12608,6 +12634,13 @@ impl<'a> FunctionEmitter<'a> {
         let mut lowered_args = Vec::with_capacity(args.len());
         let mut regions = Vec::new();
         for (arg, param) in args.iter().zip(params) {
+            if param.ty == Ty::Unit {
+                self.emit_expr(arg);
+                if self.terminated {
+                    return true;
+                }
+                continue;
+            }
             let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
             else {
                 return true;
@@ -13928,6 +13961,13 @@ impl<'a> FunctionEmitter<'a> {
         let mut regions = Vec::new();
         let mut pointer_args = Vec::new();
         for (index, (arg, param)) in args.iter().zip(&function.params).enumerate() {
+            if param.ty == Ty::Unit {
+                self.emit_expr(arg);
+                if self.terminated {
+                    return String::new();
+                }
+                continue;
+            }
             let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
             else {
                 return String::new();
@@ -14103,6 +14143,13 @@ impl<'a> FunctionEmitter<'a> {
         let mut regions = Vec::new();
         let mut pointer_args = Vec::new();
         for (arg, param) in args.iter().zip(params) {
+            if param.ty == Ty::Unit {
+                self.emit_expr(arg);
+                if self.terminated {
+                    return String::new();
+                }
+                continue;
+            }
             let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
             else {
                 return String::new();
@@ -15447,6 +15494,10 @@ impl<'a> FunctionEmitter<'a> {
                 value,
                 ..
             } => {
+                if *ty == Ty::Unit {
+                    self.emit_expr(value);
+                    return;
+                }
                 if self.append_variant && self.append_builder_local == Some(*id) {
                     let descriptor = self.entry_alloca_raw("[16 x i8]");
                     let accepted = self.temp();
@@ -15552,6 +15603,10 @@ impl<'a> FunctionEmitter<'a> {
                 operator_span,
                 value,
             } => {
+                if *ty == Ty::Unit && *op == AssignOp::Set {
+                    self.emit_expr(value);
+                    return;
+                }
                 if *op == AssignOp::Set {
                     if let Some(parameter_index) = in_place_reassignment_parameter(
                         &self.program.functions,
@@ -16750,6 +16805,10 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_print_value_storage(&mut self, ty: Ty, pointer: &str) {
         let ty = base_type(ty, &self.program.types);
+        if ty == Ty::Unit {
+            self.print_text("()");
+            return;
+        }
         if self.ascii_max(ty).is_some() {
             let descriptor = self.emit_inline_descriptor(pointer, ty);
             let data = self.ascii_field(&descriptor, ty, 0);
@@ -21192,6 +21251,9 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_inline_descriptor(&pointer, expr.ty)
             }
             TExprKind::Local(id) => {
+                if expr.ty == Ty::Unit {
+                    return String::new();
+                }
                 if let Some(view) = self.views.get(id).cloned() {
                     let index = self.temp();
                     self.instruction(format!(
@@ -22114,6 +22176,7 @@ fn lower_signature_mode(
         params: function
             .params
             .iter()
+            .filter(|param| param.ty != Ty::Unit)
             .map(|param| {
                 if offset_stack && is_large_type(param.ty, types) {
                     return "i64".to_owned();
