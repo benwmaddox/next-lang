@@ -2503,7 +2503,7 @@ struct CacheLock {
 
 impl CacheLock {
     fn acquire(path: PathBuf) -> Result<Self, PackageError> {
-        for _ in 0..600 {
+        for _ in 0..12_000 {
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)

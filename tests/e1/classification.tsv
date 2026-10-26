@@ -29,9 +29,9 @@ diagnose	tests/e1/unknown_type
 unsupported	tests/e1/unsupported_assign_shr_test
 unsupported	tests/e1/unsupported_assign_shr_unreachable
 unsupported	tests/e1/unsupported_assign_shr_unused
-unsupported	tests/e1/unsupported_op_*pct_test
-unsupported	tests/e1/unsupported_op_*pct_unreachable
-unsupported	tests/e1/unsupported_op_*pct_unused
+unsupported	tests/e1/unsupported_op_wrapmul_test
+unsupported	tests/e1/unsupported_op_wrapmul_unreachable
+unsupported	tests/e1/unsupported_op_wrapmul_unused
 unsupported	tests/e1/unsupported_op_+pct_test
 unsupported	tests/e1/unsupported_op_+pct_unreachable
 unsupported	tests/e1/unsupported_op_+pct_unused
