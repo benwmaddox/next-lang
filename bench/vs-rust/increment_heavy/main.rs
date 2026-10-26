@@ -31,7 +31,7 @@ fn main() {
     }
 
     let mut checksum: i64 = 0;
-    for _round in 0..10000 {
+    for _round in 0..2000000 {
         for index in 0..512 {
             items[index].middle.inner.value += 1;
             items[index].middle.count += 1;

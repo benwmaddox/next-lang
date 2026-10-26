@@ -22,7 +22,7 @@ fn main() {
     }
 
     var checksum = 0L
-    for round: long in 0L..1000L {
+    for round: long in 0L..300000L {
         for index: long in 0L..4096L {
             particles[index].x += particles[index].vx
             particles[index].y += particles[index].vy

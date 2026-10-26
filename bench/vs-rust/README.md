@@ -17,7 +17,6 @@ The programs use deterministic input (linear congruential generator seeded with 
 
 - Tests tight loop performance with data access and if/else branches
 - Uses modulo operations to create realistic branch behavior
-- Runtime: ~0.3–0.5 seconds
 
 **Selfhost readiness:** E3a2 (arrays and lists ready; no Text, Option, or function values needed)
 
@@ -27,7 +26,6 @@ The programs use deterministic input (linear congruential generator seeded with 
 - Tests array-of-structs layout and field update performance
 - 4,096 particles updated over 1,000 iterations
 - Each particle has 4 long fields (x, y, vx, vy)
-- Runtime: ~0.5–1.0 seconds
 
 **Selfhost readiness:** E3a2 (structs and list elements ready)
 
@@ -37,7 +35,6 @@ The programs use deterministic input (linear congruential generator seeded with 
 - Tests parameter-passing cost vs. direct field access
 - Calls `bump_field` (takes a `write long`) and `process_value` frequently
 - 1,024 items × 100 rounds with 4 calls per item
-- Runtime: ~0.3–0.5 seconds
 
 **Selfhost readiness:** E3a2 (write parameters are part of E3a2)
 
@@ -49,7 +46,6 @@ The programs use deterministic input (linear congruential generator seeded with 
 - Tests performance of deeply nested field access in a hot loop
 - 512 items, each with 3 levels of nesting (Outer → Middle → Inner)
 - 10,000 iterations of triple increment and checksum
-- Runtime: ~0.4–0.7 seconds
 
 **Selfhost readiness:** E3a2 (nested structs are inline per element; no unbounded nesting)
 
@@ -58,7 +54,6 @@ The programs use deterministic input (linear congruential generator seeded with 
 
 - Generates a list of 10,000 random numbers, sorts them, and performs 1,000 binary searches
 - Benchmarks the built-in `sort_by` and `binary_search` functions
-- Runtime: ~0.5–1.0 seconds
 
 **Selfhost readiness:** E4 (function values needed for custom comparators; not ready in E3a2)
 
@@ -83,7 +78,7 @@ bash scripts/bench-vs-rust.sh
 
 Run with timing (requires Linux, WSL, and the bench lock at `/home/ben/linuxbench/bench.lock`):
 ```bash
-bash scripts/bench-vs-rust.sh --time --out results.md
+bash scripts/bench-vs-rust.sh --time    # or name pairs: scripts/bench-vs-rust.sh --time calls
 ```
 
 Run a specific pair:
@@ -96,7 +91,7 @@ bash scripts/bench-vs-rust.sh --time tight_list
 - **No file I/O:** Input is generated inside the program to avoid I/O variance.
 - **Deterministic:** All programs use the same seed and have no randomness beyond the seeded LCG.
 - **Checksumming:** Results are accumulated into a checksum to prevent dead-code elimination while keeping the output small.
-- **Selfhost compilation:** The `--compiler selfhost` flag is reserved for future use when the self-hosted compiler is available (not yet implemented in stage 0).
+- **Selfhost compilation:** not wired in yet; add a self-hosted build path at checkpoint 1 (after E3a2), when it can build the first four pairs. Workloads are sized for roughly 0.5-1 s on the next-lang side at stage 0.
 
 ## Expected Results
 

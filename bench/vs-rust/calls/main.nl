@@ -30,7 +30,7 @@ fn main() {
     }
 
     var checksum = 0L
-    for round: long in 0L..100L {
+    for round: long in 0L..200000L {
         for index: long in 0L..1024L {
             bump_field(items[index].a)
             bump_field(items[index].b)

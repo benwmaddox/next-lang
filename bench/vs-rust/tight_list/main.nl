@@ -8,12 +8,14 @@ fn main() {
     }
 
     var checksum = 0L
-    for index: long in 0L..100000L {
-        let v = values[index]
-        if v % 2L == 0L {
-            checksum += v
-        } else {
-            checksum -= v
+    for round: long in 0L..10000L {
+        for index: long in 0L..100000L {
+            let v = values[index] + round
+            if v % 2L == 0L {
+                checksum += v
+            } else {
+                checksum -= v
+            }
         }
     }
 

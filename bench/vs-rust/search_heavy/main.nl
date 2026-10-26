@@ -16,7 +16,7 @@ fn main() {
 
     var checksum = 0L
     var seed2 = 42L
-    for round: long in 0L..1000L {
+    for round: long in 0L..10000000L {
         seed2 = (seed2 * 1103515245L + 12345L) % 2147483648L
         let target = seed2 % 2147483648L
         let found = binary_search(values, target) ?? -1L

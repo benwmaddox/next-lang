@@ -31,7 +31,7 @@ fn main() {
     }
 
     let mut checksum: i64 = 0;
-    for _round in 0..100 {
+    for _round in 0..200000 {
         for index in 0..1024 {
             bump_field(&mut items[index].a);
             bump_field(&mut items[index].b);

@@ -28,7 +28,7 @@ fn main() {
     }
 
     var checksum = 0L
-    for round: long in 0L..10000L {
+    for round: long in 0L..2000000L {
         for index: long in 0L..512L {
             items[index].middle.inner.value += 1L
             items[index].middle.count += 1L
