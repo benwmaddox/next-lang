@@ -9,5 +9,4 @@ Checked: Luna ran `scripts/compare-selfhost.sh --build` (482 classified packages
 Notes for later:
 
 - The self-hosted compiler's computed data-stack worst case grew to 3.48 GB with the checker and emitter tables (the stack-contract test ceiling went from 1 GiB to 4 GiB). That's reserved address range, not memory, and the offset milestone makes it a growth limit, but it's worth watching as E2-E4 add tables.
-- On Luna's 10,000-function benchmark, Rust nlc takes 5.6 s to check and emit while the self-hosted compiler takes 1.6 s; the Rust checker may have something quadratic in the number of functions. Logged in PLAN's small fixes.
-- `link-ir` (clang) takes 4.9 s on the self-hosted compiler's 6.2 MB of IR for 10,000 functions; Rust nlc's own build of the same package spends almost nothing in clang, which suggests Rust nlc emits only reachable functions. Worth matching (emit only what's reachable) when the IR size matters.
+- Correction (2026-10-26, after profiling): the 5.6 s Rust figure for "check and emit" includes clang, because `inspect stacks` builds the optimised code to read native frame sizes; the time is LLVM's per-function passes, run twice by the frame-size step, and it grows linearly. Both compilers send every function through clang. Follow-ups are in PLAN's small fixes ("Build time on many functions").
