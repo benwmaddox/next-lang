@@ -1,0 +1,13 @@
+# Claude: E1 review (the self-hosted compiler end to end, first subset)
+
+**Verdict:** approved, no fix round. The first next-lang code that compiles programs into working executables.
+
+What it is: selfhost/compiler.nl (selfhost/ is now about 9,100 lines of next-lang) adds eligibility, a checker and an LLVM IR code generator (offset addressing only) after the existing lexer and parser; `nlc link-ir` and `nlc test-ir` in the Rust driver build and run the IR with the existing toolchain path. Packages with anything outside the subset are rejected whole, before checking, with one diagnostic and no IR.
+
+Checked: Luna ran `scripts/compare-selfhost.sh --build` (482 classified packages: 34 build and match, 39 diagnose with identical bytes, 409 rejected as unsupported, zero mismatches at -O1 and -O3) and both full suites. My probe (a loop-based Fibonacci to fib(90), Collatz from 27, `continue` in an inclusive range, negative division and remainder, short-circuit booleans, an int overflow) built with the self-hosted compiler and `link-ir`: stdout, the overflow message, line, column and exit status identical to Rust nlc.
+
+Notes for later:
+
+- The self-hosted compiler's computed data-stack worst case grew to 3.48 GB with the checker and emitter tables (the stack-contract test ceiling went from 1 GiB to 4 GiB). That's reserved address range, not memory, and the offset milestone makes it a growth limit, but it's worth watching as E2-E4 add tables.
+- On Luna's 10,000-function benchmark, Rust nlc takes 5.6 s to check and emit while the self-hosted compiler takes 1.6 s; the Rust checker may have something quadratic in the number of functions. Logged in PLAN's small fixes.
+- `link-ir` (clang) takes 4.9 s on the self-hosted compiler's 6.2 MB of IR for 10,000 functions; Rust nlc's own build of the same package spends almost nothing in clang, which suggests Rust nlc emits only reachable functions. Worth matching (emit only what's reachable) when the IR size matters.

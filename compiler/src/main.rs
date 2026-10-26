@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use next_lang::{
     Frontend, PackageError, build_package_with_frontend, inspect_contracts, inspect_memory,
     inspect_stacks, lex_package_with_frontend, parse_package_with_frontend,
-    run_package_args_with_frontend, test_package_with_frontend,
+    link_ir, run_package_args_with_frontend, test_ir, test_package_with_frontend,
 };
 
 fn main() -> ExitCode {
@@ -85,6 +85,16 @@ fn main() -> ExitCode {
                 Err(error) => report_error(error),
             }
         }
+        "link-ir" if rest.len() == 3 && rest[1] == "-o" => {
+            match link_ir(Path::new(&rest[0]), Path::new(&rest[2])) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => report_error(error),
+            }
+        }
+        "test-ir" if rest.len() == 1 => match test_ir(Path::new(&rest[0])) {
+            Ok(code) => ExitCode::from(code),
+            Err(error) => report_error(error),
+        },
         "lex" if rest.len() == 1 => {
             match lex_package_with_frontend(Path::new(&rest[0]), frontend) {
                 Ok(tokens) => {
@@ -178,7 +188,7 @@ fn write_stdout(args: std::fmt::Arguments<'_>) {
 
 fn usage() {
     eprintln!(
-        "usage: nlc [--frontend=rust|selfhost] run <package-dir> [--frontend=rust|selfhost] [--allow-overcommit] [-- <args...>] | nlc build <package-dir> -o <file> [--frontend=rust|selfhost] | nlc test <package-dir> [--frontend=rust|selfhost] | nlc lex <package-dir> [--frontend=rust|selfhost] | nlc parse <package-dir> [--tree] [--tokens] [--frontend=rust|selfhost] | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir> | nlc inspect stacks <package-dir>"
+        "usage: nlc [--frontend=rust|selfhost] run <package-dir> [--frontend=rust|selfhost] [--allow-overcommit] [-- <args...>] | nlc build <package-dir> -o <file> [--frontend=rust|selfhost] | nlc test <package-dir> [--frontend=rust|selfhost] | nlc link-ir <file.ll> -o <exe> | nlc test-ir <file.ll> | nlc lex <package-dir> [--frontend=rust|selfhost] | nlc parse <package-dir> [--tree] [--tokens] [--frontend=rust|selfhost] | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir> | nlc inspect stacks <package-dir>"
     );
 }
 

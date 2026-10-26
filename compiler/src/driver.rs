@@ -75,6 +75,25 @@ enum StackMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BuildKind {
+    Program,
+    Test,
+}
+
+struct LinkDescription<'a> {
+    build_kind: BuildKind,
+    stack_mode: StackMode,
+    optimization: String,
+    recursion: Option<&'a CompileOutput>,
+}
+
+struct LinkIrMetadata {
+    build_kind: BuildKind,
+    stack_mode: StackMode,
+    tests: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Frontend {
     Rust,
     Selfhost,
@@ -859,10 +878,9 @@ pub fn test_package_with_frontend(package: &Path, frontend: Frontend) -> Result<
         .as_ref()
         .map(|frames| native_stack_bounds(&compiled, frames));
 
-    let mut passed = 0usize;
-    let mut failed = 0usize;
-    for (index, name) in compiled.tests.iter().enumerate() {
-        let budget_failures = compiled
+    let mut budget_failures = vec![Vec::new(); compiled.tests.len()];
+    for (index, _name) in compiled.tests.iter().enumerate() {
+        let messages = compiled
             .stack_peak_expectations
             .iter()
             .filter(|expectation| expectation.test_index == index)
@@ -880,19 +898,78 @@ pub fn test_package_with_frontend(package: &Path, frontend: Frontend) -> Result<
                 })
             })
             .collect::<Vec<_>>();
-        if !budget_failures.is_empty() {
+        budget_failures[index] = messages;
+    }
+    run_test_cases(&binary, &compiled.tests, &budget_failures)
+}
+
+/// Link an LLVM module emitted by the self-hosted compiler.  The metadata is
+/// parsed before clang is started so malformed or future IR versions fail as
+/// tool errors rather than reaching the native toolchain.
+pub fn link_ir(ir: &Path, output: &Path) -> Result<(), PackageError> {
+    let metadata = read_link_ir_metadata(ir)?;
+    let link = LinkDescription {
+        build_kind: metadata.build_kind,
+        stack_mode: metadata.stack_mode,
+        optimization: optimization_level()?,
+        recursion: None,
+    };
+    clang_internal(ir, output, &link, false).map(|_| ())
+}
+
+/// Run the tests described in a self-hosted test module.  An empty test list
+/// is intentionally handled without invoking clang, matching `nlc test`.
+pub fn test_ir(ir: &Path) -> Result<u8, PackageError> {
+    let metadata = read_link_ir_metadata(ir)?;
+    if metadata.build_kind != BuildKind::Test {
+        return Err(PackageError::Tool(
+            "test-ir requires an IR file built with --test".to_owned(),
+        ));
+    }
+    if metadata.tests.is_empty() {
+        println!("0 passed, 0 failed");
+        return Ok(0);
+    }
+    let temp = TempDir::new()
+        .map_err(|error| PackageError::Tool(format!("cannot create temporary directory: {error}")))?;
+    let binary = temp.path.join(if cfg!(windows) {
+        "program.exe"
+    } else {
+        "program"
+    });
+    let link = LinkDescription {
+        build_kind: metadata.build_kind,
+        stack_mode: metadata.stack_mode,
+        optimization: optimization_level()?,
+        recursion: None,
+    };
+    clang_internal(ir, &binary, &link, false)?;
+    let budget_failures = vec![Vec::new(); metadata.tests.len()];
+    run_test_cases(&binary, &metadata.tests, &budget_failures)
+}
+
+fn run_test_cases(
+    binary: &Path,
+    names: &[String],
+    budget_failures: &[Vec<String>],
+) -> Result<u8, PackageError> {
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    for (index, name) in names.iter().enumerate() {
+        let messages = budget_failures.get(index).map(Vec::as_slice).unwrap_or(&[]);
+        if !messages.is_empty() {
             println!("FAIL {name}");
-            for failure in budget_failures {
+            for failure in messages {
                 print!("{failure}");
             }
             failed += 1;
             stdout_flush("cannot write test status")?;
             continue;
         }
-        let output = Command::new(&binary)
+        let output = Command::new(binary)
             .env("NLC_TEST_INDEX", index.to_string())
             .output()
-            .map_err(|e| PackageError::Tool(format!("cannot run test '{}': {e}", name)))?;
+            .map_err(|error| PackageError::Tool(format!("cannot run test '{}': {error}", name)))?;
         if output.status.success() {
             println!("ok   {name}");
             passed += 1;
@@ -911,7 +988,7 @@ pub fn test_package_with_frontend(package: &Path, frontend: Frontend) -> Result<
         stdout_flush("cannot flush forwarded test stdout")?;
         io::stderr()
             .write_all(&output.stderr)
-            .map_err(|e| PackageError::Tool(format!("cannot forward test stderr: {e}")))?;
+            .map_err(|error| PackageError::Tool(format!("cannot forward test stderr: {error}")))?;
     }
     println!("{passed} passed, {failed} failed");
     Ok(if failed == 0 { 0 } else { 1 })
@@ -1370,7 +1447,8 @@ fn clang(
     test_build: bool,
     compiled: &CompileOutput,
 ) -> Result<(), PackageError> {
-    clang_internal(ir, output, test_build, compiled, false).map(|_| ())
+    let link = package_link_description(test_build, compiled)?;
+    clang_internal(ir, output, &link, false).map(|_| ())
 }
 
 fn clang_with_frames(
@@ -1379,16 +1457,137 @@ fn clang_with_frames(
     test_build: bool,
     compiled: &CompileOutput,
 ) -> Result<std::collections::HashMap<usize, u64>, PackageError> {
-    clang_internal(ir, output, test_build, compiled, true)?.ok_or_else(|| {
+    let link = package_link_description(test_build, compiled)?;
+    clang_internal(ir, output, &link, true)?.ok_or_else(|| {
         PackageError::Tool("optimized native frame sizes were not collected".to_owned())
     })
+}
+
+fn package_link_description(
+    test_build: bool,
+    compiled: &CompileOutput,
+) -> Result<LinkDescription<'_>, PackageError> {
+    Ok(LinkDescription {
+        build_kind: if test_build {
+            BuildKind::Test
+        } else {
+            BuildKind::Program
+        },
+        stack_mode: compiled.stack_mode,
+        optimization: optimization_level()?,
+        recursion: Some(compiled),
+    })
+}
+
+fn optimization_level() -> Result<String, PackageError> {
+    match std::env::var("NLC_OPT_LEVEL").as_deref() {
+        Ok("1") | Err(_) => Ok("1".to_owned()),
+        Ok("3") => Ok("3".to_owned()),
+        Ok(value) => Err(PackageError::Tool(format!(
+            "NLC_OPT_LEVEL must be 1 or 3, got '{value}'"
+        ))),
+    }
+}
+
+fn read_link_ir_metadata(ir: &Path) -> Result<LinkIrMetadata, PackageError> {
+    let source = fs::read_to_string(ir)
+        .map_err(|error| PackageError::Tool(format!("cannot read LLVM IR: {error}")))?;
+    let invalid = |reason: &str| {
+        PackageError::Tool(format!("invalid nlc-link-ir metadata: {reason}"))
+    };
+    let lines = source.lines().collect::<Vec<_>>();
+    if lines.first().copied() != Some("; nlc-link-ir 1") {
+        return Err(invalid("missing or unknown header version"));
+    }
+    if lines.last().copied() != Some("; nlc-link-ir end") {
+        return Err(invalid("missing end marker"));
+    }
+    if source.contains("nlc.recursion.targets=") {
+        return Err(invalid("recursion target records are not supported by link-ir"));
+    }
+
+    let mut build_kind = None;
+    let mut stack_mode = None;
+    let mut recursion_seen = false;
+    let mut tests = Vec::new();
+    for line in lines.iter().skip(1) {
+        if !line.starts_with("; nlc.") {
+            break;
+        }
+        if let Some(value) = line.strip_prefix("; nlc.build ") {
+            if build_kind.is_some() {
+                return Err(invalid("duplicate build kind"));
+            }
+            build_kind = Some(match value {
+                "program" => BuildKind::Program,
+                "test" => BuildKind::Test,
+                _ => return Err(invalid("unknown build kind")),
+            });
+        } else if let Some(value) = line.strip_prefix("; nlc.stack ") {
+            if stack_mode.is_some() {
+                return Err(invalid("duplicate stack mode"));
+            }
+            stack_mode = Some(match value {
+                "offset" => StackMode::Offset,
+                _ => return Err(invalid("stack mode must be offset")),
+            });
+        } else if let Some(value) = line.strip_prefix("; nlc.recursion ") {
+            if recursion_seen {
+                return Err(invalid("duplicate recursion declaration"));
+            }
+            recursion_seen = true;
+            if value != "none" {
+                return Err(invalid("recursion must be none"));
+            }
+        } else if let Some(value) = line.strip_prefix("; nlc.test ") {
+            let (index, encoded) = value
+                .split_once(' ')
+                .ok_or_else(|| invalid("malformed test record"))?;
+            if index != tests.len().to_string() {
+                return Err(invalid("test indices must be contiguous and ordered"));
+            }
+            if !encoded.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                || encoded.len() % 2 != 0
+            {
+                return Err(invalid("test names must use lowercase UTF-8 hex"));
+            }
+            let mut bytes = Vec::with_capacity(encoded.len() / 2);
+            for pair in encoded.as_bytes().chunks_exact(2) {
+                let high = link_ir_hex_nibble(pair[0]).ok_or_else(|| invalid("bad test name hex"))?;
+                let low = link_ir_hex_nibble(pair[1]).ok_or_else(|| invalid("bad test name hex"))?;
+                bytes.push(high * 16 + low);
+            }
+            let name = String::from_utf8(bytes)
+                .map_err(|_| invalid("test name is not valid UTF-8"))?;
+            tests.push(name);
+        } else {
+            return Err(invalid("unknown metadata field"));
+        }
+    }
+    let build_kind = build_kind.ok_or_else(|| invalid("missing build kind"))?;
+    let stack_mode = stack_mode.ok_or_else(|| invalid("missing stack mode"))?;
+    if !recursion_seen {
+        return Err(invalid("missing recursion declaration"));
+    }
+    Ok(LinkIrMetadata {
+        build_kind,
+        stack_mode,
+        tests,
+    })
+}
+
+fn link_ir_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
 }
 
 fn clang_internal(
     ir: &Path,
     output: &Path,
-    test_build: bool,
-    compiled: &CompileOutput,
+    link: &LinkDescription<'_>,
     collect_native_frames: bool,
 ) -> Result<Option<std::collections::HashMap<usize, u64>>, PackageError> {
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/nl_runtime.c");
@@ -1398,15 +1597,6 @@ fn clang_internal(
             runtime.display()
         )));
     }
-    let optimization = match std::env::var("NLC_OPT_LEVEL").as_deref() {
-        Ok("1") | Err(_) => "1",
-        Ok("3") => "3",
-        Ok(value) => {
-            return Err(PackageError::Tool(format!(
-                "NLC_OPT_LEVEL must be 1 or 3, got '{value}'"
-            )));
-        }
-    };
     let source = fs::read_to_string(ir)
         .map_err(|error| PackageError::Tool(format!("cannot read generated LLVM IR: {error}")))?;
     if !source.contains("nlc.recursion.targets=") {
@@ -1414,10 +1604,8 @@ fn clang_internal(
             ir,
             output,
             &runtime,
-            test_build,
-            optimization,
+            link,
             collect_native_frames,
-            compiled.stack_mode,
         )?;
         return if collect_native_frames {
             read_native_frame_sizes(output).map(Some)
@@ -1433,13 +1621,16 @@ fn clang_internal(
         ir,
         &probe,
         &runtime,
-        test_build,
-        optimization,
+        link,
         true,
-        compiled.stack_mode,
     )?;
     let mut frames = read_native_frame_sizes(&probe)?;
     for _ in 0..3 {
+        let Some(compiled) = link.recursion else {
+            return Err(PackageError::Tool(
+                "link-ir refuses recursion checks without call-graph metadata".to_owned(),
+            ));
+        };
         let patched = patch_recursion_checks(&source, compiled, &frames)?;
         fs::write(&patched_ir, patched).map_err(|error| {
             PackageError::Tool(format!("cannot write recursion-checked LLVM IR: {error}"))
@@ -1448,10 +1639,8 @@ fn clang_internal(
             &patched_ir,
             output,
             &runtime,
-            test_build,
-            optimization,
+            link,
             true,
-            compiled.stack_mode,
         )?;
         let final_frames = read_native_frame_sizes(output)?;
         if final_frames == frames {
@@ -1473,20 +1662,18 @@ fn run_clang(
     ir: &Path,
     output: &Path,
     runtime: &Path,
-    test_build: bool,
-    optimization: &str,
+    link: &LinkDescription<'_>,
     collect_stack_sizes: bool,
-    stack_mode: StackMode,
 ) -> Result<(), PackageError> {
     let mut command = Command::new("clang");
-    command.arg(format!("-O{optimization}"));
+    command.arg(format!("-O{}", link.optimization));
     if collect_stack_sizes {
         command.arg("-fstack-size-section");
     }
-    if test_build {
+    if link.build_kind == BuildKind::Test {
         command.arg("-DNLC_TEST_BUILD=1");
     }
-    if stack_mode.is_offset() {
+    if link.stack_mode.is_offset() {
         command.arg("-DNLC_STACK_MODE_OFFSET=1");
     }
     let result = command

@@ -12,6 +12,13 @@ fn usage(env: Env, parse_command: bool) -> never {
     }
 }
 
+fn usage_build(env: Env) -> never {
+    match env.err.write(b"usage: nlc run selfhost -- build <package> -o <file.ll> [--test]\n") {
+        ok(_) => env.exit(3),
+        err(_) => env.exit(3),
+    }
+}
+
 fn main(env: Env) {
     let args = env.args()
     if args.count() < 2L { usage(env, false) }
@@ -22,32 +29,46 @@ fn main(env: Env) {
     }
     let is_lex = argument_equals(command, "lex")
     let is_parse = argument_equals(command, "parse")
-    if !is_lex && !is_parse { usage(env, false) }
-    if args.count() > 4L { usage(env, is_parse) }
+    let is_build = argument_equals(command, "build")
+    if !is_lex && !is_parse && !is_build { usage(env, false) }
+    if is_build && (args.count() < 4L || args.count() > 5L) { usage_build(env) }
+    if !is_build && args.count() > 4L { usage(env, is_parse) }
     let package = match args.get(1L) {
         some(value) => value,
-        none => usage(env, is_parse),
+        none => if is_build { usage_build(env) } else { usage(env, is_parse) },
     }
 
     var want_tokens = false
     var want_tree = false
     var want_binary = false
-    for flag_index in 2L..args.count() {
-        let flag = match args.get(flag_index) {
-            some(value) => value,
-            none => usage(env, is_parse),
+    var want_test_build = false
+    if is_build {
+        let output_flag = match args.get(2L) { some(value) => value, none => usage_build(env) }
+        if !argument_equals(output_flag, "-o") { usage_build(env) }
+        let _output_path = match args.get(3L) { some(value) => value, none => usage_build(env) }
+        if args.count() == 5L {
+            let test_flag = match args.get(4L) { some(value) => value, none => usage_build(env) }
+            if !argument_equals(test_flag, "--test") { usage_build(env) }
+            want_test_build = true
         }
-        if argument_equals(flag, "--tokens") {
-            if want_tokens { usage(env, is_parse) }
-            want_tokens = true
-        } else if argument_equals(flag, "--tree") {
-            if want_tree { usage(env, is_parse) }
-            want_tree = true
-        } else if argument_equals(flag, "--binary") {
-            if want_binary { usage(env, is_parse) }
-            want_binary = true
-        } else {
-            usage(env, is_parse)
+    } else {
+        for flag_index in 2L..args.count() {
+            let flag = match args.get(flag_index) {
+                some(value) => value,
+                none => usage(env, is_parse),
+            }
+            if argument_equals(flag, "--tokens") {
+                if want_tokens { usage(env, is_parse) }
+                want_tokens = true
+            } else if argument_equals(flag, "--tree") {
+                if want_tree { usage(env, is_parse) }
+                want_tree = true
+            } else if argument_equals(flag, "--binary") {
+                if want_binary { usage(env, is_parse) }
+                want_binary = true
+            } else {
+                usage(env, is_parse)
+            }
         }
     }
     if want_binary && (want_tokens || want_tree || is_lex) { usage(env, is_parse) }
@@ -61,6 +82,25 @@ fn main(env: Env) {
     var tables = empty_parse_tables()
     initialize_parse_tables(tables)
     load_and_parse(env, package, entries, source, files, tokens, delimiters, file_data, tables, is_lex)
+    if is_build {
+        let output_path = match args.get(3L) { some(value) => value, none => usage_build(env) }
+        let config = load_manifest(env, package)
+        var compiler = empty_compiler_tables()
+        add_compiler_links(tables, compiler)
+        intern_package_names(env, source, files, tokens, tables, compiler)
+        build_line_start_index(env, source, files, compiler)
+        check_package_eligibility(env, source, files, tokens, tables, compiler)
+        var ir: Bytes max IR_BUFFER_CAPACITY = Bytes.empty()
+        compile_selfhost_package(env, source, files, tokens, tables, config, compiler, ir, want_test_build)
+        if compiler.ir_overflow {
+            fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded")
+        }
+        match env.fs.write(output_path, ir) {
+            ok(_) => (),
+            err(_) => fail_tool(env, "cannot write generated LLVM IR"),
+        }
+        return
+    }
     if is_lex {
         if want_tree { fail_tool(env, "not implemented yet") }
         match output_token_dump(env.out, source, files, tokens) {

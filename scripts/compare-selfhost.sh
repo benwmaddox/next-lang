@@ -6,6 +6,7 @@ reference=""
 selfhost=""
 tokens_mode=0
 parse_mode=0
+build_mode=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tokens)
@@ -14,6 +15,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --parse)
             parse_mode=1
+            shift
+            ;;
+        --build)
+            build_mode=1
             shift
             ;;
         --reference)
@@ -32,6 +37,17 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+if [[ $build_mode == 1 ]]; then
+    if [[ $tokens_mode == 1 || $parse_mode == 1 || -n "$selfhost" ]]; then
+        echo "usage: scripts/compare-selfhost.sh --build [--reference <nlc>]" >&2
+        exit 2
+    fi
+    if [[ -z "$reference" ]]; then
+        target_dir="${CARGO_TARGET_DIR:-$HOME/.cache/next-lang/target}"
+        reference="$target_dir/debug/nlc"
+    fi
+    exec python3 "$repo_root/scripts/compare-selfhost-build.py" --reference "$reference"
+fi
 if [[ $tokens_mode == $parse_mode || -z "$reference" || -z "$selfhost" ]]; then
     echo "usage: scripts/compare-selfhost.sh (--tokens | --parse) --reference <nlc> --selfhost <selfhost>" >&2
     exit 2

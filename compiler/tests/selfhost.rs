@@ -47,6 +47,21 @@ fn selfhosted_lexer_and_parser_match_the_rust_reference() {
             String::from_utf8_lossy(&comparison.stderr)
         );
     }
+
+    let comparison = Command::new(root.join("scripts/compare-selfhost.sh"))
+        .arg("--build")
+        .arg("--reference")
+        .arg(nlc)
+        .current_dir(root)
+        .output()
+        .expect("run the selfhost build comparison harness");
+    assert!(
+        comparison.status.success(),
+        "selfhost build comparison failed (status {:?}):\n{}\n{}",
+        comparison.status.code(),
+        String::from_utf8_lossy(&comparison.stdout),
+        String::from_utf8_lossy(&comparison.stderr)
+    );
     let _ = fs::remove_dir_all(&temp);
 }
 
