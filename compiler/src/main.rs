@@ -4,8 +4,8 @@ use std::process::ExitCode;
 
 use next_lang::{
     Frontend, PackageError, build_package_with_frontend, inspect_contracts, inspect_memory,
-    inspect_stacks, lex_package_with_frontend, parse_package_with_frontend,
-    link_ir, run_package_args_with_frontend, test_ir, test_package_with_frontend,
+    inspect_stacks, lex_package_with_frontend, link_ir, parse_package_with_frontend,
+    run_package_args_with_frontend, test_ir, test_package_with_frontend,
 };
 
 fn main() -> ExitCode {

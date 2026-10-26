@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::ast::{Program, Span};
@@ -939,8 +941,9 @@ pub fn test_ir(ir: &Path) -> Result<u8, PackageError> {
         println!("0 passed, 0 failed");
         return Ok(0);
     }
-    let temp = TempDir::new()
-        .map_err(|error| PackageError::Tool(format!("cannot create temporary directory: {error}")))?;
+    let temp = TempDir::new().map_err(|error| {
+        PackageError::Tool(format!("cannot create temporary directory: {error}"))
+    })?;
     let binary = temp.path.join(if cfg!(windows) {
         "program.exe"
     } else {
@@ -1458,7 +1461,11 @@ fn clang(
     compiled: &CompileOutput,
 ) -> Result<(), PackageError> {
     let link = package_link_description(test_build, compiled)?;
-    clang_internal(ir, output, &link, false).map(|_| ())
+    let needs_native_frames = compiled
+        .recursive_functions
+        .iter()
+        .any(|recursive| *recursive);
+    clang_internal(ir, output, &link, needs_native_frames).map(|_| ())
 }
 
 fn clang_with_frames(
@@ -1503,9 +1510,8 @@ fn optimization_level() -> Result<String, PackageError> {
 fn read_link_ir_metadata(ir: &Path) -> Result<LinkIrMetadata, PackageError> {
     let source = fs::read_to_string(ir)
         .map_err(|error| PackageError::Tool(format!("cannot read LLVM IR: {error}")))?;
-    let invalid = |reason: &str| {
-        PackageError::Tool(format!("invalid nlc-link-ir metadata: {reason}"))
-    };
+    let invalid =
+        |reason: &str| PackageError::Tool(format!("invalid nlc-link-ir metadata: {reason}"));
     let lines = source.lines().collect::<Vec<_>>();
     let version = match lines.first().copied() {
         Some("; nlc-link-ir 1") => 1,
@@ -1516,7 +1522,9 @@ fn read_link_ir_metadata(ir: &Path) -> Result<LinkIrMetadata, PackageError> {
         return Err(invalid("missing end marker"));
     }
     if source.contains("nlc.recursion.targets=") {
-        return Err(invalid("recursion target records are not supported by link-ir"));
+        return Err(invalid(
+            "recursion target records are not supported by link-ir",
+        ));
     }
 
     let mut build_kind = None;
@@ -1582,19 +1590,23 @@ fn read_link_ir_metadata(ir: &Path) -> Result<LinkIrMetadata, PackageError> {
             if index != tests.len().to_string() {
                 return Err(invalid("test indices must be contiguous and ordered"));
             }
-            if !encoded.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            if !encoded
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
                 || encoded.len() % 2 != 0
             {
                 return Err(invalid("test names must use lowercase UTF-8 hex"));
             }
             let mut bytes = Vec::with_capacity(encoded.len() / 2);
             for pair in encoded.as_bytes().chunks_exact(2) {
-                let high = link_ir_hex_nibble(pair[0]).ok_or_else(|| invalid("bad test name hex"))?;
-                let low = link_ir_hex_nibble(pair[1]).ok_or_else(|| invalid("bad test name hex"))?;
+                let high =
+                    link_ir_hex_nibble(pair[0]).ok_or_else(|| invalid("bad test name hex"))?;
+                let low =
+                    link_ir_hex_nibble(pair[1]).ok_or_else(|| invalid("bad test name hex"))?;
                 bytes.push(high * 16 + low);
             }
-            let name = String::from_utf8(bytes)
-                .map_err(|_| invalid("test name is not valid UTF-8"))?;
+            let name =
+                String::from_utf8(bytes).map_err(|_| invalid("test name is not valid UTF-8"))?;
             tests.push(name);
         } else {
             return Err(invalid("unknown metadata field"));
@@ -1607,7 +1619,9 @@ fn read_link_ir_metadata(ir: &Path) -> Result<LinkIrMetadata, PackageError> {
     }
     let runtime = if version == 1 {
         if runtime.is_some() || core_hash.is_some() {
-            return Err(invalid("version 1 metadata cannot declare a runtime or core hash"));
+            return Err(invalid(
+                "version 1 metadata cannot declare a runtime or core hash",
+            ));
         }
         LinkRuntime::C
     } else {
@@ -1636,8 +1650,8 @@ fn clang_internal(
     ir: &Path,
     output: &Path,
     link: &LinkDescription<'_>,
-    collect_native_frames: bool,
-) -> Result<Option<std::collections::HashMap<usize, u64>>, PackageError> {
+    need_native_frames: bool,
+) -> Result<Option<HashMap<usize, u64>>, PackageError> {
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/nl_runtime.c");
     if link.runtime == LinkRuntime::C && !runtime.is_file() {
         return Err(PackageError::Tool(format!(
@@ -1647,32 +1661,37 @@ fn clang_internal(
     }
     let source = fs::read_to_string(ir)
         .map_err(|error| PackageError::Tool(format!("cannot read generated LLVM IR: {error}")))?;
-    if !source.contains("nlc.recursion.targets=") {
-        run_clang(
-            ir,
-            output,
-            &runtime,
-            link,
-            collect_native_frames,
-        )?;
-        return if collect_native_frames {
-            read_native_frame_sizes(output).map(Some)
-        } else {
-            Ok(None)
-        };
+    let has_recursion_checks = source.contains("nlc.recursion.targets=");
+    if !has_recursion_checks {
+        if need_native_frames {
+            let frames = frame_sizes_for_ir(
+                ir,
+                source.as_bytes(),
+                output,
+                true,
+                &runtime,
+                link,
+                clang_version_for_frame_cache(),
+            )?;
+            return Ok(Some(frames));
+        }
+        run_clang(ir, output, &runtime, link, false)?;
+        return Ok(None);
     }
 
     let parent = ir.parent().unwrap_or_else(|| Path::new("."));
     let probe = parent.join("nlc-recursion-frame-probe");
     let patched_ir = parent.join("nlc-recursion-final.ll");
-    run_clang(
+    let clang_version = clang_version_for_frame_cache();
+    let mut frames = frame_sizes_for_ir(
         ir,
+        source.as_bytes(),
         &probe,
+        false,
         &runtime,
         link,
-        true,
+        clang_version,
     )?;
-    let mut frames = read_native_frame_sizes(&probe)?;
     for _ in 0..3 {
         let Some(compiled) = link.recursion else {
             return Err(PackageError::Tool(
@@ -1683,16 +1702,33 @@ fn clang_internal(
         fs::write(&patched_ir, patched).map_err(|error| {
             PackageError::Tool(format!("cannot write recursion-checked LLVM IR: {error}"))
         })?;
-        run_clang(
+        let patched_source = fs::read(&patched_ir).map_err(|error| {
+            PackageError::Tool(format!("cannot read recursion-checked LLVM IR: {error}"))
+        })?;
+        let patched_key = native_frame_cache_key(&patched_source, &runtime, link, clang_version);
+        if let Some(final_frames) = read_cached_native_frame_sizes(&patched_key) {
+            if final_frames == frames {
+                run_clang(&patched_ir, output, &runtime, link, false)?;
+                return if need_native_frames {
+                    Ok(Some(final_frames))
+                } else {
+                    Ok(None)
+                };
+            }
+            frames = final_frames;
+            continue;
+        }
+        let final_frames = frame_sizes_for_ir(
             &patched_ir,
+            &patched_source,
             output,
+            true,
             &runtime,
             link,
-            true,
+            clang_version,
         )?;
-        let final_frames = read_native_frame_sizes(output)?;
         if final_frames == frames {
-            return if collect_native_frames {
+            return if need_native_frames {
                 Ok(Some(final_frames))
             } else {
                 Ok(None)
@@ -1706,6 +1742,142 @@ fn clang_internal(
     ))
 }
 
+fn frame_sizes_for_ir(
+    ir: &Path,
+    source: &[u8],
+    output: &Path,
+    build_output_on_cache_hit: bool,
+    runtime: &Path,
+    link: &LinkDescription<'_>,
+    clang_version: &[u8],
+) -> Result<HashMap<usize, u64>, PackageError> {
+    let key = native_frame_cache_key(source, runtime, link, clang_version);
+    if let Some(frames) = read_cached_native_frame_sizes(&key) {
+        if build_output_on_cache_hit {
+            run_clang(ir, output, runtime, link, false)?;
+        }
+        return Ok(frames);
+    }
+
+    run_clang(ir, output, runtime, link, true)?;
+    let frames = read_native_frame_sizes(output)?;
+    write_cached_native_frame_sizes(&key, &frames);
+    Ok(frames)
+}
+
+fn native_frame_cache_key(
+    source: &[u8],
+    runtime: &Path,
+    link: &LinkDescription<'_>,
+    clang_version: &[u8],
+) -> String {
+    let mut fingerprint = Fingerprint::new();
+    fingerprint.field(b"native-frame-cache-version", b"1");
+    fingerprint.field(b"llvm-ir", source);
+    for flag in clang_flags(link, true) {
+        fingerprint.field(b"clang-flag", flag.as_bytes());
+    }
+    fingerprint.field(b"clang-version", clang_version);
+    let target = std::env::var("TARGET")
+        .unwrap_or_else(|_| format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS));
+    fingerprint.field(b"target", target.as_bytes());
+    if link.runtime == LinkRuntime::C {
+        let runtime_source = fs::read(runtime).unwrap_or_default();
+        fingerprint.field(b"runtime-source", &runtime_source);
+    }
+    fingerprint.hex()
+}
+
+fn native_frame_cache_path(key: &str) -> PathBuf {
+    target_cache_root()
+        .join("next-lang-native-frames")
+        .join(format!("{key}.frames"))
+}
+
+fn read_cached_native_frame_sizes(key: &str) -> Option<HashMap<usize, u64>> {
+    read_cached_native_frame_sizes_at(&native_frame_cache_path(key), key)
+}
+
+fn read_cached_native_frame_sizes_at(path: &Path, key: &str) -> Option<HashMap<usize, u64>> {
+    let contents = fs::read_to_string(path).ok()?;
+    let mut lines = contents.lines();
+    if lines.next()? != format!("nlc-native-frames-v1 {key}") {
+        return None;
+    }
+    let mut frames = HashMap::new();
+    for line in lines {
+        let (id, bytes) = line.split_once(' ')?;
+        let id = id.parse::<usize>().ok()?;
+        let bytes = bytes.parse::<u64>().ok()?;
+        if frames.insert(id, bytes).is_some() {
+            return None;
+        }
+    }
+    Some(frames)
+}
+
+fn write_cached_native_frame_sizes(key: &str, frames: &HashMap<usize, u64>) {
+    let path = native_frame_cache_path(key);
+    write_cached_native_frame_sizes_at(&path, key, frames);
+}
+
+fn write_cached_native_frame_sizes_at(path: &Path, key: &str, frames: &HashMap<usize, u64>) {
+    let Some(directory) = path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(directory).is_err() {
+        return;
+    }
+    let mut entries = frames.iter().collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|(id, _)| **id);
+    let mut contents = format!("nlc-native-frames-v1 {key}\n");
+    for (id, bytes) in entries {
+        contents.push_str(&format!("{id} {bytes}\n"));
+    }
+    let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let temporary = directory.join(format!(".{key}.{}-{id}.tmp", std::process::id()));
+    if fs::write(&temporary, contents).is_err() {
+        return;
+    }
+    if fs::rename(&temporary, &path).is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+}
+
+fn clang_version_for_frame_cache() -> &'static [u8] {
+    static CLANG_VERSION: OnceLock<Vec<u8>> = OnceLock::new();
+    CLANG_VERSION
+        .get_or_init(|| command_version("clang").unwrap_or_default())
+        .as_slice()
+}
+
+fn clang_flags(link: &LinkDescription<'_>, collect_stack_sizes: bool) -> Vec<String> {
+    let mut flags = vec![format!("-O{}", link.optimization)];
+    if collect_stack_sizes {
+        flags.push("-fstack-size-section".to_owned());
+    }
+    if link.runtime == LinkRuntime::C && link.build_kind == BuildKind::Test {
+        flags.push("-DNLC_TEST_BUILD=1".to_owned());
+    }
+    if link.runtime == LinkRuntime::C && link.stack_mode.is_offset() {
+        flags.push("-DNLC_STACK_MODE_OFFSET=1".to_owned());
+    }
+    if link.runtime == LinkRuntime::Core {
+        flags.extend(
+            [
+                "-nostdlib",
+                "-static",
+                "-Wl,-e,_start",
+                "-Wl,-no-pie",
+                "-Wl,--build-id=none",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+    }
+    flags
+}
+
 fn run_clang(
     ir: &Path,
     output: &Path,
@@ -1714,24 +1886,7 @@ fn run_clang(
     collect_stack_sizes: bool,
 ) -> Result<(), PackageError> {
     let mut command = Command::new("clang");
-    command.arg(format!("-O{}", link.optimization));
-    if collect_stack_sizes {
-        command.arg("-fstack-size-section");
-    }
-    if link.runtime == LinkRuntime::C && link.build_kind == BuildKind::Test {
-        command.arg("-DNLC_TEST_BUILD=1");
-    }
-    if link.runtime == LinkRuntime::C && link.stack_mode.is_offset() {
-        command.arg("-DNLC_STACK_MODE_OFFSET=1");
-    }
-    if link.runtime == LinkRuntime::Core {
-        command
-            .arg("-nostdlib")
-            .arg("-static")
-            .arg("-Wl,-e,_start")
-            .arg("-Wl,-no-pie")
-            .arg("-Wl,--build-id=none");
-    }
+    command.args(clang_flags(link, collect_stack_sizes));
     command.arg(ir);
     if link.runtime == LinkRuntime::C {
         command.arg(runtime);
@@ -2818,6 +2973,58 @@ fn parse_child_diagnostic(stderr: &str) -> Option<CompileError> {
         },
         message: message.to_owned(),
     })
+}
+
+#[cfg(test)]
+mod native_frame_cache_tests {
+    use super::*;
+
+    #[test]
+    fn frame_cache_key_includes_ir_and_clang_flags() {
+        let link = LinkDescription {
+            build_kind: BuildKind::Program,
+            stack_mode: StackMode::Offset,
+            runtime: LinkRuntime::Core,
+            optimization: "1".to_owned(),
+            recursion: None,
+        };
+        let source = b"define void @main() { ret void }";
+        let key = native_frame_cache_key(source, Path::new("unused"), &link, b"clang 1");
+        let changed_ir = native_frame_cache_key(
+            b"define void @main() { ret void }\n",
+            Path::new("unused"),
+            &link,
+            b"clang 1",
+        );
+        let changed_flags = native_frame_cache_key(
+            source,
+            Path::new("unused"),
+            &LinkDescription {
+                optimization: "3".to_owned(),
+                ..link
+            },
+            b"clang 1",
+        );
+        assert_ne!(key, changed_ir);
+        assert_ne!(key, changed_flags);
+    }
+
+    #[test]
+    fn frame_cache_round_trips_and_rejects_corrupt_data() {
+        let temp = TempDir::new().expect("create frame cache test directory");
+        let key = "frame-cache-test-key";
+        let path = temp.path.join(format!("{key}.frames"));
+        let expected = [(0, 16), (7, 256)].into_iter().collect::<HashMap<_, _>>();
+        write_cached_native_frame_sizes_at(&path, key, &expected);
+        assert_eq!(
+            read_cached_native_frame_sizes_at(&path, key),
+            Some(expected)
+        );
+
+        fs::write(&path, format!("nlc-native-frames-v1 {key}\n0 invalid\n"))
+            .expect("write corrupt frame cache entry");
+        assert_eq!(read_cached_native_frame_sizes_at(&path, key), None);
+    }
 }
 
 #[cfg(test)]

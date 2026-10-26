@@ -402,7 +402,9 @@ fn direct_children(
             )
         })?;
     if first < file_start || first > index {
-        return Err(format!("impossible node subtree partition at node {index} (first {first}, file start {file_start})"));
+        return Err(format!(
+            "impossible node subtree partition at node {index} (first {first}, file start {file_start})"
+        ));
     }
     let mut children = Vec::new();
     let mut child_end = index;
@@ -413,13 +415,17 @@ fn direct_children(
             .and_then(|end| end.checked_sub(nodes[child].subtree))
             .ok_or_else(|| format!("impossible child subtree extent at node {child}"))?;
         if child_first < first {
-            return Err(format!("impossible node subtree partition at node {index} (child {child} starts before {first})"));
+            return Err(format!(
+                "impossible node subtree partition at node {index} (child {child} starts before {first})"
+            ));
         }
         children.push(child);
         child_end = child_first;
     }
     if child_end != first {
-        return Err(format!("impossible node subtree partition at node {index} (expected start {first}, reached {child_end})"));
+        return Err(format!(
+            "impossible node subtree partition at node {index} (expected start {first}, reached {child_end})"
+        ));
     }
     children.reverse();
     Ok(children)
@@ -474,7 +480,7 @@ fn validate_string_token(
     while cursor + 1 < raw.len() {
         match raw[cursor] {
             b'"' | b'\n' | b'\r' => {
-                return Err("string token contains an unescaped delimiter".to_owned())
+                return Err("string token contains an unescaped delimiter".to_owned());
             }
             b'\\' => {
                 let escaped = *raw
@@ -878,11 +884,7 @@ fn validate_node_metadata(
                 .map(|token| token.tag)
                 .ok_or_else(|| "operator token is outside its file".to_owned())?;
             let expected = if node.tag == 67 {
-                if node.flags == 0 {
-                    22
-                } else {
-                    37
-                }
+                if node.flags == 0 { 22 } else { 37 }
             } else {
                 match node.flags {
                     0 => 21,
@@ -1002,7 +1004,7 @@ fn validate_node_metadata(
                         _ => {
                             return Err(
                                 "Function parameter or result child order is invalid".to_owned()
-                            )
+                            );
                         }
                     }
                 }

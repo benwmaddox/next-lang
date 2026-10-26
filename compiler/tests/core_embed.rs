@@ -29,8 +29,11 @@ fn embedded_core_source_is_current_and_within_its_budgets() {
         String::from_utf8_lossy(&result.stderr)
     );
     let generated_bytes = fs::read(generated).expect("read generated core embed");
-    let checked_in_bytes = fs::read(root.join("selfhost/core_files.nl"))
-        .expect("read checked-in core embed");
+    let checked_in_bytes =
+        fs::read(root.join("selfhost/core_files.nl")).expect("read checked-in core embed");
     fs::remove_dir_all(scratch).expect("remove scratch directory");
-    assert_eq!(generated_bytes, checked_in_bytes, "selfhost/core_files.nl is stale");
+    assert_eq!(
+        generated_bytes, checked_in_bytes,
+        "selfhost/core_files.nl is stale"
+    );
 }

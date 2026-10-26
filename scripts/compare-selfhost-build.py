@@ -76,24 +76,62 @@ def main() -> int:
             print("could not build the stage-zero selfhost compiler", file=sys.stderr)
             return 1
 
+        long_tests = os.environ.get("NLC_LONG_TESTS") == "1"
+        levels = (1, 3) if long_tests else (1,)
+        runtimes = ("core", "c") if long_tests else ("core",)
         counts = {
             level: {kind: 0 for kind in ("build", "diagnose", "unsupported", "mismatches")}
-            for level in (1, 3)
+            for level in levels
         }
         generated_count = int(os.environ.get("NLC_E1_GENERATED_COUNT", "8"))
         generated_cases = generate_seeded_cases(root, work, generated_count)
         generated_counts = {
             level: {kind: 0 for kind in ("build", "diagnose", "mismatches")}
-            for level in (1, 3)
+            for level in levels
         }
-        for level in (1, 3):
+
+        # Backend and optimization comparisons reuse one Rust result per
+        # package. The reference build is always made at the default O1 level.
+        reference_env = env.copy()
+        reference_env["NLC_OPT_LEVEL"] = "1"
+        reference_results: dict[str, Result | Exception] = {}
+
+        def reference_for(package: str) -> Result:
+            if package not in reference_results:
+                try:
+                    reference_results[package] = run_reference(
+                        reference, root, package, reference_env, work, 1
+                    )
+                except (Mismatch, subprocess.TimeoutExpired, OSError) as error:
+                    reference_results[package] = error
+            result = reference_results[package]
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        test_main_reference: Result | None = None
+        test_main_reference_error: Exception | None = None
+
+        def reference_test_main() -> Result:
+            nonlocal test_main_reference, test_main_reference_error
+            if test_main_reference is None and test_main_reference_error is None:
+                try:
+                    test_main_reference = build_reference_main(
+                        reference, root, "tests/test/harness", reference_env, work
+                    )
+                except (Mismatch, subprocess.TimeoutExpired, OSError) as error:
+                    test_main_reference_error = error
+            if test_main_reference_error is not None:
+                raise test_main_reference_error
+            assert test_main_reference is not None
+            return test_main_reference
+
+        for level in levels:
             run_env = env.copy()
             run_env["NLC_OPT_LEVEL"] = str(level)
             for package, kind in classifications.items():
                 try:
-                    reference_result = run_reference(
-                        reference, root, package, run_env, work, level
-                    )
+                    reference_result = reference_for(package)
                     expected = expected_result(root, package)
                     if normalize_result(reference_result, root, package) != expected:
                         raise Mismatch("Rust reference differs from checked-in expected.* files")
@@ -104,20 +142,22 @@ def main() -> int:
                                 f"misclassified build: Rust compile status {reference_result.build_status}",
                                 reference_result,
                             )
-                        self_result, wrote_ir = run_selfhost(
-                            stage0, reference, root, package, run_env, work, level
-                        )
-                        if not wrote_ir:
-                            raise Mismatch("selfhosted compiler rejected a build package", reference_result, self_result)
-                        if not same_result(self_result, reference_result):
-                            raise Mismatch("built program or test runner differs from Rust nlc", reference_result, self_result)
-                        c_result, c_wrote_ir = run_selfhost(
-                            stage0, reference, root, package, run_env, work, level, "c"
-                        )
-                        if not c_wrote_ir:
-                            raise Mismatch("selfhosted C-runtime comparison leg rejected a build package", reference_result, c_result)
-                        if not same_result(c_result, reference_result):
-                            raise Mismatch("selfhosted C-runtime leg differs from Rust nlc", reference_result, c_result)
+                        for runtime in runtimes:
+                            self_result, wrote_ir = run_selfhost(
+                                stage0, reference, root, package, run_env, work, level, runtime
+                            )
+                            if not wrote_ir:
+                                raise Mismatch(
+                                    f"selfhosted {runtime}-runtime comparison leg rejected a build package",
+                                    reference_result,
+                                    self_result,
+                                )
+                            if not same_result(self_result, reference_result):
+                                raise Mismatch(
+                                    f"built program or {runtime}-runtime test runner differs from Rust nlc",
+                                    reference_result,
+                                    self_result,
+                                )
                         counts[level]["build"] += 1
                     elif kind == "diagnose":
                         manifest_tool_failure = (
@@ -147,7 +187,15 @@ def main() -> int:
 
                     if package == "tests/test/harness" and kind == "build":
                         compare_test_package_main(
-                            stage0, reference, root, package, run_env, work, level
+                            stage0,
+                            reference,
+                            root,
+                            package,
+                            run_env,
+                            work,
+                            level,
+                            runtimes,
+                            reference_test_main(),
                         )
                 except (Mismatch, subprocess.TimeoutExpired, OSError) as error:
                     counts[level]["mismatches"] += 1
@@ -158,25 +206,34 @@ def main() -> int:
                         print("  selfhost:", brief(error.selfhost), file=sys.stderr)
             for package, kind in generated_cases:
                 try:
-                    reference_result = run_reference(reference, root, package, run_env, work, level)
+                    reference_result = reference_for(package)
                     if kind == "build":
                         if reference_result.build_status != 0:
                             raise Mismatch("seeded build did not compile with Rust nlc", reference_result)
                     elif reference_result.status not in (2, 3):
                         raise Mismatch("seeded diagnostic did not diagnose with Rust nlc", reference_result)
-                    self_result, wrote_ir = run_selfhost(stage0, reference, root, package, run_env, work, level)
                     if kind == "build":
-                        if not wrote_ir:
-                            raise Mismatch("selfhost rejected a seeded valid package", reference_result, self_result)
-                        if not same_result(reference_result, self_result):
-                            raise Mismatch("seeded build differs from Rust nlc", reference_result, self_result)
-                        c_result, c_wrote_ir = run_selfhost(
-                            stage0, reference, root, package, run_env, work, level, "c"
-                        )
-                        if not c_wrote_ir or not same_result(reference_result, c_result):
-                            raise Mismatch("seeded C-runtime leg differs from Rust nlc", reference_result, c_result)
+                        for runtime in runtimes:
+                            self_result, wrote_ir = run_selfhost(
+                                stage0, reference, root, package, run_env, work, level, runtime
+                            )
+                            if not wrote_ir:
+                                raise Mismatch(
+                                    f"selfhost rejected a seeded valid package in its {runtime}-runtime leg",
+                                    reference_result,
+                                    self_result,
+                                )
+                            if not same_result(reference_result, self_result):
+                                raise Mismatch(
+                                    f"seeded {runtime}-runtime build differs from Rust nlc",
+                                    reference_result,
+                                    self_result,
+                                )
                         generated_counts[level]["build"] += 1
                     else:
+                        self_result, wrote_ir = run_selfhost(
+                            stage0, reference, root, package, run_env, work, level
+                        )
                         if wrote_ir:
                             raise Mismatch("selfhost wrote IR for a seeded diagnostic", reference_result, self_result)
                         if not same_result(reference_result, self_result):
@@ -384,30 +441,52 @@ def run_selfhost(
         exe.unlink(missing_ok=True)
 
 
+def build_reference_main(
+    reference: Path, root: Path, package: str, env: dict[str, str], work: Path
+) -> Result:
+    exe = work / f"reference-main-{os.getpid()}"
+    build = invoke(
+        [str(reference), "--frontend=rust", "build", package, "-o", str(exe)],
+        cwd=root,
+        env=env,
+    )
+    if build.status != 0:
+        raise Mismatch("could not build Rust reference main for the test harness", build)
+    try:
+        return invoke([str(exe)], cwd=root, env=env)
+    finally:
+        exe.unlink(missing_ok=True)
+
+
 def compare_test_package_main(
-    stage0: Path, reference: Path, root: Path, package: str, env: dict[str, str], work: Path, level: int
+    stage0: Path,
+    reference: Path,
+    root: Path,
+    package: str,
+    env: dict[str, str],
+    work: Path,
+    level: int,
+    runtimes: tuple[str, ...],
+    reference_result: Result,
 ) -> None:
     suffix = f"{os.getpid()}-{level}-main"
-    exe = work / f"reference-main-{suffix}"
     ir = work / f"self-main-{suffix}.ll"
     self_exe = work / f"self-main-{suffix}"
-    ref = invoke(
-        [str(reference), "--frontend=rust", "build", package, "-o", str(exe)], cwd=root, env=env
-    )
-    if ref.status == 0:
-        ref = invoke([str(exe)], cwd=root, env=env)
-    exe.unlink(missing_ok=True)
-    for runtime in ("core", "c"):
+    for runtime in runtimes:
         command = [str(stage0), "build", package, "-o", ir.relative_to(root).as_posix(), f"--runtime={runtime}"]
         built = invoke(command, cwd=root, env=env)
         if built.status != 0:
-            raise Mismatch(f"test package {runtime} runtime build was rejected", ref, built)
+            raise Mismatch(f"test package {runtime} runtime build was rejected", reference_result, built)
         linked = invoke([str(reference), "link-ir", str(ir), "-o", str(self_exe)], cwd=root, env=env)
         ir.unlink(missing_ok=True)
         actual = linked if linked.status != 0 else invoke([str(self_exe)], cwd=root, env=env)
         self_exe.unlink(missing_ok=True)
-        if not same_result(actual, ref):
-            raise Mismatch(f"test package {runtime} runtime main differs from Rust nlc", ref, actual)
+        if not same_result(actual, reference_result):
+            raise Mismatch(
+                f"test package {runtime} runtime main differs from Rust nlc",
+                reference_result,
+                actual,
+            )
 
 
 def normalize_bytes(data: bytes, root: Path, package: str) -> bytes:

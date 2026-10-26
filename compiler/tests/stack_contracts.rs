@@ -62,11 +62,13 @@ fn fixed_large_values_use_regions_and_large_results_use_destinations() {
         .split("; function make_nested\n")
         .nth(1)
         .expect("large-result function is emitted");
-    assert!(large_result
-        .lines()
-        .next()
-        .unwrap()
-        .contains("ptr %nl.ctx, ptr %nl.entry.top, ptr %nl.result"));
+    assert!(
+        large_result
+            .lines()
+            .next()
+            .unwrap()
+            .contains("ptr %nl.ctx, ptr %nl.entry.top, ptr %nl.result")
+    );
     assert!(ir.contains("call void @llvm.memmove.p0.p0.i64"));
     assert!(ir.contains("ptr noalias %arg."));
     assert!(ir.contains("ptr %arg."));
@@ -119,9 +121,10 @@ fn returned_collection_local_is_built_in_the_caller_destination() {
         .expect("make has a stack contract");
 
     assert_eq!(make.byte_requirement, 0);
-    assert!(make
-        .result_placement
-        .contains("caller destination (16000008 bytes)"));
+    assert!(
+        make.result_placement
+            .contains("caller destination (16000008 bytes)")
+    );
 
     let make_ir = compiled
         .llvm_ir
