@@ -270,8 +270,8 @@ if [[ $tokens_mode == 1 ]]; then
     assert_selfhost_cli 3 "usage: nlc run selfhost -- lex <package> [--tokens] [--tree]" lex tests/run/arithmetic --tokens --tokens
     assert_selfhost_cli 3 "usage: nlc run selfhost -- lex <package> [--tokens] [--tree]" lex tests/run/arithmetic --unknown
 else
-    assert_selfhost_cli 3 "usage: nlc run selfhost -- parse <package> [--tokens] [--tree] [--binary] [--policy=parse|compile]" parse tests/run/arithmetic --tokens --tokens
-    assert_selfhost_cli 3 "usage: nlc run selfhost -- parse <package> [--tokens] [--tree] [--binary] [--policy=parse|compile]" parse tests/run/arithmetic --unknown
+    assert_selfhost_cli 3 "usage: nlc run selfhost -- parse <package> [--tokens] [--tree] [--binary]" parse tests/run/arithmetic --tokens --tokens
+    assert_selfhost_cli 3 "usage: nlc run selfhost -- parse <package> [--tokens] [--tree] [--binary]" parse tests/run/arithmetic --unknown
 fi
 
 compare_package "$bench_relative" benchmark

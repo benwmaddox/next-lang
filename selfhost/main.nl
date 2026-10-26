@@ -1,6 +1,6 @@
 fn usage(env: Env, parse_command: bool) -> never {
     if parse_command {
-        match env.err.write(b"usage: nlc run selfhost -- parse <package> [--tokens] [--tree] [--binary] [--policy=parse|compile]\n") {
+        match env.err.write(b"usage: nlc run selfhost -- parse <package> [--tokens] [--tree] [--binary]\n") {
             ok(_) => env.exit(3),
             err(_) => env.exit(3),
         }
@@ -32,8 +32,6 @@ fn main(env: Env) {
     var want_tokens = false
     var want_tree = false
     var want_binary = false
-    var compile_policy = false
-    var policy_seen = false
     for flag_index in 2L..args.count() {
         let flag = match args.get(flag_index) {
             some(value) => value,
@@ -48,13 +46,6 @@ fn main(env: Env) {
         } else if argument_equals(flag, "--binary") {
             if want_binary { usage(env, is_parse) }
             want_binary = true
-        } else if argument_equals(flag, "--policy=compile") {
-            if policy_seen { usage(env, is_parse) }
-            policy_seen = true
-            compile_policy = true
-        } else if argument_equals(flag, "--policy=parse") {
-            if policy_seen { usage(env, is_parse) }
-            policy_seen = true
         } else {
             usage(env, is_parse)
         }
@@ -67,17 +58,16 @@ fn main(env: Env) {
     var delimiters: list<DelimiterKind, MAX_DELIMITER_NESTING> = list {}
     var file_data: Bytes max FILE_SOURCE_CAPACITY = Bytes.empty()
 
+    var tables = empty_parse_tables()
+    initialize_parse_tables(tables)
+    load_and_parse(env, package, entries, source, files, tokens, delimiters, file_data, tables, is_lex)
     if is_lex {
         if want_tree { fail_tool(env, "not implemented yet") }
-        load_and_lex(env, package, entries, source, files, tokens, delimiters, file_data)
         match output_token_dump(env.out, source, files, tokens) {
             ok(_) => (),
             err(_) => fail_tool(env, "cannot write token output"),
         }
     } else {
-        var tables = empty_parse_tables()
-        initialize_parse_tables(tables)
-        load_and_parse(env, package, entries, source, files, tokens, delimiters, file_data, tables, compile_policy)
         if want_binary {
             match output_binary_tree(env.out, source, files, tokens, tables) {
                 ok(_) => (),

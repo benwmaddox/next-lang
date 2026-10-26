@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::ast::Span;
+use crate::ast::{Program, Span};
 use crate::emit::{EntryStackReservation, StackContract};
-use crate::typed::{base_type, growing_collection_lanes, TTypeKind, Ty};
+use crate::typed::{TTypeKind, Ty, base_type, growing_collection_lanes};
 use crate::{checker, emit, lexer, parser, syntax_dump, tree_reader};
 
 // Rust's print macros panic on a broken pipe. CLI output is optional once a
@@ -28,12 +28,12 @@ macro_rules! print {
 
 static TEMP_ID: AtomicUsize = AtomicUsize::new(0);
 const COMPILER_STACK_SIZE: usize = 1024 * 1024 * 1024;
-const MAX_PARSE_FILES: usize = 256;
-const MAX_PARSE_SOURCE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_PARSE_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_PARSE_PACKAGE_TOKENS: usize = 4_000_000;
-const MAX_PARSE_PACKAGE_NODES: usize = syntax_dump::MAX_TREE_NODES;
-const MAX_PARSE_PACKAGE_EDGES: usize = syntax_dump::MAX_TREE_EDGES;
+const MAX_SOURCE_FILES: usize = 256;
+const MAX_SOURCE_BYTES_PER_FILE: usize = 16 * 1024 * 1024;
+const MAX_SOURCE_BYTES_PER_PACKAGE: usize = 64 * 1024 * 1024;
+const MAX_PACKAGE_TOKENS: usize = 4_000_000;
+const MAX_PACKAGE_NODES: usize = syntax_dump::MAX_TREE_NODES;
+const MAX_PACKAGE_EDGES: usize = syntax_dump::MAX_TREE_EDGES;
 const MAX_PARSE_WORK_UNITS: usize = 72_000_000;
 
 #[derive(Clone, Debug)]
@@ -134,6 +134,14 @@ pub struct StackPeakExpectation {
 pub struct ParseDump {
     pub tokens: String,
     pub tree: String,
+}
+
+struct ParsedFile {
+    name: String,
+    source: String,
+    tokens: Vec<lexer::Token>,
+    program: Option<Program>,
+    tree: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -254,56 +262,104 @@ pub fn parse_package_with_frontend(
         std::thread::Builder::new()
             .name("nlc-parse".to_owned())
             .stack_size(COMPILER_STACK_SIZE)
-            .spawn_scoped(scope, move || {
-                package_dump_on_worker(package, true, frontend)
-            })
+            .spawn_scoped(scope, move || package_dump_on_worker(package, frontend))
             .map_err(|error| PackageError::Tool(format!("could not start parser thread: {error}")))?
             .join()
             .map_err(|_| PackageError::Tool("parser thread panicked".to_owned()))?
     })
 }
 
-/// Lex a package with the same source selection, byte checks, UTF-8 validation,
-/// lexer and token limits as `parse_package`, without invoking the parser.
+/// Lex a package with the same input policy as every other command. Parsing is
+/// also required to enforce the shared tree, work, and nesting limits.
 pub fn lex_package(package: &Path) -> Result<String, PackageError> {
+    let frontend = Frontend::from_environment().map_err(PackageError::Tool)?;
+    lex_package_with_frontend(package, frontend)
+}
+
+pub fn lex_package_with_frontend(
+    package: &Path,
+    frontend: Frontend,
+) -> Result<String, PackageError> {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("nlc-lex".to_owned())
             .stack_size(COMPILER_STACK_SIZE)
-            .spawn_scoped(scope, move || {
-                package_dump_on_worker(package, false, Frontend::Rust)
-            })
+            .spawn_scoped(scope, move || lex_dump_on_worker(package, frontend))
             .map_err(|error| PackageError::Tool(format!("could not start lexer thread: {error}")))?
             .join()
             .map_err(|_| PackageError::Tool("lexer thread panicked".to_owned()))?
-            .map(|dump| dump.tokens)
     })
 }
 
-fn package_dump_on_worker(
-    package: &Path,
-    parse_tree: bool,
-    frontend: Frontend,
-) -> Result<ParseDump, PackageError> {
-    if parse_tree && frontend == Frontend::Selfhost {
-        let files = run_selfhost_tree(package, "--policy=parse")?;
-        let mut dump = ParseDump::default();
-        for file in files {
-            dump.tokens.push_str(&syntax_dump::token_dump(
-                &file.name,
-                &file.source,
-                &file.tokens,
-            ));
-            let (tree, _, _) = syntax_dump::tree_dump(&file.name, file.source.len(), &file.program)
+fn package_dump_on_worker(package: &Path, frontend: Frontend) -> Result<ParseDump, PackageError> {
+    let files = load_package(package, frontend)?;
+    let mut dump = ParseDump::default();
+    for file in files {
+        dump.tokens.push_str(&syntax_dump::token_dump(
+            &file.name,
+            &file.source,
+            &file.tokens,
+        ));
+        let tree = match file.tree {
+            Some(tree) => tree,
+            None => {
+                syntax_dump::tree_dump(
+                    &file.name,
+                    file.source.len(),
+                    file.program
+                        .as_ref()
+                        .expect("strict package parsing yields a program"),
+                )
                 .map_err(|_| {
-                    PackageError::Tool(
-                        "self-hosted AST exceeds the Rust tree dump limits".to_owned(),
-                    )
-                })?;
-            dump.tree.push_str(&tree);
-        }
-        return Ok(dump);
+                    PackageError::Tool("syntax tree exceeds the Rust tree dump limits".to_owned())
+                })?
+                .0
+            }
+        };
+        dump.tree.push_str(&tree);
     }
+    Ok(dump)
+}
+
+fn load_package(package: &Path, frontend: Frontend) -> Result<Vec<ParsedFile>, PackageError> {
+    if frontend == Frontend::Selfhost {
+        return run_selfhost_tree(package).map(|files| {
+            files
+                .into_iter()
+                .map(|file| ParsedFile {
+                    name: file.name,
+                    source: file.source,
+                    tokens: file.tokens,
+                    program: Some(file.program),
+                    tree: None,
+                })
+                .collect()
+        });
+    }
+
+    load_rust_package(package, false)
+}
+
+fn lex_dump_on_worker(package: &Path, frontend: Frontend) -> Result<String, PackageError> {
+    if frontend == Frontend::Selfhost {
+        return run_selfhost_lex_dump(package);
+    }
+    let files = load_rust_package(package, true)?;
+    let mut tokens = String::new();
+    for file in files {
+        tokens.push_str(&syntax_dump::token_dump(
+            &file.name,
+            &file.source,
+            &file.tokens,
+        ));
+    }
+    Ok(tokens)
+}
+
+fn load_rust_package(
+    package: &Path,
+    ignore_parse_errors: bool,
+) -> Result<Vec<ParsedFile>, PackageError> {
     let entries = fs::read_dir(package)
         .map_err(|e| PackageError::Tool(format!("cannot read package directory: {e}")))?;
     let package_root = fs::canonicalize(package)
@@ -329,14 +385,14 @@ fn package_dump_on_worker(
             "package has no .nl source files".to_owned(),
         ));
     }
-    if paths.len() > MAX_PARSE_FILES {
+    if paths.len() > MAX_SOURCE_FILES {
         return Err(parse_limit_error(
             "<package>",
-            format!("source file limit of {MAX_PARSE_FILES} per package exceeded"),
+            format!("source file limit of {MAX_SOURCE_FILES} per package exceeded"),
         ));
     }
 
-    let mut dump = ParseDump::default();
+    let mut files = Vec::with_capacity(paths.len());
     let mut package_bytes = 0usize;
     let mut package_tokens = 0usize;
     let mut package_nodes = 0usize;
@@ -350,17 +406,17 @@ fn package_dump_on_worker(
         let bytes = fs::read(&path).map_err(|error| {
             PackageError::Tool(format!("cannot read source file '{file}': {error}"))
         })?;
-        if bytes.len() > MAX_PARSE_SOURCE_BYTES {
+        if bytes.len() > MAX_SOURCE_BYTES_PER_FILE {
             return Err(parse_limit_error(
                 &file,
-                format!("source byte limit of {MAX_PARSE_SOURCE_BYTES} per file exceeded"),
+                format!("source byte limit of {MAX_SOURCE_BYTES_PER_FILE} per file exceeded"),
             ));
         }
         package_bytes = package_bytes.saturating_add(bytes.len());
-        if package_bytes > MAX_PARSE_PACKAGE_BYTES {
+        if package_bytes > MAX_SOURCE_BYTES_PER_PACKAGE {
             return Err(parse_limit_error(
                 &file,
-                format!("source byte limit of {MAX_PARSE_PACKAGE_BYTES} per package exceeded"),
+                format!("source byte limit of {MAX_SOURCE_BYTES_PER_PACKAGE} per package exceeded"),
             ));
         }
         let source = match String::from_utf8(bytes) {
@@ -384,62 +440,83 @@ fn package_dump_on_worker(
             })
         })?;
         package_tokens = package_tokens.saturating_add(tokens.len());
-        if package_tokens > MAX_PARSE_PACKAGE_TOKENS {
+        if package_tokens > MAX_PACKAGE_TOKENS {
             return Err(parse_limit_error(
                 &file,
-                format!("token limit of {MAX_PARSE_PACKAGE_TOKENS} per package exceeded"),
+                format!("token limit of {MAX_PACKAGE_TOKENS} per package exceeded"),
             ));
         }
-        dump.tokens
-            .push_str(&syntax_dump::token_dump(&file, &source, &tokens));
-        if !parse_tree {
-            continue;
-        }
-        let program = parser::parse(tokens.clone(), &source).map_err(|error| {
-            PackageError::Compile(CompileError {
-                file: file.clone(),
-                span: error.span,
-                message: error.message,
-            })
-        })?;
-        let (tree, nodes, edges) =
-            syntax_dump::tree_dump(&file, source.len(), &program).map_err(|limit| {
-                let message = if limit.edges > MAX_PARSE_PACKAGE_EDGES {
-                    format!("child edge limit of {MAX_PARSE_PACKAGE_EDGES} per package exceeded")
-                } else if limit.nodes > MAX_PARSE_PACKAGE_NODES {
-                    format!("node limit of {MAX_PARSE_PACKAGE_NODES} per package exceeded")
-                } else {
-                    "tree dump limit exceeded".to_owned()
-                };
-                parse_limit_error(&file, message)
-            })?;
-        package_nodes = package_nodes.saturating_add(nodes);
-        if package_nodes > MAX_PARSE_PACKAGE_NODES {
-            return Err(parse_limit_error(
-                &file,
-                format!("node limit of {MAX_PARSE_PACKAGE_NODES} per package exceeded"),
-            ));
-        }
-        package_edges = package_edges.saturating_add(edges);
-        if package_edges > MAX_PARSE_PACKAGE_EDGES {
-            return Err(parse_limit_error(
-                &file,
-                format!("child edge limit of {MAX_PARSE_PACKAGE_EDGES} per package exceeded"),
-            ));
-        }
-        let work = package_bytes
-            .saturating_add(package_tokens)
-            .saturating_add(package_nodes)
-            .saturating_add(package_edges);
-        if work > MAX_PARSE_WORK_UNITS {
-            return Err(parse_limit_error(
-                &file,
-                format!("parse work limit of {MAX_PARSE_WORK_UNITS} units per package exceeded"),
-            ));
-        }
-        dump.tree.push_str(&tree);
+        let program = match parser::parse(tokens.clone(), &source) {
+            Ok(program) => Some(program),
+            Err(error) if ignore_parse_errors && !is_parser_nesting_limit(&error.message) => None,
+            Err(error) => {
+                return Err(PackageError::Compile(CompileError {
+                    file: file.clone(),
+                    span: error.span,
+                    message: error.message,
+                }));
+            }
+        };
+        let tree = if let Some(program) = program.as_ref() {
+            let (tree, nodes, edges) = syntax_dump::tree_dump(&file, source.len(), program)
+                .map_err(|limit| {
+                    let message = if limit.edges > MAX_PACKAGE_EDGES {
+                        format!("child edge limit of {MAX_PACKAGE_EDGES} per package exceeded")
+                    } else if limit.nodes > MAX_PACKAGE_NODES {
+                        format!("node limit of {MAX_PACKAGE_NODES} per package exceeded")
+                    } else {
+                        "tree dump limit exceeded".to_owned()
+                    };
+                    parse_limit_error(&file, message)
+                })?;
+            package_nodes = package_nodes.saturating_add(nodes);
+            if package_nodes > MAX_PACKAGE_NODES {
+                return Err(parse_limit_error(
+                    &file,
+                    format!("node limit of {MAX_PACKAGE_NODES} per package exceeded"),
+                ));
+            }
+            package_edges = package_edges.saturating_add(edges);
+            if package_edges > MAX_PACKAGE_EDGES {
+                return Err(parse_limit_error(
+                    &file,
+                    format!("child edge limit of {MAX_PACKAGE_EDGES} per package exceeded"),
+                ));
+            }
+            let work = package_bytes
+                .saturating_add(package_tokens)
+                .saturating_add(package_nodes)
+                .saturating_add(package_edges);
+            if work > MAX_PARSE_WORK_UNITS {
+                return Err(parse_limit_error(
+                    &file,
+                    format!(
+                        "parse work limit of {MAX_PARSE_WORK_UNITS} units per package exceeded"
+                    ),
+                ));
+            }
+            Some(tree)
+        } else {
+            None
+        };
+        files.push(ParsedFile {
+            name: file,
+            source,
+            tokens,
+            program,
+            tree,
+        });
     }
-    Ok(dump)
+    Ok(files)
+}
+
+fn is_parser_nesting_limit(message: &str) -> bool {
+    matches!(
+        message,
+        "expression nesting limit of 1000 exceeded"
+            | "type nesting limit of 1000 exceeded"
+            | "block nesting limit of 1000 exceeded"
+    )
 }
 
 fn parse_limit_error(file: &str, message: String) -> PackageError {
@@ -517,73 +594,19 @@ fn compile_package_on_worker(
             })
         })?,
     };
+    let parsed_files = load_package(package, frontend)?;
+    let files = parsed_files
+        .iter()
+        .map(|file| file.name.clone())
+        .collect::<Vec<_>>();
+    let programs = parsed_files
+        .into_iter()
+        .map(|file| {
+            file.program
+                .expect("strict package loading yields a program")
+        })
+        .collect::<Vec<_>>();
     let memory_config = read_memory_config(package)?;
-    let entries = fs::read_dir(package)
-        .map_err(|e| PackageError::Tool(format!("cannot read package directory: {e}")))?;
-    let package_root = fs::canonicalize(package)
-        .map_err(|e| PackageError::Tool(format!("cannot resolve package directory: {e}")))?
-        .parent()
-        .ok_or_else(|| PackageError::Tool("package directory has no parent".to_owned()))?
-        .to_owned();
-    let mut paths = Vec::new();
-    for entry in entries {
-        let entry =
-            entry.map_err(|e| PackageError::Tool(format!("cannot read package entry: {e}")))?;
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "nl")
-            && path.is_file()
-            && fs::canonicalize(&path).is_ok_and(|target| target.starts_with(&package_root))
-        {
-            paths.push(path);
-        }
-    }
-    paths.sort();
-    if paths.is_empty() {
-        return Err(PackageError::Tool(
-            "package has no .nl source files".to_owned(),
-        ));
-    }
-    let mut files = Vec::new();
-    let mut programs = Vec::new();
-    match frontend {
-        Frontend::Selfhost => {
-            for file in run_selfhost_tree(package, "--policy=compile")? {
-                files.push(file.name);
-                programs.push(file.program);
-            }
-        }
-        Frontend::Rust => {
-            for path in paths {
-                let file = path
-                    .file_name()
-                    .and_then(|x| x.to_str())
-                    .unwrap_or("<source>")
-                    .to_owned();
-                let source_bytes = fs::read(&path).map_err(|e| {
-                    PackageError::Tool(format!("cannot read source file '{}': {e}", file))
-                })?;
-                let source = String::from_utf8(source_bytes)
-                    .map_err(|_| PackageError::Tool("source is not valid UTF-8".to_owned()))?;
-                let file_id = files.len();
-                let tokens = lexer::lex(&source, file_id).map_err(|e| {
-                    PackageError::Compile(CompileError {
-                        file: file.clone(),
-                        span: e.span,
-                        message: e.message,
-                    })
-                })?;
-                let program = parser::parse(tokens, &source).map_err(|e| {
-                    PackageError::Compile(CompileError {
-                        file: file.clone(),
-                        span: e.span,
-                        message: e.message,
-                    })
-                })?;
-                files.push(file);
-                programs.push(program);
-            }
-        }
-    }
     let mut typed = checker::check_package(
         programs,
         files.clone(),
@@ -2101,7 +2124,7 @@ impl CacheLock {
                 Err(error) => {
                     return Err(PackageError::Tool(format!(
                         "cannot create self-hosted compiler cache lock: {error}"
-                    )))
+                    )));
                 }
             }
         }
@@ -2339,7 +2362,7 @@ fn selfhost_cached_binary() -> Result<PathBuf, PackageError> {
             Err(error) => {
                 return Err(PackageError::Tool(format!(
                     "cannot create selfhost cache staging directory: {error}"
-                )))
+                )));
             }
         }
     }
@@ -2404,18 +2427,14 @@ fn cached_artifact_valid(directory: &Path, binary: &Path) -> bool {
     marker == FingerprintHash::of(&artifact)
 }
 
-fn run_selfhost_tree(
-    package: &Path,
-    policy: &str,
-) -> Result<Vec<tree_reader::RebuiltFile>, PackageError> {
+fn run_selfhost_tree(package: &Path) -> Result<Vec<tree_reader::RebuiltFile>, PackageError> {
     let binary = selfhost_cached_binary()?;
-    run_selfhost_tree_with_binary(package, &binary, policy)
+    run_selfhost_tree_with_binary(package, &binary)
 }
 
 fn run_selfhost_tree_with_binary(
     package: &Path,
     binary: &Path,
-    policy: &str,
 ) -> Result<Vec<tree_reader::RebuiltFile>, PackageError> {
     let package = fs::canonicalize(package).map_err(|error| {
         PackageError::Tool(format!("cannot resolve package directory: {error}"))
@@ -2439,7 +2458,7 @@ fn run_selfhost_tree_with_binary(
             PackageError::Tool(format!("cannot create temporary tree file: {error}"))
         })?;
     let child = Command::new(&binary)
-        .args(["parse", name, "--binary", policy])
+        .args(["parse", name, "--binary"])
         .current_dir(parent)
         .stdin(Stdio::null())
         .stdout(Stdio::from(output_file))
@@ -2486,6 +2505,54 @@ fn run_selfhost_tree_with_binary(
         .map_err(|error| PackageError::Tool(format!("cannot read temporary tree file: {error}")))?;
     tree_reader::read_package(&bytes)
         .map_err(|error| PackageError::Tool(format!("invalid selfhost binary tree: {error}")))
+}
+
+fn run_selfhost_lex_dump(package: &Path) -> Result<String, PackageError> {
+    let binary = selfhost_cached_binary()?;
+    let package = fs::canonicalize(package).map_err(|error| {
+        PackageError::Tool(format!("cannot resolve package directory: {error}"))
+    })?;
+    let parent = package
+        .parent()
+        .ok_or_else(|| PackageError::Tool("package directory has no parent".to_owned()))?;
+    let name = package
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| PackageError::Tool("package directory name is not UTF-8".to_owned()))?;
+    let output = Command::new(&binary)
+        .args(["lex", name])
+        .current_dir(parent)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| PackageError::Tool(format!("cannot launch selfhost lexer: {error}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        if output.status.code() == Some(2) {
+            if let Some(error) = parse_child_diagnostic(&stderr) {
+                return Err(PackageError::Compile(error));
+            }
+            return Err(PackageError::Tool(format!(
+                "selfhost lexer exited with status 2 without a diagnostic: {}",
+                stderr.trim_end()
+            )));
+        }
+        if let Some(message) = stderr.strip_prefix("nlc: tool failure: ") {
+            return Err(PackageError::Tool(message.trim_end().to_owned()));
+        }
+        return Err(PackageError::Tool(match output.status.code() {
+            Some(code) => format!(
+                "selfhost lexer exited with status {code}: {}",
+                stderr.trim_end()
+            ),
+            None => format!(
+                "selfhost lexer terminated by a signal: {}",
+                stderr.trim_end()
+            ),
+        }));
+    }
+    String::from_utf8(output.stdout).map_err(|_| {
+        PackageError::Tool("selfhost lexer produced non-UTF-8 token output".to_owned())
+    })
 }
 
 fn parse_child_diagnostic(stderr: &str) -> Option<CompileError> {
@@ -2677,7 +2744,7 @@ mod selfhost_ast_tests {
         fs::write(&signal_child, "#!/bin/sh\nkill -TERM $$\n").expect("write signal child");
         fs::set_permissions(&signal_child, fs::Permissions::from_mode(0o755))
             .expect("make signal child executable");
-        let signal_error = run_selfhost_tree_with_binary(&package, &signal_child, "--policy=parse")
+        let signal_error = run_selfhost_tree_with_binary(&package, &signal_child)
             .expect_err("a child killed by a signal must fail");
         assert!(
             matches!(&signal_error, PackageError::Tool(message) if message.contains("terminated by a signal")),
@@ -2689,9 +2756,8 @@ mod selfhost_ast_tests {
             .expect("write truncated-tree child");
         fs::set_permissions(&truncated_child, fs::Permissions::from_mode(0o755))
             .expect("make truncated-tree child executable");
-        let truncated_error =
-            run_selfhost_tree_with_binary(&package, &truncated_child, "--policy=parse")
-                .expect_err("a truncated child tree must fail");
+        let truncated_error = run_selfhost_tree_with_binary(&package, &truncated_child)
+            .expect_err("a truncated child tree must fail");
         assert!(
             matches!(&truncated_error, PackageError::Tool(message) if message.contains("invalid selfhost binary tree: truncated header")),
             "unexpected truncated-tree failure: {truncated_error:?}"
@@ -2711,7 +2777,7 @@ mod selfhost_ast_tests {
             let Some(expected) = rust_programs(&package) else {
                 continue;
             };
-            let rebuilt = run_selfhost_tree(&package, "--policy=parse").unwrap_or_else(|error| {
+            let rebuilt = run_selfhost_tree(&package).unwrap_or_else(|error| {
                 panic!(
                     "selfhost failed to rebuild Rust-valid package {}: {error}",
                     package.display()

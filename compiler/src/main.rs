@@ -3,9 +3,9 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use next_lang::{
-    build_package_with_frontend, inspect_contracts, inspect_memory, inspect_stacks, lex_package,
-    parse_package_with_frontend, run_package_args_with_frontend, test_package_with_frontend,
-    Frontend, PackageError,
+    Frontend, PackageError, build_package_with_frontend, inspect_contracts, inspect_memory,
+    inspect_stacks, lex_package_with_frontend, parse_package_with_frontend,
+    run_package_args_with_frontend, test_package_with_frontend,
 };
 
 fn main() -> ExitCode {
@@ -85,13 +85,15 @@ fn main() -> ExitCode {
                 Err(error) => report_error(error),
             }
         }
-        "lex" if rest.len() == 1 => match lex_package(Path::new(&rest[0])) {
-            Ok(tokens) => {
-                write_stdout(format_args!("{tokens}"));
-                ExitCode::SUCCESS
+        "lex" if rest.len() == 1 => {
+            match lex_package_with_frontend(Path::new(&rest[0]), frontend) {
+                Ok(tokens) => {
+                    write_stdout(format_args!("{tokens}"));
+                    ExitCode::SUCCESS
+                }
+                Err(error) => report_error(error),
             }
-            Err(error) => report_error(error),
-        },
+        }
         "parse" if (1..=3).contains(&rest.len()) => {
             let flags = &rest[1..];
             let want_tree = flags.iter().any(|arg| arg == "--tree");
@@ -176,7 +178,7 @@ fn write_stdout(args: std::fmt::Arguments<'_>) {
 
 fn usage() {
     eprintln!(
-        "usage: nlc [--frontend=rust|selfhost] run <package-dir> [--frontend=rust|selfhost] [--allow-overcommit] [-- <args...>] | nlc build <package-dir> -o <file> [--frontend=rust|selfhost] | nlc test <package-dir> [--frontend=rust|selfhost] | nlc lex <package-dir> | nlc parse <package-dir> [--tree] [--tokens] [--frontend=rust|selfhost] | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir> | nlc inspect stacks <package-dir>"
+        "usage: nlc [--frontend=rust|selfhost] run <package-dir> [--frontend=rust|selfhost] [--allow-overcommit] [-- <args...>] | nlc build <package-dir> -o <file> [--frontend=rust|selfhost] | nlc test <package-dir> [--frontend=rust|selfhost] | nlc lex <package-dir> [--frontend=rust|selfhost] | nlc parse <package-dir> [--tree] [--tokens] [--frontend=rust|selfhost] | nlc inspect memory <package-dir> [--allow-overcommit] | nlc inspect contracts <package-dir> | nlc inspect stacks <package-dir>"
     );
 }
 

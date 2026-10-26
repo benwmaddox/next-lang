@@ -202,7 +202,7 @@ fn rust_and_selfhost_use_the_same_rooted_source_symlink_policy() {
 }
 
 #[test]
-fn compile_policy_reports_invalid_utf8_as_the_same_tool_failure() {
+fn frontends_report_invalid_utf8_as_the_same_syntax_diagnostic() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler crate has a workspace root");
@@ -232,20 +232,20 @@ fn compile_policy_reports_invalid_utf8_as_the_same_tool_failure() {
     };
     let rust = compile("rust");
     let selfhost = compile("selfhost");
-    assert_eq!(rust.status.code(), Some(3));
-    assert_eq!(selfhost.status.code(), Some(3));
+    assert_eq!(rust.status.code(), Some(2));
+    assert_eq!(selfhost.status.code(), Some(2));
     assert_eq!(rust.stdout, selfhost.stdout);
     assert_eq!(rust.stderr, selfhost.stderr);
     assert_eq!(
         rust.stderr,
-        b"nlc: tool failure: source is not valid UTF-8\n"
+        b"main.nl:2:1: error: source is not valid UTF-8; save the file as UTF-8\n"
     );
 
     let _ = fs::remove_dir_all(&temp);
 }
 
 #[test]
-fn compile_policy_accepts_one_byte_over_parse_source_limits() {
+fn compile_frontends_reject_over_parse_source_limits() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler crate has a workspace root");
@@ -282,18 +282,14 @@ fn compile_policy_accepts_one_byte_over_parse_source_limits() {
     };
     let rust_file = build("rust", "file");
     let selfhost_file = build("selfhost", "file");
-    assert!(
-        rust_file.status.success(),
-        "Rust per-file boundary failed: {}",
-        String::from_utf8_lossy(&rust_file.stderr)
-    );
-    assert!(
-        selfhost_file.status.success(),
-        "selfhost per-file boundary failed: {}",
-        String::from_utf8_lossy(&selfhost_file.stderr)
-    );
+    assert_eq!(rust_file.status.code(), Some(2));
+    assert_eq!(selfhost_file.status.code(), Some(2));
     assert_eq!(selfhost_file.stdout, rust_file.stdout);
     assert_eq!(selfhost_file.stderr, rust_file.stderr);
+    assert!(
+        String::from_utf8_lossy(&rust_file.stderr)
+            .contains("source byte limit of 16777216 per file exceeded")
+    );
 
     fs::remove_file(package.join("main.nl")).expect("remove per-file boundary source");
     let file_bytes = vec![b' '; file_limit];
@@ -312,18 +308,14 @@ fn compile_policy_accepts_one_byte_over_parse_source_limits() {
 
     let rust_package = build("rust", "package");
     let selfhost_package = build("selfhost", "package");
-    assert!(
-        rust_package.status.success(),
-        "Rust package boundary failed: {}",
-        String::from_utf8_lossy(&rust_package.stderr)
-    );
-    assert!(
-        selfhost_package.status.success(),
-        "selfhost package boundary failed: {}",
-        String::from_utf8_lossy(&selfhost_package.stderr)
-    );
+    assert_eq!(rust_package.status.code(), Some(2));
+    assert_eq!(selfhost_package.status.code(), Some(2));
     assert_eq!(selfhost_package.stdout, rust_package.stdout);
     assert_eq!(selfhost_package.stderr, rust_package.stderr);
+    assert!(
+        String::from_utf8_lossy(&rust_package.stderr)
+            .contains("source byte limit of 67108864 per package exceeded")
+    );
 
     let _ = fs::remove_dir_all(&temp);
 }

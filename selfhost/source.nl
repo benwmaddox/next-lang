@@ -1,9 +1,8 @@
-// Package processing follows compiler/src/driver.rs and syntax-tree-format.md:
-// list and sort .nl entries; reject an empty package and >256 regular files;
-// for each sorted file, read (16 MiB temporary), check per-file bytes, package
-// bytes, UTF-8, lex (delimiter and per-file token checks), then package tokens.
-// Output is staged until every file succeeds. Rooted Fs paths are relative to
-// the current working directory; symlinks outside that root are not readable.
+// Every command uses one package policy: list and sort .nl entries; reject an
+// empty package and more than 256 regular files; then check per-file and
+// package bytes, UTF-8, lexing and token counts, parsing, nodes, edges, work,
+// and nesting in order. Output is staged until every file succeeds. Rooted Fs
+// paths are relative to the current working directory; outside symlinks fail.
 
 enum LexProblemKind {
     UnexpectedCharacter,
@@ -203,7 +202,20 @@ fn fail_lex(env: Env, file: Bytes max 4096, problem: LexProblem) -> never {
     }
 }
 
-fn load_and_lex(
+fn is_parse_limit_error(kind: ParseProblemKind) -> bool {
+    kind == ParseProblemKind.TypeDepth ||
+    kind == ParseProblemKind.BlockDepth ||
+    kind == ParseProblemKind.ExpressionDepth ||
+    kind == ParseProblemKind.CastDepth ||
+    kind == ParseProblemKind.ParseNodeLimit ||
+    kind == ParseProblemKind.ParseEdgeLimit ||
+    kind == ParseProblemKind.ParseWorkLimit
+}
+
+// Parsing is deliberately interleaved with each file's read and lex stages.
+// This mirrors driver.rs so an earlier syntax error wins over a later file
+// failure, and successful trees remain staged until the package is complete.
+fn load_and_parse(
     env: Env,
     package: Arg,
     entries: write list<DirEntry, MAX_DIRECTORY_ENTRIES>,
@@ -212,10 +224,18 @@ fn load_and_lex(
     tokens: write list<Token, TOKEN_STORAGE_CAPACITY>,
     delimiters: write list<DelimiterKind, MAX_DELIMITER_NESTING>,
     file_data: grow Bytes max FILE_SOURCE_CAPACITY,
+    tables: write ParseTables,
+    ignore_syntax_errors: bool,
 ) {
     match env.fs.list_with_extension(package, "nl", entries) {
         ok(_) => (),
-        err(_) => fail_tool(env, "cannot read package directory"),
+        err(error) => {
+            if error == IoError.TooMany {
+                fail_diagnostic(env, write_file_count_limit(env.err))
+            } else {
+                fail_tool(env, "cannot read package directory")
+            }
+        },
     }
 
     var source_count = 0L
@@ -223,10 +243,14 @@ fn load_and_lex(
         if entries[index].kind == FileKind.File { source_count += 1L }
     }
     if source_count == 0L { fail_tool(env, "package has no .nl source files") }
-    if source_count > MAX_PARSE_SOURCE_FILES {
+    if source_count > MAX_SOURCE_FILES {
         fail_diagnostic(env, write_file_count_limit(env.err))
     }
 
+    var package_bytes = 0L
+    var package_tokens = 0L
+    var package_nodes = 0L
+    var package_edges = 0L
     for entry_index in 0L..entries.count() {
         let entry = entries[entry_index]
         if entry.kind == FileKind.File {
@@ -249,7 +273,8 @@ fn load_and_lex(
             if file_length > MAX_SOURCE_BYTES_PER_FILE {
                 fail_diagnostic(env, write_file_byte_limit(env.err, file_name))
             }
-            if source.count() + file_length > MAX_SOURCE_BYTES_PER_PACKAGE {
+            package_bytes += file_length
+            if package_bytes > MAX_SOURCE_BYTES_PER_PACKAGE {
                 fail_diagnostic(env, write_package_byte_limit(env.err, file_name))
             }
             match file_data.validate_utf8() {
@@ -268,135 +293,55 @@ fn load_and_lex(
             let first_token = tokens.count()
             let summary = match lex_file(source, base, file_length, tokens, delimiters) {
                 ok(value) => value,
-                err(problem) => fail_lex(env, file_name, problem),
-            }
-            if tokens.count() > MAX_TOKENS_PER_PACKAGE {
-                fail_diagnostic(env, write_package_token_limit(env.err, file_name))
-            }
-            let source_file = SourceFile { name: file_name, base, length: file_length, first_token, token_count: summary.token_count, end_line: summary.end_line, end_col: summary.end_col, tree_root: -1L }
-            match files.push(source_file) {
-                ok(_) => (),
-                err(Full) => fail_diagnostic(env, write_file_count_limit(env.err)),
-            }
-        }
-    }
-}
-
-// Parsing is deliberately interleaved with each file's read and lex stages.
-// This mirrors driver.rs so an earlier syntax error wins over a later file
-// failure, and successful trees remain staged until the package is complete.
-fn load_and_parse(
-    env: Env,
-    package: Arg,
-    entries: write list<DirEntry, MAX_DIRECTORY_ENTRIES>,
-    source: grow Bytes max SOURCE_BUFFER_CAPACITY,
-    files: write list<SourceFile, MAX_SOURCE_FILES>,
-    tokens: write list<Token, TOKEN_STORAGE_CAPACITY>,
-    delimiters: write list<DelimiterKind, MAX_DELIMITER_NESTING>,
-    file_data: grow Bytes max FILE_SOURCE_CAPACITY,
-    tables: write ParseTables,
-    compile_policy: bool,
-) {
-    match env.fs.list_with_extension(package, "nl", entries) {
-        ok(_) => (),
-        err(_) => fail_tool(env, "cannot read package directory"),
-    }
-
-    var source_count = 0L
-    for index in 0L..entries.count() {
-        if entries[index].kind == FileKind.File { source_count += 1L }
-    }
-    if source_count == 0L { fail_tool(env, "package has no .nl source files") }
-    if !compile_policy && source_count > MAX_PARSE_SOURCE_FILES {
-        fail_diagnostic(env, write_file_count_limit(env.err))
-    }
-
-    var package_bytes = 0L
-    var package_tokens = 0L
-    var package_nodes = 0L
-    var package_edges = 0L
-    for entry_index in 0L..entries.count() {
-        let entry = entries[entry_index]
-        if entry.kind == FileKind.File {
-            let file_name = display_name(entry.name)
-            let path = match env.fs.join(package, entry.name) {
-                ok(value) => value,
-                err(_) => fail_tool(env, "cannot join source path"),
-            }
-            match env.fs.read(path, file_data) {
-                ok(_) => (),
-                err(error) => {
-                    if error == IoError.TooLarge {
-                        if compile_policy { fail_tool(env, "source file exceeds the selfhost buffer capacity") }
-                        else { fail_diagnostic(env, write_file_byte_limit(env.err, file_name)) }
+                err(problem) => {
+                    let current_file_tokens = tokens.count() - first_token
+                    if problem.kind == LexProblemKind.TokenLimit &&
+                        tokens.count() >= MAX_TOKENS_PER_PACKAGE &&
+                        current_file_tokens < MAX_TOKENS_PER_FILE {
+                        fail_diagnostic(env, write_package_token_limit(env.err, file_name))
                     } else {
-                        fail_tool(env, "cannot read source file")
+                        fail_lex(env, file_name, problem)
                     }
                 },
             }
-            let file_length = file_data.count()
-            if !compile_policy && file_length > MAX_SOURCE_BYTES_PER_FILE {
-                fail_diagnostic(env, write_file_byte_limit(env.err, file_name))
-            }
-            package_bytes += file_length
-            if !compile_policy && package_bytes > MAX_SOURCE_BYTES_PER_PACKAGE {
-                fail_diagnostic(env, write_package_byte_limit(env.err, file_name))
-            }
-            match file_data.validate_utf8() {
-                ok(_) => (),
-                err(error) => {
-                    let position = invalid_utf8_position(file_data, error.valid_up_to)
-                    if compile_policy { fail_tool(env, "source is not valid UTF-8") }
-                    else { fail_diagnostic(env, write_source_invalid_utf8(env.err, file_name, position)) }
-                },
-            }
-
-            let base = source.count()
-            match source.try_append(file_data) {
-                ok(_) => (),
-                err(Full) => fail_tool(env, "package source buffer overflow"),
-            }
-            let first_token = tokens.count()
-            let summary = match lex_file(source, base, file_length, tokens, delimiters) {
-                ok(value) => value,
-                err(problem) => fail_lex(env, file_name, problem),
-            }
             package_tokens += summary.token_count
-            if !compile_policy && package_tokens > MAX_TOKENS_PER_PACKAGE {
+            if package_tokens > MAX_TOKENS_PER_PACKAGE {
                 fail_diagnostic(env, write_package_token_limit(env.err, file_name))
             }
 
             let prior_nodes = tables.nodes.count()
             let root = match parse_file(source, tokens, tables, base, file_length, first_token, summary.token_count) {
                 ok(value) => value,
-                err(problem) => fail_parse(env, source, tokens, file_name, base, file_length, problem),
+                err(problem) => {
+                    if ignore_syntax_errors && !is_parse_limit_error(problem.kind) { -1L }
+                    else { fail_parse(env, source, tokens, file_name, base, file_length, problem) }
+                },
             }
-            let file_nodes = tables.nodes.count() - prior_nodes
-            if !compile_policy && file_nodes > MAX_TREE_NODES {
-                fail_parse_limit(env, file_name, "node limit of 2000000 per package exceeded")
-            }
-            package_nodes += file_nodes
-            if !compile_policy && package_nodes > MAX_TREE_NODES {
-                fail_parse_limit(env, file_name, "node limit of 2000000 per package exceeded")
-            }
-            // Each file contributes one Program node, so edges are always
-            // nodes - files. The node cap makes edge overflow unreachable.
-            let file_edges = file_nodes - 1L
-            package_edges += file_edges
-            if !compile_policy && package_edges > MAX_TREE_EDGES {
-                fail_parse_limit(env, file_name, "child edge limit of 2000000 per package exceeded")
-            }
-            let work = package_bytes + package_tokens + package_nodes + package_edges
-            if !compile_policy && work > MAX_PARSE_WORK {
-                fail_parse_limit(env, file_name, "parse work limit of 72000000 units per package exceeded")
+            if root >= 0L {
+                let file_nodes = tables.nodes.count() - prior_nodes
+                if file_nodes > MAX_TREE_NODES {
+                    fail_parse_limit(env, file_name, "node limit of 2000000 per package exceeded")
+                }
+                package_nodes += file_nodes
+                if package_nodes > MAX_TREE_NODES {
+                    fail_parse_limit(env, file_name, "node limit of 2000000 per package exceeded")
+                }
+                // Each file contributes one Program node, so edges are always
+                // nodes - files. The node cap makes edge overflow unreachable.
+                let file_edges = file_nodes - 1L
+                package_edges += file_edges
+                if package_edges > MAX_TREE_EDGES {
+                    fail_parse_limit(env, file_name, "child edge limit of 2000000 per package exceeded")
+                }
+                let work = package_bytes + package_tokens + package_nodes + package_edges
+                if work > MAX_PARSE_WORK {
+                    fail_parse_limit(env, file_name, "parse work limit of 72000000 units per package exceeded")
+                }
             }
             let source_file = SourceFile { name: file_name, base, length: file_length, first_token, token_count: summary.token_count, end_line: summary.end_line, end_col: summary.end_col, tree_root: root }
             match files.push(source_file) {
                 ok(_) => (),
-                err(Full) => {
-                    if compile_policy { fail_tool(env, "package exceeds selfhost file capacity") }
-                    else { fail_diagnostic(env, write_file_count_limit(env.err)) }
-                },
+                err(Full) => fail_diagnostic(env, write_file_count_limit(env.err)),
             }
         }
     }

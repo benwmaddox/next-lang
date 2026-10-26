@@ -221,7 +221,7 @@ fn selfhost_stack_bound_has_an_exact_attributed_path() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("main.nl:78 main.tables (680912049 bytes)"),
+        stdout.contains("main.nl:61 main.tables (680912049 bytes)"),
         "{stdout}"
     );
     for line in [68, 72, 103, 128, 175] {
