@@ -104,7 +104,7 @@ for pair in "${pairs[@]}"; do
 
     # Build Rust version
     rs_exe="$work/${pair}.rs"
-    if rustc --edition 2021 -C opt-level=3 -C codegen-units=1 -C panic=abort -C strip=symbols \
+    if rustc --edition 2021 -C opt-level=3 -C codegen-units=1 -C lto=fat -C panic=abort -C strip=symbols \
         "$pair_dir/main.rs" -o "$rs_exe" 2>&1; then
         build_ok["$pair.rs"]=1
         rs_size["$pair"]=$(stat -c %s "$rs_exe")

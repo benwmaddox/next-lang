@@ -70,7 +70,8 @@ The programs use deterministic input (linear congruential generator seeded with 
 - **Arithmetic:** next-lang checks all arithmetic operations for overflow (part of the safety model); Rust does not in release builds. The LCG choice avoids triggering this difference.
 - **Compilation:** 
   - next-lang: `NLC_OPT_LEVEL=3 nlc build <dir> -o <out>` (release level; the default, 1, is the checked development level)
-  - Rust: `rustc --edition 2021 -C opt-level=3 -C codegen-units=1 -C panic=abort -C strip=symbols` (stripped, so binary sizes compare like for like)
+  - Rust: `rustc --edition 2021 -C opt-level=3 -C codegen-units=1 -C lto=fat -C panic=abort -C strip=symbols` (stripped, so binary sizes compare like for like)
+  - Both at their highest optimisation, on the same CPU target (baseline x86-64; neither uses `target-cpu=native`, since stage 0 has no way to target a newer level). When the self-hosted compiler can target x86-64-v3, add a second run with both at v3.
 - **Output:** Each program prints three values to stdout. Outputs are byte-for-byte compared before timing.
 
 ## Running the Benchmarks
