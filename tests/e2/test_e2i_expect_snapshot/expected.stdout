@@ -1,0 +1,5 @@
+FAIL aggregate equality keeps the left operand snapshot
+  main.nl:10:5: expect cell == change_and_copy(cell)
+    left:  Cell { value: 1 }
+    right: Cell { value: 9 }
+0 passed, 1 failed

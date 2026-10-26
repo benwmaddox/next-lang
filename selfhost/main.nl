@@ -100,6 +100,7 @@ fn main(env: Env) {
         let output_path = match args.get(3L) { some(value) => value, none => usage_build(env) }
         let config = load_manifest(env, package)
         var compiler = empty_compiler_tables()
+        seed_builtin_types(compiler.type_records)
         add_compiler_links(tables, compiler)
         intern_package_names(env, source, files, tokens, tables, compiler)
         build_line_start_index(env, source, files, compiler)

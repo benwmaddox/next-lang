@@ -306,7 +306,20 @@ pub struct TProgram {
     pub files: Vec<String>,
     pub call_graph: Vec<Vec<TCallEdge>>,
     pub function_type_targets: Vec<Vec<usize>>,
+    /// Checker-computed transitive effects on globals for each function.
+    pub function_global_effects: Vec<TFunctionGlobalEffects>,
     pub types: Vec<TType>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TFunctionGlobalEffects {
+    pub writes: Vec<TGlobalEffectPath>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TGlobalEffectPath {
+    pub global: usize,
+    pub fields: Vec<usize>,
 }
 
 pub const GLOBAL_ROOT_START: usize = usize::MAX / 2;

@@ -1,6 +1,19 @@
 // E1's compiler tables are owned by main and remain alive through the one IR
 // write. Syntax nodes stay immutable; the links and typed facts are indexed by
 // parser node id.
+//
+// E2i shared-code ownership (other parts add only delimited branches):
+// | Shared code | Owner after E2i | Others may |
+// | type table, kind classification, value_type_size/align, resolve_value_type, known_non_scalar_type, is_builtin_type_name | E2i (interface frozen) | append a kind and its branches |
+// | emit_layout_address and StorageLocation | E3a1 (origins), E3a2 (lane geometry) | nothing; sum layouts reach it only through the layout table |
+// | location argument/destination passing and parameter receiving | E3a2 (descriptor ABI) | nothing; E2b and E2c call the interface |
+// | helper registry | E2i | register an emitter for their kind |
+// | exit and cleanup function | E2i | register a cleanup; call it from a new exit |
+// | register_package_declarations, signatures | E3a2 (parameter modes) | E2b: enums; E2c: result types |
+// | natural_node_type, check_one_body, emit_expr_linear, emit_function_body | none | one dispatch branch per new node kind |
+// | unsupported_category_for_node, unsupported_node_message | none | remove their nodes, append their rows |
+// | core_sys_*, hook table, frame-budget walk | E3a1 | E2b/E2c add only unavoidable hooks with a C contract fixture |
+// | limits.nl | none | append one delimited block with derivations |
 const TY_INT: long = 0L
 const TY_LONG: long = 1L
 const TY_BOOL: long = 2L
@@ -9,6 +22,43 @@ const TY_NEVER: long = 4L
 const TY_ADDR: long = 5L
 const TY_STRUCT_BASE: long = 6L
 const MAX_VALUE_SIZE: long = 4097L
+
+const TYPE_KIND_SCALAR: long = 1L
+const TYPE_KIND_UNIT: long = 2L
+const TYPE_KIND_NEVER: long = 3L
+const TYPE_KIND_STRUCT: long = 4L
+const TYPE_KIND_ENUM: long = 5L
+const TYPE_KIND_OPTION: long = 6L
+const TYPE_KIND_RESULT: long = 7L
+const TYPE_KIND_ARRAY: long = 8L
+const TYPE_KIND_LIST: long = 9L
+const TYPE_KIND_ASCII: long = 10L
+const TYPE_KIND_TEXT: long = 11L
+const TYPE_KIND_BYTES: long = 12L
+const TYPE_KIND_ADDRESS: long = 13L
+
+const LOCATION_NATIVE: long = 0L
+const LOCATION_DATA_STACK: long = 1L
+const LOCATION_GLOBAL: long = 2L
+
+const HELPER_COPY: long = 1L
+const HELPER_EQUAL: long = 2L
+const HELPER_PRINT: long = 3L
+const HELPER_FILL: long = 4L
+const HELPER_DEFAULT: long = 5L
+
+const EXIT_RETURN: long = 1L
+const EXIT_RETURN_VALUE: long = 2L
+const EXIT_TEST_SUCCESS: long = 3L
+const EXIT_TEST_FAILURE: long = 4L
+const EXIT_BREAK: long = 5L
+const EXIT_CONTINUE: long = 6L
+const EXIT_BRANCH: long = 7L
+const EXIT_FALLTHROUGH: long = 8L
+
+const BRANCH_IF_END: long = 1L
+const BRANCH_IF_EXPR_END: long = 2L
+const BRANCH_FOR_INCREMENT: long = 3L
 
 const SYS_NULL: long = 1L
 const SYS_IS_NULL: long = 2L
@@ -56,7 +106,9 @@ const UNSUPPORTED_FUNCTION_VALUE: long = 8L
 const UNSUPPORTED_LARGE_VALUE: long = 9L
 const UNSUPPORTED_FRAME_BUDGET: long = 10L
 
-struct StructTypeRecord {
+struct TypeRecord {
+    // Kind and sizing state share a word; helper_mask is the registry row for this type id.
+    kind_state: long
     name_id: long
     name_token: long
     node: long
@@ -65,8 +117,25 @@ struct StructTypeRecord {
     field_count: long
     size: long
     align: long
-    state: long
-    helper_flags: long
+    helper_mask: long
+}
+
+// E2i locations carry a native-slot origin now; anchor kinds identify an SSA
+// aggregate temp, local, derived address, parameter, hidden result, or helper operand.
+// Offsets and lane fields are reserved for the later region and collection owners.
+struct StorageLocation {
+    origin: long
+    anchor_kind: long
+    anchor_node: long
+    byte_offset: long
+    copies: long
+    index: long
+}
+
+struct ExitCleanupRecord {
+    scope_id: long
+    kind: long
+    owner: long
 }
 
 struct StructFieldRecord {
@@ -223,9 +292,10 @@ struct CompilerTables {
     intern_slots: list<NameSlot, INTERN_HASH_CAPACITY>
     functions: list<FunctionRecord, FUNCTION_TABLE_CAPACITY>
     parameters: list<ParameterRecord, BINDING_TABLE_CAPACITY>
-    struct_types: list<StructTypeRecord, TYPE_TABLE_CAPACITY>
+    type_records: list<TypeRecord, TYPE_TABLE_CAPACITY>
+    exit_cleanups: list<ExitCleanupRecord, EXIT_CLEANUP_CAPACITY>
     struct_fields: list<StructFieldRecord, FIELD_TABLE_CAPACITY>
-    type_walk: list<TypeWalkFrame, TYPE_TABLE_CAPACITY>
+    type_walk: list<TypeWalkFrame, MAX_TREE_NODES>
     tests: list<TestRecord, TEST_TABLE_CAPACITY>
     call_edges: list<CallEdge, CALL_EDGE_CAPACITY>
     edge_first: list<long, NODE_STORAGE_CAPACITY>
@@ -252,6 +322,30 @@ struct CompilerTables {
     memory_closure: bool
 }
 
+fn builtin_type_record(kind: long, size: long, align: long) -> TypeRecord {
+    TypeRecord {
+        kind_state: kind * 16L + 2L,
+        name_id: -1L,
+        name_token: -1L,
+        node: -1L,
+        file: -1L,
+        field_start: 0L,
+        field_count: 0L,
+        size,
+        align,
+        helper_mask: 0L,
+    }
+}
+
+fn seed_builtin_types(types: write list<TypeRecord, TYPE_TABLE_CAPACITY>) {
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 4L, 4L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 8L, 8L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 1L, 1L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_UNIT, 0L, 1L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_NEVER, 0L, 1L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_ADDRESS, 8L, 8L)).unwrap()
+}
+
 fn empty_compiler_tables() -> CompilerTables {
     CompilerTables {
         child_first: list {},
@@ -262,7 +356,8 @@ fn empty_compiler_tables() -> CompilerTables {
         intern_slots: list {},
         functions: list {},
         parameters: list {},
-        struct_types: list {},
+        type_records: list {},
+        exit_cleanups: list {},
         struct_fields: list {},
         type_walk: list {},
         tests: list {},
@@ -301,7 +396,9 @@ fn reset_compiler_tables(compiler: write CompilerTables) {
     compiler.intern_slots.clear()
     compiler.functions.clear()
     compiler.parameters.clear()
-    compiler.struct_types.clear()
+    compiler.type_records.clear()
+    compiler.exit_cleanups.clear()
+    seed_builtin_types(compiler.type_records)
     compiler.struct_fields.clear()
     compiler.type_walk.clear()
     compiler.tests.clear()
@@ -832,20 +929,116 @@ fn known_non_scalar_type(
     token_is_word_at(source, tokens, files, file_index, token, "TextError")
 }
 
+// TYPE MODULE BEGIN: all type-table indexing and the stable type-id mapping lives here.
+fn type_record(compiler: CompilerTables, type_id: long) -> TypeRecord {
+    if type_id < 0L || type_id >= compiler.type_records.count() {
+        return TypeRecord { kind_state: 3L, name_id: -1L, name_token: -1L, node: -1L, file: -1L, field_start: 0L, field_count: 0L, size: -1L, align: -1L, helper_mask: 0L }
+    }
+    compiler.type_records[type_id]
+}
+
+fn type_record_kind(record: TypeRecord) -> long { record.kind_state / 16L }
+fn type_record_state(record: TypeRecord) -> long { record.kind_state % 16L }
+
+fn append_type_record(compiler: write CompilerTables, record: TypeRecord) -> long {
+    let type_id = compiler.type_records.count()
+    compiler.type_records.push(record).unwrap()
+    type_id
+}
+
+fn struct_type_id(compiler: CompilerTables, struct_index: long) -> long {
+    if struct_index < 0L { return -1L }
+    var seen = 0L
+    for type_id in 0L..compiler.type_records.count() {
+        if type_record_kind(compiler.type_records[type_id]) == TYPE_KIND_STRUCT {
+            if seen == struct_index { return type_id }
+            seen += 1L
+        }
+    }
+    -1L
+}
+
+fn struct_type_index(compiler: CompilerTables, type_id: long) -> long {
+    var seen = 0L
+    for index in 0L..compiler.type_records.count() {
+        if type_record_kind(compiler.type_records[index]) == TYPE_KIND_STRUCT {
+            if index == type_id { return seen }
+            seen += 1L
+        }
+    }
+    -1L
+}
+
+fn struct_record(compiler: CompilerTables, struct_index: long) -> TypeRecord {
+    type_record(compiler, struct_type_id(compiler, struct_index))
+}
+
+fn struct_type_count(compiler: CompilerTables) -> long {
+    var count = 0L
+    for type_id in 0L..compiler.type_records.count() {
+        if type_record_kind(compiler.type_records[type_id]) == TYPE_KIND_STRUCT { count += 1L }
+    }
+    count
+}
+
+fn type_kind(compiler: CompilerTables, type_id: long) -> long {
+    type_record_kind(type_record(compiler, type_id))
+}
+
+fn type_state(compiler: CompilerTables, type_id: long) -> long {
+    type_record_state(type_record(compiler, type_id))
+}
+
+fn type_count(compiler: CompilerTables) -> long { compiler.type_records.count() }
+
+fn type_helper_mask(compiler: CompilerTables, type_id: long) -> long {
+    if type_id < 0L || type_id >= compiler.type_records.count() { return 0L }
+    compiler.type_records[type_id].helper_mask
+}
+
+fn set_type_helper_mask(compiler: write CompilerTables, type_id: long, mask: long) {
+    if type_id >= 0L && type_id < compiler.type_records.count() { compiler.type_records[type_id].helper_mask = mask }
+}
+
+fn is_aggregate_type(compiler: CompilerTables, type_id: long) -> bool {
+    let kind = type_kind(compiler, type_id)
+    kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_ENUM || kind == TYPE_KIND_OPTION || kind == TYPE_KIND_RESULT ||
+        kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST || kind == TYPE_KIND_ASCII || kind == TYPE_KIND_TEXT || kind == TYPE_KIND_BYTES
+}
+
+fn set_type_state(compiler: write CompilerTables, type_id: long, state: long) {
+    if type_id >= 0L && type_id < compiler.type_records.count() {
+        let kind = type_record_kind(compiler.type_records[type_id])
+        compiler.type_records[type_id].kind_state = kind * 16L + state
+    }
+}
+
+fn set_type_layout(compiler: write CompilerTables, type_id: long, size: long, align: long, state: long) {
+    if type_id >= 0L && type_id < compiler.type_records.count() {
+        compiler.type_records[type_id].size = size
+        compiler.type_records[type_id].align = align
+        set_type_state(compiler, type_id, state)
+    }
+}
+
 fn struct_type_matches(compiler: CompilerTables, name_id: long) -> long {
     var found = -1L
-    for index in 0L..compiler.struct_types.count() {
-        if compiler.struct_types[index].name_id == name_id {
-            if found >= 0L { return -1L }
-            found = index
+    var struct_index = 0L
+    for type_id in 0L..compiler.type_records.count() {
+        if type_record_kind(compiler.type_records[type_id]) == TYPE_KIND_STRUCT {
+            if compiler.type_records[type_id].name_id == name_id {
+                if found >= 0L { return -1L }
+                found = struct_index
+            }
+            struct_index += 1L
         }
     }
     found
 }
 
 fn struct_field_matches(compiler: CompilerTables, type_index: long, name_id: long) -> long {
-    if type_index < 0L || type_index >= compiler.struct_types.count() { return -1L }
-    let ty = compiler.struct_types[type_index]
+    if type_index < 0L || type_index >= struct_type_count(compiler) { return -1L }
+    let ty = struct_record(compiler, type_index)
     for offset in 0L..ty.field_count {
         let field_index = ty.field_start + offset
         if compiler.struct_fields[field_index].name_id == name_id { return field_index }
@@ -874,7 +1067,7 @@ fn resolve_value_type(
     if syntax.token < 0L { return -1L }
     let name_id = compiler.token_name_ids[syntax.token]
     let type_index = struct_type_matches(compiler, name_id)
-    if type_index >= 0L { return TY_STRUCT_BASE + type_index }
+    if type_index >= 0L { return struct_type_id(compiler, type_index) }
     -1L
 }
 
@@ -893,27 +1086,15 @@ fn size_align_saturated(value: long, align: long) -> long {
 }
 
 fn value_type_size(compiler: CompilerTables, ty: long) -> long {
-    if ty == TY_BOOL { 1L }
-    else if ty == TY_INT { 4L }
-    else if ty == TY_LONG { 8L }
-    else if ty == TY_UNIT { 0L }
-    else if ty >= TY_STRUCT_BASE {
-        let index = ty - TY_STRUCT_BASE
-        if index >= 0L && index < compiler.struct_types.count() && compiler.struct_types[index].state == 2L { compiler.struct_types[index].size }
-        else { -1L }
-    } else { -1L }
+    if ty < 0L || ty >= compiler.type_records.count() { return -1L }
+    let record = type_record(compiler, ty)
+    if type_record_state(record) == 2L { record.size } else { -1L }
 }
 
 fn value_type_align(compiler: CompilerTables, ty: long) -> long {
-    if ty == TY_BOOL { 1L }
-    else if ty == TY_INT { 4L }
-    else if ty == TY_LONG { 8L }
-    else if ty == TY_UNIT { 1L }
-    else if ty >= TY_STRUCT_BASE {
-        let index = ty - TY_STRUCT_BASE
-        if index >= 0L && index < compiler.struct_types.count() && compiler.struct_types[index].state == 2L { compiler.struct_types[index].align }
-        else { -1L }
-    } else { -1L }
+    if ty < 0L || ty >= compiler.type_records.count() { return -1L }
+    let record = type_record(compiler, ty)
+    if type_record_state(record) == 2L { record.align } else { -1L }
 }
 
 fn index_package_structs(
@@ -930,7 +1111,7 @@ fn index_package_structs(
             if child < 0L { break }
             if tables.nodes[child].kind == NodeKind.Struct {
                 let syntax = tables.nodes[child]
-                let type_index = compiler.struct_types.count()
+                let type_index = struct_type_count(compiler)
                 let field_start = compiler.struct_fields.count()
                 var field = compiler.child_first[child]
                 for field_step in 0L..syntax.subtree {
@@ -952,7 +1133,8 @@ fn index_package_structs(
                     }
                     field = compiler.child_next[field]
                 }
-                compiler.struct_types.push(StructTypeRecord {
+                append_type_record(compiler, TypeRecord {
+                    kind_state: TYPE_KIND_STRUCT * 16L,
                     name_id: compiler.token_name_ids[syntax.token],
                     name_token: syntax.token,
                     node: child,
@@ -961,9 +1143,8 @@ fn index_package_structs(
                     field_count: compiler.struct_fields.count() - field_start,
                     size: 0L,
                     align: 1L,
-                    state: 0L,
-                    helper_flags: 0L,
-                }).unwrap()
+                    helper_mask: 0L,
+                })
             }
             child = compiler.child_next[child]
         }
@@ -978,46 +1159,44 @@ fn size_package_structs(
     compiler: write CompilerTables,
 ) {
     compiler.type_walk.clear()
-    for root_type in 0L..compiler.struct_types.count() {
-        if compiler.struct_types[root_type].state != 0L { continue }
-        compiler.struct_types[root_type].state = 1L
+    for root_type in 0L..struct_type_count(compiler) {
+        if type_state(compiler, struct_type_id(compiler, root_type)) != 0L { continue }
+        set_type_state(compiler, struct_type_id(compiler, root_type), 1L)
         compiler.type_walk.push(TypeWalkFrame { type_index: root_type, field_index: 0L, size: 0L, align: 1L }).unwrap()
         for walk_step in 0L..MAX_TREE_NODES {
             if compiler.type_walk.count() == 0L { break }
             let frame_index = compiler.type_walk.count() - 1L
             var frame = compiler.type_walk[frame_index]
-            let type_info = compiler.struct_types[frame.type_index]
+            let type_info = struct_record(compiler, frame.type_index)
             if frame.field_index >= type_info.field_count {
-                compiler.struct_types[frame.type_index].size = size_align_saturated(frame.size, frame.align)
-                compiler.struct_types[frame.type_index].align = frame.align
-                compiler.struct_types[frame.type_index].state = 2L
+                set_type_layout(compiler, struct_type_id(compiler, frame.type_index), size_align_saturated(frame.size, frame.align), frame.align, 2L)
                 let _ = compiler.type_walk.pop()
                 continue
             }
             let field_index = type_info.field_start + frame.field_index
             let field = compiler.struct_fields[field_index]
-            let file_index = compiler.struct_types[frame.type_index].file
+            let file_index = struct_record(compiler, frame.type_index).file
             let ty = resolve_value_type(source, tokens, files, tables, compiler, file_index, field.type_node)
             compiler.struct_fields[field_index].ty = ty
             let field_size = value_type_size(compiler, ty)
             let field_align = value_type_align(compiler, ty)
             if field_size < 0L || field_align < 0L {
-                if ty >= TY_STRUCT_BASE {
-                    let nested = ty - TY_STRUCT_BASE
-                    if nested >= 0L && nested < compiler.struct_types.count() && compiler.struct_types[nested].state == 0L {
-                        compiler.struct_types[nested].state = 1L
+                if type_kind(compiler, ty) == TYPE_KIND_STRUCT {
+                    let nested = struct_type_index(compiler, ty)
+                    if nested >= 0L && nested < struct_type_count(compiler) && type_state(compiler, struct_type_id(compiler, nested)) == 0L {
+                        set_type_state(compiler, ty, 1L)
                         compiler.type_walk.push(TypeWalkFrame { type_index: nested, field_index: 0L, size: 0L, align: 1L }).unwrap()
                         continue
                     }
-                    if nested >= 0L && nested < compiler.struct_types.count() && compiler.struct_types[nested].state == 1L {
-                        compiler.struct_types[frame.type_index].state = 4L
-                    } else if nested >= 0L && nested < compiler.struct_types.count() && compiler.struct_types[nested].state == 4L {
-                        compiler.struct_types[frame.type_index].state = 4L
+                    if nested >= 0L && nested < struct_type_count(compiler) && type_state(compiler, struct_type_id(compiler, nested)) == 1L {
+                        set_type_state(compiler, struct_type_id(compiler, frame.type_index), 4L)
+                    } else if nested >= 0L && nested < struct_type_count(compiler) && type_state(compiler, struct_type_id(compiler, nested)) == 4L {
+                        set_type_state(compiler, struct_type_id(compiler, frame.type_index), 4L)
                     } else {
-                        compiler.struct_types[frame.type_index].state = 3L
+                        set_type_state(compiler, struct_type_id(compiler, frame.type_index), 3L)
                     }
                 } else {
-                    compiler.struct_types[frame.type_index].state = 3L
+                    set_type_state(compiler, struct_type_id(compiler, frame.type_index), 3L)
                 }
                 let _ = compiler.type_walk.pop()
                 continue
@@ -1030,7 +1209,7 @@ fn size_package_structs(
             compiler.type_walk[frame_index] = frame
         }
         if compiler.type_walk.count() > 0L {
-            compiler.struct_types[root_type].state = 3L
+            set_type_state(compiler, struct_type_id(compiler, root_type), 3L)
             compiler.type_walk.clear()
         }
     }
@@ -1046,10 +1225,10 @@ fn type_node_is_oversized(
     file_index: long,
 ) -> bool {
     let ty = resolve_value_type(source, tokens, files, tables, compiler, file_index, node)
-    if ty < TY_STRUCT_BASE { return false }
-    let index = ty - TY_STRUCT_BASE
-    index >= 0L && index < compiler.struct_types.count() && compiler.struct_types[index].state == 2L && compiler.struct_types[index].size > 4096L
+    if !is_aggregate_type(compiler, ty) { return false }
+    value_type_size(compiler, ty) > 4096L
 }
+// TYPE MODULE END
 
 fn is_core_addr_type(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -1235,8 +1414,8 @@ fn unsupported_category_for_node(
             if value.aux > 0L { UNSUPPORTED_NODE }
             else {
                 var oversized = false
-                for type_index in 0L..compiler.struct_types.count() {
-                    if compiler.struct_types[type_index].node == node && compiler.struct_types[type_index].state == 2L && compiler.struct_types[type_index].size > 4096L { oversized = true }
+                for type_index in 0L..struct_type_count(compiler) {
+                    if struct_record(compiler, type_index).node == node && type_state(compiler, struct_type_id(compiler, type_index)) == 2L && struct_record(compiler, type_index).size > 4096L { oversized = true }
                 }
                 if oversized { UNSUPPORTED_LARGE_VALUE } else { 0L }
             }
@@ -1292,7 +1471,7 @@ fn unsupported_category_for_node(
             if is_core_addr_type(source, tokens, files, tables, compiler, file_index, node) { 0L }
             else if (value.flags & FLAG_TYPE_UNIT) != 0L { 0L }
             else if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE }
-            else if resolve_value_type(source, tokens, files, tables, compiler, file_index, node) >= TY_STRUCT_BASE { 0L }
+            else if is_aggregate_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
             else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
             else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
             else { 0L }
@@ -1302,7 +1481,7 @@ fn unsupported_category_for_node(
             else if (value.flags & FLAG_TYPE_UNIT) != 0L { 0L }
             else if token_is_word_at(source, tokens, files, file_index, value.token, "never") { 0L }
             else if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE }
-            else if resolve_value_type(source, tokens, files, tables, compiler, file_index, node) >= TY_STRUCT_BASE { 0L }
+            else if is_aggregate_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
             else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
             else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
             else { 0L }
@@ -1311,7 +1490,7 @@ fn unsupported_category_for_node(
             if is_core_addr_type(source, tokens, files, tables, compiler, file_index, node) { 0L }
             else if (value.flags & FLAG_TYPE_UNIT) != 0L { 0L }
             else if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE }
-            else if resolve_value_type(source, tokens, files, tables, compiler, file_index, node) >= TY_STRUCT_BASE { 0L }
+            else if is_aggregate_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
             else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
             else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
             else { 0L }
@@ -1777,7 +1956,7 @@ fn fail_duplicate_struct_field(
     previous_index: long,
 ) -> never {
     let current = compiler.struct_fields[field_index]
-    let owner = compiler.struct_types[current.owner]
+    let owner = struct_record(compiler, current.owner)
     let position = position_for_offset(owner.file, files[owner.file].base + tables.nodes[current.node].start, compiler)
     let previous_position = position_for_offset(owner.file, files[owner.file].base + tables.nodes[compiler.struct_fields[previous_index].node].start, compiler)
     match env.err.write(files[owner.file].name) { ok(_) => (), err(_) => env.exit(3) }
@@ -1800,19 +1979,19 @@ fn check_struct_declarations(
     tables: ParseTables,
     compiler: write CompilerTables,
 ) {
-    for type_index in 0L..compiler.struct_types.count() {
-        let ty = compiler.struct_types[type_index]
+    for type_index in 0L..struct_type_count(compiler) {
+        let ty = struct_record(compiler, type_index)
         if is_builtin_type_name(source, tokens, files, ty.file, ty.name_token) {
             fail_dynamic_checker_error(env, source, files, tokens, compiler, ty.file, tables.nodes[ty.node].start, "type '", ty.name_token, "' is declared more than once or shadows a built-in type")
         }
         for previous in 0L..type_index {
-            if compiler.struct_types[previous].name_id == ty.name_id {
+            if struct_record(compiler, previous).name_id == ty.name_id {
                 fail_dynamic_checker_error(env, source, files, tokens, compiler, ty.file, tables.nodes[ty.node].start, "type '", ty.name_token, "' is declared more than once or shadows a built-in type")
             }
         }
     }
-    for type_index in 0L..compiler.struct_types.count() {
-        let ty = compiler.struct_types[type_index]
+    for type_index in 0L..struct_type_count(compiler) {
+        let ty = struct_record(compiler, type_index)
         for offset in 0L..ty.field_count {
             let field_index = ty.field_start + offset
             let field = compiler.struct_fields[field_index]
@@ -1829,9 +2008,9 @@ fn check_struct_declarations(
             }
         }
     }
-    for type_index in 0L..compiler.struct_types.count() {
-        let ty = compiler.struct_types[type_index]
-        if ty.state == 4L {
+    for type_index in 0L..struct_type_count(compiler) {
+        let ty = struct_record(compiler, type_index)
+        if type_state(compiler, struct_type_id(compiler, type_index)) == 4L {
             fail_dynamic_checker_error(env, source, files, tokens, compiler, ty.file, tables.nodes[ty.node].start, "value type '", ty.name_token, "' contains itself directly or through Option/Result and would have infinite size")
         }
     }
@@ -1916,7 +2095,7 @@ fn fail_missing_struct_field(
     field_index: long,
 ) -> never {
     let position = position_for_offset(file_index, files[file_index].base + offset, compiler)
-    let ty = compiler.struct_types[type_index]
+    let ty = struct_record(compiler, type_index)
     let field = compiler.struct_fields[field_index]
     match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
@@ -1946,7 +2125,7 @@ fn fail_unknown_struct_field(
     is_literal: bool,
 ) -> never {
     let position = position_for_offset(file_index, files[file_index].base + offset, compiler)
-    let ty = compiler.struct_types[type_index]
+    let ty = struct_record(compiler, type_index)
     let wanted_length = tokens[field_token].length
     var candidate = NameCandidate { token: -1L, file: -1L, distance: 3L, length: 0L }
     for field_offset in 0L..ty.field_count {
@@ -2792,7 +2971,7 @@ fn check_one_body(
                     }
                     fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "unknown struct '", syntax.token, "'; declare it with struct")
                 }
-                frame.result_ty = TY_STRUCT_BASE + type_index
+                frame.result_ty = struct_type_id(compiler, type_index)
                 frame.cursor = compiler.child_first[node]
                 frame.phase = 1L
                 compiler.work[frame_index] = frame
@@ -3024,7 +3203,7 @@ fn check_one_body(
             } else if kind == NodeKind.StructInit {
                 let initializer = frame.cursor
                 if initializer >= 0L {
-                    let type_index = frame.result_ty - TY_STRUCT_BASE
+                    let type_index = struct_type_index(compiler, frame.result_ty)
                     let field_index = struct_field_matches(compiler, type_index, compiler.token_name_ids[tables.nodes[initializer].token])
                     if field_index < 0L {
                         fail_unknown_struct_field(env, source, files, tokens, tables, compiler, file_index, tables.nodes[initializer].start, type_index, tables.nodes[initializer].token, true)
@@ -3133,11 +3312,11 @@ fn check_one_body(
         } else if kind == NodeKind.Field {
             let receiver = frame.child0
             let receiver_ty = compiler.facts[receiver].ty
-            if receiver_ty < TY_STRUCT_BASE {
+            if !is_aggregate_type(compiler, receiver_ty) {
                 let message: Ascii max 160 = "value has no fields; cannot read this field"
                 fail_at_message(env, files, compiler, file_index, syntax.anchor, message)
             }
-            let type_index = receiver_ty - TY_STRUCT_BASE
+            let type_index = struct_type_index(compiler, receiver_ty)
             let field_index = struct_field_matches(compiler, type_index, compiler.token_name_ids[syntax.token])
             if field_index < 0L {
                 fail_unknown_struct_field(env, source, files, tokens, tables, compiler, file_index, syntax.anchor, type_index, syntax.token, false)
@@ -3146,8 +3325,8 @@ fn check_one_body(
             if frame.expected >= 0L && frame.expected != field_ty { require_type(env, files, compiler, file_index, node, frame.expected, field_ty, tables) }
             compiler.facts[node] = NodeFact { ty: field_ty, flags: FACT_FALLS_THROUGH, binding: compiler.facts[receiver].binding, function: -1L, literal: field_index }
         } else if kind == NodeKind.StructInit {
-            let type_index = frame.result_ty - TY_STRUCT_BASE
-            let ty = compiler.struct_types[type_index]
+            let type_index = struct_type_index(compiler, frame.result_ty)
+            let ty = struct_record(compiler, type_index)
             for offset in 0L..ty.field_count {
                 let field_index = ty.field_start + offset
                 var supplied = false
@@ -3205,7 +3384,7 @@ fn check_one_body(
                 if arg_count != 1L { fail_at_message(env, files, compiler, file_index, syntax.start, "print takes one argument, but got an invalid number; call print(value)") }
                 let argument = child_at(tables, compiler, node, 0L)
                 let arg_ty = compiler.facts[argument].ty
-                if !is_numeric_type(arg_ty) && arg_ty != TY_BOOL && !is_aggregate_type(arg_ty) {
+                if !is_numeric_type(arg_ty) && arg_ty != TY_BOOL && !is_aggregate_type(compiler, arg_ty) {
                     fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values")
                 }
                 compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
@@ -3445,7 +3624,7 @@ fn fail_default_cycle(
     field_index: long,
 ) -> never {
     let field = compiler.struct_fields[field_index]
-    let ty = compiler.struct_types[field.owner]
+    let ty = struct_record(compiler, field.owner)
     let position = position_for_offset(ty.file, files[ty.file].base + tables.nodes[field.default_node].start, compiler)
     match env.err.write(files[ty.file].name) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
@@ -3535,8 +3714,8 @@ fn check_struct_defaults(
     config: MemoryConfig,
     compiler: write CompilerTables,
 ) {
-    for type_index in 0L..compiler.struct_types.count() {
-        let ty = compiler.struct_types[type_index]
+    for type_index in 0L..struct_type_count(compiler) {
+        let ty = struct_record(compiler, type_index)
         for field_offset in 0L..ty.field_count {
             let field_index = ty.field_start + field_offset
             let field = compiler.struct_fields[field_index]
@@ -3565,7 +3744,7 @@ fn check_struct_defaults(
             if tables.nodes[syntax_node].kind != NodeKind.StructInit { continue }
             let target_type = struct_type_matches(compiler, compiler.token_name_ids[tables.nodes[syntax_node].token])
             if target_type < 0L { continue }
-            let target = compiler.struct_types[target_type]
+            let target = struct_record(compiler, target_type)
             for target_offset in 0L..target.field_count {
                 let target_field = target.field_start + target_offset
                 if compiler.struct_fields[target_field].default_node >= 0L && struct_literal_omits_field(tables, compiler, syntax_node, target_field) {
@@ -3590,7 +3769,7 @@ fn add_default_call_graph_edges(
             if tables.nodes[syntax_node].kind != NodeKind.StructInit { continue }
             let type_index = struct_type_matches(compiler, compiler.token_name_ids[tables.nodes[syntax_node].token])
             if type_index < 0L { continue }
-            let ty = compiler.struct_types[type_index]
+            let ty = struct_record(compiler, type_index)
             for offset in 0L..ty.field_count {
                 let field_index = ty.field_start + offset
                 if compiler.struct_fields[field_index].default_node >= 0L && struct_literal_omits_field(tables, compiler, syntax_node, field_index) {
@@ -3626,7 +3805,7 @@ fn add_default_call_graph_edges(
             } else if tables.nodes[syntax_node].kind == NodeKind.StructInit {
                 let type_index = struct_type_matches(compiler, compiler.token_name_ids[tables.nodes[syntax_node].token])
                 if type_index < 0L { continue }
-                let ty = compiler.struct_types[type_index]
+                let ty = struct_record(compiler, type_index)
                 for offset in 0L..ty.field_count {
                     let field_index = ty.field_start + offset
                     if compiler.struct_fields[field_index].default_node >= 0L && struct_literal_omits_field(tables, compiler, syntax_node, field_index) {
@@ -3640,7 +3819,7 @@ fn add_default_call_graph_edges(
 }
 
 fn add_frame_slot_bytes(compiler: write CompilerTables, graph_node: long, ty: long) {
-    if !is_aggregate_type(ty) { return }
+    if !is_aggregate_type(compiler, ty) { return }
     let size = value_type_size(compiler, ty)
     if size > 0L { compiler.frame_own_bytes[graph_node] += size }
 }
@@ -3974,59 +4153,130 @@ fn ir_write_value_ref(compiler: write CompilerTables, ir: grow Bytes max IR_BUFF
     ir_write_number(compiler, ir, node)
 }
 
-fn is_aggregate_type(ty: long) -> bool { ty >= TY_STRUCT_BASE }
+fn native_location(anchor_kind: long, anchor_node: long, byte_offset: long) -> StorageLocation {
+    StorageLocation { origin: LOCATION_NATIVE, anchor_kind, anchor_node, byte_offset, copies: 1L, index: 0L }
+}
+
+fn aggregate_destination_location(kind: long, node: long) -> StorageLocation {
+    if kind == 0L { native_location(0L, node, 0L) }
+    else if kind == 1L { native_location(1L, node, 0L) }
+    else if kind == 2L { native_location(4L, 0L, 0L) }
+    else { native_location(2L, node, 0L) }
+}
+
+fn aggregate_source_location(kind: long, node: long) -> StorageLocation {
+    if kind == 0L { native_location(0L, node, 0L) }
+    else if kind == 1L { native_location(1L, node, 0L) }
+    else if kind == 2L { native_location(3L, node, 0L) }
+    else { native_location(2L, node, 0L) }
+}
+
+fn emit_location_pointer(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    location: StorageLocation,
+) {
+    // E2i has native slots only; other origins and lane geometry fail closed
+    // until the region and collection owners implement them.
+    if location.origin != LOCATION_NATIVE || location.copies != 1L || location.index != 0L || location.byte_offset != 0L {
+        compiler.ir_overflow = true
+        return
+    }
+    if location.anchor_kind == 0L { ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, location.anchor_node) }
+    else if location.anchor_kind == 1L { ir_write_ascii(compiler, ir, "%local."); ir_write_number(compiler, ir, location.anchor_node) }
+    else if location.anchor_kind == 2L { ir_write_ascii(compiler, ir, "%addr."); ir_write_number(compiler, ir, location.anchor_node) }
+    else if location.anchor_kind == 3L { ir_write_ascii(compiler, ir, "%arg."); ir_write_number(compiler, ir, location.anchor_node) }
+    else if location.anchor_kind == 4L { ir_write_ascii(compiler, ir, "%nl.dest") }
+    else if location.anchor_kind == 5L { ir_write_ascii(compiler, ir, "%nl.source") }
+    else if location.anchor_kind == 6L { ir_write_ascii(compiler, ir, "%nl.left") }
+    else if location.anchor_kind == 7L { ir_write_ascii(compiler, ir, "%nl.right") }
+    else if location.anchor_kind == 8L { ir_write_ascii(compiler, ir, "%nl.value") }
+    else { compiler.ir_overflow = true }
+}
+
+fn emit_location_argument(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    location: StorageLocation,
+) {
+    ir_write_ascii(compiler, ir, "ptr ")
+    emit_location_pointer(compiler, ir, location)
+}
+
+fn emit_location_parameter(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    binding: long,
+) {
+    emit_location_argument(compiler, ir, native_location(3L, binding, 0L))
+}
+
+fn emit_hidden_destination_argument(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    destination: StorageLocation,
+) {
+    emit_location_argument(compiler, ir, destination)
+}
+
+fn emit_hidden_destination_parameter(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
+    emit_location_argument(compiler, ir, native_location(4L, 0L, 0L))
+}
+
+fn lower_scope_exit(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    scope_id: long,
+    exit_kind: long,
+    target_kind: long,
+    target: long,
+    value_ty: long,
+    value_node: long,
+) {
+    // One invocation lowers one exited scope. A multi-scope exit invokes this
+    // in innermost-first order; E2i has no cleanup records to run.
+    for cleanup_step in 0L..compiler.exit_cleanups.count() {
+        let cleanup = compiler.exit_cleanups[compiler.exit_cleanups.count() - cleanup_step - 1L]
+        if cleanup.scope_id == scope_id { emit_registered_exit_cleanup(compiler, ir, cleanup) }
+    }
+    if exit_kind == EXIT_RETURN { ir_write_ascii(compiler, ir, "  ret void\n") }
+    else if exit_kind == EXIT_RETURN_VALUE {
+        ir_write_ascii(compiler, ir, "  ret "); ir_write_ascii(compiler, ir, llvm_type_name(value_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, "\n")
+    } else if exit_kind == EXIT_TEST_SUCCESS { ir_write_ascii(compiler, ir, "  ret i32 0\n") }
+    else if exit_kind == EXIT_TEST_FAILURE { ir_write_ascii(compiler, ir, "  ret i32 1\n") }
+    else if exit_kind == EXIT_FALLTHROUGH {
+        if target_kind == 1L { ir_write_ascii(compiler, ir, "  ret i32 0\n") }
+        else if value_ty == TY_UNIT || value_ty == TY_NEVER || is_aggregate_type(compiler, value_ty) { ir_write_ascii(compiler, ir, "  ret void\n") }
+        else { ir_write_ascii(compiler, ir, "  ret "); ir_write_ascii(compiler, ir, llvm_type_name(value_ty)); ir_write_ascii(compiler, ir, " 0\n") }
+    } else if exit_kind == EXIT_BREAK || exit_kind == EXIT_CONTINUE {
+        if exit_kind == EXIT_BREAK { ir_write_ascii(compiler, ir, "  br label %for.end.") }
+        else { ir_write_ascii(compiler, ir, "  br label %for.increment.") }
+        ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, "\n")
+    } else if exit_kind == EXIT_BRANCH {
+        ir_write_ascii(compiler, ir, "  br label %")
+        if target_kind == BRANCH_IF_END { ir_write_ascii(compiler, ir, "if.end.") }
+        else if target_kind == BRANCH_IF_EXPR_END { ir_write_ascii(compiler, ir, "if.expr.end.") }
+        else if target_kind == BRANCH_FOR_INCREMENT { ir_write_ascii(compiler, ir, "for.increment.") }
+        else { compiler.ir_overflow = true }
+        ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, "\n")
+    } else { compiler.ir_overflow = true }
+}
 
 fn emit_layout_address(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     result_node: long,
-    base_node: long,
-    base_kind: long,
-    offset: long,
+    location: StorageLocation,
 ) {
+    if location.origin != LOCATION_NATIVE || location.copies != 1L || location.index != 0L {
+        compiler.ir_overflow = true
+        return
+    }
     ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, result_node)
     ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
-    if base_kind == 0L {
-        ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, base_node)
-    } else if base_kind == 1L {
-        ir_write_ascii(compiler, ir, "%local."); ir_write_number(compiler, ir, base_node)
-    } else if base_kind == 3L {
-        ir_write_ascii(compiler, ir, "%arg."); ir_write_number(compiler, ir, base_node)
-    } else if base_kind == 4L {
-        ir_write_ascii(compiler, ir, "%nl.dest")
-    } else if base_kind == 5L {
-        ir_write_ascii(compiler, ir, "%nl.source")
-    } else if base_kind == 6L {
-        ir_write_ascii(compiler, ir, "%nl.left")
-    } else if base_kind == 7L {
-        ir_write_ascii(compiler, ir, "%nl.right")
-    } else if base_kind == 8L {
-        ir_write_ascii(compiler, ir, "%nl.value")
-    } else {
-        ir_write_ascii(compiler, ir, "%addr."); ir_write_number(compiler, ir, base_node)
-    }
-    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, offset); ir_write_ascii(compiler, ir, "\n")
-}
-
-fn emit_aggregate_pointer(
-    tables: ParseTables,
-    compiler: write CompilerTables,
-    ir: grow Bytes max IR_BUFFER_CAPACITY,
-    node: long,
-) {
-    let kind = tables.nodes[node].kind
-    if kind == NodeKind.Name {
-        let binding = compiler.facts[node].binding
-        if compiler.bindings[binding].parameter {
-            ir_write_ascii(compiler, ir, "%arg."); ir_write_number(compiler, ir, binding)
-        } else {
-            ir_write_ascii(compiler, ir, "%local."); ir_write_number(compiler, ir, binding)
-        }
-    } else if kind == NodeKind.Field {
-        ir_write_ascii(compiler, ir, "%addr."); ir_write_number(compiler, ir, node)
-    } else {
-        ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, node)
-    }
+    let pointer_location = native_location(location.anchor_kind, location.anchor_node, 0L)
+    emit_location_pointer(compiler, ir, pointer_location)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, location.byte_offset); ir_write_ascii(compiler, ir, "\n")
 }
 
 fn emit_aggregate_address(
@@ -4040,12 +4290,12 @@ fn emit_aggregate_address(
     let receiver = compiler.child_first[node]
     if tables.nodes[receiver].kind == NodeKind.Name {
         let binding = compiler.facts[receiver].binding
-        if compiler.bindings[binding].parameter { emit_layout_address(compiler, ir, node, binding, 3L, field.offset) }
-        else { emit_layout_address(compiler, ir, node, binding, 1L, field.offset) }
+        if compiler.bindings[binding].parameter { emit_layout_address(compiler, ir, node, native_location(3L, binding, field.offset)) }
+        else { emit_layout_address(compiler, ir, node, native_location(1L, binding, field.offset)) }
     } else if tables.nodes[receiver].kind == NodeKind.Field {
-        emit_layout_address(compiler, ir, node, receiver, 2L, field.offset)
+        emit_layout_address(compiler, ir, node, native_location(2L, receiver, field.offset))
     } else {
-        emit_layout_address(compiler, ir, node, receiver, 0L, field.offset)
+        emit_layout_address(compiler, ir, node, native_location(0L, receiver, field.offset))
     }
 }
 
@@ -4066,7 +4316,7 @@ fn emit_field_path_value(
         let field_node = compiler.type_walk[compiler.type_walk.count() - path_index - 1L].type_index
         emit_aggregate_address(tables, compiler, ir, field_node)
         let field_ty = compiler.facts[field_node].ty
-        if field_node == node && !is_aggregate_type(field_ty) && field_ty != TY_UNIT {
+        if field_node == node && !is_aggregate_type(compiler, field_ty) && field_ty != TY_UNIT {
             emit_load_scalar(compiler, ir, field_node, field_ty)
         }
     }
@@ -4077,22 +4327,76 @@ fn emit_aggregate_copy(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     type_id: long,
-    dst_kind: long,
-    dst_node: long,
-    src_kind: long,
-    src_node: long,
+    destination: StorageLocation,
+    source: StorageLocation,
 ) {
-    ir_write_ascii(compiler, ir, "  call void @nl.copy."); ir_write_number(compiler, ir, type_id - TY_STRUCT_BASE); ir_write_ascii(compiler, ir, "(ptr ")
-    if dst_kind == 0L { ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, dst_node) }
-    else if dst_kind == 1L { ir_write_ascii(compiler, ir, "%local."); ir_write_number(compiler, ir, dst_node) }
-    else if dst_kind == 2L { ir_write_ascii(compiler, ir, "%nl.dest") }
-    else { ir_write_ascii(compiler, ir, "%addr."); ir_write_number(compiler, ir, dst_node) }
-    ir_write_ascii(compiler, ir, ", ptr ")
-    if src_kind == 0L { ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, src_node) }
-    else if src_kind == 1L { ir_write_ascii(compiler, ir, "%local."); ir_write_number(compiler, ir, src_node) }
-    else if src_kind == 2L { ir_write_ascii(compiler, ir, "%arg."); ir_write_number(compiler, ir, src_node) }
-    else { ir_write_ascii(compiler, ir, "%addr."); ir_write_number(compiler, ir, src_node) }
+    ir_write_ascii(compiler, ir, "  call void ")
+    emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY)
+    ir_push_byte(compiler, ir, 40)
+    emit_location_argument(compiler, ir, destination)
+    ir_write_ascii(compiler, ir, ", ")
+    emit_location_argument(compiler, ir, source)
     ir_write_ascii(compiler, ir, ")\n")
+}
+
+fn emit_type_helper_symbol(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    type_id: long,
+    operation: long,
+) {
+    if !is_aggregate_type(compiler, type_id) || !has_type_helper(compiler, type_id, operation) {
+        compiler.ir_overflow = true
+        return
+    }
+    if operation == HELPER_COPY { ir_write_ascii(compiler, ir, "@nl.copy.") }
+    else if operation == HELPER_EQUAL { ir_write_ascii(compiler, ir, "@nl.eq.") }
+    else if operation == HELPER_PRINT { ir_write_ascii(compiler, ir, "@nl.print.") }
+    else if operation == HELPER_FILL { ir_write_ascii(compiler, ir, "@nl.fill.") }
+    else { compiler.ir_overflow = true }
+    ir_write_number(compiler, ir, type_id)
+}
+
+fn emit_default_field_helper_symbol(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    type_id: long,
+    field_index: long,
+) {
+    if !has_type_helper(compiler, type_id, HELPER_DEFAULT) { compiler.ir_overflow = true }
+    ir_write_ascii(compiler, ir, "@nl.default.")
+    ir_write_number(compiler, ir, type_id)
+    ir_push_byte(compiler, ir, 46)
+    ir_write_number(compiler, ir, field_index)
+}
+
+fn emit_type_helper_call_one(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    type_id: long,
+    operation: long,
+    operand: StorageLocation,
+) {
+    emit_type_helper_symbol(compiler, ir, type_id, operation)
+    ir_push_byte(compiler, ir, 40)
+    emit_location_argument(compiler, ir, operand)
+    ir_push_byte(compiler, ir, 41)
+}
+
+fn emit_type_helper_call_two(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    type_id: long,
+    operation: long,
+    first: StorageLocation,
+    second: StorageLocation,
+) {
+    emit_type_helper_symbol(compiler, ir, type_id, operation)
+    ir_push_byte(compiler, ir, 40)
+    emit_location_argument(compiler, ir, first)
+    ir_write_ascii(compiler, ir, ", ")
+    emit_location_argument(compiler, ir, second)
+    ir_push_byte(compiler, ir, 41)
 }
 
 fn aggregate_source_kind(tables: ParseTables, compiler: CompilerTables, node: long) -> long {
@@ -4454,7 +4758,7 @@ fn emit_expr_linear(
             } else if kind == NodeKind.Name {
                 let ty = compiler.facts[current].ty
                 let binding = compiler.facts[current].binding
-                if ty == TY_UNIT || is_aggregate_type(ty) { () }
+                if ty == TY_UNIT || is_aggregate_type(compiler, ty) { () }
                 else if ty == TY_BOOL { ir_write_ascii(compiler, ir, "  %bool.load."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load i8, ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i8 %bool.load."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " to i1\n") }
                 else { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
@@ -4527,14 +4831,15 @@ fn emit_expr_linear(
                     compiler.expr_work[frame_index] = frame
                     compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
                 } else {
-                    if is_test { ir_write_ascii(compiler, ir, "  ret i32 1\n") } else { ir_write_ascii(compiler, ir, "  ret void\n") }
+                    if is_test { lower_scope_exit(compiler, ir, -1L, EXIT_TEST_FAILURE, 0L, 0L, TY_UNIT, -1L) }
+                    else { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, TY_UNIT, -1L) }
                     match compiler.expr_work.pop() { some(_) => (), none => () }
                 }
             } else if kind == NodeKind.LoopExit {
                 let is_break = (syntax.flags & FLAG_VALUE) != 0L
                 let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
-                if is_break { ir_write_ascii(compiler, ir, "  br label %for.end.") } else { ir_write_ascii(compiler, ir, "  br label %for.increment.") }
-                ir_write_number(compiler, ir, loop.node); ir_write_ascii(compiler, ir, "\n")
+                if is_break { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, 0L, loop.node, TY_UNIT, -1L) }
+                else { lower_scope_exit(compiler, ir, -1L, EXIT_CONTINUE, 0L, loop.node, TY_UNIT, -1L) }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             } else {
                 match compiler.expr_work.pop() { some(_) => (), none => () }
@@ -4542,7 +4847,7 @@ fn emit_expr_linear(
         } else if kind == NodeKind.Field && frame.phase == 1L {
             emit_aggregate_address(tables, compiler, ir, current)
             let ty = compiler.facts[current].ty
-            if !is_aggregate_type(ty) && ty != TY_UNIT { emit_load_scalar(compiler, ir, current, ty) }
+            if !is_aggregate_type(compiler, ty) && ty != TY_UNIT { emit_load_scalar(compiler, ir, current, ty) }
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.StructInit && frame.phase == 50L {
             let initializer = frame.cursor
@@ -4556,8 +4861,9 @@ fn emit_expr_linear(
                 compiler.expr_work.push(EmitExprFrame { node: value, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
             } else {
                 let type_index = compiler.facts[current].literal
+                let type_id = struct_type_id(compiler, type_index)
                 if struct_has_defaults(compiler, type_index) {
-                    let ty = compiler.struct_types[type_index]
+                    let ty = struct_record(compiler, type_index)
                     var count = 0L
                     for field_offset in 0L..ty.field_count {
                         let field_index = ty.field_start + field_offset
@@ -4568,7 +4874,7 @@ fn emit_expr_linear(
                             child = compiler.child_next[child]
                         }
                     }
-                    ir_write_ascii(compiler, ir, "  call void @nl.fill."); ir_write_number(compiler, ir, type_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, ptr %agg."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", ptr @.nl.given."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, count); ir_write_ascii(compiler, ir, ")\n")
+                    ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_FILL); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_location_argument(compiler, ir, native_location(0L, current, 0L)); ir_write_ascii(compiler, ir, ", ptr @.nl.given."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, count); ir_write_ascii(compiler, ir, ")\n")
                 }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             }
@@ -4577,8 +4883,8 @@ fn emit_expr_linear(
             let value = frame.child1
             let field_index = compiler.facts[initializer].binding
             let field = compiler.struct_fields[field_index]
-            emit_layout_address(compiler, ir, initializer, current, 0L, field.offset)
-            if is_aggregate_type(field.ty) {
+            emit_layout_address(compiler, ir, initializer, native_location(0L, current, field.offset))
+            if is_aggregate_type(compiler, field.ty) {
                 var source_kind = 0L
                 var source_node = value
                 if tables.nodes[value].kind == NodeKind.Name {
@@ -4587,7 +4893,7 @@ fn emit_expr_linear(
                     else { source_kind = 1L; source_node = binding }
                 } else if tables.nodes[value].kind == NodeKind.Field { source_kind = 3L }
                 else { () }
-                emit_aggregate_copy(compiler, ir, field.ty, 3L, initializer, source_kind, source_node)
+                emit_aggregate_copy(compiler, ir, field.ty, aggregate_destination_location(3L, initializer), aggregate_source_location(source_kind, source_node))
             } else if field.ty != TY_UNIT {
                 emit_store_scalar(compiler, ir, initializer, field.ty, value)
             } else { () }
@@ -4619,13 +4925,13 @@ fn emit_expr_linear(
             ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = sext i32 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i64\n")
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.Return && frame.phase == 17L {
-            if is_aggregate_type(return_ty) {
+            if is_aggregate_type(compiler, return_ty) {
                 let source_kind = aggregate_source_kind(tables, compiler, frame.child0)
                 let source_node = aggregate_source_id(tables, compiler, frame.child0)
-                emit_aggregate_copy(compiler, ir, return_ty, 2L, 0L, source_kind, source_node)
-                ir_write_ascii(compiler, ir, "  ret void\n")
-            } else if return_ty == TY_UNIT { ir_write_ascii(compiler, ir, "  ret void\n") }
-            else { ir_write_ascii(compiler, ir, "  ret "); ir_write_ascii(compiler, ir, llvm_type_name(return_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, "\n") }
+                emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(2L, 0L), aggregate_source_location(source_kind, source_node))
+                lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L)
+            } else if return_ty == TY_UNIT { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L) }
+            else { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN_VALUE, 0L, 0L, return_ty, frame.child0) }
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.Binary && frame.phase == 1L {
             let op = syntax.flags
@@ -4640,12 +4946,12 @@ fn emit_expr_linear(
                 if op == 14L { ir_write_ascii(compiler, ir, "false") } else { ir_write_ascii(compiler, ir, "true") }
                 ir_write_ascii(compiler, ir, ", ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n  br label %logic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\nlogic.rhs."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n")
             }
-            if (op == 8L || op == 9L) && is_aggregate_type(compiler.facts[frame.child0].ty) &&
+            if (op == 8L || op == 9L) && is_aggregate_type(compiler, compiler.facts[frame.child0].ty) &&
                 (tables.nodes[frame.child0].kind == NodeKind.Name || tables.nodes[frame.child0].kind == NodeKind.Field) {
                 let ty = compiler.facts[frame.child0].ty
                 let source_kind = aggregate_source_kind(tables, compiler, frame.child0)
                 let source_node = aggregate_source_id(tables, compiler, frame.child0)
-                emit_aggregate_copy(compiler, ir, ty, 0L, frame.child0, source_kind, source_node)
+                emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(0L, frame.child0), aggregate_source_location(source_kind, source_node))
             }
             frame.phase = 2L
             compiler.expr_work[frame_index] = frame
@@ -4656,13 +4962,14 @@ fn emit_expr_linear(
             let op = syntax.flags
             if op == 14L || op == 15L {
                 ir_write_ascii(compiler, ir, "  store i1 "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n  br label %logic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\nlogic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load i1, ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n")
-            } else if (op == 8L || op == 9L) && is_aggregate_type(compiler.facts[left].ty) {
+            } else if (op == 8L || op == 9L) && is_aggregate_type(compiler, compiler.facts[left].ty) {
                 let ty = compiler.facts[left].ty
-                ir_write_ascii(compiler, ir, "  %eq.value."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = call i1 @nl.eq."); ir_write_number(compiler, ir, ty - TY_STRUCT_BASE); ir_write_ascii(compiler, ir, "(ptr ")
-                if tables.nodes[left].kind == NodeKind.Name || tables.nodes[left].kind == NodeKind.Field {
-                    ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, left)
-                } else { emit_aggregate_pointer(tables, compiler, ir, left) }
-                ir_write_ascii(compiler, ir, ", ptr "); emit_aggregate_pointer(tables, compiler, ir, right); ir_write_ascii(compiler, ir, ")\n")
+                ir_write_ascii(compiler, ir, "  %eq.value."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = call i1 ")
+                let left_location = if tables.nodes[left].kind == NodeKind.Name || tables.nodes[left].kind == NodeKind.Field { native_location(0L, left, 0L) }
+                    else { aggregate_source_location(aggregate_source_kind(tables, compiler, left), aggregate_source_id(tables, compiler, left)) }
+                let right_location = aggregate_source_location(aggregate_source_kind(tables, compiler, right), aggregate_source_id(tables, compiler, right))
+                emit_type_helper_call_two(compiler, ir, ty, HELPER_EQUAL, left_location, right_location)
+                ir_push_byte(compiler, ir, 10)
                 if op == 8L {
                     ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = select i1 true, i1 %eq.value."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i1 false\n")
                 } else {
@@ -4702,14 +5009,14 @@ fn emit_expr_linear(
                     let ty = compiler.facts[argument].ty
                     let source_kind = aggregate_source_kind(tables, compiler, argument)
                     let source_node = aggregate_source_id(tables, compiler, argument)
-                    emit_aggregate_copy(compiler, ir, ty, 0L, argument, source_kind, source_node)
+                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(0L, argument), aggregate_source_location(source_kind, source_node))
                 }
                 frame.phase = 1L
                 compiler.expr_work[frame_index] = frame
             } else if frame.cursor >= 0L {
                 let argument = frame.cursor
                 frame.cursor = compiler.child_next[argument]
-                frame.phase = if is_aggregate_type(compiler.facts[argument].ty) { 2L } else { 1L }
+                frame.phase = if is_aggregate_type(compiler, compiler.facts[argument].ty) { 2L } else { 1L }
                 frame.child0 = argument
                 compiler.expr_work[frame_index] = frame
                 compiler.expr_work.push(EmitExprFrame { node: argument, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
@@ -4718,8 +5025,8 @@ fn emit_expr_linear(
                 let first_arg = compiler.child_first[current]
                 if is_print {
                     let arg_ty = compiler.facts[first_arg].ty
-                    if is_aggregate_type(arg_ty) {
-                        ir_write_ascii(compiler, ir, "  call void @nl.print."); ir_write_number(compiler, ir, arg_ty - TY_STRUCT_BASE); ir_write_ascii(compiler, ir, "(ptr "); emit_aggregate_pointer(tables, compiler, ir, first_arg); ir_write_ascii(compiler, ir, ")\n  call void @nl_print_newline()\n")
+                    if is_aggregate_type(compiler, arg_ty) {
+                        ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, arg_ty, HELPER_PRINT, aggregate_source_location(aggregate_source_kind(tables, compiler, first_arg), aggregate_source_id(tables, compiler, first_arg))); ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline()\n")
                     } else {
                         ir_write_ascii(compiler, ir, "  call void @nl_print_")
                         if arg_ty == TY_INT { ir_write_ascii(compiler, ir, "int(i32 ") }
@@ -4731,7 +5038,7 @@ fn emit_expr_linear(
                     let target = compiler.facts[current].function
                     let function = compiler.functions[target]
                     let return_ty = function.result_ty
-                    let aggregate_result = is_aggregate_type(return_ty)
+                    let aggregate_result = is_aggregate_type(compiler, return_ty)
                     if return_ty != TY_UNIT && return_ty != TY_NEVER && !aggregate_result { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = ") } else { ir_write_ascii(compiler, ir, "  ") }
                     ir_write_ascii(compiler, ir, "call ")
                     if aggregate_result || return_ty == TY_UNIT || return_ty == TY_NEVER { ir_write_ascii(compiler, ir, "void") }
@@ -4744,14 +5051,18 @@ fn emit_expr_linear(
                         ir_write_ascii(compiler, ir, "@nl_fn_"); ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top")
                     }
                     var wrote_argument = !compiler.core_mode
-                    if aggregate_result && !compiler.core_mode { ir_write_ascii(compiler, ir, ", ptr %agg."); ir_write_number(compiler, ir, current); wrote_argument = true }
+                    if aggregate_result {
+                        if wrote_argument { ir_write_ascii(compiler, ir, ", ") }
+                        emit_hidden_destination_argument(compiler, ir, native_location(0L, current, 0L))
+                        wrote_argument = true
+                    }
                     var arg = first_arg
                     for arg_index in 0L..function.param_count {
                         let param_ty = compiler.parameters[function.param_start + arg_index].ty
                         if param_ty != TY_UNIT {
                             if wrote_argument { ir_write_ascii(compiler, ir, ", ") }
-                            if is_aggregate_type(param_ty) {
-                                ir_write_ascii(compiler, ir, "ptr %agg."); ir_write_number(compiler, ir, arg)
+                            if is_aggregate_type(compiler, param_ty) {
+                                emit_location_argument(compiler, ir, native_location(0L, arg, 0L))
                             } else {
                                 ir_write_ascii(compiler, ir, llvm_type_name(param_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, arg)
                             }
@@ -4797,7 +5108,7 @@ fn emit_expr_linear(
             } else {
                 ir_write_ascii(compiler, ir, "if.expr.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n")
                 if frame.auxiliary >= 0L {
-                    ir_write_ascii(compiler, ir, "  br label %if.expr.end."); ir_write_number(compiler, ir, frame.auxiliary); ir_write_ascii(compiler, ir, "\n")
+                    lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, frame.auxiliary, TY_UNIT, -1L)
                 }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
                 if compiler.expr_work.count() > 0L {
@@ -4814,19 +5125,19 @@ fn emit_expr_linear(
             let result_ty = compiler.facts[current].ty
             if any_falls { ir_write_ascii(compiler, ir, "if.expr.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n") }
             if any_falls && result_ty != TY_UNIT && result_ty != TY_NEVER {
-                if !is_aggregate_type(result_ty) {
+                if !is_aggregate_type(compiler, result_ty) {
                     ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(result_ty)); ir_write_ascii(compiler, ir, ", ptr %if.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n")
                 }
             }
             if any_falls && frame.auxiliary >= 0L {
                 if result_ty != TY_UNIT && result_ty != TY_NEVER {
-                    if is_aggregate_type(result_ty) {
-                        emit_aggregate_copy(compiler, ir, result_ty, 0L, frame.auxiliary, 0L, current)
+                    if is_aggregate_type(compiler, result_ty) {
+                        emit_aggregate_copy(compiler, ir, result_ty, aggregate_destination_location(0L, frame.auxiliary), aggregate_source_location(0L, current))
                     } else {
                         ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(result_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, current); ir_write_ascii(compiler, ir, ", ptr %if.slot."); ir_write_number(compiler, ir, frame.auxiliary); ir_write_ascii(compiler, ir, ", align 1\n")
                     }
                 }
-                ir_write_ascii(compiler, ir, "  br label %if.expr.end."); ir_write_number(compiler, ir, frame.auxiliary); ir_write_ascii(compiler, ir, "\n")
+                lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, frame.auxiliary, TY_UNIT, -1L)
             }
             match compiler.expr_work.pop() { some(_) => (), none => () }
             if compiler.expr_work.count() > 0L {
@@ -4897,15 +5208,16 @@ fn emit_expr_linear(
                         compiler.expr_work[frame_index] = frame
                         compiler.expr_work.push(EmitExprFrame { node: value, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
                     } else {
-                        if is_test { ir_write_ascii(compiler, ir, "  ret i32 1\n") } else { ir_write_ascii(compiler, ir, "  ret void\n") }
+                        if is_test { lower_scope_exit(compiler, ir, -1L, EXIT_TEST_FAILURE, 0L, 0L, TY_UNIT, -1L) }
+                        else { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, TY_UNIT, -1L) }
                         frame.reachable = false
                         frame.cursor = -1L
                         compiler.expr_work[frame_index] = frame
                     }
                 } else if tables.nodes[statement].kind == NodeKind.BreakStatement || tables.nodes[statement].kind == NodeKind.ContinueStatement {
                     let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
-                    if tables.nodes[statement].kind == NodeKind.BreakStatement { ir_write_ascii(compiler, ir, "  br label %for.end.") } else { ir_write_ascii(compiler, ir, "  br label %for.increment.") }
-                    ir_write_number(compiler, ir, loop.node); ir_write_ascii(compiler, ir, "\n")
+                    if tables.nodes[statement].kind == NodeKind.BreakStatement { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, 0L, loop.node, TY_UNIT, -1L) }
+                    else { lower_scope_exit(compiler, ir, -1L, EXIT_CONTINUE, 0L, loop.node, TY_UNIT, -1L) }
                     frame.reachable = false
                     frame.cursor = -1L
                     compiler.expr_work[frame_index] = frame
@@ -4917,7 +5229,7 @@ fn emit_expr_linear(
                 compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
             } else {
                 if frame.auxiliary >= 0L {
-                    ir_write_ascii(compiler, ir, "  br label %if.expr.end."); ir_write_number(compiler, ir, frame.auxiliary); ir_write_ascii(compiler, ir, "\n")
+                    lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, frame.auxiliary, TY_UNIT, -1L)
                 }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
                 if compiler.expr_work.count() > 0L {
@@ -4935,15 +5247,15 @@ fn emit_expr_linear(
             } else if frame.auxiliary >= 0L && compiler.facts[frame.child1].ty != TY_UNIT {
                 let parent = frame.auxiliary
                 let tail_ty = compiler.facts[frame.child1].ty
-                if is_aggregate_type(tail_ty) {
+                if is_aggregate_type(compiler, tail_ty) {
                     let source_kind = aggregate_source_kind(tables, compiler, frame.child1)
                     let source_node = aggregate_source_id(tables, compiler, frame.child1)
-                    emit_aggregate_copy(compiler, ir, tail_ty, 0L, parent, source_kind, source_node)
+                    emit_aggregate_copy(compiler, ir, tail_ty, aggregate_destination_location(0L, parent), aggregate_source_location(source_kind, source_node))
                 } else {
                     ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(tail_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, frame.child1); ir_write_ascii(compiler, ir, ", ptr %if.slot."); ir_write_number(compiler, ir, parent); ir_write_ascii(compiler, ir, ", align 1\n")
                 }
-                ir_write_ascii(compiler, ir, "  br label %if.expr.end."); ir_write_number(compiler, ir, parent); ir_write_ascii(compiler, ir, "\n")
-            } else if frame.auxiliary >= 0L { ir_write_ascii(compiler, ir, "  br label %if.expr.end."); ir_write_number(compiler, ir, frame.auxiliary); ir_write_ascii(compiler, ir, "\n") } else { () }
+                lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, parent, TY_UNIT, -1L)
+            } else if frame.auxiliary >= 0L { lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, frame.auxiliary, TY_UNIT, -1L) } else { () }
             match compiler.expr_work.pop() { some(_) => (), none => () }
             if compiler.expr_work.count() > 0L {
                 let parent_index = compiler.expr_work.count() - 1L
@@ -4958,10 +5270,10 @@ fn emit_expr_linear(
             let value = frame.child2
             let binding = compiler.facts[statement].binding
             let ty = compiler.bindings[binding].ty
-            if is_aggregate_type(ty) {
+            if is_aggregate_type(compiler, ty) {
                 let source_kind = aggregate_source_kind(tables, compiler, value)
                 let source_node = aggregate_source_id(tables, compiler, value)
-                emit_aggregate_copy(compiler, ir, ty, 1L, binding, source_kind, source_node)
+                emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(1L, binding), aggregate_source_location(source_kind, source_node))
             } else if ty == TY_BOOL {
                 ir_write_ascii(compiler, ir, "  %block.bool."); ir_write_number(compiler, ir, statement); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %block.bool."); ir_write_number(compiler, ir, statement); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
             } else if ty != TY_UNIT {
@@ -4977,12 +5289,12 @@ fn emit_expr_linear(
             let ty = compiler.facts[target].ty
             let op = tables.nodes[statement].flags
             if op == 0L {
-                if is_aggregate_type(ty) {
+                if is_aggregate_type(compiler, ty) {
                     let destination_kind = if tables.nodes[target].kind == NodeKind.Field { 3L } else { 1L }
                     let destination_node = if tables.nodes[target].kind == NodeKind.Field { target } else { binding }
                     let source_kind = aggregate_source_kind(tables, compiler, value)
                     let source_node = aggregate_source_id(tables, compiler, value)
-                    emit_aggregate_copy(compiler, ir, ty, destination_kind, destination_node, source_kind, source_node)
+                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(destination_kind, destination_node), aggregate_source_location(source_kind, source_node))
                 } else if ty == TY_BOOL {
                     if tables.nodes[target].kind == NodeKind.Field { emit_store_scalar(compiler, ir, target, ty, value) }
                     else { ir_write_ascii(compiler, ir, "  %block.bool."); ir_write_number(compiler, ir, statement); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %block.bool."); ir_write_number(compiler, ir, statement); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
@@ -5005,13 +5317,13 @@ fn emit_expr_linear(
             frame.phase = 10L
             compiler.expr_work[frame_index] = frame
         } else if kind == NodeKind.Block && frame.phase == 16L {
-            if is_aggregate_type(return_ty) {
+            if is_aggregate_type(compiler, return_ty) {
                 let source_kind = aggregate_source_kind(tables, compiler, frame.child2)
                 let source_node = aggregate_source_id(tables, compiler, frame.child2)
-                emit_aggregate_copy(compiler, ir, return_ty, 2L, 0L, source_kind, source_node)
-                ir_write_ascii(compiler, ir, "  ret void\n")
-            } else if return_ty == TY_UNIT { ir_write_ascii(compiler, ir, "  ret void\n") }
-            else { ir_write_ascii(compiler, ir, "  ret "); ir_write_ascii(compiler, ir, llvm_type_name(return_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, frame.child2); ir_write_ascii(compiler, ir, "\n") }
+                emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(2L, 0L), aggregate_source_location(source_kind, source_node))
+                lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L)
+            } else if return_ty == TY_UNIT { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L) }
+            else { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN_VALUE, 0L, 0L, return_ty, frame.child2) }
             frame.reachable = false
             frame.cursor = -1L
             frame.phase = 10L
@@ -5050,13 +5362,10 @@ fn emit_expect_after_expression(
         let left_node = compiler.child_first[expression]
         let right_node = compiler.child_next[left_node]
         let operand_ty = compiler.facts[left_node].ty
-        if is_aggregate_type(operand_ty) {
+        if is_aggregate_type(compiler, operand_ty) {
             ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_header(i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.expect."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 0, i64 0))\n")
-            ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_left()\n  call void @nl.print."); ir_write_number(compiler, ir, operand_ty - TY_STRUCT_BASE); ir_write_ascii(compiler, ir, "(ptr ")
-            if tables.nodes[left_node].kind == NodeKind.Name || tables.nodes[left_node].kind == NodeKind.Field {
-                ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, left_node)
-            } else { emit_aggregate_pointer(tables, compiler, ir, left_node) }
-            ir_write_ascii(compiler, ir, ")\n  call void @nl_print_newline()\n  call void @nl_expect_fail_right()\n  call void @nl.print."); ir_write_number(compiler, ir, operand_ty - TY_STRUCT_BASE); ir_write_ascii(compiler, ir, "(ptr "); emit_aggregate_pointer(tables, compiler, ir, right_node); ir_write_ascii(compiler, ir, ")\n  call void @nl_print_newline()\n")
+            ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_left()\n  call void "); emit_type_helper_call_one(compiler, ir, operand_ty, HELPER_PRINT, native_location(0L, left_node, 0L))
+            ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline()\n  call void @nl_expect_fail_right()\n  call void "); emit_type_helper_call_one(compiler, ir, operand_ty, HELPER_PRINT, aggregate_source_location(aggregate_source_kind(tables, compiler, right_node), aggregate_source_id(tables, compiler, right_node))); ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline()\n")
         } else {
         if operand_ty == TY_INT || operand_ty == TY_BOOL {
             let extension = if operand_ty == TY_INT { "sext" } else { "zext" }
@@ -5111,7 +5420,8 @@ fn emit_expect_after_expression(
         ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i64 0, i64 0))\n")
     }
-    ir_write_ascii(compiler, ir, "  ret i32 1\nexpect.pass.")
+    lower_scope_exit(compiler, ir, -1L, EXIT_TEST_FAILURE, 0L, 0L, TY_UNIT, -1L)
+    ir_write_ascii(compiler, ir, "expect.pass.")
     ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, ":\n")
 }
@@ -5153,7 +5463,7 @@ fn emit_function_body(
         let frame_index = compiler.work.count() - 1L
         var frame = compiler.work[frame_index]
         if frame.phase == 100L {
-            if frame.child2 == 1L { ir_write_ascii(compiler, ir, "  br label %if.end."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, "\n") }
+            if frame.child2 == 1L { lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_END, frame.node, TY_UNIT, -1L) }
             if frame.child1 >= 0L {
                 ir_write_ascii(compiler, ir, "if.else."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n")
                 frame.phase = 101L
@@ -5173,7 +5483,7 @@ fn emit_function_body(
         if frame.phase == 101L {
             let then_falls = frame.child2 == 1L
             let else_falls = frame.auxiliary == 1L
-            if else_falls { ir_write_ascii(compiler, ir, "  br label %if.end."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, "\n") }
+            if else_falls { lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_END, frame.node, TY_UNIT, -1L) }
             if then_falls || else_falls {
                 ir_write_ascii(compiler, ir, "if.end."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n")
             }
@@ -5186,7 +5496,7 @@ fn emit_function_body(
         }
         if frame.phase == 200L {
             if frame.auxiliary == 1L {
-                ir_write_ascii(compiler, ir, "  br label %for.increment."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, "\n")
+                lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_FOR_INCREMENT, frame.node, TY_UNIT, -1L)
             }
             let binding = frame.child1
             let ty = compiler.bindings[binding].ty
@@ -5207,9 +5517,7 @@ fn emit_function_body(
         }
         if frame.cursor < 0L {
             if frame.node == body && frame.reachable {
-                if is_test { ir_write_ascii(compiler, ir, "  ret i32 0\n") }
-                else if return_ty == TY_UNIT || return_ty == TY_NEVER || is_aggregate_type(return_ty) { ir_write_ascii(compiler, ir, "  ret void\n") }
-                else { ir_write_ascii(compiler, ir, "  ret "); ir_write_ascii(compiler, ir, llvm_type_name(return_ty)); ir_write_ascii(compiler, ir, " 0\n") }
+                lower_scope_exit(compiler, ir, -1L, EXIT_FALLTHROUGH, if is_test { 1L } else { 0L }, 0L, return_ty, -1L)
             }
             match compiler.work.pop() { some(_) => (), none => () }
             if compiler.work.count() > 0L {
@@ -5232,20 +5540,16 @@ fn emit_function_body(
             emit_expr_linear(source, files, tokens, tables, compiler, ir, child, file_index, return_ty, is_test)
             if frame.node == body {
                 if compiler.facts[child].ty != TY_NEVER {
-                    if is_test { ir_write_ascii(compiler, ir, "  ret i32 0\n") }
-                    else if return_ty == TY_UNIT { ir_write_ascii(compiler, ir, "  ret void\n") }
-                    else if is_aggregate_type(return_ty) {
+                    if is_test { lower_scope_exit(compiler, ir, -1L, EXIT_TEST_SUCCESS, 0L, 0L, TY_UNIT, -1L) }
+                    else if return_ty == TY_UNIT { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L) }
+                    else if is_aggregate_type(compiler, return_ty) {
                         let source_kind = aggregate_source_kind(tables, compiler, child)
                         let source_node = aggregate_source_id(tables, compiler, child)
-                        emit_aggregate_copy(compiler, ir, return_ty, 2L, 0L, source_kind, source_node)
-                        ir_write_ascii(compiler, ir, "  ret void\n")
+                        emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(2L, 0L), aggregate_source_location(source_kind, source_node))
+                        lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L)
                     }
                     else {
-                        ir_write_ascii(compiler, ir, "  ret ")
-                        ir_write_ascii(compiler, ir, llvm_type_name(return_ty))
-                        ir_write_ascii(compiler, ir, " ")
-                        ir_write_value_ref(compiler, ir, child)
-                        ir_write_ascii(compiler, ir, "\n")
+                        lower_scope_exit(compiler, ir, -1L, EXIT_RETURN_VALUE, 0L, 0L, return_ty, child)
                     }
                 }
                 frame.reachable = false
@@ -5265,10 +5569,10 @@ fn emit_function_body(
             emit_expr_linear(source, files, tokens, tables, compiler, ir, value, file_index, return_ty, is_test)
             let binding = compiler.facts[child].binding
             let ty = compiler.bindings[binding].ty
-            if is_aggregate_type(ty) {
+            if is_aggregate_type(compiler, ty) {
                 let source_kind = aggregate_source_kind(tables, compiler, value)
                 let source_node = aggregate_source_id(tables, compiler, value)
-                emit_aggregate_copy(compiler, ir, ty, 1L, binding, source_kind, source_node)
+                emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(1L, binding), aggregate_source_location(source_kind, source_node))
             } else if ty == TY_BOOL {
                 ir_write_ascii(compiler, ir, "  %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
             } else if ty != TY_UNIT {
@@ -5283,12 +5587,12 @@ fn emit_function_body(
             let ty = compiler.facts[target].ty
             let op = tables.nodes[child].flags
             if op == 0L {
-                if is_aggregate_type(ty) {
+                if is_aggregate_type(compiler, ty) {
                     let source_kind = aggregate_source_kind(tables, compiler, value)
                     let source_node = aggregate_source_id(tables, compiler, value)
                     let destination_kind = if tables.nodes[target].kind == NodeKind.Field { 3L } else { 1L }
                     let destination_node = if tables.nodes[target].kind == NodeKind.Field { target } else { binding }
-                    emit_aggregate_copy(compiler, ir, ty, destination_kind, destination_node, source_kind, source_node)
+                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(destination_kind, destination_node), aggregate_source_location(source_kind, source_node))
                 } else if ty == TY_BOOL {
                     if tables.nodes[target].kind == NodeKind.Field { emit_store_scalar(compiler, ir, target, ty, value) }
                     else { ir_write_ascii(compiler, ir, "  %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
@@ -5308,15 +5612,15 @@ fn emit_function_body(
             let value = compiler.child_first[child]
             if value >= 0L {
                 emit_expr_linear(source, files, tokens, tables, compiler, ir, value, file_index, return_ty, is_test)
-                if is_aggregate_type(return_ty) {
+                if is_aggregate_type(compiler, return_ty) {
                     let source_kind = aggregate_source_kind(tables, compiler, value)
                     let source_node = aggregate_source_id(tables, compiler, value)
-                    emit_aggregate_copy(compiler, ir, return_ty, 2L, 0L, source_kind, source_node)
-                    ir_write_ascii(compiler, ir, "  ret void\n")
-                } else if return_ty == TY_UNIT { ir_write_ascii(compiler, ir, "  ret void\n") }
-                else { ir_write_ascii(compiler, ir, "  ret "); ir_write_ascii(compiler, ir, llvm_type_name(return_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, "\n") }
-            } else if is_test { ir_write_ascii(compiler, ir, "  ret i32 1\n") }
-            else { ir_write_ascii(compiler, ir, "  ret void\n") }
+                    emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(2L, 0L), aggregate_source_location(source_kind, source_node))
+                    lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L)
+                } else if return_ty == TY_UNIT { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L) }
+                else { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN_VALUE, 0L, 0L, return_ty, value) }
+            } else if is_test { lower_scope_exit(compiler, ir, -1L, EXIT_TEST_FAILURE, 0L, 0L, TY_UNIT, -1L) }
+            else { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L) }
             frame.reachable = false
             compiler.work[frame_index] = frame
         } else if kind == NodeKind.Block {
@@ -5362,10 +5666,8 @@ fn emit_function_body(
             compiler.work.push(CheckFrame { node: loop_body, scope: -1L, expected: -1L, function_id, loop_depth: 0L, is_test, phase: 0L, cursor: compiler.child_first[loop_body], child0: node_last_child(tables, compiler, loop_body), child1: -1L, child2: -1L, result_ty: -1L, auxiliary: 0L, reachable: true }).unwrap()
         } else if kind == NodeKind.BreakStatement || kind == NodeKind.ContinueStatement {
             let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
-            if kind == NodeKind.BreakStatement { ir_write_ascii(compiler, ir, "  br label %for.end.") }
-            else { ir_write_ascii(compiler, ir, "  br label %for.increment.") }
-            ir_write_number(compiler, ir, loop.node)
-            ir_write_ascii(compiler, ir, "\n")
+            if kind == NodeKind.BreakStatement { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, 0L, loop.node, TY_UNIT, -1L) }
+            else { lower_scope_exit(compiler, ir, -1L, EXIT_CONTINUE, 0L, loop.node, TY_UNIT, -1L) }
             frame.reachable = false
             compiler.work[frame_index] = frame
         } else {
@@ -5386,7 +5688,7 @@ fn emit_function_definition(
     let function = compiler.functions[function_id]
     if compiler.core_mode { ir_write_ascii(compiler, ir, "define internal ") }
     else { ir_write_ascii(compiler, ir, "define ") }
-    if is_aggregate_type(function.result_ty) || function.result_ty == TY_UNIT || function.result_ty == TY_NEVER { ir_write_ascii(compiler, ir, "void") }
+    if is_aggregate_type(compiler, function.result_ty) || function.result_ty == TY_UNIT || function.result_ty == TY_NEVER { ir_write_ascii(compiler, ir, "void") }
     else { ir_write_ascii(compiler, ir, llvm_type_name(function.result_ty)) }
     if compiler.core_mode {
         ir_push_byte(compiler, ir, 32)
@@ -5396,19 +5698,21 @@ fn emit_function_definition(
         ir_write_ascii(compiler, ir, " @nl_fn_")
         ir_write_number(compiler, ir, function_id)
         ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top")
-        if is_aggregate_type(function.result_ty) { ir_write_ascii(compiler, ir, ", ptr %nl.dest") }
+        if is_aggregate_type(compiler, function.result_ty) { ir_write_ascii(compiler, ir, ", "); emit_hidden_destination_parameter(compiler, ir) }
     }
     var wrote_parameter = !compiler.core_mode
-    if compiler.core_mode && is_aggregate_type(function.result_ty) { ir_write_ascii(compiler, ir, "ptr %nl.dest"); wrote_parameter = true }
+    if compiler.core_mode && is_aggregate_type(compiler, function.result_ty) { emit_hidden_destination_parameter(compiler, ir); wrote_parameter = true }
     for parameter_index in 0L..function.param_count {
         let parameter = compiler.parameters[function.param_start + parameter_index]
         let binding = binding_for_node(compiler, parameter.node)
         if parameter.ty == TY_UNIT { continue }
         if wrote_parameter { ir_write_ascii(compiler, ir, ", ") }
-        if is_aggregate_type(parameter.ty) { ir_write_ascii(compiler, ir, "ptr") }
-        else { ir_write_ascii(compiler, ir, llvm_type_name(parameter.ty)) }
-        ir_write_ascii(compiler, ir, " %arg.")
-        ir_write_number(compiler, ir, binding)
+        if is_aggregate_type(compiler, parameter.ty) {
+            emit_location_parameter(compiler, ir, binding)
+            wrote_parameter = true
+            continue
+        }
+        ir_write_ascii(compiler, ir, llvm_type_name(parameter.ty)); ir_write_ascii(compiler, ir, " %arg."); ir_write_number(compiler, ir, binding)
         wrote_parameter = true
     }
     ir_write_ascii(compiler, ir, ")")
@@ -5424,16 +5728,15 @@ fn emit_function_definition(
         if tables.nodes[node].kind == NodeKind.Binary && (tables.nodes[node].flags == 14L || tables.nodes[node].flags == 15L) {
             ir_write_ascii(compiler, ir, "  %logic.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca i1, align 1\n")
         }
-        if tables.nodes[node].kind == NodeKind.If && compiler.facts[node].ty != TY_UNIT && compiler.facts[node].ty != TY_NEVER && !is_aggregate_type(compiler.facts[node].ty) {
+        if tables.nodes[node].kind == NodeKind.If && compiler.facts[node].ty != TY_UNIT && compiler.facts[node].ty != TY_NEVER && !is_aggregate_type(compiler, compiler.facts[node].ty) {
             ir_write_ascii(compiler, ir, "  %if.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(compiler.facts[node].ty)); ir_write_ascii(compiler, ir, ", align 1\n")
         }
         if (tables.nodes[node].kind == NodeKind.Binary && tables.nodes[node].flags == 4L) || (tables.nodes[node].kind == NodeKind.Assign && tables.nodes[node].flags == 5L) {
             let ty = if tables.nodes[node].kind == NodeKind.Binary { compiler.facts[node].ty } else { compiler.facts[compiler.child_first[node]].ty }
             ir_write_ascii(compiler, ir, "  %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", align 1\n")
         }
-        if is_aggregate_type(compiler.facts[node].ty) {
-            let ty = compiler.facts[node].ty - TY_STRUCT_BASE
-            let type_info = compiler.struct_types[ty]
+        if is_aggregate_type(compiler, compiler.facts[node].ty) {
+            let type_info = type_record(compiler, compiler.facts[node].ty)
             let size = type_info.size
             let alignment = type_info.align
             ir_write_ascii(compiler, ir, "  %agg."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca ["); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, " x i8], align "); ir_write_number(compiler, ir, alignment); ir_write_ascii(compiler, ir, "\n")
@@ -5441,12 +5744,12 @@ fn emit_function_definition(
     }
     for binding_id in 0L..compiler.bindings.count() {
         let binding = compiler.bindings[binding_id]
-        if compiler.scopes[binding.scope].function_id == function_id && binding.ty != TY_UNIT && !(binding.parameter && is_aggregate_type(binding.ty)) {
+        if compiler.scopes[binding.scope].function_id == function_id && binding.ty != TY_UNIT && !(binding.parameter && is_aggregate_type(compiler, binding.ty)) {
             ir_write_ascii(compiler, ir, "  %local.")
             ir_write_number(compiler, ir, binding_id)
             ir_write_ascii(compiler, ir, " = alloca ")
-            if is_aggregate_type(binding.ty) {
-                let type_info = compiler.struct_types[binding.ty - TY_STRUCT_BASE]
+            if is_aggregate_type(compiler, binding.ty) {
+            let type_info = type_record(compiler, binding.ty)
                 ir_write_ascii(compiler, ir, "["); ir_write_number(compiler, ir, type_info.size); ir_write_ascii(compiler, ir, " x i8], align "); ir_write_number(compiler, ir, type_info.align); ir_write_ascii(compiler, ir, "\n")
             } else {
                 if binding.ty == TY_BOOL { ir_write_ascii(compiler, ir, "i8") } else { ir_write_ascii(compiler, ir, llvm_type_name(binding.ty)) }
@@ -5456,7 +5759,7 @@ fn emit_function_definition(
     }
     for parameter_index in 0L..function.param_count {
         let parameter = compiler.parameters[function.param_start + parameter_index]
-        if parameter.ty == TY_UNIT || is_aggregate_type(parameter.ty) { continue }
+        if parameter.ty == TY_UNIT || is_aggregate_type(compiler, parameter.ty) { continue }
         let binding = binding_for_node(compiler, parameter.node)
         if parameter.ty == TY_BOOL {
             ir_write_ascii(compiler, ir, "  %arg.bool."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, " = zext i1 %arg."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, " to i8\n")
@@ -5491,16 +5794,15 @@ fn emit_test_definition(
         if tables.nodes[node].kind == NodeKind.Binary && (tables.nodes[node].flags == 14L || tables.nodes[node].flags == 15L) {
             ir_write_ascii(compiler, ir, "  %logic.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca i1, align 1\n")
         }
-        if tables.nodes[node].kind == NodeKind.If && compiler.facts[node].ty != TY_UNIT && compiler.facts[node].ty != TY_NEVER && !is_aggregate_type(compiler.facts[node].ty) {
+        if tables.nodes[node].kind == NodeKind.If && compiler.facts[node].ty != TY_UNIT && compiler.facts[node].ty != TY_NEVER && !is_aggregate_type(compiler, compiler.facts[node].ty) {
             ir_write_ascii(compiler, ir, "  %if.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(compiler.facts[node].ty)); ir_write_ascii(compiler, ir, ", align 1\n")
         }
         if (tables.nodes[node].kind == NodeKind.Binary && tables.nodes[node].flags == 4L) || (tables.nodes[node].kind == NodeKind.Assign && tables.nodes[node].flags == 5L) {
             let ty = if tables.nodes[node].kind == NodeKind.Binary { compiler.facts[node].ty } else { compiler.facts[compiler.child_first[node]].ty }
             ir_write_ascii(compiler, ir, "  %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", align 1\n")
         }
-        if is_aggregate_type(compiler.facts[node].ty) {
-            let ty = compiler.facts[node].ty - TY_STRUCT_BASE
-            let type_info = compiler.struct_types[ty]
+        if is_aggregate_type(compiler, compiler.facts[node].ty) {
+            let type_info = type_record(compiler, compiler.facts[node].ty)
             let size = type_info.size
             let alignment = type_info.align
             ir_write_ascii(compiler, ir, "  %agg."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca ["); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, " x i8], align "); ir_write_number(compiler, ir, alignment); ir_write_ascii(compiler, ir, "\n")
@@ -5513,8 +5815,8 @@ fn emit_test_definition(
             ir_write_ascii(compiler, ir, "  %local.")
             ir_write_number(compiler, ir, binding_id)
             ir_write_ascii(compiler, ir, " = alloca ")
-            if is_aggregate_type(binding.ty) {
-                let type_info = compiler.struct_types[binding.ty - TY_STRUCT_BASE]
+            if is_aggregate_type(compiler, binding.ty) {
+                let type_info = type_record(compiler, binding.ty)
                 ir_write_ascii(compiler, ir, "["); ir_write_number(compiler, ir, type_info.size); ir_write_ascii(compiler, ir, " x i8], align "); ir_write_number(compiler, ir, type_info.align); ir_write_ascii(compiler, ir, "\n")
             } else {
                 if binding.ty == TY_BOOL { ir_write_ascii(compiler, ir, "i8") } else { ir_write_ascii(compiler, ir, llvm_type_name(binding.ty)) }
@@ -5527,19 +5829,66 @@ fn emit_test_definition(
 }
 
 fn struct_has_defaults(compiler: CompilerTables, type_index: long) -> bool {
-    let ty = compiler.struct_types[type_index]
+    let ty = struct_record(compiler, type_index)
     for offset in 0L..ty.field_count {
         if compiler.struct_fields[ty.field_start + offset].default_node >= 0L { return true }
     }
     false
 }
 
+fn has_type_helper(compiler: CompilerTables, type_id: long, operation: long) -> bool {
+    if type_id < 0L || type_id >= type_count(compiler) { return false }
+    let bit = if operation == HELPER_COPY { 1L }
+        else if operation == HELPER_EQUAL { 2L }
+        else if operation == HELPER_PRINT { 4L }
+        else if operation == HELPER_FILL { 8L }
+        else if operation == HELPER_DEFAULT { 16L }
+        else { 0L }
+    let mask = type_helper_mask(compiler, type_id)
+    bit != 0L && (mask / bit) % 2L == 1L
+}
+
+fn register_type_helper(compiler: write CompilerTables, type_id: long, operation: long) {
+    if type_id < 0L || type_id >= type_count(compiler) { return }
+    let bit = if operation == HELPER_COPY { 1L }
+        else if operation == HELPER_EQUAL { 2L }
+        else if operation == HELPER_PRINT { 4L }
+        else if operation == HELPER_FILL { 8L }
+        else if operation == HELPER_DEFAULT { 16L }
+        else { 0L }
+    if bit != 0L && !has_type_helper(compiler, type_id, operation) {
+        set_type_helper_mask(compiler, type_id, type_helper_mask(compiler, type_id) + bit)
+    }
+}
+
+fn type_has_registered_helper(compiler: CompilerTables, type_id: long) -> bool {
+    has_type_helper(compiler, type_id, HELPER_COPY) ||
+        has_type_helper(compiler, type_id, HELPER_EQUAL) ||
+        has_type_helper(compiler, type_id, HELPER_PRINT) ||
+        has_type_helper(compiler, type_id, HELPER_FILL) ||
+        has_type_helper(compiler, type_id, HELPER_DEFAULT)
+}
+
+fn register_exit_cleanup(compiler: write CompilerTables, scope_id: long, kind: long, owner: long) {
+    compiler.exit_cleanups.push(ExitCleanupRecord { scope_id, kind, owner }).unwrap()
+}
+
+fn emit_registered_exit_cleanup(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    cleanup: ExitCleanupRecord,
+) {
+    // E2i registers none. The cleanup owner adds its kind here and keeps its
+    // action payload in owner; unrecognized records fail closed meanwhile.
+    if cleanup.kind != 0L { compiler.ir_overflow = true }
+}
+
 fn add_type_helper_flag(compiler: write CompilerTables, ty: long, flag: long) {
-    if !is_aggregate_type(ty) { return }
-    let type_index = ty - TY_STRUCT_BASE
-    if type_index < 0L || type_index >= compiler.struct_types.count() { return }
-    let flags = compiler.struct_types[type_index].helper_flags
-    if (flags / flag) % 2L == 0L { compiler.struct_types[type_index].helper_flags = flags + flag }
+    if !is_aggregate_type(compiler, ty) { return }
+    if flag == 1L { register_type_helper(compiler, ty, HELPER_COPY) }
+    else if flag == 2L { register_type_helper(compiler, ty, HELPER_EQUAL) }
+    else if flag == 4L { register_type_helper(compiler, ty, HELPER_PRINT) }
+    else { () }
 }
 
 fn mark_struct_helpers(
@@ -5549,8 +5898,13 @@ fn mark_struct_helpers(
     tables: ParseTables,
     compiler: write CompilerTables,
 ) {
-    for type_index in 0L..compiler.struct_types.count() {
-        compiler.struct_types[type_index].helper_flags = 0L
+    for type_id in 0L..type_count(compiler) { set_type_helper_mask(compiler, type_id, 0L) }
+    for type_index in 0L..struct_type_count(compiler) {
+        if struct_has_defaults(compiler, type_index) {
+            let type_id = struct_type_id(compiler, type_index)
+            register_type_helper(compiler, type_id, HELPER_FILL)
+            register_type_helper(compiler, type_id, HELPER_DEFAULT)
+        }
     }
     for function_id in 0L..compiler.functions.count() {
         let result_ty = compiler.functions[function_id].result_ty
@@ -5558,7 +5912,7 @@ fn mark_struct_helpers(
     }
     for field_index in 0L..compiler.struct_fields.count() {
         let field = compiler.struct_fields[field_index]
-        if field.default_node >= 0L && is_aggregate_type(field.ty) { add_type_helper_flag(compiler, field.ty, 1L) }
+        if field.default_node >= 0L && is_aggregate_type(compiler, field.ty) { add_type_helper_flag(compiler, field.ty, 1L) }
     }
     for node in 0L..tables.nodes.count() {
         let syntax = tables.nodes[node]
@@ -5590,7 +5944,7 @@ fn mark_struct_helpers(
             for argument_step in 0L..tables.nodes[node].subtree {
                 if argument < 0L { break }
                 let argument_ty = compiler.facts[argument].ty
-                if is_aggregate_type(argument_ty) {
+                if is_aggregate_type(compiler, argument_ty) {
                     if is_print { add_type_helper_flag(compiler, argument_ty, 4L) }
                     else if tables.nodes[argument].kind == NodeKind.Name || tables.nodes[argument].kind == NodeKind.Field {
                         add_type_helper_flag(compiler, argument_ty, 1L)
@@ -5601,7 +5955,7 @@ fn mark_struct_helpers(
         } else if syntax.kind == NodeKind.Binary && (syntax.flags == 8L || syntax.flags == 9L) {
             let left = compiler.child_first[node]
             let right = if left >= 0L { compiler.child_next[left] } else { -1L }
-            if left >= 0L && is_aggregate_type(compiler.facts[left].ty) {
+            if left >= 0L && is_aggregate_type(compiler, compiler.facts[left].ty) {
                 let ty = compiler.facts[left].ty
                 add_type_helper_flag(compiler, ty, 2L)
                 if tables.nodes[left].kind == NodeKind.Name || tables.nodes[left].kind == NodeKind.Field { add_type_helper_flag(compiler, ty, 1L) }
@@ -5619,19 +5973,16 @@ fn mark_struct_helpers(
             }
         }
     }
-    for pass in 0L..compiler.struct_types.count() {
-        for type_index in 0L..compiler.struct_types.count() {
-            let type_info = compiler.struct_types[type_index]
-            let flags = type_info.helper_flags
+    for pass in 0L..struct_type_count(compiler) {
+        for type_index in 0L..struct_type_count(compiler) {
+            let type_info = struct_record(compiler, type_index)
+            let type_id = struct_type_id(compiler, type_index)
             for offset in 0L..type_info.field_count {
                 let child_ty = compiler.struct_fields[type_info.field_start + offset].ty
-                if !is_aggregate_type(child_ty) { continue }
-                let child_index = child_ty - TY_STRUCT_BASE
-                var child_flags = compiler.struct_types[child_index].helper_flags
-                if (flags / 1L) % 2L == 1L && (child_flags / 1L) % 2L == 0L { child_flags += 1L }
-                if (flags / 2L) % 2L == 1L && (child_flags / 2L) % 2L == 0L { child_flags += 2L }
-                if (flags / 4L) % 2L == 1L && (child_flags / 4L) % 2L == 0L { child_flags += 4L }
-                compiler.struct_types[child_index].helper_flags = child_flags
+                if !is_aggregate_type(compiler, child_ty) { continue }
+                if has_type_helper(compiler, type_id, HELPER_COPY) { register_type_helper(compiler, child_ty, HELPER_COPY) }
+                if has_type_helper(compiler, type_id, HELPER_EQUAL) { register_type_helper(compiler, child_ty, HELPER_EQUAL) }
+                if has_type_helper(compiler, type_id, HELPER_PRINT) { register_type_helper(compiler, child_ty, HELPER_PRINT) }
             }
         }
     }
@@ -5642,20 +5993,21 @@ fn emit_struct_copy_helpers(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
 ) {
-    for type_index in 0L..compiler.struct_types.count() {
-        let ty = compiler.struct_types[type_index]
-        if (ty.helper_flags / 1L) % 2L == 0L { continue }
-        ir_write_ascii(compiler, ir, "define internal void @nl.copy."); ir_write_number(compiler, ir, type_index); ir_write_ascii(compiler, ir, "(ptr %nl.dest, ptr %nl.source) {\nentry:\n")
+    for type_index in 0L..struct_type_count(compiler) {
+        let ty = struct_record(compiler, type_index)
+        let type_id = struct_type_id(compiler, type_index)
+        if !has_type_helper(compiler, type_id, HELPER_COPY) { continue }
+        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY); ir_push_byte(compiler, ir, 40); emit_location_argument(compiler, ir, native_location(4L, 0L, 0L)); ir_write_ascii(compiler, ir, ", "); emit_location_argument(compiler, ir, native_location(5L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
         for offset in 0L..ty.field_count {
             let field_index = ty.field_start + offset
             let field = compiler.struct_fields[field_index]
             if field.ty == TY_UNIT { continue }
             let dest_address = MAX_TREE_NODES * 2L + field_index * 2L
             let source_address = dest_address + 1L
-            emit_layout_address(compiler, ir, dest_address, 0L, 4L, field.offset)
-            emit_layout_address(compiler, ir, source_address, 0L, 5L, field.offset)
-            if is_aggregate_type(field.ty) {
-                ir_write_ascii(compiler, ir, "  call void @nl.copy."); ir_write_number(compiler, ir, field.ty - TY_STRUCT_BASE); ir_write_ascii(compiler, ir, "(ptr %addr."); ir_write_number(compiler, ir, dest_address); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, source_address); ir_write_ascii(compiler, ir, ")\n")
+            emit_layout_address(compiler, ir, dest_address, native_location(4L, 0L, field.offset))
+            emit_layout_address(compiler, ir, source_address, native_location(5L, 0L, field.offset))
+            if is_aggregate_type(compiler, field.ty) {
+                ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_two(compiler, ir, field.ty, HELPER_COPY, native_location(2L, dest_address, 0L), native_location(2L, source_address, 0L)); ir_push_byte(compiler, ir, 10)
             } else {
                 let storage_type: Ascii max 8 = if field.ty == TY_BOOL { "i8" } else { llvm_type_name(field.ty) }
                 ir_write_ascii(compiler, ir, "  %copy.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, source_address); ir_write_ascii(compiler, ir, ", align 1\n  store "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, " %copy.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, dest_address); ir_write_ascii(compiler, ir, ", align 1\n")
@@ -5669,10 +6021,11 @@ fn emit_struct_eq_helpers(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
 ) {
-    for type_index in 0L..compiler.struct_types.count() {
-        let ty = compiler.struct_types[type_index]
-        if (ty.helper_flags / 2L) % 2L == 0L { continue }
-        ir_write_ascii(compiler, ir, "define internal i1 @nl.eq."); ir_write_number(compiler, ir, type_index); ir_write_ascii(compiler, ir, "(ptr %nl.left, ptr %nl.right) {\nentry:\n")
+    for type_index in 0L..struct_type_count(compiler) {
+        let ty = struct_record(compiler, type_index)
+        let type_id = struct_type_id(compiler, type_index)
+        if !has_type_helper(compiler, type_id, HELPER_EQUAL) { continue }
+        ir_write_ascii(compiler, ir, "define internal i1 "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_EQUAL); ir_push_byte(compiler, ir, 40); emit_location_argument(compiler, ir, native_location(6L, 0L, 0L)); ir_write_ascii(compiler, ir, ", "); emit_location_argument(compiler, ir, native_location(7L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
         var previous = -1L
         for offset in 0L..ty.field_count {
             let field_index = ty.field_start + offset
@@ -5680,10 +6033,10 @@ fn emit_struct_eq_helpers(
             if field.ty == TY_UNIT { continue }
             let left_address = MAX_TREE_NODES * 3L + field_index * 2L
             let right_address = left_address + 1L
-            emit_layout_address(compiler, ir, left_address, 0L, 6L, field.offset)
-            emit_layout_address(compiler, ir, right_address, 0L, 7L, field.offset)
-            if is_aggregate_type(field.ty) {
-                ir_write_ascii(compiler, ir, "  %eq.raw."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = call i1 @nl.eq."); ir_write_number(compiler, ir, field.ty - TY_STRUCT_BASE); ir_write_ascii(compiler, ir, "(ptr %addr."); ir_write_number(compiler, ir, left_address); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, right_address); ir_write_ascii(compiler, ir, ")\n")
+            emit_layout_address(compiler, ir, left_address, native_location(6L, 0L, field.offset))
+            emit_layout_address(compiler, ir, right_address, native_location(7L, 0L, field.offset))
+            if is_aggregate_type(compiler, field.ty) {
+                ir_write_ascii(compiler, ir, "  %eq.raw."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = call i1 "); emit_type_helper_call_two(compiler, ir, field.ty, HELPER_EQUAL, native_location(2L, left_address, 0L), native_location(2L, right_address, 0L)); ir_push_byte(compiler, ir, 10)
             } else {
                 let storage_type: Ascii max 8 = if field.ty == TY_BOOL { "i8" } else { llvm_type_name(field.ty) }
                 ir_write_ascii(compiler, ir, "  %eq.left."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, left_address); ir_write_ascii(compiler, ir, ", align 1\n  %eq.right."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, right_address); ir_write_ascii(compiler, ir, ", align 1\n  %eq.raw."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = icmp eq "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, " %eq.left."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", %eq.right."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, "\n")
@@ -5718,10 +6071,11 @@ fn emit_struct_print_helpers(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
 ) {
-    for type_index in 0L..compiler.struct_types.count() {
-        let ty = compiler.struct_types[type_index]
-        if (ty.helper_flags / 4L) % 2L == 0L { continue }
-        ir_write_ascii(compiler, ir, "define internal void @nl.print."); ir_write_number(compiler, ir, type_index); ir_write_ascii(compiler, ir, "(ptr %nl.value) {\nentry:\n")
+    for type_index in 0L..struct_type_count(compiler) {
+        let ty = struct_record(compiler, type_index)
+        let type_id = struct_type_id(compiler, type_index)
+        if !has_type_helper(compiler, type_id, HELPER_PRINT) { continue }
+        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_PRINT); ir_push_byte(compiler, ir, 40); emit_location_argument(compiler, ir, native_location(8L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
         emit_struct_print_text_call(compiler, ir, "type", type_index, tokens[ty.name_token].length)
         emit_struct_print_text_call(compiler, ir, "open", 0L, 3L)
         for offset in 0L..ty.field_count {
@@ -5731,9 +6085,9 @@ fn emit_struct_print_helpers(
             emit_struct_print_text_call(compiler, ir, "field", field_index, tokens[field.name_token].length)
             emit_struct_print_text_call(compiler, ir, "colon", 0L, 2L)
             let address = MAX_TREE_NODES * 5L + field_index
-            emit_layout_address(compiler, ir, address, 0L, 8L, field.offset)
-            if is_aggregate_type(field.ty) {
-                ir_write_ascii(compiler, ir, "  call void @nl.print."); ir_write_number(compiler, ir, field.ty - TY_STRUCT_BASE); ir_write_ascii(compiler, ir, "(ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ")\n")
+            emit_layout_address(compiler, ir, address, native_location(8L, 0L, field.offset))
+            if is_aggregate_type(compiler, field.ty) {
+                ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, field.ty, HELPER_PRINT, native_location(2L, address, 0L)); ir_push_byte(compiler, ir, 10)
             } else if field.ty == TY_BOOL {
                 ir_write_ascii(compiler, ir, "  %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = trunc i8 %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " to i1\n  call void @nl_print_bool_raw(i1 zeroext %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n")
             } else {
@@ -5755,23 +6109,24 @@ fn emit_struct_fill_helpers(
     ir: grow Bytes max IR_BUFFER_CAPACITY,
 ) {
     var any_defaults = false
-    for type_index in 0L..compiler.struct_types.count() {
-        if struct_has_defaults(compiler, type_index) { any_defaults = true }
+    for type_index in 0L..struct_type_count(compiler) {
+        if has_type_helper(compiler, struct_type_id(compiler, type_index), HELPER_FILL) { any_defaults = true }
     }
     if !any_defaults { return }
     emit_contains_index_helper(compiler, ir)
-    for type_index in 0L..compiler.struct_types.count() {
-        let ty = compiler.struct_types[type_index]
-        if !struct_has_defaults(compiler, type_index) { continue }
-        ir_write_ascii(compiler, ir, "define internal void @nl.fill."); ir_write_number(compiler, ir, type_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, ptr %nl.dest, ptr %nl.given, i64 %nl.given.count) {\nentry:\n")
+    for type_index in 0L..struct_type_count(compiler) {
+        let ty = struct_record(compiler, type_index)
+        let type_id = struct_type_id(compiler, type_index)
+        if !has_type_helper(compiler, type_id, HELPER_FILL) { continue }
+        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_FILL); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_hidden_destination_parameter(compiler, ir); ir_write_ascii(compiler, ir, ", ptr %nl.given, i64 %nl.given.count) {\nentry:\n")
         for offset in 0L..ty.field_count {
             let field_index = ty.field_start + offset
             let field = compiler.struct_fields[field_index]
             if field.default_node < 0L { continue }
             let address = MAX_TREE_NODES * 4L + field_index
             ir_write_ascii(compiler, ir, "  %given."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = call i1 @nl.contains.index(ptr %nl.given, i64 %nl.given.count, i64 "); ir_write_number(compiler, ir, offset); ir_write_ascii(compiler, ir, ")\n  br i1 %given."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", label %skip."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", label %fill."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, "\nfill."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ":\n")
-            emit_layout_address(compiler, ir, address, 0L, 4L, field.offset)
-            ir_write_ascii(compiler, ir, "  call void @nl.default."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ")\n  br label %skip."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, "\nskip."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ":\n")
+            emit_layout_address(compiler, ir, address, native_location(4L, 0L, field.offset))
+            ir_write_ascii(compiler, ir, "  call void "); emit_default_field_helper_symbol(compiler, ir, type_id, field_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_location_argument(compiler, ir, native_location(2L, address, 0L)); ir_write_ascii(compiler, ir, ")\n  br label %skip."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, "\nskip."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ":\n")
         }
         ir_write_ascii(compiler, ir, "  ret void\n}\n\n")
     }
@@ -5787,21 +6142,21 @@ fn emit_struct_default_helpers(
 ) {
     for field_index in 0L..compiler.struct_fields.count() {
         let field = compiler.struct_fields[field_index]
-        if field.default_node < 0L { continue }
+        if field.default_node < 0L || !has_type_helper(compiler, struct_type_id(compiler, field.owner), HELPER_DEFAULT) { continue }
         let function_id = -100000L - field_index
         let expression = field.default_node
-        let default_file = compiler.struct_types[field.owner].file
-        ir_write_ascii(compiler, ir, "define internal void @nl.default."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, ptr %nl.dest) {\nentry:\n")
+        let default_file = struct_record(compiler, field.owner).file
+        ir_write_ascii(compiler, ir, "define internal void "); emit_default_field_helper_symbol(compiler, ir, struct_type_id(compiler, field.owner), field_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_hidden_destination_parameter(compiler, ir); ir_write_ascii(compiler, ir, ") {\nentry:\n")
         let first = expression - tables.nodes[expression].subtree
         for node in first..expression + 1L {
-            if tables.nodes[node].kind == NodeKind.If && compiler.facts[node].ty != TY_UNIT && compiler.facts[node].ty != TY_NEVER && !is_aggregate_type(compiler.facts[node].ty) {
+            if tables.nodes[node].kind == NodeKind.If && compiler.facts[node].ty != TY_UNIT && compiler.facts[node].ty != TY_NEVER && !is_aggregate_type(compiler, compiler.facts[node].ty) {
                 ir_write_ascii(compiler, ir, "  %if.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(compiler.facts[node].ty)); ir_write_ascii(compiler, ir, ", align 1\n")
             }
             if (tables.nodes[node].kind == NodeKind.Binary && (tables.nodes[node].flags == 14L || tables.nodes[node].flags == 15L)) {
                 ir_write_ascii(compiler, ir, "  %logic.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca i1, align 1\n")
             }
-            if is_aggregate_type(compiler.facts[node].ty) {
-                let ty = compiler.struct_types[compiler.facts[node].ty - TY_STRUCT_BASE]
+            if is_aggregate_type(compiler, compiler.facts[node].ty) {
+                let ty = type_record(compiler, compiler.facts[node].ty)
                 let size = ty.size
                 let alignment = ty.align
                 ir_write_ascii(compiler, ir, "  %agg."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca ["); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, " x i8], align "); ir_write_number(compiler, ir, alignment); ir_write_ascii(compiler, ir, "\n")
@@ -5811,8 +6166,8 @@ fn emit_struct_default_helpers(
             let binding = compiler.bindings[binding_index]
             if compiler.scopes[binding.scope].function_id == function_id && binding.ty != TY_UNIT {
                 ir_write_ascii(compiler, ir, "  %local."); ir_write_number(compiler, ir, binding_index); ir_write_ascii(compiler, ir, " = alloca ")
-                if is_aggregate_type(binding.ty) {
-                    let ty = compiler.struct_types[binding.ty - TY_STRUCT_BASE]
+                if is_aggregate_type(compiler, binding.ty) {
+                    let ty = type_record(compiler, binding.ty)
                     let size = ty.size
                     let alignment = ty.align
                     ir_write_ascii(compiler, ir, "["); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, " x i8], align "); ir_write_number(compiler, ir, alignment); ir_write_ascii(compiler, ir, "\n")
@@ -5823,16 +6178,59 @@ fn emit_struct_default_helpers(
             }
         }
         emit_expr_linear(source, files, tokens, tables, compiler, ir, expression, default_file, field.ty, false)
-        if is_aggregate_type(field.ty) {
+        if is_aggregate_type(compiler, field.ty) {
             let source_kind = aggregate_source_kind(tables, compiler, expression)
             let source_node = aggregate_source_id(tables, compiler, expression)
-            emit_aggregate_copy(compiler, ir, field.ty, 2L, 0L, source_kind, source_node)
+            emit_aggregate_copy(compiler, ir, field.ty, aggregate_destination_location(2L, 0L), aggregate_source_location(source_kind, source_node))
         } else if field.ty == TY_BOOL {
-            ir_write_ascii(compiler, ir, "  %default.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, expression); ir_write_ascii(compiler, ir, " to i8\n  store i8 %default.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", ptr %nl.dest, align 1\n")
+            ir_write_ascii(compiler, ir, "  %default.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, expression); ir_write_ascii(compiler, ir, " to i8\n  store i8 %default.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer(compiler, ir, native_location(4L, 0L, 0L)); ir_write_ascii(compiler, ir, ", align 1\n")
         } else {
-            ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, expression); ir_write_ascii(compiler, ir, ", ptr %nl.dest, align 1\n")
+            ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, expression); ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer(compiler, ir, native_location(4L, 0L, 0L)); ir_write_ascii(compiler, ir, ", align 1\n")
         }
         ir_write_ascii(compiler, ir, "  ret void\n}\n\n")
+    }
+}
+
+fn emit_type_helpers_for_kind(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    kind: long,
+) {
+    if kind == TYPE_KIND_STRUCT {
+        var has_struct_helpers = false
+        for type_id in 0L..type_count(compiler) {
+            if type_kind(compiler, type_id) == kind && type_has_registered_helper(compiler, type_id) {
+                has_struct_helpers = true
+            }
+        }
+        if has_struct_helpers {
+            emit_struct_copy_helpers(tables, compiler, ir)
+            emit_struct_eq_helpers(compiler, ir)
+            emit_struct_print_helpers(source, files, tokens, compiler, ir)
+            emit_struct_default_helpers(source, files, tokens, tables, compiler, ir)
+            emit_struct_fill_helpers(compiler, ir)
+        }
+    } else {
+        for type_id in 0L..type_count(compiler) {
+            if type_kind(compiler, type_id) == kind && type_has_registered_helper(compiler, type_id) { compiler.ir_overflow = true }
+        }
+    }
+}
+
+fn emit_registered_type_helpers(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+) {
+    for kind in TYPE_KIND_STRUCT..TYPE_KIND_ADDRESS + 1L {
+        emit_type_helpers_for_kind(source, files, tokens, tables, compiler, ir, kind)
     }
 }
 
@@ -5882,7 +6280,7 @@ fn emit_file_globals(
         if tables.nodes[node].kind == NodeKind.Expect { ir_write_expect_global(source, tables, compiler, ir, node) }
         if tables.nodes[node].kind == NodeKind.StructInit {
             let type_index = compiler.facts[node].literal
-            let ty = compiler.struct_types[type_index]
+            let ty = struct_record(compiler, type_index)
             var count = 0L
             for field_offset in 0L..ty.field_count {
                 let field_index = ty.field_start + field_offset
@@ -5922,8 +6320,8 @@ fn emit_file_globals(
     ir_write_global_string(compiler, ir, "@.nl.struct.close.0 = private unnamed_addr constant [", close_text)
     ir_write_global_string(compiler, ir, "@.nl.struct.separator.0 = private unnamed_addr constant [", separator_text)
     ir_write_global_string(compiler, ir, "@.nl.struct.colon.0 = private unnamed_addr constant [", colon_text)
-    for type_index in 0L..compiler.struct_types.count() {
-        let ty = compiler.struct_types[type_index]
+    for type_index in 0L..struct_type_count(compiler) {
+        let ty = struct_record(compiler, type_index)
         ir_write_struct_identifier_global(source, files, tokens, compiler, ir, "type", type_index, ty.file, ty.name_token)
         for offset in 0L..ty.field_count {
             let field_index = ty.field_start + offset
@@ -6303,11 +6701,7 @@ fn compile_selfhost_package(
     for test_index in 0L..compiler.tests.count() {
         emit_test_definition(source, files, tokens, tables, compiler, ir, test_index)
     }
-    emit_struct_copy_helpers(tables, compiler, ir)
-    emit_struct_eq_helpers(compiler, ir)
-    emit_struct_print_helpers(source, files, tokens, compiler, ir)
-    emit_struct_default_helpers(source, files, tokens, tables, compiler, ir)
-    emit_struct_fill_helpers(compiler, ir)
+    emit_registered_type_helpers(source, files, tokens, tables, compiler, ir)
     emit_file_globals(files, source, tokens, tables, compiler, ir)
     emit_main_function(source, compiler, ir, files, tokens, config, entry, runtime_core)
     if runtime_core {

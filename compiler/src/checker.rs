@@ -647,6 +647,19 @@ impl Checker {
                 }
             }
         }
+        let function_global_effects = infer_global_effects(&functions, &call_graph)
+            .into_iter()
+            .map(|effects| TFunctionGlobalEffects {
+                writes: effects
+                    .writes
+                    .into_iter()
+                    .map(|write| TGlobalEffectPath {
+                        global: write.path.global,
+                        fields: write.path.fields,
+                    })
+                    .collect(),
+            })
+            .collect();
         let typed = TProgram {
             functions,
             tests,
@@ -669,6 +682,7 @@ impl Checker {
             files: self.files,
             call_graph,
             function_type_targets,
+            function_global_effects,
             types: self.types,
         };
         Ok(typed)
@@ -15605,9 +15619,25 @@ fn collect_global_expr_effects(expr: &TExpr, effects: &mut GlobalEffects, functi
                 | CallTarget::ArgLength
                 | CallTarget::ArgByte
                 | CallTarget::EnvExit => effects.env = true,
-                CallTarget::FsRead => effects.fs_read = true,
+                CallTarget::FsRead => {
+                    effects.fs_read = true;
+                    if let Some(path) = args.get(2).and_then(global_path_from_expr) {
+                        effects.add_write(path, false);
+                    }
+                }
                 CallTarget::FsWrite => effects.fs_write = true,
-                CallTarget::FsList | CallTarget::FsListWithExtension => effects.fs_read = true,
+                CallTarget::FsList => {
+                    effects.fs_read = true;
+                    if let Some(path) = args.get(2).and_then(global_path_from_expr) {
+                        effects.add_write(path, false);
+                    }
+                }
+                CallTarget::FsListWithExtension => {
+                    effects.fs_read = true;
+                    if let Some(path) = args.get(3).and_then(global_path_from_expr) {
+                        effects.add_write(path, false);
+                    }
+                }
                 CallTarget::FsJoin
                 | CallTarget::EnvFs
                 | CallTarget::EnvOut
@@ -16150,7 +16180,79 @@ fn is_prefix(a: &[usize], b: &[usize]) -> bool {
     a.len() <= b.len() && a.iter().zip(b).all(|(x, y)| x == y)
 }
 
-fn places_overlap(a: &TPlace, b: &TPlace) -> bool {
+fn typed_global_path_name(program: &TProgram, path: &GlobalPath) -> String {
+    let mut name = program
+        .globals
+        .get(path.global)
+        .map(|global| global.name.clone())
+        .unwrap_or_else(|| "<global>".to_owned());
+    let Some(global) = program.globals.get(path.global) else {
+        return name;
+    };
+    let mut ty = global.ty;
+    for index in &path.fields {
+        let TTypeKind::Struct(fields) = &program.types[ty.0].kind else {
+            break;
+        };
+        let Some(field) = fields.get(*index) else {
+            break;
+        };
+        name.push('.');
+        name.push_str(&field.name);
+        ty = field.ty;
+    }
+    name
+}
+
+pub(crate) fn function_global_writes_overlap(
+    program: &TProgram,
+    function_id: usize,
+    place: &TPlace,
+) -> bool {
+    let Some(place_path) = global_path_from_place(place) else {
+        return false;
+    };
+    program
+        .function_global_effects
+        .get(function_id)
+        .is_some_and(|effects| {
+            effects.writes.iter().any(|write| {
+                global_paths_overlap(
+                    &place_path,
+                    &GlobalPath {
+                        global: write.global,
+                        fields: write.fields.clone(),
+                    },
+                )
+            })
+        })
+}
+
+/// Whether an unresolved indirect target's declared effect bound can write a
+/// global place. A missing or non-function type is unknown, so it is treated
+/// conservatively as a possible write.
+pub(crate) fn function_type_global_writes_overlap(
+    program: &TProgram,
+    function_ty: Ty,
+    place: &TPlace,
+) -> bool {
+    let Some(place_path) = global_path_from_place(place) else {
+        return false;
+    };
+    let Some(TTypeKind::Function { effects, .. }) = program
+        .types
+        .get(function_ty.0)
+        .map(|definition| &definition.kind)
+    else {
+        return true;
+    };
+    let place_name = typed_global_path_name(program, &place_path);
+    effects.writes.iter().any(|bound| {
+        effect_path_covers(bound, &place_name) || effect_path_covers(&place_name, bound)
+    })
+}
+
+pub(crate) fn places_overlap(a: &TPlace, b: &TPlace) -> bool {
     if a.root != b.root {
         return false;
     }

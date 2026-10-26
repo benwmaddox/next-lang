@@ -1,0 +1,16 @@
+You are the implementer (Luna) for the next-lang project, in this repository (/mnt/d/code/next-lang). Claude is the manager and reviewer.
+
+Do **E2b**: enums with payloads and `match` in the self-hosted compiler, as specified in docs/tasks/E2-selfhost-structs-enums.md (the binding spec; sections Layout, Size eligibility, Evaluation points, Shared helpers, Behaviour, Checker order, Directed fixtures, Classification update, Measurements, as they apply to enums and `match`). E2a (structs) and E2i (shared interfaces: type kinds, storage locations, helper registry, exit lowering, the ownership table at the top of selfhost/compiler.nl) have landed; read docs/tasks/E2a-report.md and docs/tasks/E2i-report.md.
+
+Scope: enum declarations with and without payloads, constructors, the i32 tag at offset 0 with payloads at their aligned offsets, inferred oversized sums, `match` with payload bindings, guards if the spec includes them, exhaustiveness diagnostics in stage 0's order, enum printing and equality exactly as stage 0, enums as fields, parameters and results. `Option`, `Result`, `?`, `??` and the core error wrappers are **E2c**: they must still fail closed as unsupported after E2b.
+
+Parallel work: E3a1/E3a2 (data-stack regions, collections, `write` parameters) are being built at the same time in a separate git worktree from the same E2i commit. So:
+- follow E2i's ownership table: add the enum kind, its helper emitters and one dispatch branch per new node kind; don't change functions the table gives to E3a1/E3a2 (`emit_layout_address` and the location record, passing/receiving locations, the `core_sys_*`/hook table and frame-budget walk) beyond calling them;
+- don't add hooks unless unavoidable; if you must, add a contract fixture recorded against the C runtime and list it in the report;
+- add new classification rows in one block at the end of tests/e1/classification.tsv between `# E2b begin` and `# E2b end`.
+
+Mutable globals have been removed from the language (docs/DESIGN.md, 2026-10-26): never add global support to the self-hosted compiler; packages using `global` stay unsupported.
+
+Stage 0 (compiler/) is frozen: change nothing there unless the spec requires a reference fix for enums or `match`, and then list it. Always set CARGO_TARGET_DIR=$HOME/.cache/next-lang/target; run large builds under `ulimit -v 8000000` and `timeout`. Acceptance: both full suites (NLC_FRONTEND=rust and selfhost `cargo test --offline`), `cargo fmt --all -- --check`, the selfhost_interfaces test, `scripts/compare-selfhost.sh --build` in default and `NLC_LONG_TESTS=1` modes at zero mismatches, `git diff --check`. No network, no external crates. Work in steps and keep the suites passing after each, so partial work is usable. Delete scratch files you create in the repository root.
+
+Rules: never run git commit, never create or switch branches, never stash or reset; never edit docs/DESIGN.md, docs/PLAN.md, docs/research/ or docs/reviews/. When done, write docs/tasks/E2b-report.md: what was built, every classification movement with old and new class, counts per class before and after, measurements the spec asks for, anything in the spec that didn't work as written, and what's left for E2c.

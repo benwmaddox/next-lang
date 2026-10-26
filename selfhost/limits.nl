@@ -27,8 +27,11 @@ const SCOPE_TABLE_CAPACITY: long = MAX_TREE_NODES
 // Includes package calls plus per-literal/default helper edges. The graph is
 // linear in syntax plus field entries for the E2 default/call closure.
 const CALL_EDGE_CAPACITY: long = EXTRA_STORAGE_CAPACITY
-const TYPE_TABLE_CAPACITY: long = MAX_TREE_NODES
+// Six stable slots hold the built-in type ids; user types append after them.
+const TYPE_TABLE_CAPACITY: long = MAX_TREE_NODES + 6L
 const FIELD_TABLE_CAPACITY: long = MAX_TREE_NODES
+// E2i has no cleanup producers; the first cleanup owner derives and expands this.
+const EXIT_CLEANUP_CAPACITY: long = 1L
 const INTERN_NAME_CAPACITY: long = TOKEN_STORAGE_CAPACITY
 const INTERN_HASH_CAPACITY: long = 4194304L
 const CHECK_FRAME_CAPACITY: long = 4096L

@@ -518,3 +518,14 @@ diagnose	tests/e2/size_direct_cycle
 diagnose	tests/e2/size_mutual_cycle
 diagnose	tests/e2/size_unknown_with_large_part
 build	tests/e2/tolong
+# E2i argument-timing audit fixtures (stage 0 reference; E3a2 enables selfhost)
+unsupported	tests/e2/e2i_write_struct_element
+unsupported	tests/e2/e2i_write_scalar
+unsupported	tests/e2/e2i_large_read_snapshots
+unsupported	tests/e2/e2i_large_list_snapshot
+unsupported	tests/e2/e2i_index_equality_snapshots
+unsupported	tests/e2/test_e2i_expect_snapshot
+unsupported	tests/e2/e2i_global_hidden_write_snapshot
+unsupported	tests/e2/e2i_global_transitive_hidden_write_snapshot
+unsupported	tests/e2/e2i_global_equality_hidden_write_snapshot
+unsupported	tests/e2/e2i_global_read_only_no_snapshot

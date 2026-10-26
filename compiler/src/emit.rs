@@ -1468,7 +1468,33 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
         own
     }
 
-    fn expression_scratch(expr: &TExpr, types: &[TType]) -> u64 {
+    fn call_argument_snapshot_scratch(
+        args: &[TExpr],
+        modes: impl Iterator<Item = ParamMode>,
+        program: &TProgram,
+    ) -> u64 {
+        let types = &program.types;
+        let mut scratch = 0u64;
+        for (index, (arg, mode)) in args.iter().zip(modes).enumerate() {
+            if mode != ParamMode::Read || !is_large_type(arg.ty, types) {
+                continue;
+            }
+            let Some(place) = FunctionEmitter::expr_place(arg) else {
+                continue;
+            };
+            let later_may_mutate = args[index + 1..]
+                .iter()
+                .any(|later| FunctionEmitter::expression_may_write_place(program, later, &place));
+            if later_may_mutate {
+                scratch = scratch.saturating_add(stack_storage_size(arg.ty, types) as u64);
+            }
+        }
+        scratch
+    }
+
+    fn expression_scratch(expr: &TExpr, program: &TProgram) -> u64 {
+        let types = &program.types;
+        let functions = &program.functions;
         let mut own = 0u64;
         match &expr.kind {
             TExprKind::Call { target, args, .. } => {
@@ -1494,6 +1520,16 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                         })
                         .sum::<u64>(),
                 );
+                if let CallTarget::Function(function_id) = target {
+                    own = own.saturating_add(call_argument_snapshot_scratch(
+                        args,
+                        functions[*function_id]
+                            .params
+                            .iter()
+                            .map(|param| param.mode),
+                        program,
+                    ));
+                }
                 if matches!(target, CallTarget::Sort { .. } | CallTarget::SortBy { .. }) {
                     if let Some(collection) = args.first() {
                         own = own.saturating_add(stack_storage_size(collection.ty, types) as u64);
@@ -1509,10 +1545,15 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     }
                 }
                 for arg in args {
-                    own = own.saturating_add(expression_scratch(arg, types));
+                    own = own.saturating_add(expression_scratch(arg, program));
                 }
             }
-            TExprKind::IndirectCall { callee, args, .. } => {
+            TExprKind::IndirectCall {
+                callee,
+                args,
+                params,
+                ..
+            } => {
                 if is_large_type(expr.ty, types) {
                     own = own.saturating_add(stack_storage_size(expr.ty, types) as u64);
                 }
@@ -1532,19 +1573,24 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                         })
                         .sum::<u64>(),
                 );
-                own = own.saturating_add(expression_scratch(callee, types));
+                own = own.saturating_add(call_argument_snapshot_scratch(
+                    args,
+                    params.iter().map(|param| param.mode),
+                    program,
+                ));
+                own = own.saturating_add(expression_scratch(callee, program));
                 for arg in args {
-                    own = own.saturating_add(expression_scratch(arg, types));
+                    own = own.saturating_add(expression_scratch(arg, program));
                 }
             }
             TExprKind::Construct { args, .. } => {
                 own = own.saturating_add(large_storage(expr.ty, 1, types));
                 for arg in args {
-                    own = own.saturating_add(expression_scratch(arg, types));
+                    own = own.saturating_add(expression_scratch(arg, program));
                 }
             }
             TExprKind::Method { receiver, .. } | TExprKind::OptionalToLong(receiver) => {
-                own = own.saturating_add(expression_scratch(receiver, types));
+                own = own.saturating_add(expression_scratch(receiver, program));
             }
             TExprKind::AsciiUpper(value)
             | TExprKind::TextUpper(value)
@@ -1554,30 +1600,30 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
             | TExprKind::TextConvert { value, .. }
             | TExprKind::Take(value)
             | TExprKind::AsciiFit { value, .. } => {
-                own = own.saturating_add(expression_scratch(value, types));
+                own = own.saturating_add(expression_scratch(value, program));
             }
             TExprKind::AsciiFormat { value, .. }
             | TExprKind::ParseInteger {
                 receiver: value, ..
-            } => own = own.saturating_add(expression_scratch(value, types)),
+            } => own = own.saturating_add(expression_scratch(value, program)),
             TExprKind::AsciiPad { value, width, .. } | TExprKind::AsciiZeroPad { value, width } => {
-                own = own.saturating_add(expression_scratch(value, types));
-                own = own.saturating_add(expression_scratch(width, types));
+                own = own.saturating_add(expression_scratch(value, program));
+                own = own.saturating_add(expression_scratch(width, program));
             }
             TExprKind::AsciiTryAppend { receiver, argument }
             | TExprKind::TextTryAppend { receiver, argument }
             | TExprKind::BytesTryAppend { receiver, argument } => {
-                own = own.saturating_add(expression_scratch(receiver, types));
-                own = own.saturating_add(expression_scratch(argument, types));
+                own = own.saturating_add(expression_scratch(receiver, program));
+                own = own.saturating_add(expression_scratch(argument, program));
                 own = own.saturating_add(large_storage(argument.ty, 1, types));
             }
             TExprKind::BytesPush { receiver, byte, .. } => {
-                own = own.saturating_add(expression_scratch(receiver, types));
-                own = own.saturating_add(expression_scratch(byte, types));
+                own = own.saturating_add(expression_scratch(receiver, program));
+                own = own.saturating_add(expression_scratch(byte, program));
             }
             TExprKind::AsciiEmpty | TExprKind::TextEmpty | TExprKind::BytesEmpty => {}
             TExprKind::Field { receiver, .. } => {
-                own = own.saturating_add(expression_scratch(receiver, types));
+                own = own.saturating_add(expression_scratch(receiver, program));
             }
             TExprKind::Index {
                 receiver,
@@ -1595,11 +1641,11 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 if is_large_type(receiver.ty, types) && !expr_is_place_for_contract(receiver) {
                     own = own.saturating_add(stack_storage_size(receiver.ty, types) as u64);
                 }
-                own = own.saturating_add(expression_scratch(receiver, types));
-                own = own.saturating_add(expression_scratch(index, types));
+                own = own.saturating_add(expression_scratch(receiver, program));
+                own = own.saturating_add(expression_scratch(index, program));
                 if let Some(grid) = grid {
-                    own = own.saturating_add(expression_scratch(&grid.x, types));
-                    own = own.saturating_add(expression_scratch(&grid.y, types));
+                    own = own.saturating_add(expression_scratch(&grid.x, program));
+                    own = own.saturating_add(expression_scratch(&grid.y, program));
                 }
             }
             TExprKind::BytesIndex {
@@ -1608,18 +1654,18 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 if is_large_type(receiver.ty, types) && !expr_is_place_for_contract(receiver) {
                     own = own.saturating_add(stack_storage_size(receiver.ty, types) as u64);
                 }
-                own = own.saturating_add(expression_scratch(receiver, types));
-                own = own.saturating_add(expression_scratch(index, types));
+                own = own.saturating_add(expression_scratch(receiver, program));
+                own = own.saturating_add(expression_scratch(index, program));
             }
             TExprKind::Fill { value, .. } => {
                 own = own
-                    .saturating_add(expression_scratch(value, types))
+                    .saturating_add(expression_scratch(value, program))
                     .saturating_add(large_storage(expr.ty, 1, types));
             }
             TExprKind::CollectionLiteral(values) => {
                 own = own.saturating_add(large_storage(expr.ty, 1, types));
                 for value in values {
-                    own = own.saturating_add(expression_scratch(value, types));
+                    own = own.saturating_add(expression_scratch(value, program));
                     if is_large_type(value.ty, types) {
                         own = own.saturating_add(large_storage(value.ty, 1, types));
                     }
@@ -1630,10 +1676,10 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
             | TExprKind::ToLong(value)
             | TExprKind::Cast { value, .. }
             | TExprKind::Unary { value, .. } => {
-                own = own.saturating_add(expression_scratch(value, types));
+                own = own.saturating_add(expression_scratch(value, program));
             }
             TExprKind::Try { value, .. } => {
-                own = own.saturating_add(expression_scratch(value, types));
+                own = own.saturating_add(expression_scratch(value, program));
                 if is_large_type(value.ty, types) && !expr_is_place_for_contract(value) {
                     own = own.saturating_add(large_storage(value.ty, 1, types));
                 }
@@ -1642,24 +1688,29 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
             | TExprKind::PoolOp { receiver, args, .. }
             | TExprKind::MapOp { receiver, args, .. }
             | TExprKind::SetOp { receiver, args, .. } => {
-                own = own.saturating_add(expression_scratch(receiver, types));
+                own = own.saturating_add(expression_scratch(receiver, program));
                 for arg in args {
-                    own = own.saturating_add(expression_scratch(arg, types));
+                    own = own.saturating_add(expression_scratch(arg, program));
                 }
             }
             TExprKind::StructConstruct { fields } => {
                 own = own.saturating_add(large_storage(expr.ty, 1, types));
                 for (_, value) in fields {
-                    own = own.saturating_add(expression_scratch(value, types));
+                    own = own.saturating_add(expression_scratch(value, program));
                 }
             }
-            TExprKind::OptionalCall { receiver, args, .. } => {
-                own = own.saturating_add(expression_scratch(receiver, types));
+            TExprKind::OptionalCall {
+                receiver,
+                function_id,
+                args,
+                ..
+            } => {
+                own = own.saturating_add(expression_scratch(receiver, program));
                 if is_large_type(receiver.ty, types) && !expr_is_place_for_contract(receiver) {
                     own = own.saturating_add(large_storage(receiver.ty, 1, types));
                 }
                 for arg in args {
-                    own = own.saturating_add(expression_scratch(arg, types));
+                    own = own.saturating_add(expression_scratch(arg, program));
                 }
                 own = own.saturating_add(
                     args.iter()
@@ -1677,19 +1728,28 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                         })
                         .sum::<u64>(),
                 );
+                own = own.saturating_add(call_argument_snapshot_scratch(
+                    args,
+                    functions[*function_id]
+                        .params
+                        .iter()
+                        .skip(1)
+                        .map(|param| param.mode),
+                    program,
+                ));
                 if is_large_type(expr.ty, types) {
                     own = own.saturating_add(stack_storage_size(expr.ty, types) as u64);
                 }
             }
             TExprKind::Coalesce { option, fallback } => {
-                own = own.saturating_add(expression_scratch(option, types));
-                own = own.saturating_add(expression_scratch(fallback, types));
+                own = own.saturating_add(expression_scratch(option, program));
+                own = own.saturating_add(expression_scratch(fallback, program));
                 if is_large_type(option.ty, types) && !expr_is_place_for_contract(option) {
                     own = own.saturating_add(large_storage(option.ty, 1, types));
                 }
             }
             TExprKind::Match { scrutinee, arms } => {
-                own = own.saturating_add(expression_scratch(scrutinee, types));
+                own = own.saturating_add(expression_scratch(scrutinee, program));
                 if is_large_type(scrutinee.ty, types)
                     && (!expr_is_place_for_contract(scrutinee)
                         || matches!(types[scrutinee.ty.0].kind, TTypeKind::Struct(_)))
@@ -1710,25 +1770,35 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                             }
                         }
                     }
-                    own = own.saturating_add(block_scratch(&arm.body, types, &[]));
+                    own = own.saturating_add(block_scratch(&arm.body, program));
                 }
             }
             TExprKind::Return(value) => {
                 if let Some(value) = value {
-                    own = own.saturating_add(expression_scratch(value, types));
+                    own = own.saturating_add(expression_scratch(value, program));
                 }
             }
             TExprKind::Binary {
                 op, left, right, ..
             } => {
-                own = own.saturating_add(expression_scratch(left, types));
-                own = own.saturating_add(expression_scratch(right, types));
+                own = own.saturating_add(expression_scratch(left, program));
+                own = own.saturating_add(expression_scratch(right, program));
                 if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
                     own = own.saturating_add(equality_scratch(
                         left.ty,
                         types,
                         &mut vec![false; types.len()],
                     ));
+                    if is_large_type(left.ty, types)
+                        && !is_growing_string_type(left.ty, types)
+                        && !is_growing_string_type(right.ty, types)
+                    {
+                        if let Some(place) = FunctionEmitter::expr_place(left) {
+                            if FunctionEmitter::expression_may_write_place(program, right, &place) {
+                                own = own.saturating_add(stack_storage_size(left.ty, types) as u64);
+                            }
+                        }
+                    }
                 }
             }
             TExprKind::AsciiSlice {
@@ -1746,19 +1816,19 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 start,
                 end,
             } => {
-                own = own.saturating_add(expression_scratch(receiver, types));
-                own = own.saturating_add(expression_scratch(start, types));
-                own = own.saturating_add(expression_scratch(end, types));
+                own = own.saturating_add(expression_scratch(receiver, program));
+                own = own.saturating_add(expression_scratch(start, program));
+                own = own.saturating_add(expression_scratch(end, program));
             }
             TExprKind::If {
                 condition,
                 then_block,
                 else_block,
             } => {
-                own = own.saturating_add(expression_scratch(condition, types));
-                own = own.saturating_add(block_scratch(then_block, types, &[]));
+                own = own.saturating_add(expression_scratch(condition, program));
+                own = own.saturating_add(block_scratch(then_block, program));
                 if let Some(other) = else_block {
-                    own = own.saturating_add(block_scratch(other, types, &[]));
+                    own = own.saturating_add(block_scratch(other, program));
                 }
             }
             TExprKind::Unit
@@ -1782,8 +1852,9 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
         own
     }
 
-    fn expression_scratch_in_destination(expr: &TExpr, types: &[TType]) -> u64 {
-        let scratch = expression_scratch(expr, types);
+    fn expression_scratch_in_destination(expr: &TExpr, program: &TProgram) -> u64 {
+        let types = &program.types;
+        let scratch = expression_scratch(expr, program);
         let destination_bytes = match &expr.kind {
             TExprKind::Call { .. }
             | TExprKind::IndirectCall { .. }
@@ -1795,21 +1866,23 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
         scratch.saturating_sub(destination_bytes)
     }
 
-    fn append_expression_scratch(expr: &TExpr, types: &[TType]) -> u64 {
+    fn append_expression_scratch(expr: &TExpr, program: &TProgram) -> u64 {
+        let types = &program.types;
         match &expr.kind {
             TExprKind::Call {
                 target: CallTarget::Function(_),
                 args,
                 ..
-            } if matches!(types[expr.ty.0].kind, TTypeKind::Ascii { .. }) => {
-                args.iter().map(|arg| expression_scratch(arg, types)).sum()
-            }
+            } if matches!(types[expr.ty.0].kind, TTypeKind::Ascii { .. }) => args
+                .iter()
+                .map(|arg| expression_scratch(arg, program))
+                .sum(),
             TExprKind::IndirectCall { callee, args, .. }
                 if matches!(types[expr.ty.0].kind, TTypeKind::Ascii { .. }) =>
             {
-                expression_scratch(callee, types).saturating_add(
+                expression_scratch(callee, program).saturating_add(
                     args.iter()
-                        .map(|arg| expression_scratch(arg, types))
+                        .map(|arg| expression_scratch(arg, program))
                         .sum::<u64>(),
                 )
             }
@@ -1819,14 +1892,16 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                 right,
                 ..
             } if matches!(types[expr.ty.0].kind, TTypeKind::Ascii { .. }) => {
-                append_expression_scratch(left, types)
-                    .saturating_add(append_expression_scratch(right, types))
+                append_expression_scratch(left, program)
+                    .saturating_add(append_expression_scratch(right, program))
             }
-            _ => expression_scratch(expr, types),
+            _ => expression_scratch(expr, program),
         }
     }
 
-    fn block_scratch(block: &TBlock, types: &[TType], functions: &[TFunction]) -> u64 {
+    fn block_scratch(block: &TBlock, program: &TProgram) -> u64 {
+        let types = &program.types;
+        let functions = &program.functions;
         let mut total = 0u64;
         for statement in &block.statements {
             match &statement.kind {
@@ -1836,15 +1911,15 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     value,
                     ..
                 } if matches!(types[place.ty.0].kind, TTypeKind::Ascii { .. }) => {
-                    total = total.saturating_add(append_expression_scratch(value, types))
+                    total = total.saturating_add(append_expression_scratch(value, program))
                 }
                 TStmtKind::Let { ty, value, .. }
                     if matches!(types[ty.0].kind, TTypeKind::Ascii { .. }) =>
                 {
-                    total = total.saturating_add(append_expression_scratch(value, types))
+                    total = total.saturating_add(append_expression_scratch(value, program))
                 }
                 TStmtKind::Let { value, .. } => {
-                    total = total.saturating_add(expression_scratch_in_destination(value, types));
+                    total = total.saturating_add(expression_scratch_in_destination(value, program));
                 }
                 TStmtKind::Assign {
                     place,
@@ -1856,9 +1931,9 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     let in_place =
                         in_place_reassignment_parameter(functions, types, place, value).is_some();
                     let scratch = if in_place {
-                        expression_scratch_in_destination(value, types)
+                        expression_scratch_in_destination(value, program)
                     } else {
-                        expression_scratch(value, types)
+                        expression_scratch(value, program)
                     };
                     total = total.saturating_add(scratch);
                     if *op != AssignOp::Add
@@ -1878,14 +1953,14 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     }
                 }
                 TStmtKind::Expr(value) | TStmtKind::Discard(value) => {
-                    total = total.saturating_add(expression_scratch(value, types));
+                    total = total.saturating_add(expression_scratch(value, program));
                 }
                 TStmtKind::Return(value) => {
                     if let Some(value) = value {
                         let scratch = if matches!(types[value.ty.0].kind, TTypeKind::Ascii { .. }) {
-                            append_expression_scratch(value, types)
+                            append_expression_scratch(value, program)
                         } else {
-                            expression_scratch_in_destination(value, types)
+                            expression_scratch_in_destination(value, program)
                         };
                         total = total.saturating_add(scratch);
                     }
@@ -1895,41 +1970,57 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
                     then_block,
                     else_block,
                 } => {
-                    total = total.saturating_add(expression_scratch(condition, types));
-                    total = total.saturating_add(block_scratch(then_block, types, functions));
+                    total = total.saturating_add(expression_scratch(condition, program));
+                    total = total.saturating_add(block_scratch(then_block, program));
                     if let Some(other) = else_block {
-                        total = total.saturating_add(block_scratch(other, types, functions));
+                        total = total.saturating_add(block_scratch(other, program));
                     }
                 }
                 TStmtKind::For {
                     start, end, body, ..
                 } => {
-                    total = total.saturating_add(expression_scratch(start, types));
-                    total = total.saturating_add(expression_scratch(end, types));
-                    total = total.saturating_add(block_scratch(body, types, functions));
+                    total = total.saturating_add(expression_scratch(start, program));
+                    total = total.saturating_add(expression_scratch(end, program));
+                    total = total.saturating_add(block_scratch(body, program));
                 }
                 TStmtKind::ForEach {
                     collection, body, ..
                 } => {
-                    total = total.saturating_add(expression_scratch(collection, types));
-                    total = total.saturating_add(block_scratch(body, types, functions));
+                    total = total.saturating_add(expression_scratch(collection, program));
+                    total = total.saturating_add(block_scratch(body, program));
                 }
                 TStmtKind::Block(body) => {
-                    total = total.saturating_add(block_scratch(body, types, functions))
+                    total = total.saturating_add(block_scratch(body, program))
                 }
                 TStmtKind::Expect { kind, .. } => match kind {
                     TExpectKind::Bool(value) => {
-                        total = total.saturating_add(expression_scratch(value, types));
+                        total = total.saturating_add(expression_scratch(value, program));
                     }
-                    TExpectKind::Compare { left, right, .. } => {
+                    TExpectKind::Compare { op, left, right } => {
                         total = total
-                            .saturating_add(expression_scratch(left, types))
-                            .saturating_add(expression_scratch(right, types))
+                            .saturating_add(expression_scratch(left, program))
+                            .saturating_add(expression_scratch(right, program))
                             .saturating_add(equality_scratch(
                                 left.ty,
                                 types,
                                 &mut vec![false; types.len()],
                             ));
+                        let storage = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                            && contains_lazy_collection(
+                                left.ty,
+                                types,
+                                &mut vec![false; types.len()],
+                            );
+                        if storage {
+                            if let Some(place) = FunctionEmitter::expr_place(left) {
+                                if FunctionEmitter::expression_may_write_place(
+                                    program, right, &place,
+                                ) {
+                                    total = total
+                                        .saturating_add(stack_storage_size(left.ty, types) as u64);
+                                }
+                            }
+                        }
                         if !matches!(base_type(left.ty, types), Ty::Int | Ty::Long | Ty::Bool) {
                             total = total.saturating_add(print_scratch(
                                 left.ty,
@@ -1950,9 +2041,9 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
         }
         if let Some(tail) = &block.tail {
             let scratch = if matches!(types[tail.ty.0].kind, TTypeKind::Ascii { .. }) {
-                append_expression_scratch(tail, types)
+                append_expression_scratch(tail, program)
             } else {
-                expression_scratch_in_destination(tail, types)
+                expression_scratch_in_destination(tail, program)
             };
             total = total.saturating_add(scratch);
         }
@@ -2017,7 +2108,7 @@ pub fn stack_contracts(program: &TProgram) -> Vec<StackContract> {
     let temporary_requirements = program
         .functions
         .iter()
-        .map(|function| block_scratch(&function.body, &program.types, &program.functions))
+        .map(|function| block_scratch(&function.body, program))
         .collect::<Vec<_>>();
     let bases = local_requirements
         .iter()
@@ -6046,6 +6137,7 @@ struct CallArgumentRegion {
     collection_offset: Option<String>,
     index: String,
     temporary: String,
+    gather_before_call: bool,
     copy_back: bool,
 }
 
@@ -11160,6 +11252,384 @@ impl<'a> FunctionEmitter<'a> {
         }
     }
 
+    fn call_argument_needs_snapshot(
+        &self,
+        arg: &TExpr,
+        param_ty: Ty,
+        mode: ParamMode,
+        later_args: &[TExpr],
+    ) -> bool {
+        if mode != ParamMode::Read || !is_large_type(param_ty, &self.program.types) {
+            return false;
+        }
+        let Some(place) = Self::expr_place(arg) else {
+            return false;
+        };
+        later_args
+            .iter()
+            .any(|later| Self::expression_may_write_place(self.program, later, &place))
+    }
+
+    fn expression_may_write_place(program: &TProgram, expr: &TExpr, place: &TPlace) -> bool {
+        let functions = &program.functions;
+        let overlaps = |candidate: &TExpr| {
+            Self::expr_place(candidate)
+                .is_some_and(|candidate| crate::checker::places_overlap(&candidate, place))
+        };
+        match &expr.kind {
+            TExprKind::Call { target, args, .. } => {
+                if let CallTarget::Function(function_id) = target {
+                    if functions[*function_id]
+                        .params
+                        .iter()
+                        .zip(args)
+                        .any(|(param, arg)| param.mode != ParamMode::Read && overlaps(arg))
+                    {
+                        return true;
+                    }
+                    if crate::checker::function_global_writes_overlap(program, *function_id, place)
+                    {
+                        return true;
+                    }
+                } else {
+                    let written_argument = match target {
+                        CallTarget::FsRead | CallTarget::FsList => args.get(2),
+                        CallTarget::FsListWithExtension => args.get(3),
+                        CallTarget::Sort { .. } | CallTarget::SortBy { .. } => args.first(),
+                        _ => None,
+                    };
+                    if written_argument.is_some_and(overlaps) {
+                        return true;
+                    }
+                }
+                args.iter()
+                    .any(|arg| Self::expression_may_write_place(program, arg, place))
+            }
+            TExprKind::IndirectCall {
+                callee,
+                args,
+                params,
+                ..
+            } => {
+                if params
+                    .iter()
+                    .zip(args)
+                    .any(|(param, arg)| param.mode != ParamMode::Read && overlaps(arg))
+                {
+                    return true;
+                }
+                let targets = program
+                    .function_type_targets
+                    .get(callee.ty.0)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let may_write_global = if targets.is_empty() {
+                    crate::checker::function_type_global_writes_overlap(program, callee.ty, place)
+                } else {
+                    targets.iter().any(|target| {
+                        crate::checker::function_global_writes_overlap(program, *target, place)
+                    })
+                };
+                may_write_global
+                    || Self::expression_may_write_place(program, callee, place)
+                    || args
+                        .iter()
+                        .any(|arg| Self::expression_may_write_place(program, arg, place))
+            }
+            TExprKind::OptionalCall {
+                receiver,
+                function_id,
+                args,
+                ..
+            } => {
+                if functions[*function_id]
+                    .params
+                    .iter()
+                    .skip(1)
+                    .zip(args)
+                    .any(|(param, arg)| param.mode != ParamMode::Read && overlaps(arg))
+                {
+                    return true;
+                }
+                crate::checker::function_global_writes_overlap(program, *function_id, place)
+                    || Self::expression_may_write_place(program, receiver, place)
+                    || args
+                        .iter()
+                        .any(|arg| Self::expression_may_write_place(program, arg, place))
+            }
+            TExprKind::CollectionOp {
+                op, receiver, args, ..
+            } => {
+                if matches!(
+                    op,
+                    CollectionOp::Push
+                        | CollectionOp::RingPush
+                        | CollectionOp::Pop
+                        | CollectionOp::Insert
+                        | CollectionOp::Remove
+                        | CollectionOp::Clear
+                ) && overlaps(receiver)
+                {
+                    return true;
+                }
+                Self::expression_may_write_place(program, receiver, place)
+                    || args
+                        .iter()
+                        .any(|arg| Self::expression_may_write_place(program, arg, place))
+            }
+            TExprKind::PoolOp {
+                op, receiver, args, ..
+            } => {
+                if matches!(op, PoolOp::Add | PoolOp::Remove) && overlaps(receiver) {
+                    return true;
+                }
+                Self::expression_may_write_place(program, receiver, place)
+                    || args
+                        .iter()
+                        .any(|arg| Self::expression_may_write_place(program, arg, place))
+            }
+            TExprKind::MapOp {
+                op, receiver, args, ..
+            } => {
+                if matches!(op, MapOp::Set | MapOp::Remove) && overlaps(receiver) {
+                    return true;
+                }
+                Self::expression_may_write_place(program, receiver, place)
+                    || args
+                        .iter()
+                        .any(|arg| Self::expression_may_write_place(program, arg, place))
+            }
+            TExprKind::SetOp {
+                op, receiver, args, ..
+            } => {
+                if matches!(op, SetOp::Add | SetOp::Remove) && overlaps(receiver) {
+                    return true;
+                }
+                Self::expression_may_write_place(program, receiver, place)
+                    || args
+                        .iter()
+                        .any(|arg| Self::expression_may_write_place(program, arg, place))
+            }
+            TExprKind::AsciiTryAppend { receiver, argument }
+            | TExprKind::TextTryAppend { receiver, argument }
+            | TExprKind::BytesTryAppend { receiver, argument } => {
+                overlaps(receiver)
+                    || Self::expression_may_write_place(program, receiver, place)
+                    || Self::expression_may_write_place(program, argument, place)
+            }
+            TExprKind::BytesPush { receiver, byte, .. } => {
+                overlaps(receiver)
+                    || Self::expression_may_write_place(program, receiver, place)
+                    || Self::expression_may_write_place(program, byte, place)
+            }
+            TExprKind::Field { receiver, .. }
+            | TExprKind::BytesView(receiver)
+            | TExprKind::Take(receiver)
+            | TExprKind::OptionalToLong(receiver)
+            | TExprKind::ToLong(receiver)
+            | TExprKind::Cast {
+                value: receiver, ..
+            }
+            | TExprKind::Unary {
+                value: receiver, ..
+            }
+            | TExprKind::Try {
+                value: receiver, ..
+            }
+            | TExprKind::Method { receiver, .. }
+            | TExprKind::AsciiUpper(receiver)
+            | TExprKind::TextUpper(receiver)
+            | TExprKind::AsciiCast(receiver)
+            | TExprKind::BytesValidateUtf8(receiver) => {
+                Self::expression_may_write_place(program, receiver, place)
+            }
+            TExprKind::Index {
+                receiver,
+                index,
+                grid,
+                ..
+            } => {
+                Self::expression_may_write_place(program, receiver, place)
+                    || Self::expression_may_write_place(program, index, place)
+                    || grid.as_ref().is_some_and(|grid| {
+                        Self::expression_may_write_place(program, &grid.x, place)
+                            || Self::expression_may_write_place(program, &grid.y, place)
+                    })
+            }
+            TExprKind::BytesIndex {
+                receiver, index, ..
+            } => {
+                Self::expression_may_write_place(program, receiver, place)
+                    || Self::expression_may_write_place(program, index, place)
+            }
+            TExprKind::AsciiFormat { value, .. }
+            | TExprKind::Convert { value, .. }
+            | TExprKind::Fit { value, .. } => {
+                Self::expression_may_write_place(program, value, place)
+            }
+            TExprKind::AsciiFit { value, .. } | TExprKind::TextConvert { value, .. } => {
+                Self::expression_may_write_place(program, value, place)
+            }
+            TExprKind::AsciiPad { value, width, .. } => {
+                Self::expression_may_write_place(program, value, place)
+                    || Self::expression_may_write_place(program, width, place)
+            }
+            TExprKind::AsciiZeroPad { value, width } => {
+                Self::expression_may_write_place(program, value, place)
+                    || Self::expression_may_write_place(program, width, place)
+            }
+            TExprKind::ParseInteger { receiver, .. } => {
+                Self::expression_may_write_place(program, receiver, place)
+            }
+            TExprKind::TextSlice {
+                receiver,
+                start,
+                end,
+            }
+            | TExprKind::AsciiSlice {
+                receiver,
+                start,
+                end,
+            }
+            | TExprKind::BytesSlice {
+                receiver,
+                start,
+                end,
+            } => {
+                Self::expression_may_write_place(program, receiver, place)
+                    || Self::expression_may_write_place(program, start, place)
+                    || Self::expression_may_write_place(program, end, place)
+            }
+            TExprKind::Construct { args, .. } | TExprKind::CollectionLiteral(args) => args
+                .iter()
+                .any(|arg| Self::expression_may_write_place(program, arg, place)),
+            TExprKind::Fill { value, .. } => {
+                Self::expression_may_write_place(program, value, place)
+            }
+            TExprKind::StructConstruct { fields } => fields
+                .iter()
+                .any(|(_, value)| Self::expression_may_write_place(program, value, place)),
+            TExprKind::Coalesce { option, fallback } => {
+                Self::expression_may_write_place(program, option, place)
+                    || Self::expression_may_write_place(program, fallback, place)
+            }
+            TExprKind::Match { scrutinee, arms } => {
+                Self::expression_may_write_place(program, scrutinee, place)
+                    || arms
+                        .iter()
+                        .any(|arm| Self::block_may_write_place(program, &arm.body, place))
+            }
+            TExprKind::Return(value) => value
+                .as_deref()
+                .is_some_and(|value| Self::expression_may_write_place(program, value, place)),
+            TExprKind::Binary { left, right, .. } => {
+                Self::expression_may_write_place(program, left, place)
+                    || Self::expression_may_write_place(program, right, place)
+            }
+            TExprKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                Self::expression_may_write_place(program, condition, place)
+                    || Self::block_may_write_place(program, then_block, place)
+                    || else_block
+                        .as_ref()
+                        .is_some_and(|block| Self::block_may_write_place(program, block, place))
+            }
+            TExprKind::Unit
+            | TExprKind::Integer(_)
+            | TExprKind::Bool(_)
+            | TExprKind::ByteString(_)
+            | TExprKind::Local(_)
+            | TExprKind::Global(_)
+            | TExprKind::Constant(_)
+            | TExprKind::FunctionValue(_)
+            | TExprKind::AsciiEmpty
+            | TExprKind::TextEmpty
+            | TExprKind::BytesEmpty
+            | TExprKind::EmptyArray
+            | TExprKind::EmptyGrid
+            | TExprKind::EmptyList
+            | TExprKind::EmptyPool
+            | TExprKind::EmptyMap
+            | TExprKind::EmptySet
+            | TExprKind::EmptyQueue
+            | TExprKind::EmptyRing
+            | TExprKind::LoopExit(_) => false,
+        }
+    }
+
+    fn block_may_write_place(program: &TProgram, block: &TBlock, place: &TPlace) -> bool {
+        block
+            .statements
+            .iter()
+            .any(|statement| match &statement.kind {
+                TStmtKind::Assign {
+                    place: assigned,
+                    value,
+                    ..
+                } => {
+                    crate::checker::places_overlap(assigned, place)
+                        || Self::expression_may_write_place(program, value, place)
+                        || assigned.path.iter().any(|projection| match projection {
+                            TProjection::Index { index, .. } => {
+                                Self::expression_may_write_place(program, index, place)
+                            }
+                            TProjection::Field(_) => false,
+                        })
+                }
+                TStmtKind::Let { value, .. }
+                | TStmtKind::Expr(value)
+                | TStmtKind::Discard(value) => {
+                    Self::expression_may_write_place(program, value, place)
+                }
+                TStmtKind::Return(value) => value
+                    .as_ref()
+                    .is_some_and(|value| Self::expression_may_write_place(program, value, place)),
+                TStmtKind::If {
+                    condition,
+                    then_block,
+                    else_block,
+                } => {
+                    Self::expression_may_write_place(program, condition, place)
+                        || Self::block_may_write_place(program, then_block, place)
+                        || else_block
+                            .as_ref()
+                            .is_some_and(|block| Self::block_may_write_place(program, block, place))
+                }
+                TStmtKind::For {
+                    start, end, body, ..
+                } => {
+                    Self::expression_may_write_place(program, start, place)
+                        || Self::expression_may_write_place(program, end, place)
+                        || Self::block_may_write_place(program, body, place)
+                }
+                TStmtKind::ForEach {
+                    collection, body, ..
+                } => {
+                    Self::expression_may_write_place(program, collection, place)
+                        || Self::block_may_write_place(program, body, place)
+                }
+                TStmtKind::Expect { kind, .. } => match kind {
+                    TExpectKind::Bool(value) => {
+                        Self::expression_may_write_place(program, value, place)
+                    }
+                    TExpectKind::Compare { left, right, .. } => {
+                        Self::expression_may_write_place(program, left, place)
+                            || Self::expression_may_write_place(program, right, place)
+                    }
+                    TExpectKind::StackPeak { .. } => false,
+                },
+                TStmtKind::Block(block) => Self::block_may_write_place(program, block, place),
+                TStmtKind::Break | TStmtKind::Continue => false,
+            })
+            || block
+                .tail
+                .as_deref()
+                .is_some_and(|tail| Self::expression_may_write_place(program, tail, place))
+    }
+
     fn emit_place_pointer_expr(&mut self, expr: &TExpr) -> String {
         let place = Self::expr_place(expr).expect("checker validated writable place");
         self.emit_place_pointer(&place)
@@ -11478,9 +11948,19 @@ impl<'a> FunctionEmitter<'a> {
         arg: &TExpr,
         param_ty: Ty,
         mode: ParamMode,
+        snapshot_read: bool,
         regions: &mut Vec<CallArgumentRegion>,
     ) -> Option<String> {
         if self.offset_stack && is_large_type(param_ty, &self.program.types) {
+            if mode == ParamMode::Read && snapshot_read {
+                let pointer = self.emit_runtime_region_alloc(param_ty, arg.span, None);
+                let offset = self.emit_pointer_offset(&pointer);
+                self.emit_expr_to(&pointer, arg);
+                if self.terminated {
+                    return None;
+                }
+                return Some(format!("i64 {offset}"));
+            }
             if let Some(place) = Self::expr_place(arg) {
                 if place.path.is_empty()
                     && global_from_root(place.root).is_none()
@@ -11537,18 +12017,22 @@ impl<'a> FunctionEmitter<'a> {
                 } else {
                     collection_ptr
                 };
-                self.emit_gather_collection_element(
-                    collection_ty,
-                    &collection_ptr,
-                    &index,
-                    &temporary,
-                );
+                let gather_before_call = mode != ParamMode::Read;
+                if !gather_before_call {
+                    self.emit_gather_collection_element(
+                        collection_ty,
+                        &collection_ptr,
+                        &index,
+                        &temporary,
+                    );
+                }
                 regions.push(CallArgumentRegion {
                     collection_ty,
                     collection_ptr,
                     collection_offset,
                     index,
                     temporary: temporary.clone(),
+                    gather_before_call,
                     copy_back: mode != ParamMode::Read,
                 });
                 return Some(format!("ptr {temporary}"));
@@ -11556,6 +12040,18 @@ impl<'a> FunctionEmitter<'a> {
             return Some(format!("ptr {}", self.emit_place_pointer(&place)));
         }
         if is_large_type(param_ty, &self.program.types) {
+            if snapshot_read {
+                let temporary = if self.offset_stack {
+                    self.emit_runtime_region_alloc(param_ty, arg.span, None)
+                } else {
+                    self.entry_alloca(param_ty)
+                };
+                self.emit_expr_to(&temporary, arg);
+                if self.terminated {
+                    return None;
+                }
+                return Some(format!("ptr {temporary}"));
+            }
             let pointer = if let Some(place) = Self::expr_place(arg) {
                 if let Some((collection_ty, collection_ptr, index)) =
                     self.emit_struct_element_address(&place)
@@ -11581,6 +12077,7 @@ impl<'a> FunctionEmitter<'a> {
                         collection_offset,
                         index,
                         temporary: temporary.clone(),
+                        gather_before_call: false,
                         copy_back: false,
                     });
                     temporary
@@ -11605,6 +12102,29 @@ impl<'a> FunctionEmitter<'a> {
         }
         let value = self.emit_expr(arg);
         (!self.terminated).then(|| format!("{} {value}", self.lltype(param_ty)))
+    }
+
+    fn emit_call_argument_region_gathers(&mut self, regions: &[CallArgumentRegion]) {
+        if self.offset_stack
+            && regions
+                .iter()
+                .any(|region| region.gather_before_call && region.collection_offset.is_some())
+        {
+            self.emit_refresh_base();
+        }
+        for region in regions.iter().filter(|region| region.gather_before_call) {
+            let collection_ptr = if let Some(offset) = &region.collection_offset {
+                self.emit_offset_pointer(offset)
+            } else {
+                region.collection_ptr.clone()
+            };
+            self.emit_gather_collection_element(
+                region.collection_ty,
+                &collection_ptr,
+                &region.index,
+                &region.temporary,
+            );
+        }
     }
 
     fn emit_call_argument_region_copybacks(
@@ -12423,7 +12943,7 @@ impl<'a> FunctionEmitter<'a> {
             format!("ptr {offset_slot}"),
         ];
         let mut regions = Vec::new();
-        for (arg, param) in args.iter().zip(&function.params) {
+        for (index, (arg, param)) in args.iter().zip(&function.params).enumerate() {
             if param.ty == Ty::Unit {
                 self.emit_expr(arg);
                 if self.terminated {
@@ -12431,7 +12951,10 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 continue;
             }
-            let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
+            let snapshot_read =
+                self.call_argument_needs_snapshot(arg, param.ty, param.mode, &args[index + 1..]);
+            let Some(value) =
+                self.emit_call_argument(arg, param.ty, param.mode, snapshot_read, &mut regions)
             else {
                 return;
             };
@@ -12444,6 +12967,7 @@ impl<'a> FunctionEmitter<'a> {
         if function.recursive {
             self.emit_recursion_check(&[function_id], call_span);
         }
+        self.emit_call_argument_region_gathers(&regions);
         self.publish_stack_top_before_call(callee_may_grow);
         self.instruction(format!(
             "call void @nl_fn_{function_id}_append({})",
@@ -12477,7 +13001,7 @@ impl<'a> FunctionEmitter<'a> {
             format!("ptr {offset}"),
         ];
         let mut regions = Vec::new();
-        for (arg, param) in args.iter().zip(&function.params) {
+        for (index, (arg, param)) in args.iter().zip(&function.params).enumerate() {
             if param.ty == Ty::Unit {
                 self.emit_expr(arg);
                 if self.terminated {
@@ -12485,7 +13009,10 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 continue;
             }
-            let value = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)?;
+            let snapshot_read =
+                self.call_argument_needs_snapshot(arg, param.ty, param.mode, &args[index + 1..]);
+            let value =
+                self.emit_call_argument(arg, param.ty, param.mode, snapshot_read, &mut regions)?;
             call_args.push(value);
         }
         call_args.insert(
@@ -12495,6 +13022,7 @@ impl<'a> FunctionEmitter<'a> {
         if function.recursive {
             self.emit_recursion_check(&[function_id], call_span);
         }
+        self.emit_call_argument_region_gathers(&regions);
         self.publish_stack_top_before_call(callee_may_grow);
         self.instruction(format!(
             "call void @nl_fn_{function_id}_append({})",
@@ -12539,7 +13067,7 @@ impl<'a> FunctionEmitter<'a> {
         let saved_top = self.stack_top.clone();
         let mut lowered_args = Vec::with_capacity(args.len());
         let mut regions = Vec::new();
-        for (arg, param) in args.iter().zip(params) {
+        for (index, (arg, param)) in args.iter().zip(params).enumerate() {
             if param.ty == Ty::Unit {
                 self.emit_expr(arg);
                 if self.terminated {
@@ -12547,7 +13075,10 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 continue;
             }
-            let value = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)?;
+            let snapshot_read =
+                self.call_argument_needs_snapshot(arg, param.ty, param.mode, &args[index + 1..]);
+            let value =
+                self.emit_call_argument(arg, param.ty, param.mode, snapshot_read, &mut regions)?;
             lowered_args.push(value);
         }
         let call_top = self.stack_top.clone();
@@ -12557,6 +13088,7 @@ impl<'a> FunctionEmitter<'a> {
             .copied()
             .collect::<Vec<_>>();
         self.emit_recursion_check(&recursive, call_span);
+        self.emit_call_argument_region_gathers(&regions);
         let merge = self.new_label("ascii.append.result.indirect.merge");
         for (index, target) in targets.iter().enumerate() {
             let append_label = self.new_label("ascii.append.result.indirect.target");
@@ -12633,7 +13165,7 @@ impl<'a> FunctionEmitter<'a> {
         let saved_top = self.stack_top.clone();
         let mut lowered_args = Vec::with_capacity(args.len());
         let mut regions = Vec::new();
-        for (arg, param) in args.iter().zip(params) {
+        for (index, (arg, param)) in args.iter().zip(params).enumerate() {
             if param.ty == Ty::Unit {
                 self.emit_expr(arg);
                 if self.terminated {
@@ -12641,7 +13173,10 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 continue;
             }
-            let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
+            let snapshot_read =
+                self.call_argument_needs_snapshot(arg, param.ty, param.mode, &args[index + 1..]);
+            let Some(value) =
+                self.emit_call_argument(arg, param.ty, param.mode, snapshot_read, &mut regions)
             else {
                 return true;
             };
@@ -12654,6 +13189,7 @@ impl<'a> FunctionEmitter<'a> {
             .copied()
             .collect::<Vec<_>>();
         self.emit_recursion_check(&recursive, call_span);
+        self.emit_call_argument_region_gathers(&regions);
         let merge = self.new_label("ascii.append.indirect.merge");
         for (index, target) in targets.iter().enumerate() {
             let append_label = self.new_label("ascii.append.indirect.target");
@@ -13968,7 +14504,10 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 continue;
             }
-            let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
+            let snapshot_read =
+                self.call_argument_needs_snapshot(arg, param.ty, param.mode, &args[index + 1..]);
+            let Some(value) =
+                self.emit_call_argument(arg, param.ty, param.mode, snapshot_read, &mut regions)
             else {
                 return String::new();
             };
@@ -13982,6 +14521,7 @@ impl<'a> FunctionEmitter<'a> {
         if self.program.functions[function_id].recursive {
             self.emit_recursion_check(&[function_id], call_span);
         }
+        self.emit_call_argument_region_gathers(&regions);
         if signature.result_destination && result_destination.is_some() && !pointer_args.is_empty()
         {
             let destination = result_storage.as_deref().unwrap();
@@ -14142,7 +14682,7 @@ impl<'a> FunctionEmitter<'a> {
         };
         let mut regions = Vec::new();
         let mut pointer_args = Vec::new();
-        for (arg, param) in args.iter().zip(params) {
+        for (index, (arg, param)) in args.iter().zip(params).enumerate() {
             if param.ty == Ty::Unit {
                 self.emit_expr(arg);
                 if self.terminated {
@@ -14150,7 +14690,10 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 continue;
             }
-            let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
+            let snapshot_read =
+                self.call_argument_needs_snapshot(arg, param.ty, param.mode, &args[index + 1..]);
+            let Some(value) =
+                self.emit_call_argument(arg, param.ty, param.mode, snapshot_read, &mut regions)
             else {
                 return String::new();
             };
@@ -14176,6 +14719,7 @@ impl<'a> FunctionEmitter<'a> {
             .map(|edge| edge.target)
             .collect::<Vec<_>>();
         self.emit_recursion_check(&targets, call_span);
+        self.emit_call_argument_region_gathers(&regions);
         if large_result && result_destination.is_some() && !pointer_args.is_empty() {
             let destination = result_storage.as_deref().unwrap();
             let destination_offset = result_offset_storage.clone();
@@ -16288,13 +16832,26 @@ impl<'a> FunctionEmitter<'a> {
                         &self.program.types,
                         &mut vec![false; self.program.types.len()],
                     );
-                let lhs = if storage {
+                let mut lhs = if storage {
                     self.emit_expr_storage(left)
                 } else {
                     self.emit_expr(left)
                 };
                 if self.terminated {
                     return;
+                }
+                if storage {
+                    if let Some(place) = Self::expr_place(left) {
+                        if Self::expression_may_write_place(self.program, right, &place) {
+                            let snapshot = if self.offset_stack {
+                                self.emit_runtime_region_alloc(left.ty, left.span, None)
+                            } else {
+                                self.entry_alloca(left.ty)
+                            };
+                            self.emit_copy_value_storage(&snapshot, &lhs, left.ty);
+                            lhs = snapshot;
+                        }
+                    }
                 }
                 let rhs = if storage {
                     self.emit_expr_storage(right)
@@ -17938,8 +18495,11 @@ impl<'a> FunctionEmitter<'a> {
             lowered_args.push(format!("{} {receiver_arg}", signature.params[0]));
         }
         let mut regions = Vec::new();
-        for (arg, param) in args.iter().zip(target.params.iter().skip(1)) {
-            let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
+        for (index, (arg, param)) in args.iter().zip(target.params.iter().skip(1)).enumerate() {
+            let snapshot_read =
+                self.call_argument_needs_snapshot(arg, param.ty, param.mode, &args[index + 1..]);
+            let Some(value) =
+                self.emit_call_argument(arg, param.ty, param.mode, snapshot_read, &mut regions)
             else {
                 self.start_block(&merge);
                 return none;
@@ -17954,6 +18514,7 @@ impl<'a> FunctionEmitter<'a> {
         if target.recursive {
             self.emit_recursion_check(&[function_id], expr.span);
         }
+        self.emit_call_argument_region_gathers(&regions);
         let function_result = if signature.result == "void" {
             self.publish_stack_top_before_function_call(function_id);
             self.instruction(format!("call void @nl_fn_{function_id}({call_args})"));
@@ -18079,8 +18640,11 @@ impl<'a> FunctionEmitter<'a> {
         }
 
         let mut regions = Vec::new();
-        for (arg, param) in args.iter().zip(target.params.iter().skip(1)) {
-            let Some(value) = self.emit_call_argument(arg, param.ty, param.mode, &mut regions)
+        for (index, (arg, param)) in args.iter().zip(target.params.iter().skip(1)).enumerate() {
+            let snapshot_read =
+                self.call_argument_needs_snapshot(arg, param.ty, param.mode, &args[index + 1..]);
+            let Some(value) =
+                self.emit_call_argument(arg, param.ty, param.mode, snapshot_read, &mut regions)
             else {
                 return;
             };
@@ -18098,6 +18662,7 @@ impl<'a> FunctionEmitter<'a> {
         if self.program.functions[function_id].recursive {
             self.emit_recursion_check(&[function_id], expr.span);
         }
+        self.emit_call_argument_region_gathers(&regions);
         if signature.result_destination {
             self.publish_stack_top_before_function_call(function_id);
             self.instruction(format!("call void @nl_fn_{function_id}({call_args})"));
@@ -20599,9 +21164,20 @@ impl<'a> FunctionEmitter<'a> {
                     && self.ascii_max(left.ty).is_none()
                     && self.ascii_max(right.ty).is_none()
                 {
-                    let lhs = self.emit_expr_storage(left);
+                    let mut lhs = self.emit_expr_storage(left);
                     if self.terminated {
                         return String::new();
+                    }
+                    if let Some(place) = Self::expr_place(left) {
+                        if Self::expression_may_write_place(self.program, right, &place) {
+                            let snapshot = if self.offset_stack {
+                                self.emit_runtime_region_alloc(left.ty, left.span, None)
+                            } else {
+                                self.entry_alloca(left.ty)
+                            };
+                            self.emit_copy_value_storage(&snapshot, &lhs, left.ty);
+                            lhs = snapshot;
+                        }
                     }
                     let rhs = self.emit_expr_storage(right);
                     if self.terminated {

@@ -159,6 +159,50 @@ fn gathered_large_struct_arguments_count_in_the_caller_contract() {
 }
 
 #[test]
+fn hidden_global_writes_drive_read_snapshots_and_scratch_contracts() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler crate has a workspace root");
+
+    let writing = compile_package(&root.join("tests/e2/e2i_global_hidden_write_snapshot"))
+        .expect("hidden global write fixture compiles");
+    let main_contract = writing
+        .contracts
+        .iter()
+        .find(|contract| contract.function == "main")
+        .expect("writing caller has a stack contract");
+    assert!(
+        main_contract.byte_requirement >= 4_404,
+        "main must reserve the large read snapshot, got {} bytes",
+        main_contract.byte_requirement
+    );
+
+    let read_only = compile_package(&root.join("tests/e2/e2i_global_read_only_no_snapshot"))
+        .expect("read-only global fixture compiles");
+    let main_contract = read_only
+        .contracts
+        .iter()
+        .find(|contract| contract.function == "main")
+        .expect("read-only caller has a stack contract");
+    assert_eq!(
+        main_contract.byte_requirement, 0,
+        "a read-only later call must not reserve a snapshot"
+    );
+    let main_ir = read_only
+        .llvm_ir
+        .split("; function main\n")
+        .nth(1)
+        .expect("main is emitted")
+        .split("}\n")
+        .next()
+        .expect("main has a body");
+    assert!(
+        !main_ir.contains("@nl_stack_alloc"),
+        "read-only later call unexpectedly allocates snapshot scratch:\n{main_ir}"
+    );
+}
+
+#[test]
 fn worked_reservation_is_small_and_reports_loop_growth() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -221,7 +265,7 @@ fn selfhost_stack_bound_has_an_exact_attributed_path() {
     // E2's layout, defaults, helper and aggregate-frame tables live in main
     // alongside the parser's source, token and node buffers. Pin their data
     // stack total and keep it below the fixed six-gigabyte compiler bound.
-    assert_eq!(worst_case, 5_115_732_009, "{stdout}");
+    assert_eq!(worst_case, 5_115_732_521, "{stdout}");
     assert!(worst_case < 6_000_000_000, "{stdout}");
     assert_eq!(
         parse_bytes("  data stack reservation: "),
