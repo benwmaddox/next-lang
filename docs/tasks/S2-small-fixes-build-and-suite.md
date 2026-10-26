@@ -1,0 +1,8 @@
+# Small fixes: one LLVM build when frame sizes aren't needed; faster self-hosted build comparison
+
+From PLAN.md's small fixes ("Build time on many functions" and "Faster self-hosted build comparison"), measured 2026-10-26.
+
+1. **One LLVM build when native frame sizes aren't needed.** Today the driver builds the optimised module, reads frame sizes (`.stack_sizes`), then rebuilds (T17/T19's frame-size step), apparently for every program. Run that step only when something needs native frame sizes: a `recursive` function (T19's checks), a `stack_peak` expectation, or `inspect stacks`/`inspect contracts` asking for native bounds. Otherwise build once. Where it does run, cache the measured frame sizes keyed by a hash of the IR and the clang flags, so an unchanged module isn't measured twice. Keep T17/T19 behaviour identical where the step runs (their tests unchanged). Measure before and after (best of 5): a hello-world `nlc run`, a 10,000-function package (scripts/gen-selfhost-bench.py) `nlc build`, and a recursive program; the same for `nlc link-ir` if it shares the step.
+2. **Faster self-hosted build comparison.** compiler/tests/selfhost.rs's build comparison takes about 12 minutes per suite (482 packages at two optimisation levels, three legs). Default run: one optimisation level (-O1) and the core-library leg only; under `NLC_LONG_TESTS=1`: both levels and the C-runtime leg too (same convention as compiler/tests/input_policy.rs). Build each package's reference result once and reuse it across legs. Report suite times before and after for both modes.
+
+Both full suites (NLC_FRONTEND=rust and selfhost) must pass, in default and long modes. Report: docs/tasks/S2-small-fixes-report.md.
