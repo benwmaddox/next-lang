@@ -14,7 +14,7 @@ Non-goals for the first version:
 
 - Full dependent types or proofs of arbitrary properties (refinements stay decidable, see Types).
 - Pointer graphs with arbitrary aliasing; long-lived links are typed ids.
-- 32-bit and WebAssembly targets: v1 is 64-bit only (Windows, Linux, macOS, 64-bit Android), because the stack design relies on large address reservations. WebAssembly comes later with its own stack design (decided 2026-10-24).
+- 32-bit and WebAssembly targets: v1 is 64-bit only (Windows, Linux, macOS, 64-bit Android), because the stack design relies on large address reservations. WebAssembly comes later with its own stack design (decided 2026-10-24), which also needs stack switching for suspended jobs (Open questions under Threads).
 - Replacing Burin or the other languages: Burin continues as its own web language, and this is a separate project in its own folder that borrows their ideas and code.
 - A package ecosystem or governance model before the core proves itself.
 
@@ -358,11 +358,33 @@ database Chat: sqlite {
 
 A fixed set of threads, one per core. Each job owns one data stack that only it touches while it runs. So the common operations (push, free a scope, read state) take no locks and no atomic operations (the special CPU instructions threads use to update shared memory safely, each costing far more than an ordinary store), and nothing mutable is shared.
 
+### How a program divides into jobs
+
+A **job** is the unit that owns stacks: its own data stack and native stack, isolated from every other job's. A new job starts only where work may run at the same time as its caller or outlive it. Everything else is an ordinary call on the caller's stacks, whose scratch is freed when it returns.
+
+| Piece | What it is | Its stacks | What it receives |
+| --- | --- | --- | --- |
+| `main` | the program's first job: creates program state, shared state and capabilities, then runs or hands off | its own, for the whole run | `env` and configuration |
+| A call | ordinary code | the caller's | parameters: read, `write`, `grow`, `take` |
+| A request job (`page`, `action`, `api`) | one per request | its own, from the worker's pool, reset afterwards | the request's values, capabilities from `serve`, `shared` handles |
+| A spawned job | concurrent or background work | its own | see "Spawning" below |
+| A service job | a long-lived job that loops over a queue and owns its state as locals | its own, for its lifetime | copies of flat values, capabilities, `shared` handles, queue ends |
+| A parallel loop's chunk | one piece of a `parallel for` | its own scratch, freed at the join | read-only views of the caller's values; it writes only its slice of the result |
+| The writer | one per shared value | its own | change batches and `transaction` blocks |
+
+- **Program state** is a local in `main`, passed down as `write` (one state struct, so a deep call chain passes one parameter). It can't be handed to another job: two jobs would then share mutable memory, and the compiler refuses it. Live data other jobs need is a `shared` value or the database.
+- **A game** runs inside main's job: the host's loop calls `tick` and `draw` (The game host), so frames cost no job start or copy.
+- **A server's** `main` opens the database, creates its `shared` values and calls `serve`; each request is a job with its own stacks, so its memory is bounded per request and freed by resetting its stack.
+- **A service job** is how a component keeps mutable state of its own that isn't shared and isn't in `main` (a cache, a log writer, a game's audio mixer): other jobs reach it only by queue. The writer for shared state is the built-in case of this pattern.
+- **Choosing a form:** CPU work over data is a `parallel for` (structured, chunks read without copying, results in a fixed order); independent concurrent tasks are spawned jobs; I/O concurrency is straight-line code, since a waiting job suspends and its worker runs others; data many jobs read while it changes is a `shared` value; large read-only data built once is a frozen pool.
+- **Entry points:** a package's manifest lists the functions that start jobs (`main`, routes, spawned and service functions), each with its own stack cap, `strict_stack` and time limit. With no globals, a job's inputs are exactly its parameters, which is what the compiler's per-entry-point stack bounds and `inspect stacks` are computed from.
+- **Spawning** (open question, below): the direction is structured concurrency. A spawned job lives inside a scope that waits for all of them, cancels the others when one fails and passes its deadline down; because the parent waits, children may take read-only views of the parent's values without copying, as parallel loops do. Jobs that outlive their starter (services) are started with an explicit form and take only copies and queue ends.
+
 ### Thread kinds and jobs
 
-- **Workers,** one per core, pinned. Each runs jobs: requests, tasks or game ticks.
+- **Workers,** one per core, pinned. Each runs jobs: `main`, requests, spawned and service jobs, and parallel loop chunks.
 - **Jobs can wait** (decided 2026-10-24). A job that waits for I/O (a call to another service, a slow file, a timer) is suspended and the worker runs other jobs meanwhile; when the I/O completes, the job resumes on the same worker where it stopped. Code reads straight-line, with no `async` in source (Go's goroutines work this way). A suspended job keeps its own native stack and its own one data stack; that's what makes resuming possible.
-  - Only some calls can suspend, and the compiler knows which: every function has a *may suspend* property, inferred across calls like an effect. The calls that suspend directly are I/O (`net`, `fs`), `clock` sleeps, `spawn` joins, a parallel loop's join, and sending a change to a shared set's writer (it waits for the reply), and database queries and transactions. Before a call that may suspend, a function writes its cached stack tops back to memory, as it does before any call that can reach those stacks. `spawn f(...)` starts a job and returns a `Job<T>` for f's result type; `join` waits for it and gives f's own return value (a `Result` if f returns one), and a job that fails (a crash, not an error value) fails its joiner too. How many spawned jobs run at once is under admission.
+  - Only some calls can suspend, and the compiler knows which: every function has a *may suspend* property, inferred across calls like an effect. The calls that suspend directly are I/O (`net`, `fs`), `clock` sleeps, `spawn` joins, a parallel loop's join, and sending a change to a shared set's writer (it waits for the reply), and database queries and transactions. Before a call that may suspend, a function writes its cached stack tops back to memory, as it does before any call that can reach those stacks. `spawn f(...)` starts a job and returns a `Job<T>` for f's result type; `join` waits for it and gives f's own return value (a `Result` if f returns one), and a job that fails (a crash, not an error value) fails its joiner too. How many spawned jobs run at once is under admission. Scoping and the form for long-lived jobs are an open question (How a program divides into jobs).
   - Each worker keeps a pool of free data stacks (one per job), so starting a job takes one from the pool, not a system call (The job's data stack: stacks are pooled per worker and keep their memory while it's used, trimmed by recent peaks).
   - A job doesn't move between workers in v1. That keeps every stack single-threaded, with no locks.
   - **A snapshot pin never spans a wait,** with one exception below. Before a call that can suspend, the job's views of the snapshot must have ended (the compiler refuses a view live across such a call) and the runtime releases its pin. After the wait the job pins the then-current snapshot, so what follows is a new read phase that may see newer data. A waiting job therefore never holds old versions of shared state alive, and can't stall the writer.
@@ -547,6 +569,11 @@ Still off the table: many threads writing into one shared structure (a global in
 - Parallel loops inside a game tick, keeping ticks deterministic and within their time budget.
 - The block size for snapshots of shared state.
 - Whether jobs should ever move between workers (better balance, but stacks would then need to be safe to hand over).
+- **Spawning and waiting** (open, 2026-10-26). The design keeps stackful jobs with implicit suspension and no `async` colouring; still open:
+  - *Scoped spawn:* whether `spawn` is allowed only inside a `scope { }` that joins its children, cancels siblings on failure and passes deadlines down (the direction above), and the exact form for jobs that outlive their starter (`start service(rx)` or similar).
+  - *Marking suspension:* whether calls that may suspend carry a keyword at the call site (`wait fetch(x)`: no futures and no two kinds of function, but a marker on most lines of server code), or only an editor marker, with the compiler errors that depend on suspension (views across a wait, transactions, ticks) naming the call. A keyword can be added later without breaking anything, since the compiler already knows every such call.
+  - *Wide fan-out:* each spawned job costs at least a page of data stack plus its native stack. Measure thousands of small concurrent I/O tasks first; if that is too costly, add a batch form over leaf I/O (`all(urls, fetch)`) issued from one job, not state machines.
+  - *Against `async`/`await`:* stackless futures have compile-time sizes (a good fit for bounded memory), make suspension visible and need no stack switching on WebAssembly; they cost function colouring, two kinds of function values and cancellation at every `await`. WebAssembly support for implicit suspension needs stack switching (JavaScript promise integration now, the stack-switching proposal later), recorded as that target's cost.
 
 *(Diagram in the shared Claude Doc: threads · workers with their own stacks, one writer, snapshots.)*
 
