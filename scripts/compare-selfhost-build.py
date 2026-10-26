@@ -180,8 +180,8 @@ def main() -> int:
                         )
                         if wrote_ir:
                             raise Mismatch("selfhosted compiler wrote IR after a rejection", reference_result, self_result)
-                        if not same_result(self_result, reference_result):
-                            raise Mismatch("diagnostic bytes or status differ from Rust nlc", reference_result, self_result)
+                        if not same_rejection(self_result, reference_result):
+                            raise Mismatch("selfhost did not reject with an error like Rust nlc", reference_result, self_result)
                         counts[level]["diagnose"] += 1
                     else:
                         self_result, wrote_ir = run_selfhost(
@@ -247,8 +247,8 @@ def main() -> int:
                         )
                         if wrote_ir:
                             raise Mismatch("selfhost wrote IR for a seeded diagnostic", reference_result, self_result)
-                        if not same_result(reference_result, self_result):
-                            raise Mismatch("seeded diagnostic differs from Rust nlc", reference_result, self_result)
+                        if not same_rejection(self_result, reference_result):
+                            raise Mismatch("seeded diagnostic: selfhost did not reject with an error", reference_result, self_result)
                         generated_counts[level]["diagnose"] += 1
                 except (Mismatch, subprocess.TimeoutExpired, OSError) as error:
                     generated_counts[level]["mismatches"] += 1
@@ -569,6 +569,19 @@ def normalize_result(result: Result, root: Path, package: str) -> tuple[int, byt
 
 def same_result(left: Result, right: Result) -> bool:
     return (left.status, left.stdout, left.stderr) == (right.status, right.stdout, right.stderr)
+
+
+def same_rejection(selfhost: Result, reference: Result) -> bool:
+    """A rejected package passes when the self-hosted compiler also rejects it
+    with the same status and real error text. Which error comes first and its
+    exact wording need not match stage 0 (Ben, 2026-10-26); an "unsupported"
+    rejection doesn't count, since that means the construct isn't built yet."""
+    return (
+        selfhost.status == reference.status
+        and selfhost.stdout == b""
+        and b"error" in selfhost.stderr
+        and b"not supported by the self-hosted compiler yet" not in selfhost.stderr
+    )
 
 
 def expected_result(root: Path, package: str) -> tuple[int, bytes, bytes]:

@@ -109,12 +109,12 @@ E2 keeps E1's rule that an unsupported construct beats a checker error, with two
 1. **Front end:** input policy, lexing and parsing of every file (status 2).
 2. **Manifest** (status 3).
 3. **Syntactic eligibility:** one deterministic pass over every node of every file, as in E1. It covers node kinds, operators, written type names and the size of every declared and written type. A package rejected here is unsupported, whatever checker errors it also has.
-4. **Checker,** in Rust's order (see "Checker order"), with **typed unsupported events** at fixed points:
+4. **Checker** (see "Checker order"), with **typed unsupported events** at fixed points:
    - the checker interns an `Option` or `Result` instance whose size exceeds 4096 bytes (see "Size eligibility");
    - the checker resolves a name or constructor to a case of `FileKind`, `IoError` or `Full`;
    - the checker finishes a test body whose tail has a `Result` type.
 
-   Each event stops the checker with the unsupported diagnostic, anchored at the node that caused it. The event and Rust's checker errors are ordered by Rust's traversal. A checker error that Rust's order reaches first wins over a later event, and an event reached first wins over every later checker error.
+   Each event stops the checker with the unsupported diagnostic, anchored at the node that caused it. Whether an event or a checker error comes first is the self-hosted checker's own order; a package that has both is classified by what the self-hosted compiler reports, and stays deterministic.
 5. **Native-path check,** after a successful check and before emission (see "Native frames").
 6. **Emission** and the single write.
 
@@ -268,7 +268,7 @@ The header and labels flush the buffered output and write directly. The values g
 **Struct literals.**
 
 - The given fields are evaluated in source order, then the omitted defaults in declaration order, each once. An overridden default is never evaluated.
-- The errors are Rust's, in Rust's order: unknown struct, not a struct, unknown field (with did-you-mean), duplicate field, then missing required field anchored at the whole literal.
+- The errors are the same rules as Rust's (any order and wording): unknown struct, not a struct, unknown field (with did-you-mean), duplicate field, then missing required field anchored at the whole literal.
 
 **`match`.**
 
@@ -319,32 +319,7 @@ Fixtures, run in both compilers: a default calling a function declared later in 
 
 ## Checker order
 
-The first error must equal Rust's, as in E1. Rust's `run` adds these phases before E1's:
-
-1. **Type names**, for every file: enums, then structs (`register_type_names`). Errors: a duplicate type, or one that shadows a built-in.
-2. **Enum payloads** across all files, then **struct fields** across all files (`fill_enum_cases`, `fill_struct_fields`). Errors: duplicate cases and fields (with "first on line N"), unknown payload and field types, and `()` fields.
-3. **Infinite size** (`check_recursive_value_types`), anchored at the declaration.
-4. Function signatures and tests file by file, then the entry check, as in E1.
-5. **Struct field defaults** (see "Struct field defaults").
-6. Then E1's order: function bodies, test bodies and the whole-program phase.
-
-Rust's `check_all_type_sizes` runs between 3 and 4. It reports nothing reachable in the E2 subset (its errors involve collections, pools and capabilities). The implementer confirms that and pins it with a comment, not a test.
-
-Inside bodies, the order rules come from Rust's traversal:
-
-- **Constructors:** expected-type resolution first, then the single matching enum, then the ambiguity error (`case 'X' belongs to more than one enum; qualify it with the enum name`), then the unknown-case or unknown-name error. Arity errors come after resolution. The candidates include the built-in enums, so resolution to one of their cases is the typed unsupported event, reached at that point.
-- **Names:** a bare name resolves in the order of the `ExprKind::Name` path in `check_expr`: locals first, then package functions (a function value, which stays unsupported as in E1), then a case of the expected sum type, then `none`. With an expected type and no such case, the name is Rust's unknown-name error. Only with no expected type does Rust search every enum, built-ins included, for the single matching case. A call `Name(...)` resolves package functions before cases. Fixtures pin each collision: a local named like a case, a function named like a case, a case in two enums, a user case spelled like a built-in case (ambiguity with no expected type, the user's case with one), and a local spelled like a built-in case (the local wins).
-- **`match`:** arms in source order. For each arm: its pattern errors (type of pattern against scrutinee, qualifier, arity, unreachable or duplicate), then its bindings, declared in payload order (a duplicate binding name fails here, before the body), then its body, then the arm-type check against earlier reachable arms. Exhaustiveness comes last, anchored at the `match` keyword:
-  - sum types: `non-exhaustive match; missing Color.Blue`, missing cases as `Type.case` in declaration order joined by `", "`;
-  - bool: `non-exhaustive bool match; missing ...`, true then false, joined by `" and "`;
-  - integers: `integer matches need a '_' catch-all arm`.
-
-  So an unreachable arm beats a missing case, and a bad binding beats an error in its arm's body.
-- **Struct literals:** fields in written order, each checked as it is met, then the missing-field check over declaration order.
-- **`?`:** the test check first (`a test cannot use '?'`, before the operand is visited), then the operand, then the operator's own rule.
-- **`??`:** the operand first, then the operator's own rule, then the fallback.
-
-The implementer extends E1's documented order in the checker's source and pins each non-obvious step with a fixture. Where this file and checker.rs disagree, checker.rs wins (after the reference fixes) and the report says so.
+Errors don't have to match stage 0's order or wording (Ben, 2026-10-26). A program stage 0 rejects must be rejected with the same status, no IR written, and an error message with real text (`file:line:col: error: ...`); which error is reported first, and its exact text, may differ. The harness checks exactly that (`same_rejection` in scripts/compare-selfhost-build.py). An `unsupported` diagnostic never counts as a rejection. The checker may check in whatever order is simplest; Rust's phases and traversal (checker.rs `run`, `check_expr`) remain a good default and a guide to which rules exist. Name resolution must still give the same meaning as stage 0 for valid programs (locals before functions before cases, as in `ExprKind::Name`), since that changes behaviour, not just errors.
 
 **Structure.** The type table gets struct, enum, `Option` and `Result` entries. `Option<T>` and `Result<T, E>` are interned by their arguments, so each instance has one id. Fields and cases live in their own ordered tables keyed by type id, with name ids. Typed defaults live with their fields. The checker stays a flat, frame-driven walk with no `recursive` functions, as in E1.
 
@@ -396,7 +371,7 @@ Grouped like tests/e1, each classified by hand:
 - **Structs:** defaults and overrides, shorthand, nested literals, field read and write paths, compound assignment on fields with overflow at the operator, copies, equality and printing, empty structs.
 - **Enums:** payload and payload-free cases, qualified and unqualified constructors, cases of the same name in two enums (ambiguity), resolution from expected type, `Option` and `Result` nesting.
 - **Match:** every pattern form; shadowing; block arms; `never` arms; match as statement and expression; integer matches on both widths with negative literals; bool matches.
-- **Diagnostics, in Rust's order:** each checker message named in this file, at least once; competing errors across the new registration phases and files (a duplicate case in `b.nl` against a bad parameter type in `a.nl`); an unreachable arm against a missing case; each missing-case order; duplicate payload binding names; struct-literal errors in competition; `?` in a test with a bad operand; other `?` errors; `??` on a `Result`; unused `Result`; infinite size directly and through `Option`; the name-collision fixtures in "Checker order"; the default-phase fixtures.
+- **Diagnostics:** each rule in this file has at least one fixture that stage 0 rejects and the self-hosted compiler must also reject (unreachable and duplicate arms, each missing-case form, duplicate payload bindings, struct-literal errors, `?` in a test and other `?` errors, `??` on a `Result`, unused `Result`, infinite size directly and through `Option`, the default-phase errors); and the name-collision fixtures (a local, a function or a case with the same name) as valid programs whose output pins which one wins.
 - **Runtime:** the checklist above.
 - **Core library:** a fixture per new hook, and the wrapper test.
 - **Size:** at exactly 4096 bytes (`build`) and just over (`unsupported`); a threshold crossed only by alignment padding; a size where Rust's layout and E2's fall on different sides of 4096; a doubling chain of structs far past the threshold; direct, mutual and `Option`/`Result` cycles; forward references across files; an unresolved field type next to a large known part (`diagnose`); an oversized `some(s)` with no annotation, before and after a checker error; an oversized `.ok()`; an oversized intermediate in `some(some(s))`.
