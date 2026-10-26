@@ -1,0 +1,1 @@
+main.nl:3:46: error: match arms have different types: int and bool; make reachable arms return the same type

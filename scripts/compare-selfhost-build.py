@@ -180,7 +180,9 @@ def main() -> int:
                         )
                         if wrote_ir:
                             raise Mismatch("selfhosted compiler wrote IR after a rejection", reference_result, self_result)
-                        if not same_rejection(self_result, reference_result):
+                        if not same_rejection(self_result, reference_result) and not (
+                            manifest_tool_failure and same_result(self_result, reference_result)
+                        ):
                             raise Mismatch("selfhost did not reject with an error like Rust nlc", reference_result, self_result)
                         counts[level]["diagnose"] += 1
                     else:

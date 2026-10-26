@@ -94,6 +94,10 @@ const SYS_FILL_16: long = 31L
 
 const FACT_NEVER: long = 1L
 const FACT_FALLS_THROUGH: long = 2L
+const MATCH_PATTERN_CASE: long = 11L
+const MATCH_PATTERN_WILDCARD: long = 12L
+const MATCH_PATTERN_INTEGER: long = 13L
+const MATCH_PATTERN_BOOL: long = 14L
 
 const UNSUPPORTED_NODE: long = 1L
 const UNSUPPORTED_TYPE: long = 2L
@@ -149,11 +153,30 @@ struct StructFieldRecord {
     default_node: long
 }
 
+struct EnumCaseRecord {
+    owner: long
+    name_id: long
+    name_token: long
+    node: long
+    payload_start: long
+    payload_count: long
+    tag: long
+}
+
+struct EnumPayloadRecord {
+    case_index: long
+    type_node: long
+    ty: long
+    offset: long
+}
+
 struct TypeWalkFrame {
     type_index: long
     field_index: long
     size: long
     align: long
+    case_index: long
+    max_size: long
 }
 
 struct NodeFact {
@@ -295,6 +318,8 @@ struct CompilerTables {
     type_records: list<TypeRecord, TYPE_TABLE_CAPACITY>
     exit_cleanups: list<ExitCleanupRecord, EXIT_CLEANUP_CAPACITY>
     struct_fields: list<StructFieldRecord, FIELD_TABLE_CAPACITY>
+    enum_cases: list<EnumCaseRecord, ENUM_CASE_TABLE_CAPACITY>
+    enum_payloads: list<EnumPayloadRecord, ENUM_PAYLOAD_TABLE_CAPACITY>
     type_walk: list<TypeWalkFrame, MAX_TREE_NODES>
     tests: list<TestRecord, TEST_TABLE_CAPACITY>
     call_edges: list<CallEdge, CALL_EDGE_CAPACITY>
@@ -359,6 +384,8 @@ fn empty_compiler_tables() -> CompilerTables {
         type_records: list {},
         exit_cleanups: list {},
         struct_fields: list {},
+        enum_cases: list {},
+        enum_payloads: list {},
         type_walk: list {},
         tests: list {},
         call_edges: list {},
@@ -400,6 +427,8 @@ fn reset_compiler_tables(compiler: write CompilerTables) {
     compiler.exit_cleanups.clear()
     seed_builtin_types(compiler.type_records)
     compiler.struct_fields.clear()
+    compiler.enum_cases.clear()
+    compiler.enum_payloads.clear()
     compiler.type_walk.clear()
     compiler.tests.clear()
     compiler.call_edges.clear()
@@ -981,6 +1010,118 @@ fn struct_type_count(compiler: CompilerTables) -> long {
     count
 }
 
+fn enum_type_id(compiler: CompilerTables, enum_index: long) -> long {
+    if enum_index < 0L { return -1L }
+    var seen = 0L
+    for type_id in 0L..compiler.type_records.count() {
+        if type_record_kind(compiler.type_records[type_id]) == TYPE_KIND_ENUM {
+            if seen == enum_index { return type_id }
+            seen += 1L
+        }
+    }
+    -1L
+}
+
+fn enum_type_index(compiler: CompilerTables, type_id: long) -> long {
+    var seen = 0L
+    for index in 0L..compiler.type_records.count() {
+        if type_record_kind(compiler.type_records[index]) == TYPE_KIND_ENUM {
+            if index == type_id { return seen }
+            seen += 1L
+        }
+    }
+    -1L
+}
+
+fn enum_record(compiler: CompilerTables, enum_index: long) -> TypeRecord {
+    type_record(compiler, enum_type_id(compiler, enum_index))
+}
+
+fn enum_type_count(compiler: CompilerTables) -> long {
+    var count = 0L
+    for type_id in 0L..compiler.type_records.count() {
+        if type_record_kind(compiler.type_records[type_id]) == TYPE_KIND_ENUM { count += 1L }
+    }
+    count
+}
+
+fn enum_type_matches(compiler: CompilerTables, name_id: long) -> long {
+    var found = -1L
+    for enum_index in 0L..enum_type_count(compiler) {
+        let type_id = enum_type_id(compiler, enum_index)
+        if compiler.type_records[type_id].name_id == name_id {
+            if found >= 0L { return -1L }
+            found = enum_index
+        }
+    }
+    found
+}
+
+fn enum_case_matches(compiler: CompilerTables, enum_index: long, name_id: long) -> long {
+    if enum_index < 0L || enum_index >= enum_type_count(compiler) { return -1L }
+    let ty = enum_record(compiler, enum_index)
+    for offset in 0L..ty.field_count {
+        let case_index = ty.field_start + offset
+        if compiler.enum_cases[case_index].name_id == name_id { return case_index }
+    }
+    -1L
+}
+
+fn enum_case_for_tag(compiler: CompilerTables, type_id: long, tag: long) -> long {
+    let enum_index = enum_type_index(compiler, type_id)
+    if enum_index < 0L { return -1L }
+    let ty = enum_record(compiler, enum_index)
+    for offset in 0L..ty.field_count {
+        let case_index = ty.field_start + offset
+        if compiler.enum_cases[case_index].tag == tag { return case_index }
+    }
+    -1L
+}
+
+fn enum_case_payload_type(compiler: CompilerTables, case_index: long, payload_index: long) -> long {
+    if case_index < 0L || case_index >= compiler.enum_cases.count() { return -1L }
+    let case = compiler.enum_cases[case_index]
+    if payload_index < 0L || payload_index >= case.payload_count { return -1L }
+    compiler.enum_payloads[case.payload_start + payload_index].ty
+}
+
+fn enum_case_owner_type_id(compiler: CompilerTables, case_index: long) -> long {
+    if case_index < 0L || case_index >= compiler.enum_cases.count() { return -1L }
+    enum_type_id(compiler, compiler.enum_cases[case_index].owner)
+}
+
+fn value_type_matches(compiler: CompilerTables, name_id: long) -> long {
+    var found = -1L
+    for type_id in 0L..compiler.type_records.count() {
+        let kind = type_record_kind(compiler.type_records[type_id])
+        if (kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_ENUM) && compiler.type_records[type_id].name_id == name_id {
+            if found >= 0L { return -1L }
+            found = type_id
+        }
+    }
+    found
+}
+
+fn value_type_for_node(compiler: CompilerTables, node: long) -> long {
+    for type_id in 0L..compiler.type_records.count() {
+        let kind = type_record_kind(compiler.type_records[type_id])
+        if (kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_ENUM) && compiler.type_records[type_id].node == node { return type_id }
+    }
+    -1L
+}
+
+fn user_case_matches(compiler: CompilerTables, name_id: long) -> long {
+    var found = -1L
+    for enum_index in 0L..enum_type_count(compiler) {
+        let case_index = enum_case_matches(compiler, enum_index, name_id)
+        if case_index >= 0L {
+            if found >= 0L { return -2L }
+            found = case_index
+        }
+    }
+    found
+}
+
 fn type_kind(compiler: CompilerTables, type_id: long) -> long {
     type_record_kind(type_record(compiler, type_id))
 }
@@ -1066,8 +1207,8 @@ fn resolve_value_type(
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "bool") { return TY_BOOL }
     if syntax.token < 0L { return -1L }
     let name_id = compiler.token_name_ids[syntax.token]
-    let type_index = struct_type_matches(compiler, name_id)
-    if type_index >= 0L { return struct_type_id(compiler, type_index) }
+    let type_id = value_type_matches(compiler, name_id)
+    if type_id >= 0L { return type_id }
     -1L
 }
 
@@ -1095,6 +1236,66 @@ fn value_type_align(compiler: CompilerTables, ty: long) -> long {
     if ty < 0L || ty >= compiler.type_records.count() { return -1L }
     let record = type_record(compiler, ty)
     if type_record_state(record) == 2L { record.align } else { -1L }
+}
+
+fn index_package_enums(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+) {
+    for file_index in 0L..files.count() {
+        let root = files[file_index].tree_root
+        var child = compiler.child_first[root]
+        for step in 0L..tables.nodes[root].subtree {
+            if child < 0L { break }
+            if tables.nodes[child].kind == NodeKind.Enum {
+                let syntax = tables.nodes[child]
+                let enum_index = enum_type_count(compiler)
+                let case_start = compiler.enum_cases.count()
+                var case_node = compiler.child_first[child]
+                for case_step in 0L..syntax.subtree {
+                    if case_node < 0L { break }
+                    if tables.nodes[case_node].kind == NodeKind.EnumCase {
+                        let case_syntax = tables.nodes[case_node]
+                        let payload_start = compiler.enum_payloads.count()
+                        var payload_node = compiler.child_first[case_node]
+                        for payload_step in 0L..case_syntax.subtree {
+                            if payload_node < 0L { break }
+                            if tables.nodes[payload_node].kind == NodeKind.PayloadType {
+                                compiler.enum_payloads.push(EnumPayloadRecord { case_index: compiler.enum_cases.count(), type_node: payload_node, ty: -1L, offset: 0L }).unwrap()
+                            }
+                            payload_node = compiler.child_next[payload_node]
+                        }
+                        compiler.enum_cases.push(EnumCaseRecord {
+                            owner: enum_index,
+                            name_id: compiler.token_name_ids[case_syntax.token],
+                            name_token: case_syntax.token,
+                            node: case_node,
+                            payload_start,
+                            payload_count: compiler.enum_payloads.count() - payload_start,
+                            tag: compiler.enum_cases.count() - case_start,
+                        }).unwrap()
+                    }
+                    case_node = compiler.child_next[case_node]
+                }
+                append_type_record(compiler, TypeRecord {
+                    kind_state: TYPE_KIND_ENUM * 16L,
+                    name_id: compiler.token_name_ids[syntax.token],
+                    name_token: syntax.token,
+                    node: child,
+                    file: file_index,
+                    field_start: case_start,
+                    field_count: compiler.enum_cases.count() - case_start,
+                    size: 0L,
+                    align: 4L,
+                    helper_mask: 0L,
+                })
+            }
+            child = compiler.child_next[child]
+        }
+    }
 }
 
 fn index_package_structs(
@@ -1151,7 +1352,15 @@ fn index_package_structs(
     }
 }
 
-fn size_package_structs(
+fn initial_type_walk_frame(compiler: CompilerTables, type_id: long) -> TypeWalkFrame {
+    if type_kind(compiler, type_id) == TYPE_KIND_ENUM {
+        TypeWalkFrame { type_index: type_id, field_index: 0L, size: 4L, align: 4L, case_index: 0L, max_size: 4L }
+    } else {
+        TypeWalkFrame { type_index: type_id, field_index: 0L, size: 0L, align: 1L, case_index: 0L, max_size: 0L }
+    }
+}
+
+fn size_package_types(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -1159,57 +1368,86 @@ fn size_package_structs(
     compiler: write CompilerTables,
 ) {
     compiler.type_walk.clear()
-    for root_type in 0L..struct_type_count(compiler) {
-        if type_state(compiler, struct_type_id(compiler, root_type)) != 0L { continue }
-        set_type_state(compiler, struct_type_id(compiler, root_type), 1L)
-        compiler.type_walk.push(TypeWalkFrame { type_index: root_type, field_index: 0L, size: 0L, align: 1L }).unwrap()
+    for root_type in 0L..type_count(compiler) {
+        if type_kind(compiler, root_type) != TYPE_KIND_STRUCT && type_kind(compiler, root_type) != TYPE_KIND_ENUM { continue }
+        if type_state(compiler, root_type) != 0L { continue }
+        set_type_state(compiler, root_type, 1L)
+        compiler.type_walk.push(initial_type_walk_frame(compiler, root_type)).unwrap()
         for walk_step in 0L..MAX_TREE_NODES {
             if compiler.type_walk.count() == 0L { break }
             let frame_index = compiler.type_walk.count() - 1L
             var frame = compiler.type_walk[frame_index]
-            let type_info = struct_record(compiler, frame.type_index)
-            if frame.field_index >= type_info.field_count {
-                set_type_layout(compiler, struct_type_id(compiler, frame.type_index), size_align_saturated(frame.size, frame.align), frame.align, 2L)
-                let _ = compiler.type_walk.pop()
-                continue
-            }
-            let field_index = type_info.field_start + frame.field_index
-            let field = compiler.struct_fields[field_index]
-            let file_index = struct_record(compiler, frame.type_index).file
-            let ty = resolve_value_type(source, tokens, files, tables, compiler, file_index, field.type_node)
-            compiler.struct_fields[field_index].ty = ty
-            let field_size = value_type_size(compiler, ty)
-            let field_align = value_type_align(compiler, ty)
-            if field_size < 0L || field_align < 0L {
-                if type_kind(compiler, ty) == TYPE_KIND_STRUCT {
-                    let nested = struct_type_index(compiler, ty)
-                    if nested >= 0L && nested < struct_type_count(compiler) && type_state(compiler, struct_type_id(compiler, nested)) == 0L {
+            let type_info = type_record(compiler, frame.type_index)
+            if type_kind(compiler, frame.type_index) == TYPE_KIND_STRUCT {
+                if frame.field_index >= type_info.field_count {
+                    set_type_layout(compiler, frame.type_index, size_align_saturated(frame.size, frame.align), frame.align, 2L)
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
+                let field_index = type_info.field_start + frame.field_index
+                let field = compiler.struct_fields[field_index]
+                let ty = resolve_value_type(source, tokens, files, tables, compiler, type_info.file, field.type_node)
+                compiler.struct_fields[field_index].ty = ty
+                let field_size = value_type_size(compiler, ty)
+                let field_align = value_type_align(compiler, ty)
+                if field_size < 0L || field_align < 0L {
+                    if (type_kind(compiler, ty) == TYPE_KIND_STRUCT || type_kind(compiler, ty) == TYPE_KIND_ENUM) && type_state(compiler, ty) == 0L {
                         set_type_state(compiler, ty, 1L)
-                        compiler.type_walk.push(TypeWalkFrame { type_index: nested, field_index: 0L, size: 0L, align: 1L }).unwrap()
+                        compiler.type_walk.push(initial_type_walk_frame(compiler, ty)).unwrap()
                         continue
                     }
-                    if nested >= 0L && nested < struct_type_count(compiler) && type_state(compiler, struct_type_id(compiler, nested)) == 1L {
-                        set_type_state(compiler, struct_type_id(compiler, frame.type_index), 4L)
-                    } else if nested >= 0L && nested < struct_type_count(compiler) && type_state(compiler, struct_type_id(compiler, nested)) == 4L {
-                        set_type_state(compiler, struct_type_id(compiler, frame.type_index), 4L)
-                    } else {
-                        set_type_state(compiler, struct_type_id(compiler, frame.type_index), 3L)
-                    }
-                } else {
-                    set_type_state(compiler, struct_type_id(compiler, frame.type_index), 3L)
+                    set_type_state(compiler, frame.type_index, if type_state(compiler, ty) == 1L || type_state(compiler, ty) == 4L { 4L } else { 3L })
+                    let _ = compiler.type_walk.pop()
+                    continue
                 }
-                let _ = compiler.type_walk.pop()
-                continue
+                let offset = size_align_saturated(frame.size, field_align)
+                compiler.struct_fields[field_index].offset = offset
+                frame.size = size_add_saturated(offset, field_size)
+                if field_align > frame.align { frame.align = field_align }
+                frame.field_index += 1L
+                compiler.type_walk[frame_index] = frame
+            } else {
+                if frame.field_index >= type_info.field_count {
+                    set_type_layout(compiler, frame.type_index, size_align_saturated(frame.max_size, frame.align), frame.align, 2L)
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
+                let case_index = type_info.field_start + frame.field_index
+                let case = compiler.enum_cases[case_index]
+                if frame.case_index >= case.payload_count {
+                    if frame.size > frame.max_size { frame.max_size = frame.size }
+                    frame.field_index += 1L
+                    frame.case_index = 0L
+                    frame.size = 4L
+                    compiler.type_walk[frame_index] = frame
+                    continue
+                }
+                let payload_index = case.payload_start + frame.case_index
+                let payload = compiler.enum_payloads[payload_index]
+                let ty = resolve_value_type(source, tokens, files, tables, compiler, type_info.file, payload.type_node)
+                compiler.enum_payloads[payload_index].ty = ty
+                let payload_size = value_type_size(compiler, ty)
+                let payload_align = value_type_align(compiler, ty)
+                if payload_size < 0L || payload_align < 0L {
+                    if (type_kind(compiler, ty) == TYPE_KIND_STRUCT || type_kind(compiler, ty) == TYPE_KIND_ENUM) && type_state(compiler, ty) == 0L {
+                        set_type_state(compiler, ty, 1L)
+                        compiler.type_walk.push(initial_type_walk_frame(compiler, ty)).unwrap()
+                        continue
+                    }
+                    set_type_state(compiler, frame.type_index, if type_state(compiler, ty) == 1L || type_state(compiler, ty) == 4L { 4L } else { 3L })
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
+                let offset = size_align_saturated(frame.size, payload_align)
+                compiler.enum_payloads[payload_index].offset = offset
+                frame.size = size_add_saturated(offset, payload_size)
+                if payload_align > frame.align { frame.align = payload_align }
+                frame.case_index += 1L
+                compiler.type_walk[frame_index] = frame
             }
-            let offset = size_align_saturated(frame.size, field_align)
-            compiler.struct_fields[field_index].offset = offset
-            frame.size = size_add_saturated(offset, field_size)
-            if field_align > frame.align { frame.align = field_align }
-            frame.field_index += 1L
-            compiler.type_walk[frame_index] = frame
         }
         if compiler.type_walk.count() > 0L {
-            set_type_state(compiler, struct_type_id(compiler, root_type), 3L)
+            set_type_state(compiler, root_type, 3L)
             compiler.type_walk.clear()
         }
     }
@@ -1409,7 +1647,10 @@ fn unsupported_category_for_node(
     let value = tables.nodes[node]
     match value.kind {
         NodeKind.Program => 0L,
-        NodeKind.Enum => UNSUPPORTED_NODE,
+        NodeKind.Enum => {
+            let type_id = value_type_for_node(compiler, node)
+            if type_id >= 0L && type_state(compiler, type_id) == 2L && value_type_size(compiler, type_id) > 4096L { UNSUPPORTED_LARGE_VALUE } else { 0L }
+        },
         NodeKind.Struct => {
             if value.aux > 0L { UNSUPPORTED_NODE }
             else {
@@ -1421,13 +1662,15 @@ fn unsupported_category_for_node(
             }
         },
         NodeKind.StructField => 0L,
+        NodeKind.EnumCase => 0L,
         NodeKind.FieldType => if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE } else { 0L },
+        NodeKind.PayloadType => if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE } else { 0L },
         NodeKind.TypeAlias => UNSUPPORTED_NODE,
         NodeKind.Const => UNSUPPORTED_NODE,
         NodeKind.Global => UNSUPPORTED_NODE,
         NodeKind.ForEach => UNSUPPORTED_NODE,
         NodeKind.Discard => UNSUPPORTED_NODE,
-        NodeKind.Match => UNSUPPORTED_NODE,
+        NodeKind.Match => 0L,
         NodeKind.Cast => 0L,
         NodeKind.CastType => {
             if token_is_word_at(source, tokens, files, file_index, value.token, "int") ||
@@ -1441,7 +1684,13 @@ fn unsupported_category_for_node(
         NodeKind.Index => UNSUPPORTED_NODE,
         NodeKind.OptionalCall => UNSUPPORTED_NODE,
         NodeKind.Field => 0L,
-        NodeKind.QualifiedCase => UNSUPPORTED_NODE,
+        NodeKind.QualifiedCase => {
+            let qualifier = tables.nodes[node].token
+            let enum_index = enum_type_matches(compiler, compiler.token_name_ids[qualifier])
+            if enum_index >= 0L { 0L }
+            else if token_is_word_at(source, tokens, files, file_index, qualifier, "Option") || token_is_word_at(source, tokens, files, file_index, qualifier, "Result") { UNSUPPORTED_CASE }
+            else { 0L }
+        },
         NodeKind.StructInit => 0L,
         NodeKind.InitializerField => 0L,
         NodeKind.ArrayLiteral => UNSUPPORTED_NODE,
@@ -1453,16 +1702,15 @@ fn unsupported_category_for_node(
         NodeKind.RingLiteral => UNSUPPORTED_NODE,
         NodeKind.GridIndex => UNSUPPORTED_NODE,
         NodeKind.ToLong => 0L,
-        NodeKind.WildcardPattern => UNSUPPORTED_NODE,
-        NodeKind.BoolPattern => UNSUPPORTED_NODE,
-        NodeKind.CasePattern => UNSUPPORTED_NODE,
-        NodeKind.PatternBinding => UNSUPPORTED_NODE,
-        NodeKind.IgnoredPatternBinding => UNSUPPORTED_NODE,
-        NodeKind.MatchArm => UNSUPPORTED_NODE,
+        NodeKind.WildcardPattern => 0L,
+        NodeKind.BoolPattern => 0L,
+        NodeKind.CasePattern => 0L,
+        NodeKind.PatternBinding => 0L,
+        NodeKind.IgnoredPatternBinding => 0L,
+        NodeKind.MatchArm => 0L,
         NodeKind.FunctionType => UNSUPPORTED_NODE,
         NodeKind.FunctionTypeParameter => UNSUPPORTED_NODE,
         NodeKind.Effect => UNSUPPORTED_NODE,
-        NodeKind.PayloadType => UNSUPPORTED_NODE,
         NodeKind.AliasedType => UNSUPPORTED_NODE,
         NodeKind.DeclaredType => UNSUPPORTED_NODE,
         NodeKind.TypeArgument => UNSUPPORTED_TYPE_FORM,
@@ -1517,7 +1765,9 @@ fn unsupported_category_for_node(
         NodeKind.BytesLiteral => if compiler.core_mode { 0L } else { UNSUPPORTED_NODE },
         NodeKind.Name => {
             if is_function_value_name(files, tables, compiler, node, file_index) { UNSUPPORTED_FUNCTION_VALUE }
-            else if builtin_case_name(source, tokens, files, file_index, value.token) { UNSUPPORTED_CASE }
+            else if builtin_case_name(source, tokens, files, file_index, value.token) &&
+                user_case_matches(compiler, compiler.token_name_ids[value.token]) == -1L &&
+                !is_shadowed_function_value(files, tables, compiler, node, file_index, compiler.token_name_ids[value.token]) { UNSUPPORTED_CASE }
             else { 0L }
         },
         NodeKind.Return => 0L,
@@ -1529,7 +1779,8 @@ fn unsupported_category_for_node(
             if builtin_function_name(source, tokens, files, file_index, value.token) {
                 let id = compiler.token_name_ids[value.token]
                 if function_exists_by_name(tables, files, compiler, id) { 0L } else { UNSUPPORTED_CALLEE }
-            } else if builtin_case_name(source, tokens, files, file_index, value.token) {
+            } else if builtin_case_name(source, tokens, files, file_index, value.token) &&
+                user_case_matches(compiler, compiler.token_name_ids[value.token]) == -1L {
                 UNSUPPORTED_CASE
             } else { 0L }
         },
@@ -1945,6 +2196,35 @@ fn is_builtin_type_name(
     token_is_word_at(source, tokens, files, file_index, token, "Utf8Error")
 }
 
+fn has_prior_type_name(
+    tables: ParseTables,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: CompilerTables,
+    file_index: long,
+    node: long,
+    name_id: long,
+) -> bool {
+    for prior_file in 0L..files.count() {
+        let root = files[prior_file].tree_root
+        for phase in 0L..2L {
+            var child = compiler.child_first[root]
+            for step in 0L..tables.nodes[root].subtree {
+                if child < 0L { break }
+                let kind = tables.nodes[child].kind
+                let wanted = if phase == 0L { NodeKind.Enum } else { NodeKind.Struct }
+                if kind == wanted {
+                    if prior_file == file_index && child == node { return false }
+                    if prior_file > file_index { return false }
+                    if compiler.token_name_ids[tables.nodes[child].token] == name_id { return true }
+                }
+                child = compiler.child_next[child]
+            }
+        }
+    }
+    false
+}
+
 fn fail_duplicate_struct_field(
     env: Env,
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -1979,14 +2259,57 @@ fn check_struct_declarations(
     tables: ParseTables,
     compiler: write CompilerTables,
 ) {
-    for type_index in 0L..struct_type_count(compiler) {
-        let ty = struct_record(compiler, type_index)
-        if is_builtin_type_name(source, tokens, files, ty.file, ty.name_token) {
-            fail_dynamic_checker_error(env, source, files, tokens, compiler, ty.file, tables.nodes[ty.node].start, "type '", ty.name_token, "' is declared more than once or shadows a built-in type")
+    // Rust registers type names per file, with enums before structs.
+    for file_index in 0L..files.count() {
+        let root = files[file_index].tree_root
+        for phase in 0L..2L {
+            var child = compiler.child_first[root]
+            for step in 0L..tables.nodes[root].subtree {
+                if child < 0L { break }
+                let kind = tables.nodes[child].kind
+                let wanted = if phase == 0L { NodeKind.Enum } else { NodeKind.Struct }
+                if kind == wanted {
+                    let declaration = tables.nodes[child]
+                    let name_id = compiler.token_name_ids[declaration.token]
+                    if is_builtin_type_name(source, tokens, files, file_index, declaration.token) ||
+                        has_prior_type_name(tables, files, tokens, compiler, file_index, child, name_id) {
+                        fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, declaration.start, "type '", declaration.token, "' is declared more than once or shadows a built-in type")
+                    }
+                }
+                child = compiler.child_next[child]
+            }
         }
-        for previous in 0L..type_index {
-            if struct_record(compiler, previous).name_id == ty.name_id {
-                fail_dynamic_checker_error(env, source, files, tokens, compiler, ty.file, tables.nodes[ty.node].start, "type '", ty.name_token, "' is declared more than once or shadows a built-in type")
+    }
+    // Enum cases and payload types are checked across every file before any
+    // struct field is visited, matching checker.rs::fill_enum_cases.
+    for enum_index in 0L..enum_type_count(compiler) {
+        let ty = enum_record(compiler, enum_index)
+        for case_offset in 0L..ty.field_count {
+            let case_index = ty.field_start + case_offset
+            let current = compiler.enum_cases[case_index]
+            for previous_offset in 0L..case_offset {
+                let previous_index = ty.field_start + previous_offset
+                if compiler.enum_cases[previous_index].name_id == current.name_id {
+                    let previous_position = position_for_offset(ty.file, files[ty.file].base + tables.nodes[compiler.enum_cases[previous_index].node].start, compiler)
+                    let position = position_for_offset(ty.file, files[ty.file].base + tables.nodes[current.node].start, compiler)
+                    match env.err.write(files[ty.file].name) { ok(_) => (), err(_) => env.exit(3) }
+                    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+                    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+                    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+                    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+                    match env.err.write(b": error: case '") { ok(_) => (), err(_) => env.exit(3) }
+                    match write_token_raw(env.err, source, tokens, files[ty.file].base, ty.name_token) { ok(_) => (), err(_) => env.exit(3) }
+                    match env.err.write(b".") { ok(_) => (), err(_) => env.exit(3) }
+                    match write_token_raw(env.err, source, tokens, files[ty.file].base, current.name_token) { ok(_) => (), err(_) => env.exit(3) }
+                    match env.err.write(b"' is declared twice (first on line ") { ok(_) => (), err(_) => env.exit(3) }
+                    match env.err.write(str(previous_position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+                    match env.err.write(b")\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+                }
+            }
+            for payload_offset in 0L..current.payload_count {
+                let payload_index = current.payload_start + payload_offset
+                let payload = compiler.enum_payloads[payload_index]
+                compiler.enum_payloads[payload_index].ty = parse_scalar_type(env, source, tokens, files, tables, compiler, ty.file, payload.type_node)
             }
         }
     }
@@ -2008,10 +2331,25 @@ fn check_struct_declarations(
             }
         }
     }
-    for type_index in 0L..struct_type_count(compiler) {
-        let ty = struct_record(compiler, type_index)
-        if type_state(compiler, struct_type_id(compiler, type_index)) == 4L {
-            fail_dynamic_checker_error(env, source, files, tokens, compiler, ty.file, tables.nodes[ty.node].start, "value type '", ty.name_token, "' contains itself directly or through Option/Result and would have infinite size")
+    // Infinite-size checking follows the same per-file enum-then-struct order.
+    for file_index in 0L..files.count() {
+        let root = files[file_index].tree_root
+        for phase in 0L..2L {
+            var child = compiler.child_first[root]
+            for step in 0L..tables.nodes[root].subtree {
+                if child < 0L { break }
+                let kind = tables.nodes[child].kind
+                let wanted = if phase == 0L { NodeKind.Enum } else { NodeKind.Struct }
+                if kind == wanted {
+                    for type_id in 0L..type_count(compiler) {
+                        let ty = type_record(compiler, type_id)
+                        if ty.node == child && type_state(compiler, type_id) == 4L {
+                            fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, tables.nodes[child].start, "value type '", ty.name_token, "' contains itself directly or through Option/Result and would have infinite size")
+                        }
+                    }
+                }
+                child = compiler.child_next[child]
+            }
         }
     }
 }
@@ -2078,6 +2416,401 @@ fn fail_dynamic_checker_error(
     match env.err.write(prefix.bytes()) { ok(_) => (), err(_) => env.exit(3) }
     match write_token_raw(env.err, source, tokens, file.base, token) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(suffix.bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn fail_ambiguous_enum_case(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: CompilerTables,
+    file_index: long,
+    offset: long,
+    token: long,
+) -> never {
+    fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, offset, "case '", token, "' belongs to more than one enum; qualify it with the enum name")
+}
+
+fn fail_unknown_enum_case(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    offset: long,
+    token: long,
+    filter_enum: long,
+) -> never {
+    let wanted_length = tokens[token].length
+    var candidate = NameCandidate { token: -1L, file: -1L, distance: 3L, length: 0L }
+    for enum_index in 0L..enum_type_count(compiler) {
+        if filter_enum >= 0L && enum_index != filter_enum { continue }
+        let ty = enum_record(compiler, enum_index)
+        for case_offset in 0L..ty.field_count {
+            let case = compiler.enum_cases[ty.field_start + case_offset]
+            let length = tokens[case.name_token].length
+            let distance = identifier_distance(source, tokens, files, file_index, token, ty.file, case.name_token)
+            let threshold = if wanted_length > length { wanted_length / 3L + 1L } else { length / 3L + 1L }
+            if distance <= 2L && distance <= threshold && (candidate.token < 0L || distance < candidate.distance || (distance == candidate.distance && length < candidate.length)) {
+                candidate = NameCandidate { token: case.name_token, file: ty.file, distance, length }
+            }
+        }
+    }
+    let position = position_for_offset(file_index, files[file_index].base + offset, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: unknown enum case '") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[file_index].base, token) { ok(_) => (), err(_) => env.exit(3) }
+    if candidate.token >= 0L {
+        match env.err.write(b"'; did you mean '") { ok(_) => (), err(_) => env.exit(3) }
+        match write_token_raw(env.err, source, tokens, files[candidate.file].base, candidate.token) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b"'") { ok(_) => (), err(_) => env.exit(3) }
+    } else {
+        match env.err.write(b"'; qualify it with its enum name") { ok(_) => (), err(_) => env.exit(3) }
+    }
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn fail_enum_constructor_arity(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    node: long,
+    case_index: long,
+    actual: long,
+) -> never {
+    let case = compiler.enum_cases[case_index]
+    let ty = enum_record(compiler, case.owner)
+    let node_info = tables.nodes[node]
+    let anchor = if node_info.kind == NodeKind.QualifiedCase { tokens[tables.extra[node_info.extra]].start } else { node_info.start }
+    let position = position_for_offset(file_index, files[file_index].base + anchor, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: case '") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[ty.file].base, ty.name_token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b".") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[ty.file].base, case.name_token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"' takes ") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(case.payload_count).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b" payload value(s), but got ") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(actual).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn fail_enum_case_needs_payload(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    node: long,
+    enum_index: long,
+    case_index: long,
+) -> never {
+    let case = compiler.enum_cases[case_index]
+    let ty = enum_record(compiler, enum_index)
+    let position = position_for_offset(file_index, files[file_index].base + tables.nodes[node].anchor, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: case '") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[ty.file].base, ty.name_token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b".") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[ty.file].base, case.name_token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"' needs ") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(case.payload_count).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b" payload value(s)") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn fail_match_case_arity(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    pattern: long,
+    type_id: long,
+    case_index: long,
+    actual: long,
+) -> never {
+    let case = compiler.enum_cases[case_index]
+    let position = position_for_offset(file_index, files[file_index].base + tokens[tables.nodes[pattern].token].start, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: case '") { ok(_) => (), err(_) => env.exit(3) }
+    let ty = type_record(compiler, type_id)
+    match write_token_raw(env.err, source, tokens, files[ty.file].base, ty.name_token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b".") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[ty.file].base, case.name_token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"' has ") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(case.payload_count).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b" payload part(s), but this pattern names ") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(actual).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn fail_match_duplicate_case(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    arm: long,
+    type_id: long,
+    case_index: long,
+) -> never {
+    let case = compiler.enum_cases[case_index]
+    let ty = type_record(compiler, type_id)
+    let position = position_for_offset(file_index, files[file_index].base + tables.nodes[arm].start, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: unreachable duplicate pattern '") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[ty.file].base, ty.name_token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b".") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[ty.file].base, case.name_token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"'; remove this arm\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn fail_match_qualifier(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    pattern: long,
+    matched_type: long,
+) -> never {
+    let qualifier = tables.nodes[pattern].extra
+    let case_token = tables.nodes[pattern].token
+    let position = position_for_offset(file_index, files[file_index].base + tokens[tables.nodes[pattern].token].start, compiler)
+    let matched = type_record(compiler, matched_type)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: pattern '") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[file_index].base, qualifier) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b".") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[file_index].base, case_token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"' does not match ") { ok(_) => (), err(_) => env.exit(3) }
+    if matched.name_token >= 0L { match write_token_raw(env.err, source, tokens, files[matched.file].base, matched.name_token) { ok(_) => (), err(_) => env.exit(3) } }
+    else { match env.err.write(scalar_type_name(matched_type).bytes()) { ok(_) => (), err(_) => env.exit(3) } }
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn match_prior_pattern(
+    tables: ParseTables,
+    compiler: CompilerTables,
+    match_node: long,
+    stop_arm: long,
+    pattern_kind: long,
+    literal: long,
+) -> bool {
+    let scrutinee = compiler.child_first[match_node]
+    var arm = if scrutinee >= 0L { compiler.child_next[scrutinee] } else { -1L }
+    for step in 0L..tables.nodes[match_node].subtree {
+        if arm < 0L || arm == stop_arm { break }
+        let pattern = compiler.child_first[arm]
+        if pattern >= 0L && compiler.facts[pattern].flags == pattern_kind &&
+            (pattern_kind == MATCH_PATTERN_CASE || pattern_kind == MATCH_PATTERN_INTEGER || pattern_kind == MATCH_PATTERN_BOOL) &&
+            compiler.facts[pattern].literal == literal { return true }
+        arm = compiler.child_next[arm]
+    }
+    false
+}
+
+fn match_has_prior_wildcard(tables: ParseTables, compiler: CompilerTables, match_node: long, stop_arm: long) -> bool {
+    let scrutinee = compiler.child_first[match_node]
+    var arm = if scrutinee >= 0L { compiler.child_next[scrutinee] } else { -1L }
+    for step in 0L..tables.nodes[match_node].subtree {
+        if arm < 0L || arm == stop_arm { break }
+        let pattern = compiler.child_first[arm]
+        if pattern >= 0L && compiler.facts[pattern].flags == MATCH_PATTERN_WILDCARD { return true }
+        arm = compiler.child_next[arm]
+    }
+    false
+}
+
+fn match_covered_count(tables: ParseTables, compiler: CompilerTables, match_node: long, pattern_kind: long) -> long {
+    let scrutinee = compiler.child_first[match_node]
+    var arm = if scrutinee >= 0L { compiler.child_next[scrutinee] } else { -1L }
+    var count = 0L
+    for step in 0L..tables.nodes[match_node].subtree {
+        if arm < 0L { break }
+        let pattern = compiler.child_first[arm]
+        if pattern >= 0L && compiler.facts[pattern].flags == pattern_kind { count += 1L }
+        arm = compiler.child_next[arm]
+    }
+    count
+}
+
+fn write_type_name(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: CompilerTables,
+    type_id: long,
+) {
+    let ty = type_record(compiler, type_id)
+    if ty.name_token >= 0L { match write_token_raw(env.err, source, tokens, files[ty.file].base, ty.name_token) { ok(_) => (), err(_) => env.exit(3) } }
+    else { match env.err.write(scalar_type_name(type_id).bytes()) { ok(_) => (), err(_) => env.exit(3) } }
+}
+
+fn fail_match_arm_type(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    arm: long,
+    first_type: long,
+    second_type: long,
+) -> never {
+    let position = position_for_offset(file_index, files[file_index].base + tables.nodes[arm].start, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: match arms have different types: ") { ok(_) => (), err(_) => env.exit(3) }
+    write_type_name(env, source, files, tokens, compiler, first_type)
+    match env.err.write(b" and ") { ok(_) => (), err(_) => env.exit(3) }
+    write_type_name(env, source, files, tokens, compiler, second_type)
+    match env.err.write(b"; make reachable arms return the same type\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn fail_match_scalar_duplicate(
+    env: Env,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    arm: long,
+    value: long,
+    is_bool: bool,
+) -> never {
+    let position = position_for_offset(file_index, files[file_index].base + tables.nodes[arm].start, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: unreachable duplicate pattern '") { ok(_) => (), err(_) => env.exit(3) }
+    if is_bool {
+        if value == 1L { match env.err.write(b"true") { ok(_) => (), err(_) => env.exit(3) } }
+        else { match env.err.write(b"false") { ok(_) => (), err(_) => env.exit(3) } }
+    } else { match env.err.write(str(value).bytes()) { ok(_) => (), err(_) => env.exit(3) } }
+    match env.err.write(b"'; remove this arm\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn fail_match_requires_supported_type(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    match_node: long,
+    type_id: long,
+) -> never {
+    let position = position_for_offset(file_index, files[file_index].base + tables.nodes[match_node].start, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: match requires an enum, Option, Result, int, long, a numeric refinement, or bool; found ") { ok(_) => (), err(_) => env.exit(3) }
+    write_type_name(env, source, files, tokens, compiler, type_id)
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn fail_match_exhaustiveness(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    match_node: long,
+    matched_type: long,
+) -> never {
+    let position = position_for_offset(file_index, files[file_index].base + tables.nodes[match_node].start, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    if type_kind(compiler, matched_type) == TYPE_KIND_ENUM {
+        match env.err.write(b": error: non-exhaustive match; missing ") { ok(_) => (), err(_) => env.exit(3) }
+        let type_info = type_record(compiler, matched_type)
+        var wrote_case = false
+        for case_offset in 0L..type_info.field_count {
+            let case_index = type_info.field_start + case_offset
+            let case = compiler.enum_cases[case_index]
+            if match_prior_pattern(tables, compiler, match_node, -1L, MATCH_PATTERN_CASE, case.tag) { continue }
+            if wrote_case { match env.err.write(b", ") { ok(_) => (), err(_) => env.exit(3) } }
+            match write_token_raw(env.err, source, tokens, files[type_info.file].base, type_info.name_token) { ok(_) => (), err(_) => env.exit(3) }
+            match env.err.write(b".") { ok(_) => (), err(_) => env.exit(3) }
+            match write_token_raw(env.err, source, tokens, files[type_info.file].base, case.name_token) { ok(_) => (), err(_) => env.exit(3) }
+            wrote_case = true
+        }
+    } else if matched_type == TY_BOOL {
+        match env.err.write(b": error: non-exhaustive bool match; missing ") { ok(_) => (), err(_) => env.exit(3) }
+        var wrote_bool = false
+        if !match_prior_pattern(tables, compiler, match_node, -1L, MATCH_PATTERN_BOOL, 1L) {
+            match env.err.write(b"true") { ok(_) => (), err(_) => env.exit(3) }
+            wrote_bool = true
+        }
+        if !match_prior_pattern(tables, compiler, match_node, -1L, MATCH_PATTERN_BOOL, 0L) {
+            if wrote_bool { match env.err.write(b" and ") { ok(_) => (), err(_) => env.exit(3) } }
+            match env.err.write(b"false") { ok(_) => (), err(_) => env.exit(3) }
+        }
+    } else {
+        match env.err.write(b": error: integer matches need a '_' catch-all arm") { ok(_) => (), err(_) => env.exit(3) }
+    }
     match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
 }
@@ -2472,7 +3205,11 @@ fn natural_node_type(
         NodeKind.Unit => TY_UNIT,
         NodeKind.Name => {
             let binding = find_binding_in_scope(compiler, scope, compiler.token_name_ids[value.token])
-            if binding >= 0L { compiler.bindings[binding].ty } else { -1L }
+            if binding >= 0L { compiler.bindings[binding].ty }
+            else {
+                let candidate = user_case_matches(compiler, compiler.token_name_ids[value.token])
+                if candidate >= 0L { enum_case_owner_type_id(compiler, candidate) } else { -1L }
+            }
         },
         NodeKind.Call => {
             if token_is_word_at(source, tokens, files, file_index, value.token, "print") { TY_UNIT }
@@ -2480,8 +3217,25 @@ fn natural_node_type(
                 let id = compiler.token_name_ids[value.token]
                 let function = find_function_by_name(compiler, id)
                 if function >= 0L { compiler.functions[function].result_ty }
-                else { -1L }
+                else {
+                    let candidate = user_case_matches(compiler, id)
+                    if candidate >= 0L { enum_case_owner_type_id(compiler, candidate) } else { -1L }
+                }
             }
+        },
+        NodeKind.QualifiedCase => {
+            let enum_index = enum_type_matches(compiler, compiler.token_name_ids[value.token])
+            if enum_index >= 0L { enum_type_id(compiler, enum_index) } else { -1L }
+        },
+        NodeKind.Field => {
+            let receiver = compiler.child_first[node]
+            if receiver >= 0L && tables.nodes[receiver].kind == NodeKind.Name && find_binding_in_scope(compiler, scope, compiler.token_name_ids[tables.nodes[receiver].token]) < 0L {
+                let enum_index = enum_type_matches(compiler, compiler.token_name_ids[tables.nodes[receiver].token])
+                if enum_index >= 0L {
+                    let case_index = enum_case_matches(compiler, enum_index, compiler.token_name_ids[value.token])
+                    if case_index >= 0L { enum_type_id(compiler, enum_index) } else { -1L }
+                } else { -1L }
+            } else { -1L }
         },
         NodeKind.MethodCall => {
             if is_core_sys_receiver(source, tokens, files, tables, compiler, node, file_index) {
@@ -2872,13 +3626,16 @@ fn body_child_expected(
     } else if kind == NodeKind.Expect {
         TY_BOOL
     } else if kind == NodeKind.Call {
-        if token_is_word_at(source, tokens, files, file_index, tables.nodes[parent].token, "print") { -1L }
+        if frame.child2 >= 0L { enum_case_payload_type(compiler, frame.child2, child_index) }
+        else if token_is_word_at(source, tokens, files, file_index, tables.nodes[parent].token, "print") { -1L }
         else {
             let function = find_function_by_name(compiler, compiler.token_name_ids[tables.nodes[parent].token])
             if function >= 0L && child_index < compiler.functions[function].param_count {
                 compiler.parameters[compiler.functions[function].param_start + child_index].ty
             } else { -1L }
         }
+    } else if kind == NodeKind.QualifiedCase && frame.child2 >= 0L {
+        enum_case_payload_type(compiler, frame.child2, child_index)
     } else if kind == NodeKind.MethodCall && is_core_sys_receiver(source, tokens, files, tables, compiler, parent, file_index) {
         core_sys_argument_type(core_sys_operation(source, tokens, files, file_index, tables.nodes[parent].token), child_index)
     } else if kind == NodeKind.Cast && child == frame.child0 {
@@ -2959,6 +3716,197 @@ fn check_one_body(
         let node = frame.node
         let syntax = tables.nodes[node]
         let kind = syntax.kind
+        if kind == NodeKind.Match && frame.phase == 0L {
+            frame.child0 = compiler.child_first[node]
+            frame.cursor = if frame.child0 >= 0L { compiler.child_next[frame.child0] } else { -1L }
+            frame.phase = 70L
+            compiler.work[frame_index] = frame
+            if frame.child0 >= 0L {
+                push_check_frame(env, files, compiler, CheckFrame {
+                    node: frame.child0,
+                    scope: frame.scope,
+                    expected: -1L,
+                    function_id,
+                    loop_depth: frame.loop_depth,
+                    is_test,
+                    phase: 0L,
+                    cursor: -1L,
+                    child0: -1L,
+                    child1: -1L,
+                    child2: -1L,
+                    result_ty: -1L,
+                    auxiliary: 0L,
+                    reachable: true,
+                })
+            }
+            continue
+        }
+        if kind == NodeKind.Match && frame.phase == 70L {
+            let matched_type = compiler.facts[frame.child0].ty
+            if type_kind(compiler, matched_type) != TYPE_KIND_ENUM && !is_numeric_type(matched_type) && matched_type != TY_BOOL {
+                fail_match_requires_supported_type(env, source, files, tokens, tables, compiler, file_index, node, matched_type)
+            }
+            let arm = frame.cursor
+            if arm < 0L {
+                if !match_has_prior_wildcard(tables, compiler, node, -1L) {
+                    if type_kind(compiler, matched_type) == TYPE_KIND_ENUM {
+                        let type_info = type_record(compiler, matched_type)
+                        if match_covered_count(tables, compiler, node, MATCH_PATTERN_CASE) != type_info.field_count {
+                            fail_match_exhaustiveness(env, source, files, tokens, tables, compiler, file_index, node, matched_type)
+                        }
+                    } else if matched_type == TY_BOOL {
+                        if match_covered_count(tables, compiler, node, MATCH_PATTERN_BOOL) != 2L {
+                            fail_match_exhaustiveness(env, source, files, tokens, tables, compiler, file_index, node, matched_type)
+                        }
+                    } else {
+                        fail_match_exhaustiveness(env, source, files, tokens, tables, compiler, file_index, node, matched_type)
+                    }
+                }
+                let result_ty = if frame.result_ty < 0L { TY_NEVER } else { frame.result_ty }
+                if frame.expected >= 0L && result_ty != TY_NEVER && result_ty != frame.expected {
+                    require_type(env, files, compiler, file_index, node, frame.expected, result_ty, tables)
+                }
+                compiler.facts[node] = NodeFact { ty: result_ty, flags: if result_ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: 0L }
+                match compiler.work.pop() { some(_) => (), none() => () }
+                continue
+            }
+            let pattern = compiler.child_first[arm]
+            let body_node = if pattern >= 0L { compiler.child_next[pattern] } else { -1L }
+            let pattern_kind = tables.nodes[pattern].kind
+            let has_wildcard = match_has_prior_wildcard(tables, compiler, node, arm)
+            if pattern_kind == NodeKind.WildcardPattern {
+                var already_total = false
+                if type_kind(compiler, matched_type) == TYPE_KIND_ENUM {
+                    already_total = match_covered_count(tables, compiler, node, MATCH_PATTERN_CASE) == type_record(compiler, matched_type).field_count
+                } else if matched_type == TY_BOOL {
+                    already_total = match_covered_count(tables, compiler, node, MATCH_PATTERN_BOOL) == 2L
+                } else { () }
+                if has_wildcard || already_total {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[arm].start, "unreachable match arm; previous patterns already cover this value")
+                }
+                compiler.facts[pattern] = NodeFact { ty: matched_type, flags: MATCH_PATTERN_WILDCARD, binding: -1L, function: -1L, literal: 0L }
+            } else if pattern_kind == NodeKind.Integer {
+                if !is_numeric_type(matched_type) {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[pattern].start, "integer patterns require an int, long, or numeric refinement match value")
+                }
+                if has_wildcard { fail_at_message(env, files, compiler, file_index, tables.nodes[arm].start, "unreachable match arm after '_'") }
+                let pattern_ty = if (tables.nodes[pattern].flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else { matched_type }
+                require_type(env, files, compiler, file_index, pattern, matched_type, pattern_ty, tables)
+                let value = literal_value(env, files, compiler, tables, file_index, pattern, pattern_ty)
+                if match_prior_pattern(tables, compiler, node, arm, MATCH_PATTERN_INTEGER, value) {
+                    fail_match_scalar_duplicate(env, files, tables, compiler, file_index, arm, value, false)
+                }
+                compiler.facts[pattern] = NodeFact { ty: matched_type, flags: MATCH_PATTERN_INTEGER, binding: -1L, function: -1L, literal: value }
+            } else if pattern_kind == NodeKind.BoolPattern {
+                if matched_type != TY_BOOL {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[pattern].start, "bool patterns require a bool match value")
+                }
+                let value = if (tables.nodes[pattern].flags & FLAG_VALUE) != 0L { 1L } else { 0L }
+                if has_wildcard || match_prior_pattern(tables, compiler, node, arm, MATCH_PATTERN_BOOL, value) {
+                    fail_match_scalar_duplicate(env, files, tables, compiler, file_index, arm, value, true)
+                }
+                compiler.facts[pattern] = NodeFact { ty: TY_BOOL, flags: MATCH_PATTERN_BOOL, binding: -1L, function: -1L, literal: value }
+            } else if pattern_kind == NodeKind.CasePattern {
+                if type_kind(compiler, matched_type) != TYPE_KIND_ENUM {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[pattern].start, "enum case patterns require an enum, Option, or Result match value")
+                }
+                if has_wildcard { fail_at_message(env, files, compiler, file_index, tables.nodes[arm].start, "unreachable match arm after '_'") }
+                let enum_index = enum_type_index(compiler, matched_type)
+                if (tables.nodes[pattern].flags & FLAG_HAS_ANNOTATION) != 0L {
+                    let qualifier = tables.nodes[pattern].extra
+                    if enum_type_matches(compiler, compiler.token_name_ids[qualifier]) < 0L ||
+                        enum_type_id(compiler, enum_type_matches(compiler, compiler.token_name_ids[qualifier])) != matched_type {
+                        fail_match_qualifier(env, source, files, tokens, tables, compiler, file_index, pattern, matched_type)
+                    }
+                }
+                let case_index = enum_case_matches(compiler, enum_index, compiler.token_name_ids[tables.nodes[pattern].token])
+                if case_index < 0L {
+                    fail_unknown_enum_case(env, source, files, tokens, tables, compiler, file_index, tokens[tables.nodes[pattern].token].start, tables.nodes[pattern].token, enum_index)
+                }
+                let case = compiler.enum_cases[case_index]
+                let binding_count = count_children(tables, compiler, pattern)
+                if binding_count != case.payload_count {
+                    fail_match_case_arity(env, source, files, tokens, tables, compiler, file_index, pattern, matched_type, case_index, binding_count)
+                }
+                if match_prior_pattern(tables, compiler, node, arm, MATCH_PATTERN_CASE, case.tag) {
+                    fail_match_duplicate_case(env, source, files, tokens, tables, compiler, file_index, arm, matched_type, case_index)
+                }
+                compiler.facts[pattern] = NodeFact { ty: matched_type, flags: MATCH_PATTERN_CASE, binding: case_index, function: -1L, literal: case.tag }
+                let arm_scope = create_scope(env, files, compiler, frame.scope, function_id, arm, file_index)
+                var binding_node = compiler.child_first[pattern]
+                for payload_index in 0L..case.payload_count {
+                    if binding_node < 0L { fail_at_message(env, files, compiler, file_index, tables.nodes[pattern].start, "internal match pattern payload count mismatch") }
+                    let payload_ty = compiler.enum_payloads[case.payload_start + payload_index].ty
+                    if tables.nodes[binding_node].kind == NodeKind.PatternBinding {
+                        let binding = add_local_binding(env, source, files, tokens, tables, compiler, file_index, binding_node, tables.nodes[binding_node].token, arm_scope, payload_ty, false, false, false)
+                        compiler.facts[binding_node] = NodeFact { ty: payload_ty, flags: FACT_FALLS_THROUGH, binding, function: -1L, literal: payload_index }
+                    } else {
+                        compiler.facts[binding_node] = NodeFact { ty: payload_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: payload_index }
+                    }
+                    binding_node = compiler.child_next[binding_node]
+                }
+                frame.child1 = arm
+                frame.child2 = body_node
+                frame.phase = 71L
+                compiler.work[frame_index] = frame
+                push_check_frame(env, files, compiler, CheckFrame {
+                    node: body_node,
+                    scope: arm_scope,
+                    expected: frame.expected,
+                    function_id,
+                    loop_depth: frame.loop_depth,
+                    is_test,
+                    phase: 0L,
+                    cursor: -1L,
+                    child0: -1L,
+                    child1: -1L,
+                    child2: -1L,
+                    result_ty: -1L,
+                    auxiliary: 1L,
+                    reachable: true,
+                })
+                continue
+            } else {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[pattern].start, "unsupported match pattern")
+            }
+            let arm_scope = create_scope(env, files, compiler, frame.scope, function_id, arm, file_index)
+            frame.child1 = arm
+            frame.child2 = body_node
+            frame.phase = 71L
+            compiler.work[frame_index] = frame
+            push_check_frame(env, files, compiler, CheckFrame {
+                node: body_node,
+                scope: arm_scope,
+                expected: frame.expected,
+                function_id,
+                loop_depth: frame.loop_depth,
+                is_test,
+                phase: 0L,
+                cursor: -1L,
+                child0: -1L,
+                child1: -1L,
+                child2: -1L,
+                result_ty: -1L,
+                auxiliary: 1L,
+                reachable: true,
+            })
+            continue
+        }
+        if kind == NodeKind.Match && frame.phase == 71L {
+            let arm_type = compiler.facts[frame.child2].ty
+            if arm_type != TY_NEVER {
+                if frame.result_ty >= 0L && frame.result_ty != arm_type {
+                    fail_match_arm_type(env, source, files, tokens, tables, compiler, file_index, frame.child1, frame.result_ty, arm_type)
+                }
+                if frame.result_ty < 0L { frame.result_ty = arm_type }
+            }
+            frame.cursor = compiler.child_next[frame.child1]
+            frame.child1 = -1L
+            frame.child2 = -1L
+            frame.phase = 70L
+            compiler.work[frame_index] = frame
+            continue
+        }
         if frame.phase == 0L {
             if function_id <= -100000L && (kind == NodeKind.Return || kind == NodeKind.ReturnStatement) {
                 fail_at_message(env, files, compiler, file_index, syntax.start, "return is not allowed in a field default")
@@ -2978,6 +3926,23 @@ fn check_one_body(
                 continue
             }
             if kind == NodeKind.Field {
+                let receiver = compiler.child_first[node]
+                if receiver >= 0L && tables.nodes[receiver].kind == NodeKind.Name &&
+                    find_binding_in_scope(compiler, frame.scope, compiler.token_name_ids[tables.nodes[receiver].token]) < 0L {
+                    let enum_index = enum_type_matches(compiler, compiler.token_name_ids[tables.nodes[receiver].token])
+                    if enum_index >= 0L {
+                        let case_index = enum_case_matches(compiler, enum_index, compiler.token_name_ids[syntax.token])
+                        if case_index >= 0L {
+                            let case = compiler.enum_cases[case_index]
+                            if case.payload_count > 0L { fail_enum_case_needs_payload(env, source, files, tokens, tables, compiler, file_index, node, enum_index, case_index) }
+                            let ty = enum_type_id(compiler, enum_index)
+                            if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
+                            compiler.facts[node] = NodeFact { ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: case.tag }
+                            match compiler.work.pop() { some(_) => (), none() => () }
+                            continue
+                        }
+                    }
+                }
                 frame.child0 = compiler.child_first[node]
                 frame.cursor = frame.child0
                 frame.phase = 1L
@@ -3025,6 +3990,48 @@ fn check_one_body(
                 continue
             }
             if kind == NodeKind.Call {
+                let target = find_function_by_name(compiler, compiler.token_name_ids[syntax.token])
+                if target < 0L {
+                    var case_index = -1L
+                    var case_type = -1L
+                    if type_kind(compiler, frame.expected) == TYPE_KIND_ENUM {
+                        let expected_enum_index = enum_type_index(compiler, frame.expected)
+                        let expected_case = enum_case_matches(compiler, expected_enum_index, compiler.token_name_ids[syntax.token])
+                        if expected_case >= 0L { case_index = expected_case; case_type = frame.expected }
+                    }
+                    if case_index < 0L {
+                        case_index = user_case_matches(compiler, compiler.token_name_ids[syntax.token])
+                        if case_index == -2L { fail_ambiguous_enum_case(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token) }
+                        if case_index >= 0L { case_type = enum_case_owner_type_id(compiler, case_index) }
+                    }
+                    if case_index >= 0L {
+                        let actual = count_children(tables, compiler, node)
+                        if actual != compiler.enum_cases[case_index].payload_count { fail_enum_constructor_arity(env, source, files, tokens, tables, compiler, file_index, node, case_index, actual) }
+                        frame.result_ty = case_type
+                        frame.child2 = case_index
+                        frame.cursor = compiler.child_first[node]
+                        frame.phase = 1L
+                        compiler.work[frame_index] = frame
+                        continue
+                    }
+                }
+                frame.cursor = compiler.child_first[node]
+                frame.phase = 1L
+                compiler.work[frame_index] = frame
+                continue
+            }
+            if kind == NodeKind.QualifiedCase {
+                let enum_index = enum_type_matches(compiler, compiler.token_name_ids[syntax.token])
+                if enum_index < 0L {
+                    fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "unknown enum '", syntax.token, "'; declare it with enum")
+                }
+                let case_token = tables.extra[syntax.extra]
+                let case_index = enum_case_matches(compiler, enum_index, compiler.token_name_ids[case_token])
+                if case_index < 0L { fail_unknown_enum_case(env, source, files, tokens, tables, compiler, file_index, tokens[case_token].start, case_token, enum_index) }
+                let actual = count_children(tables, compiler, node)
+                if actual != compiler.enum_cases[case_index].payload_count { fail_enum_constructor_arity(env, source, files, tokens, tables, compiler, file_index, node, case_index, actual) }
+                frame.result_ty = enum_type_id(compiler, enum_index)
+                frame.child2 = case_index
                 frame.cursor = compiler.child_first[node]
                 frame.phase = 1L
                 compiler.work[frame_index] = frame
@@ -3156,6 +4163,25 @@ fn check_one_body(
                 if binding < 0L {
                     let function = find_function_by_name(compiler, compiler.token_name_ids[syntax.token])
                     if function >= 0L { report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node, offset: syntax.start, category: UNSUPPORTED_NODE, token: syntax.token }) }
+                    var case_index = -1L
+                    var case_type = -1L
+                    if type_kind(compiler, frame.expected) == TYPE_KIND_ENUM {
+                        let expected_enum_index = enum_type_index(compiler, frame.expected)
+                        let expected_case = enum_case_matches(compiler, expected_enum_index, compiler.token_name_ids[syntax.token])
+                        if expected_case >= 0L { case_index = expected_case; case_type = frame.expected }
+                    } else if frame.expected < 0L {
+                        case_index = user_case_matches(compiler, compiler.token_name_ids[syntax.token])
+                        if case_index == -2L { fail_ambiguous_enum_case(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token) }
+                        if case_index >= 0L { case_type = enum_case_owner_type_id(compiler, case_index) }
+                    } else { () }
+                    if case_index >= 0L {
+                        let case = compiler.enum_cases[case_index]
+                        if case.payload_count > 0L { fail_enum_constructor_arity(env, source, files, tokens, tables, compiler, file_index, node, case_index, 0L) }
+                        if frame.expected >= 0L && frame.expected != case_type { require_type(env, files, compiler, file_index, node, frame.expected, case_type, tables) }
+                        compiler.facts[node] = NodeFact { ty: case_type, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: case.tag }
+                        match compiler.work.pop() { some(_) => (), none() => () }
+                        continue
+                    }
                     fail_name_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, frame.scope, false)
                 }
                 let ty = compiler.bindings[binding].ty
@@ -3183,11 +4209,11 @@ fn check_one_body(
             var child_scope = frame.scope
             var child_loop_depth = frame.loop_depth
             var child_index = -1L
-            if kind == NodeKind.Block || kind == NodeKind.Call || kind == NodeKind.MethodCall {
+            if kind == NodeKind.Block || kind == NodeKind.Call || kind == NodeKind.QualifiedCase || kind == NodeKind.MethodCall {
                 child = frame.cursor
                 if child >= 0L { frame.cursor = compiler.child_next[child] }
                 child_index = 0L
-                if kind == NodeKind.Call || kind == NodeKind.MethodCall {
+                if kind == NodeKind.Call || kind == NodeKind.QualifiedCase || kind == NodeKind.MethodCall {
                     var sibling = compiler.child_first[node]
                     var position = 0L
                     for count in 0L..tables.nodes[node].subtree {
@@ -3379,7 +4405,12 @@ fn check_one_body(
         } else if kind == NodeKind.Call {
             let name_id = compiler.token_name_ids[syntax.token]
             let arg_count = count_children(tables, compiler, node)
-            if token_is_word_at(source, tokens, files, file_index, syntax.token, "print") {
+            if frame.child2 >= 0L {
+                let ty = frame.result_ty
+                if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
+                let case = compiler.enum_cases[frame.child2]
+                compiler.facts[node] = NodeFact { ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: case.tag }
+            } else if token_is_word_at(source, tokens, files, file_index, syntax.token, "print") {
                 if (config.capability_mask & 2L) == 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "package manifest must grant capability 'out' in the 'capabilities' key") }
                 if arg_count != 1L { fail_at_message(env, files, compiler, file_index, syntax.start, "print takes one argument, but got an invalid number; call print(value)") }
                 let argument = child_at(tables, compiler, node, 0L)
@@ -3402,6 +4433,11 @@ fn check_one_body(
                 let ty = function.result_ty
                 compiler.facts[node] = NodeFact { ty, flags: if ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: target, literal: 0L }
             }
+        } else if kind == NodeKind.QualifiedCase {
+            let ty = frame.result_ty
+            if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
+            let case = compiler.enum_cases[frame.child2]
+            compiler.facts[node] = NodeFact { ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: case.tag }
         } else if kind == NodeKind.MethodCall {
             let operation = frame.auxiliary
             let expected_count = core_sys_argument_count(operation)
@@ -4309,7 +5345,7 @@ fn emit_field_path_value(
     var current = node
     for path_step in 0L..MAX_TREE_NODES {
         if current < 0L || tables.nodes[current].kind != NodeKind.Field { break }
-        compiler.type_walk.push(TypeWalkFrame { type_index: current, field_index: -1L, size: 0L, align: 0L }).unwrap()
+        compiler.type_walk.push(TypeWalkFrame { type_index: current, field_index: -1L, size: 0L, align: 0L, case_index: 0L, max_size: 0L }).unwrap()
         current = compiler.child_first[current]
     }
     for path_index in 0L..compiler.type_walk.count() {
@@ -4400,15 +5436,17 @@ fn emit_type_helper_call_two(
 }
 
 fn aggregate_source_kind(tables: ParseTables, compiler: CompilerTables, node: long) -> long {
-    if tables.nodes[node].kind == NodeKind.Field { 3L }
+    if tables.nodes[node].kind == NodeKind.Field && compiler.facts[node].binding < 0L && type_kind(compiler, compiler.facts[node].ty) == TYPE_KIND_ENUM { 0L }
+    else if tables.nodes[node].kind == NodeKind.Field { 3L }
     else if tables.nodes[node].kind == NodeKind.Name {
         let binding = compiler.facts[node].binding
-        if compiler.bindings[binding].parameter { 2L } else { 1L }
+        if binding < 0L { 0L }
+        else if compiler.bindings[binding].parameter { 2L } else { 1L }
     } else { 0L }
 }
 
 fn aggregate_source_id(tables: ParseTables, compiler: CompilerTables, node: long) -> long {
-    if tables.nodes[node].kind == NodeKind.Name { compiler.facts[node].binding }
+    if tables.nodes[node].kind == NodeKind.Name && compiler.facts[node].binding >= 0L { compiler.facts[node].binding }
     else { node }
 }
 
@@ -4728,6 +5766,94 @@ fn emit_sys_method(
     if operation == SYS_EXIT_GROUP { ir_write_ascii(compiler, ir, "  unreachable\n") }
 }
 
+fn enum_temporary_address(node: long, part: long) -> long {
+    1000000000000L + node * (MAX_TREE_NODES + 1L) + part
+}
+
+fn emit_enum_tag_store(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    tag: long,
+) {
+    let address = enum_temporary_address(node, 0L)
+    emit_layout_address(compiler, ir, address, native_location(0L, node, 0L))
+    ir_write_ascii(compiler, ir, "  %enum.tag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i32 0, "); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, "\n  store i32 %enum.tag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n")
+}
+
+fn emit_enum_constructor_payload(
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    constructor: long,
+    case_index: long,
+    payload_index: long,
+    value_node: long,
+) {
+    let case = compiler.enum_cases[case_index]
+    let payload = compiler.enum_payloads[case.payload_start + payload_index]
+    if payload.ty == TY_UNIT { return }
+    let address = enum_temporary_address(constructor, payload_index + 1L)
+    emit_layout_address(compiler, ir, address, native_location(0L, constructor, payload.offset))
+    if is_aggregate_type(compiler, payload.ty) {
+        let source_kind = aggregate_source_kind(tables, compiler, value_node)
+        let source_node = aggregate_source_id(tables, compiler, value_node)
+        emit_aggregate_copy(compiler, ir, payload.ty, native_location(2L, address, 0L), aggregate_source_location(source_kind, source_node))
+    } else {
+        emit_store_scalar(compiler, ir, address, payload.ty, value_node)
+    }
+}
+
+fn emit_match_payload_bindings(
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    match_node: long,
+    arm: long,
+) {
+    let scrutinee = compiler.child_first[match_node]
+    let pattern = compiler.child_first[arm]
+    if tables.nodes[pattern].kind != NodeKind.CasePattern { return }
+    let case_index = compiler.facts[pattern].binding
+    if case_index < 0L { return }
+    let case = compiler.enum_cases[case_index]
+    let source_kind = aggregate_source_kind(tables, compiler, scrutinee)
+    let source_node = aggregate_source_id(tables, compiler, scrutinee)
+    var binding_node = compiler.child_first[pattern]
+    for payload_index in 0L..case.payload_count {
+        if binding_node < 0L { break }
+        let payload = compiler.enum_payloads[case.payload_start + payload_index]
+        if tables.nodes[binding_node].kind == NodeKind.PatternBinding {
+            let binding = compiler.facts[binding_node].binding
+            let source_address = aggregate_source_location(source_kind, source_node)
+            emit_layout_address(compiler, ir, binding_node, native_location(source_address.anchor_kind, source_address.anchor_node, payload.offset))
+            if payload.ty != TY_UNIT {
+                if is_aggregate_type(compiler, payload.ty) {
+                    emit_aggregate_copy(compiler, ir, payload.ty, aggregate_destination_location(1L, binding), aggregate_source_location(3L, binding_node))
+                } else if payload.ty == TY_BOOL {
+                    ir_write_ascii(compiler, ir, "  %match.bool."); ir_write_number(compiler, ir, binding_node); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, binding_node); ir_write_ascii(compiler, ir, ", align 1\n  store i8 %match.bool."); ir_write_number(compiler, ir, binding_node); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
+                } else {
+                    ir_write_ascii(compiler, ir, "  %match.payload."); ir_write_number(compiler, ir, binding_node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(payload.ty)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, binding_node); ir_write_ascii(compiler, ir, ", align 1\n  store "); ir_write_ascii(compiler, ir, llvm_type_name(payload.ty)); ir_write_ascii(compiler, ir, " %match.payload."); ir_write_number(compiler, ir, binding_node); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
+                }
+            }
+        }
+        binding_node = compiler.child_next[binding_node]
+    }
+}
+
+fn match_wildcard_ordinal(tables: ParseTables, compiler: CompilerTables, first_arm: long, first_ordinal: long, match_node: long) -> long {
+    var scan = first_arm
+    var ordinal = first_ordinal
+    for step in 0L..tables.nodes[match_node].subtree {
+        if scan < 0L { break }
+        let pattern = compiler.child_first[scan]
+        if pattern >= 0L && tables.nodes[pattern].kind == NodeKind.WildcardPattern { return ordinal }
+        scan = compiler.child_next[scan]
+        ordinal += 1L
+    }
+    -1L
+}
+
 fn emit_expr_linear(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -4758,15 +5884,24 @@ fn emit_expr_linear(
             } else if kind == NodeKind.Name {
                 let ty = compiler.facts[current].ty
                 let binding = compiler.facts[current].binding
-                if ty == TY_UNIT || is_aggregate_type(compiler, ty) { () }
+                let case_tag = compiler.facts[current].literal
+                if type_kind(compiler, ty) == TYPE_KIND_ENUM && binding < 0L {
+                    emit_enum_tag_store(compiler, ir, current, case_tag)
+                } else if ty == TY_UNIT || is_aggregate_type(compiler, ty) { () }
                 else if ty == TY_BOOL { ir_write_ascii(compiler, ir, "  %bool.load."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load i8, ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i8 %bool.load."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " to i1\n") }
                 else { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             } else if kind == NodeKind.Field {
-                frame.child0 = compiler.child_first[current]
-                frame.phase = 1L
-                compiler.expr_work[frame_index] = frame
-                compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+                if type_kind(compiler, compiler.facts[current].ty) == TYPE_KIND_ENUM && compiler.facts[current].binding < 0L {
+                    let case_tag = compiler.facts[current].literal
+                    emit_enum_tag_store(compiler, ir, current, case_tag)
+                    match compiler.expr_work.pop() { some(_) => (), none => () }
+                } else {
+                    frame.child0 = compiler.child_first[current]
+                    frame.phase = 1L
+                    compiler.expr_work[frame_index] = frame
+                    compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+                }
             } else if kind == NodeKind.StructInit {
                 frame.cursor = compiler.child_first[current]
                 frame.phase = 50L
@@ -4786,9 +5921,11 @@ fn emit_expr_linear(
                 frame.phase = 1L
                 compiler.expr_work[frame_index] = frame
                 compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
-            } else if kind == NodeKind.Call {
+            } else if kind == NodeKind.Call || kind == NodeKind.QualifiedCase {
+                let is_constructor = compiler.facts[current].function < 0L && type_kind(compiler, compiler.facts[current].ty) == TYPE_KIND_ENUM
                 frame.cursor = compiler.child_first[current]
-                frame.phase = 1L
+                frame.phase = if is_constructor { 60L } else { 1L }
+                frame.auxiliary = 0L
                 compiler.expr_work[frame_index] = frame
             } else if kind == NodeKind.MethodCall {
                 let receiver = compiler.child_first[current]
@@ -4817,6 +5954,13 @@ fn emit_expr_linear(
                 frame.child1 = compiler.child_next[frame.child0]
                 frame.child2 = compiler.child_next[frame.child1]
                 frame.phase = 1L
+                compiler.expr_work[frame_index] = frame
+                compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+            } else if kind == NodeKind.Match {
+                frame.child0 = compiler.child_first[current]
+                frame.cursor = if frame.child0 >= 0L { compiler.child_next[frame.child0] } else { -1L }
+                frame.auxiliary = 0L
+                frame.phase = 30L
                 compiler.expr_work[frame_index] = frame
                 compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
             } else if kind == NodeKind.Block {
@@ -5002,6 +6146,27 @@ fn emit_expr_linear(
                 ir_write_ascii(compiler, ir, llvm_type_name(operand_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, left); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, "\n")
             }
             match compiler.expr_work.pop() { some(_) => (), none => () }
+        } else if (kind == NodeKind.Call || kind == NodeKind.QualifiedCase) && (frame.phase == 60L || frame.phase == 61L) {
+            let case_index = enum_case_for_tag(compiler, compiler.facts[current].ty, compiler.facts[current].literal)
+            if frame.phase == 61L {
+                emit_enum_constructor_payload(tables, compiler, ir, current, case_index, frame.child1, frame.child0)
+                frame.auxiliary += 1L
+                frame.phase = 60L
+                compiler.expr_work[frame_index] = frame
+            } else if frame.cursor >= 0L {
+                let argument = frame.cursor
+                let payload_index = frame.auxiliary
+                frame.cursor = compiler.child_next[argument]
+                frame.child0 = argument
+                frame.child1 = payload_index
+                frame.phase = 61L
+                compiler.expr_work[frame_index] = frame
+                compiler.expr_work.push(EmitExprFrame { node: argument, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+            } else {
+                let case_tag = compiler.facts[current].literal
+                emit_enum_tag_store(compiler, ir, current, case_tag)
+                match compiler.expr_work.pop() { some(_) => (), none() => () }
+            }
         } else if kind == NodeKind.Call {
             if frame.phase == 2L {
                 let argument = frame.child0
@@ -5084,6 +6249,103 @@ fn emit_expr_linear(
             } else {
                 emit_sys_method(source, files, tokens, tables, compiler, ir, current, file_index)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
+            }
+        } else if kind == NodeKind.Match && frame.phase == 30L {
+            let matched_type = compiler.facts[frame.child0].ty
+            let wildcard_arm = match_wildcard_ordinal(tables, compiler, frame.cursor, frame.auxiliary, current)
+            let default_arm = if wildcard_arm >= 0L { wildcard_arm } else { -1L }
+            if type_kind(compiler, matched_type) == TYPE_KIND_ENUM {
+                let source_kind = aggregate_source_kind(tables, compiler, frame.child0)
+                let source_node = aggregate_source_id(tables, compiler, frame.child0)
+                let source_location = aggregate_source_location(source_kind, source_node)
+                let tag_address = enum_temporary_address(current, MAX_TREE_NODES)
+                emit_layout_address(compiler, ir, tag_address, native_location(source_location.anchor_kind, source_location.anchor_node, 0L))
+                ir_write_ascii(compiler, ir, "  %match.tag."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, tag_address); ir_write_ascii(compiler, ir, ", align 1\n  switch i32 %match.tag."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %")
+            } else {
+                ir_write_ascii(compiler, ir, "  switch "); ir_write_ascii(compiler, ir, llvm_type_name(matched_type)); ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", label %")
+            }
+            if default_arm >= 0L { ir_write_ascii(compiler, ir, "match.arm."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, default_arm) }
+            else { ir_write_ascii(compiler, ir, "match.invalid."); ir_write_number(compiler, ir, current) }
+            ir_write_ascii(compiler, ir, " [\n")
+            var scan = frame.cursor
+            var ordinal = frame.auxiliary
+            for arm_step in 0L..tables.nodes[current].subtree {
+                if scan < 0L { break }
+                let pattern = compiler.child_first[scan]
+                if pattern >= 0L && tables.nodes[pattern].kind != NodeKind.WildcardPattern {
+                    let fact = compiler.facts[pattern]
+                    ir_write_ascii(compiler, ir, "    "); ir_write_ascii(compiler, ir, llvm_type_name(matched_type)); ir_push_byte(compiler, ir, 32)
+                    if matched_type == TY_BOOL { if fact.literal == 1L { ir_write_ascii(compiler, ir, "true") } else { ir_write_ascii(compiler, ir, "false") } }
+                    else { ir_write_number(compiler, ir, fact.literal) }
+                    ir_write_ascii(compiler, ir, ", label %match.arm."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, ordinal); ir_push_byte(compiler, ir, 10)
+                }
+                scan = compiler.child_next[scan]
+                ordinal += 1L
+            }
+            ir_write_ascii(compiler, ir, "  ]\n")
+            if default_arm < 0L {
+                ir_write_ascii(compiler, ir, "match.invalid."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  unreachable\n")
+            }
+            frame.phase = 32L
+            compiler.expr_work[frame_index] = frame
+        } else if kind == NodeKind.Match && frame.phase == 31L {
+            let arm = frame.child1
+            let body = frame.child2
+            if compiler.facts[body].ty != TY_NEVER {
+                let result_ty = compiler.facts[current].ty
+                let tail = if (tables.nodes[body].flags & FLAG_HAS_TAIL) != 0L { node_last_child(tables, compiler, body) } else { -1L }
+                if is_aggregate_type(compiler, result_ty) && tail >= 0L {
+                    let source_kind = aggregate_source_kind(tables, compiler, tail)
+                    let source_node = aggregate_source_id(tables, compiler, tail)
+                    emit_aggregate_copy(compiler, ir, result_ty, aggregate_destination_location(0L, current), aggregate_source_location(source_kind, source_node))
+                }
+                ir_write_ascii(compiler, ir, "  br label %match.arm.cont."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, frame.auxiliary); ir_push_byte(compiler, ir, 10)
+                ir_write_ascii(compiler, ir, "match.arm.cont."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, frame.auxiliary); ir_write_ascii(compiler, ir, ":\n  br label %match.end."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 10)
+            }
+            frame.auxiliary += 1L
+            frame.phase = 32L
+            compiler.expr_work[frame_index] = frame
+            let _ = arm
+        } else if kind == NodeKind.Match && frame.phase == 32L {
+            if frame.cursor >= 0L {
+                let arm = frame.cursor
+                let ordinal = frame.auxiliary
+                let pattern = compiler.child_first[arm]
+                let body = if pattern >= 0L { compiler.child_next[pattern] } else { -1L }
+                ir_write_ascii(compiler, ir, "match.arm."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, ordinal); ir_write_ascii(compiler, ir, ":\n")
+                emit_match_payload_bindings(tables, compiler, ir, current, arm)
+                frame.cursor = compiler.child_next[arm]
+                frame.child1 = arm
+                frame.child2 = body
+                frame.phase = 31L
+                compiler.expr_work[frame_index] = frame
+                compiler.expr_work.push(EmitExprFrame { node: body, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+            } else if compiler.facts[current].ty != TY_NEVER {
+                ir_write_ascii(compiler, ir, "match.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n")
+                let result_ty = compiler.facts[current].ty
+                if result_ty != TY_UNIT && !is_aggregate_type(compiler, result_ty) {
+                    ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = phi "); ir_write_ascii(compiler, ir, llvm_type_name(result_ty)); ir_push_byte(compiler, ir, 32)
+                    var scan = if compiler.child_first[current] >= 0L { compiler.child_next[compiler.child_first[current]] } else { -1L }
+                    var ordinal = 0L
+                    var wrote = false
+                    for arm_step in 0L..tables.nodes[current].subtree {
+                        if scan < 0L { break }
+                        let pattern = compiler.child_first[scan]
+                        let body = if pattern >= 0L { compiler.child_next[pattern] } else { -1L }
+                        if body >= 0L && compiler.facts[body].ty != TY_NEVER {
+                            if wrote { ir_write_ascii(compiler, ir, ", ") }
+                            let tail = if (tables.nodes[body].flags & FLAG_HAS_TAIL) != 0L { node_last_child(tables, compiler, body) } else { -1L }
+                            ir_write_ascii(compiler, ir, "[ %v"); ir_write_number(compiler, ir, tail); ir_write_ascii(compiler, ir, ", %match.arm.cont."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, ordinal); ir_write_ascii(compiler, ir, " ]")
+                            wrote = true
+                        }
+                        scan = compiler.child_next[scan]
+                        ordinal += 1L
+                    }
+                    ir_push_byte(compiler, ir, 10)
+                }
+                match compiler.expr_work.pop() { some(_) => (), none() => () }
+            } else {
+                match compiler.expr_work.pop() { some(_) => (), none() => () }
             }
         } else if kind == NodeKind.If && frame.phase == 1L {
             ir_write_ascii(compiler, ir, "  br i1 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", label %if.expr.then."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %if.expr.")
@@ -5937,16 +7199,21 @@ fn mark_struct_helpers(
         } else if syntax.kind == NodeKind.InitializerField || syntax.kind == NodeKind.If || syntax.kind == NodeKind.Block {
             let ty = compiler.facts[node].ty
             add_type_helper_flag(compiler, ty, 1L)
-        } else if syntax.kind == NodeKind.Call {
+        } else if syntax.kind == NodeKind.PatternBinding {
+            let binding_ty = compiler.facts[node].ty
+            add_type_helper_flag(compiler, binding_ty, 1L)
+        } else if syntax.kind == NodeKind.Call || syntax.kind == NodeKind.QualifiedCase {
             let file_index = node_file_index(tables.nodes, files, node)
-            let is_print = token_is_word_at(source, tokens, files, file_index, syntax.token, "print")
+            let is_print = syntax.kind == NodeKind.Call && token_is_word_at(source, tokens, files, file_index, syntax.token, "print")
+            let is_constructor = compiler.facts[node].function < 0L && type_kind(compiler, compiler.facts[node].ty) == TYPE_KIND_ENUM &&
+                (syntax.kind == NodeKind.QualifiedCase || user_case_matches(compiler, compiler.token_name_ids[syntax.token]) != -1L)
             var argument = compiler.child_first[node]
             for argument_step in 0L..tables.nodes[node].subtree {
                 if argument < 0L { break }
                 let argument_ty = compiler.facts[argument].ty
                 if is_aggregate_type(compiler, argument_ty) {
                     if is_print { add_type_helper_flag(compiler, argument_ty, 4L) }
-                    else if tables.nodes[argument].kind == NodeKind.Name || tables.nodes[argument].kind == NodeKind.Field {
+                    else if is_constructor || tables.nodes[argument].kind == NodeKind.Name || tables.nodes[argument].kind == NodeKind.Field {
                         add_type_helper_flag(compiler, argument_ty, 1L)
                     } else { () }
                 }
@@ -5973,18 +7240,123 @@ fn mark_struct_helpers(
             }
         }
     }
-    for pass in 0L..struct_type_count(compiler) {
-        for type_index in 0L..struct_type_count(compiler) {
-            let type_info = struct_record(compiler, type_index)
-            let type_id = struct_type_id(compiler, type_index)
-            for offset in 0L..type_info.field_count {
-                let child_ty = compiler.struct_fields[type_info.field_start + offset].ty
-                if !is_aggregate_type(compiler, child_ty) { continue }
-                if has_type_helper(compiler, type_id, HELPER_COPY) { register_type_helper(compiler, child_ty, HELPER_COPY) }
-                if has_type_helper(compiler, type_id, HELPER_EQUAL) { register_type_helper(compiler, child_ty, HELPER_EQUAL) }
-                if has_type_helper(compiler, type_id, HELPER_PRINT) { register_type_helper(compiler, child_ty, HELPER_PRINT) }
-            }
+    for pass in 0L..type_count(compiler) {
+        for type_id in 0L..type_count(compiler) {
+            if type_kind(compiler, type_id) == TYPE_KIND_STRUCT {
+                let type_info = type_record(compiler, type_id)
+                for offset in 0L..type_info.field_count {
+                    let child_ty = compiler.struct_fields[type_info.field_start + offset].ty
+                    if !is_aggregate_type(compiler, child_ty) { continue }
+                    if has_type_helper(compiler, type_id, HELPER_COPY) { register_type_helper(compiler, child_ty, HELPER_COPY) }
+                    if has_type_helper(compiler, type_id, HELPER_EQUAL) { register_type_helper(compiler, child_ty, HELPER_EQUAL) }
+                    if has_type_helper(compiler, type_id, HELPER_PRINT) { register_type_helper(compiler, child_ty, HELPER_PRINT) }
+                }
+            } else if type_kind(compiler, type_id) == TYPE_KIND_ENUM {
+                let type_info = type_record(compiler, type_id)
+                for case_offset in 0L..type_info.field_count {
+                    let case = compiler.enum_cases[type_info.field_start + case_offset]
+                    for part_offset in 0L..case.payload_count {
+                        let child_ty = compiler.enum_payloads[case.payload_start + part_offset].ty
+                        if !is_aggregate_type(compiler, child_ty) { continue }
+                        if has_type_helper(compiler, type_id, HELPER_COPY) { register_type_helper(compiler, child_ty, HELPER_COPY) }
+                        if has_type_helper(compiler, type_id, HELPER_EQUAL) { register_type_helper(compiler, child_ty, HELPER_EQUAL) }
+                        if has_type_helper(compiler, type_id, HELPER_PRINT) { register_type_helper(compiler, child_ty, HELPER_PRINT) }
+                    }
+                }
+            } else { () }
         }
+    }
+}
+
+fn emit_enum_copy_helpers(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+) {
+    for enum_index in 0L..enum_type_count(compiler) {
+        let ty = enum_record(compiler, enum_index)
+        let type_id = enum_type_id(compiler, enum_index)
+        if !has_type_helper(compiler, type_id, HELPER_COPY) { continue }
+        let tag_source = MAX_TREE_NODES * 20L + type_id * 2L
+        let tag_dest = tag_source + 1L
+        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY); ir_write_ascii(compiler, ir, "(")
+        emit_location_argument(compiler, ir, native_location(4L, 0L, 0L)); ir_write_ascii(compiler, ir, ", ")
+        emit_location_argument(compiler, ir, native_location(5L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
+        emit_layout_address(compiler, ir, tag_source, native_location(5L, 0L, 0L))
+        emit_layout_address(compiler, ir, tag_dest, native_location(4L, 0L, 0L))
+        ir_write_ascii(compiler, ir, "  %copy.tag."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, tag_source); ir_write_ascii(compiler, ir, ", align 1\n  store i32 %copy.tag."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, tag_dest); ir_write_ascii(compiler, ir, ", align 1\n  switch i32 %copy.tag."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %copy.invalid."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " [\n")
+        for case_offset in 0L..ty.field_count {
+            let case = compiler.enum_cases[ty.field_start + case_offset]
+            ir_write_ascii(compiler, ir, "    i32 "); ir_write_number(compiler, ir, case.tag); ir_write_ascii(compiler, ir, ", label %copy.case."); ir_write_number(compiler, ir, type_id); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, case.tag); ir_push_byte(compiler, ir, 10)
+        }
+        ir_write_ascii(compiler, ir, "  ]\n")
+        for case_offset in 0L..ty.field_count {
+            let case = compiler.enum_cases[ty.field_start + case_offset]
+            ir_write_ascii(compiler, ir, "copy.case."); ir_write_number(compiler, ir, type_id); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, case.tag); ir_write_ascii(compiler, ir, ":\n")
+            for part_offset in 0L..case.payload_count {
+                let payload_index = case.payload_start + part_offset
+                let payload = compiler.enum_payloads[payload_index]
+                if payload.ty == TY_UNIT { continue }
+                let dest_address = MAX_TREE_NODES * 20L + type_count(compiler) * 2L + payload_index * 2L
+                let source_address = dest_address + 1L
+                emit_layout_address(compiler, ir, dest_address, native_location(4L, 0L, payload.offset))
+                emit_layout_address(compiler, ir, source_address, native_location(5L, 0L, payload.offset))
+                if is_aggregate_type(compiler, payload.ty) {
+                    ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_two(compiler, ir, payload.ty, HELPER_COPY, native_location(2L, dest_address, 0L), native_location(2L, source_address, 0L)); ir_push_byte(compiler, ir, 10)
+                } else {
+                    let storage_type: Ascii max 8 = if payload.ty == TY_BOOL { "i8" } else { llvm_type_name(payload.ty) }
+                    ir_write_ascii(compiler, ir, "  %copy.value."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, source_address); ir_write_ascii(compiler, ir, ", align 1\n  store "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, " %copy.value."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, dest_address); ir_write_ascii(compiler, ir, ", align 1\n")
+                }
+            }
+            ir_write_ascii(compiler, ir, "  br label %copy.end."); ir_write_number(compiler, ir, type_id); ir_push_byte(compiler, ir, 10)
+        }
+        ir_write_ascii(compiler, ir, "copy.invalid."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n  unreachable\ncopy.end."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n  ret void\n}\n\n")
+    }
+}
+
+fn emit_enum_equal_helpers(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+) {
+    for enum_index in 0L..enum_type_count(compiler) {
+        let ty = enum_record(compiler, enum_index)
+        let type_id = enum_type_id(compiler, enum_index)
+        if !has_type_helper(compiler, type_id, HELPER_EQUAL) { continue }
+        let left_tag = MAX_TREE_NODES * 30L + type_id * 2L
+        let right_tag = left_tag + 1L
+        ir_write_ascii(compiler, ir, "define internal i1 "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_EQUAL); ir_write_ascii(compiler, ir, "(")
+        emit_location_argument(compiler, ir, native_location(6L, 0L, 0L)); ir_write_ascii(compiler, ir, ", ")
+        emit_location_argument(compiler, ir, native_location(7L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
+        emit_layout_address(compiler, ir, left_tag, native_location(6L, 0L, 0L))
+        emit_layout_address(compiler, ir, right_tag, native_location(7L, 0L, 0L))
+        ir_write_ascii(compiler, ir, "  %eq.tag.left."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, left_tag); ir_write_ascii(compiler, ir, ", align 1\n  %eq.tag.right."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, right_tag); ir_write_ascii(compiler, ir, ", align 1\n  %eq.tag.same."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = icmp eq i32 %eq.tag.left."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", %eq.tag.right."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, "\n  br i1 %eq.tag.same."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %eq.dispatch."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %eq.false."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, "\neq.dispatch."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n  switch i32 %eq.tag.left."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %eq.invalid."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " [\n")
+        for case_offset in 0L..ty.field_count {
+            let case = compiler.enum_cases[ty.field_start + case_offset]
+            ir_write_ascii(compiler, ir, "    i32 "); ir_write_number(compiler, ir, case.tag); ir_write_ascii(compiler, ir, ", label %eq.case."); ir_write_number(compiler, ir, type_id); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, case.tag); ir_push_byte(compiler, ir, 10)
+        }
+        ir_write_ascii(compiler, ir, "  ]\n")
+        for case_offset in 0L..ty.field_count {
+            let case = compiler.enum_cases[ty.field_start + case_offset]
+            ir_write_ascii(compiler, ir, "eq.case."); ir_write_number(compiler, ir, type_id); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, case.tag); ir_write_ascii(compiler, ir, ":\n")
+            for part_offset in 0L..case.payload_count {
+                let payload_index = case.payload_start + part_offset
+                let payload = compiler.enum_payloads[payload_index]
+                if payload.ty == TY_UNIT { continue }
+                let left_address = MAX_TREE_NODES * 30L + type_count(compiler) * 2L + payload_index * 2L
+                let right_address = left_address + 1L
+                emit_layout_address(compiler, ir, left_address, native_location(6L, 0L, payload.offset))
+                emit_layout_address(compiler, ir, right_address, native_location(7L, 0L, payload.offset))
+                if is_aggregate_type(compiler, payload.ty) {
+                    ir_write_ascii(compiler, ir, "  %eq.part."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = call i1 "); emit_type_helper_call_two(compiler, ir, payload.ty, HELPER_EQUAL, native_location(2L, left_address, 0L), native_location(2L, right_address, 0L)); ir_push_byte(compiler, ir, 10)
+                } else {
+                    let storage_type: Ascii max 8 = if payload.ty == TY_BOOL { "i8" } else { llvm_type_name(payload.ty) }
+                    ir_write_ascii(compiler, ir, "  %eq.left."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, left_address); ir_write_ascii(compiler, ir, ", align 1\n  %eq.right."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, right_address); ir_write_ascii(compiler, ir, ", align 1\n  %eq.part."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = icmp eq "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, " %eq.left."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, ", %eq.right."); ir_write_number(compiler, ir, payload_index); ir_push_byte(compiler, ir, 10)
+                }
+                ir_write_ascii(compiler, ir, "  br i1 %eq.part."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, ", label %eq.next."); ir_write_number(compiler, ir, type_id); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, case.tag); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, part_offset); ir_write_ascii(compiler, ir, ", label %eq.false."); ir_write_number(compiler, ir, type_id); ir_push_byte(compiler, ir, 10)
+                ir_write_ascii(compiler, ir, "eq.next."); ir_write_number(compiler, ir, type_id); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, case.tag); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, part_offset); ir_write_ascii(compiler, ir, ":\n")
+            }
+            ir_write_ascii(compiler, ir, "  ret i1 true\n")
+        }
+        ir_write_ascii(compiler, ir, "eq.false."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n  ret i1 false\neq.invalid."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n  unreachable\n}\n\n")
     }
 }
 
@@ -6097,6 +7469,67 @@ fn emit_struct_print_helpers(
         }
         emit_struct_print_text_call(compiler, ir, "close", 0L, 2L)
         ir_write_ascii(compiler, ir, "  ret void\n}\n\n")
+    }
+}
+
+fn emit_enum_text_call(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    prefix: Ascii max 32,
+    index: long,
+    length: long,
+) {
+    ir_write_ascii(compiler, ir, "  call void @nl_print_ascii(ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length + 1L); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.enum."); ir_write_ascii(compiler, ir, prefix); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 "); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, ")\n")
+}
+
+fn emit_enum_print_helpers(
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+) {
+    for enum_index in 0L..enum_type_count(compiler) {
+        let ty = enum_record(compiler, enum_index)
+        let type_id = enum_type_id(compiler, enum_index)
+        if !has_type_helper(compiler, type_id, HELPER_PRINT) { continue }
+        let tag_address = MAX_TREE_NODES * 40L + type_id
+        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_PRINT); ir_write_ascii(compiler, ir, "("); emit_location_argument(compiler, ir, native_location(8L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
+        emit_layout_address(compiler, ir, tag_address, native_location(8L, 0L, 0L))
+        ir_write_ascii(compiler, ir, "  %print.tag."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, tag_address); ir_write_ascii(compiler, ir, ", align 1\n  switch i32 %print.tag."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %print.invalid."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " [\n")
+        for case_offset in 0L..ty.field_count {
+            let case = compiler.enum_cases[ty.field_start + case_offset]
+            ir_write_ascii(compiler, ir, "    i32 "); ir_write_number(compiler, ir, case.tag); ir_write_ascii(compiler, ir, ", label %print.case."); ir_write_number(compiler, ir, type_id); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, case.tag); ir_push_byte(compiler, ir, 10)
+        }
+        ir_write_ascii(compiler, ir, "  ]\n")
+        for case_offset in 0L..ty.field_count {
+            let case = compiler.enum_cases[ty.field_start + case_offset]
+            ir_write_ascii(compiler, ir, "print.case."); ir_write_number(compiler, ir, type_id); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, case.tag); ir_write_ascii(compiler, ir, ":\n")
+            emit_enum_text_call(compiler, ir, "case", ty.field_start + case_offset, tokens[case.name_token].length)
+            if case.payload_count > 0L {
+                emit_enum_text_call(compiler, ir, "open", 0L, 1L)
+                for part_offset in 0L..case.payload_count {
+                    let payload_index = case.payload_start + part_offset
+                    let payload = compiler.enum_payloads[payload_index]
+                    if part_offset > 0L { emit_enum_text_call(compiler, ir, "separator", 0L, 2L) }
+                    if payload.ty == TY_UNIT {
+                        emit_enum_text_call(compiler, ir, "unit", 0L, 2L)
+                    } else {
+                        let address = MAX_TREE_NODES * 40L + type_count(compiler) + payload_index
+                        emit_layout_address(compiler, ir, address, native_location(8L, 0L, payload.offset))
+                        if is_aggregate_type(compiler, payload.ty) {
+                            ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, payload.ty, HELPER_PRINT, native_location(2L, address, 0L)); ir_push_byte(compiler, ir, 10)
+                        } else if payload.ty == TY_BOOL {
+                            ir_write_ascii(compiler, ir, "  %print.bool.byte."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  %print.bool."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = trunc i8 %print.bool.byte."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " to i1\n  call void @nl_print_bool_raw(i1 zeroext %print.bool."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, ")\n")
+                        } else {
+                            let raw_name: Ascii max 16 = if payload.ty == TY_INT { "int" } else { "long" }
+                            ir_write_ascii(compiler, ir, "  %print.value."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(payload.ty)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  call void @nl_print_"); ir_write_ascii(compiler, ir, raw_name); ir_write_ascii(compiler, ir, "_raw("); ir_write_ascii(compiler, ir, llvm_type_name(payload.ty)); ir_write_ascii(compiler, ir, " %print.value."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, ")\n")
+                        }
+                    }
+                }
+                emit_enum_text_call(compiler, ir, "close", 0L, 1L)
+            }
+            ir_write_ascii(compiler, ir, "  ret void\n")
+        }
+        ir_write_ascii(compiler, ir, "print.invalid."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n  unreachable\n}\n\n")
     }
 }
 
@@ -6214,6 +7647,16 @@ fn emit_type_helpers_for_kind(
             emit_struct_default_helpers(source, files, tokens, tables, compiler, ir)
             emit_struct_fill_helpers(compiler, ir)
         }
+    } else if kind == TYPE_KIND_ENUM {
+        var has_enum_helpers = false
+        for type_id in 0L..type_count(compiler) {
+            if type_kind(compiler, type_id) == kind && type_has_registered_helper(compiler, type_id) { has_enum_helpers = true }
+        }
+        if has_enum_helpers {
+            emit_enum_copy_helpers(compiler, ir)
+            emit_enum_equal_helpers(compiler, ir)
+            emit_enum_print_helpers(tokens, compiler, ir)
+        }
     } else {
         for type_id in 0L..type_count(compiler) {
             if type_kind(compiler, type_id) == kind && type_has_registered_helper(compiler, type_id) { compiler.ir_overflow = true }
@@ -6248,6 +7691,23 @@ fn ir_write_struct_identifier_global(
     let length = tokens[token].length
     let start = files[file_index].base + tokens[token].start
     ir_write_ascii(compiler, ir, "@.nl.struct."); ir_write_ascii(compiler, ir, kind); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, " = private unnamed_addr constant ["); ir_write_number(compiler, ir, length + 1L); ir_write_ascii(compiler, ir, " x i8] c\"")
+    for byte_index in 0L..length { ir_write_escaped_byte(compiler, ir, source[start + byte_index]) }
+    ir_write_ascii(compiler, ir, "\\00\", align 1\n")
+}
+
+fn ir_write_enum_case_global(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    case_index: long,
+) {
+    let case = compiler.enum_cases[case_index]
+    let owner = enum_record(compiler, case.owner)
+    let length = tokens[case.name_token].length
+    let start = files[owner.file].base + tokens[case.name_token].start
+    ir_write_ascii(compiler, ir, "@.nl.enum.case."); ir_write_number(compiler, ir, case_index); ir_write_ascii(compiler, ir, " = private unnamed_addr constant ["); ir_write_number(compiler, ir, length + 1L); ir_write_ascii(compiler, ir, " x i8] c\"")
     for byte_index in 0L..length { ir_write_escaped_byte(compiler, ir, source[start + byte_index]) }
     ir_write_ascii(compiler, ir, "\\00\", align 1\n")
 }
@@ -6316,10 +7776,18 @@ fn emit_file_globals(
     let close_text: Bytes max 4096 = b" }"
     let separator_text: Bytes max 4096 = b", "
     let colon_text: Bytes max 4096 = b": "
+    let enum_open_text: Bytes max 4096 = b"("
+    let enum_close_text: Bytes max 4096 = b")"
+    let enum_separator_text: Bytes max 4096 = b", "
+    let enum_unit_text: Bytes max 4096 = b"()"
     ir_write_global_string(compiler, ir, "@.nl.struct.open.0 = private unnamed_addr constant [", open_text)
     ir_write_global_string(compiler, ir, "@.nl.struct.close.0 = private unnamed_addr constant [", close_text)
     ir_write_global_string(compiler, ir, "@.nl.struct.separator.0 = private unnamed_addr constant [", separator_text)
     ir_write_global_string(compiler, ir, "@.nl.struct.colon.0 = private unnamed_addr constant [", colon_text)
+    ir_write_global_string(compiler, ir, "@.nl.enum.open.0 = private unnamed_addr constant [", enum_open_text)
+    ir_write_global_string(compiler, ir, "@.nl.enum.close.0 = private unnamed_addr constant [", enum_close_text)
+    ir_write_global_string(compiler, ir, "@.nl.enum.separator.0 = private unnamed_addr constant [", enum_separator_text)
+    ir_write_global_string(compiler, ir, "@.nl.enum.unit.0 = private unnamed_addr constant [", enum_unit_text)
     for type_index in 0L..struct_type_count(compiler) {
         let ty = struct_record(compiler, type_index)
         ir_write_struct_identifier_global(source, files, tokens, compiler, ir, "type", type_index, ty.file, ty.name_token)
@@ -6329,6 +7797,7 @@ fn emit_file_globals(
             ir_write_struct_identifier_global(source, files, tokens, compiler, ir, "field", field_index, ty.file, field.name_token)
         }
     }
+    for case_index in 0L..compiler.enum_cases.count() { ir_write_enum_case_global(source, files, tokens, compiler, ir, case_index) }
     ir_write_ascii(compiler, ir, "\n")
 }
 

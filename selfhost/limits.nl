@@ -41,4 +41,15 @@ const SOURCE_LINE_START_CAPACITY: long = 67109120L
 const IR_BYTES_PER_NODE: long = 640L
 const IR_BYTES_PER_TABLE_ENTRY: long = 256L
 const IR_FIXED_BYTES: long = 8388608L
-const IR_BUFFER_CAPACITY: long = MAX_TREE_NODES * IR_BYTES_PER_NODE + MAX_TREE_NODES * IR_BYTES_PER_TABLE_ENTRY + MAX_SOURCE_BYTES_PER_PACKAGE + IR_FIXED_BYTES
+
+// E2b begin
+const ENUM_CASE_TABLE_CAPACITY: long = MAX_TREE_NODES
+const ENUM_PAYLOAD_TABLE_CAPACITY: long = MAX_TREE_NODES
+// Enum declarations, cases and payload parts are distinct syntax nodes, so
+// together they stay within MAX_TREE_NODES. Per enum table entry, the existing
+// 256-byte allowance plus this 768-byte extension covers dispatch labels and
+// copy/equality/print addresses, values and calls.
+// The 640-byte per-node term covers constructor/match use-site output.
+const IR_BYTES_PER_ENUM_TABLE_ENTRY: long = 768L
+const IR_BUFFER_CAPACITY: long = MAX_TREE_NODES * IR_BYTES_PER_NODE + MAX_TREE_NODES * IR_BYTES_PER_TABLE_ENTRY + MAX_TREE_NODES * IR_BYTES_PER_ENUM_TABLE_ENTRY + MAX_SOURCE_BYTES_PER_PACKAGE + IR_FIXED_BYTES
+// E2b end

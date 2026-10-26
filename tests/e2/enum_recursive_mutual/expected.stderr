@@ -1,0 +1,1 @@
+main.nl:2:1: error: value type 'Tree' contains itself directly or through Option/Result and would have infinite size

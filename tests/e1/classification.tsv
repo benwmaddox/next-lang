@@ -122,13 +122,13 @@ unsupported	tests/e1/unsupported_type_set_unused
 unsupported	tests/e1/unsupported_type_text_test
 unsupported	tests/e1/unsupported_type_text_unreachable
 unsupported	tests/e1/unsupported_type_text_unused
-unsupported	tests/run/ambiguous_case
+diagnose	tests/run/ambiguous_case
 unsupported	tests/run/arithmetic
 diagnose	tests/run/assign_let
 build	tests/run/bad_cast
 unsupported	tests/run/bad_shift
 diagnose	tests/run/bad_to_long_method
-unsupported	tests/run/bool_match_non_exhaustive
+diagnose	tests/run/bool_match_non_exhaustive
 diagnose	tests/run/break_outside_loop
 diagnose	tests/run/call_cycle
 unsupported	tests/run/coalesce_exit_outside
@@ -139,7 +139,7 @@ diagnose	tests/run/duplicate_name
 unsupported	tests/run/enums
 unsupported	tests/run/err_inference
 diagnose	tests/run/expect_in_function
-unsupported	tests/run/integer_match_no_catchall
+diagnose	tests/run/integer_match_no_catchall
 diagnose	tests/run/literal_too_big
 diagnose	tests/run/loop_assign_counter
 diagnose	tests/run/loop_conflicting_types
@@ -148,11 +148,11 @@ diagnose	tests/run/loop_explicit_type_conflict
 diagnose	tests/run/loop_missing_result
 diagnose	tests/run/loop_non_integer_bound
 build	tests/run/loops
-unsupported	tests/run/match_duplicate
-unsupported	tests/run/match_empty
-unsupported	tests/run/match_non_exhaustive
-unsupported	tests/run/match_payload_arity
-unsupported	tests/run/match_unreachable
+diagnose	tests/run/match_duplicate
+diagnose	tests/run/match_empty
+diagnose	tests/run/match_non_exhaustive
+diagnose	tests/run/match_payload_arity
+diagnose	tests/run/match_unreachable
 build	tests/run/minimum_literal
 diagnose	tests/run/missing_result
 diagnose	tests/run/mixed_int_long
@@ -451,7 +451,7 @@ unsupported	tests/run/t30_copy_down
 unsupported	tests/run/t30_locality
 build	tests/run/t32_decimal_print
 diagnose	tests/run/test_return
-unsupported	tests/run/unknown_enum_case
+diagnose	tests/run/unknown_enum_case
 diagnose	tests/run/unknown_name
 unsupported	tests/run/unwrap_err_failure
 unsupported	tests/run/unwrap_failure
@@ -529,3 +529,23 @@ unsupported	tests/e2/e2i_global_hidden_write_snapshot
 unsupported	tests/e2/e2i_global_transitive_hidden_write_snapshot
 unsupported	tests/e2/e2i_global_equality_hidden_write_snapshot
 unsupported	tests/e2/e2i_global_read_only_no_snapshot
+# E2b begin
+build	tests/e2/enum_match_runtime
+build	tests/e2/enum_match_never
+build	tests/e2/enum_multifile
+diagnose	tests/e2/enum_constructor_ambiguity
+diagnose	tests/e2/enum_constructor_arity
+diagnose	tests/e2/enum_duplicate_case
+diagnose	tests/e2/enum_registration_order
+diagnose	tests/e2/enum_recursive
+diagnose	tests/e2/enum_recursive_mutual
+diagnose	tests/e2/enum_unknown_payload
+diagnose	tests/e2/match_arm_type
+diagnose	tests/e2/match_bool_duplicate
+diagnose	tests/e2/match_duplicate_binding
+diagnose	tests/e2/match_integer_duplicate
+diagnose	tests/e2/match_qualifier
+build	tests/e2/enum_size_exact
+unsupported	tests/e2/enum_size_over
+unsupported	tests/e2/enum_size_padding
+# E2b end

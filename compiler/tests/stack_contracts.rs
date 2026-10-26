@@ -263,13 +263,14 @@ fn selfhost_stack_bound_has_an_exact_attributed_path() {
     let attributed = parse_bytes("  data stack critical path sum: ");
     assert_eq!(attributed, worst_case, "{stdout}");
     // E2's layout, defaults, helper and aggregate-frame tables live in main
-    // alongside the parser's source, token and node buffers. Pin their data
-    // stack total and keep it below the fixed six-gigabyte compiler bound.
-    assert_eq!(worst_case, 5_115_732_521, "{stdout}");
-    assert!(worst_case < 6_000_000_000, "{stdout}");
+    // alongside the parser's source, token and node buffers. E2b expands the
+    // IR table allowance for sum helpers; pin the new total below 7 GB so the
+    // selfhost compiler still fits the fixed 8 GB process budget.
+    assert_eq!(worst_case, 6_859_732_537, "{stdout}");
+    assert!(worst_case < 7_000_000_000, "{stdout}");
     assert_eq!(
         parse_bytes("  data stack reservation: "),
-        5_115_736_064,
+        6_859_735_040,
         "{stdout}"
     );
     assert!(
