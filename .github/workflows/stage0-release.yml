@@ -1,0 +1,72 @@
+# Builds the frozen stage-0 compiler (Rust nlc) and the self-hosted compiler,
+# tests them, and publishes the binaries as a GitHub Release. Manual only.
+name: stage0-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag to build and release (it must already exist)"
+        required: true
+      run_tests:
+        description: "Run the full test suite before publishing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Toolchain (Rust from rust-toolchain.toml; clang 18 as on the development machine)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+          rustup show
+          clang --version
+          rustc --version
+
+      - name: Build stage 0 (release)
+        run: cargo build --release
+
+      - name: Test
+        if: ${{ inputs.run_tests }}
+        run: |
+          NLC_FRONTEND=rust cargo test --release
+          NLC_FRONTEND=selfhost cargo test --release
+
+      - name: Build the self-hosted compiler with stage 0
+        run: ./target/release/nlc build selfhost -o selfhost-nlc
+
+      - name: Package
+        run: |
+          name="next-lang-${{ inputs.tag }}-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp target/release/nlc "dist/$name/nlc-stage0"
+          cp selfhost-nlc "dist/$name/nlc-selfhost"
+          cp -r runtime core "dist/$name/"
+          {
+            echo "tag: ${{ inputs.tag }}"
+            echo "commit: $(git rev-parse HEAD)"
+            rustc --version
+            clang --version | head -1
+            echo "runner: ubuntu-24.04"
+          } > "dist/$name/BUILD-INFO.txt"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          sha256sum "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.tag }}" dist/*.tar.gz dist/*.sha256 \
+            --title "${{ inputs.tag }}" \
+            --notes "Frozen stage-0 compiler (Rust nlc) and the self-hosted compiler built from it, with the C runtime (for stage 0) and the next-lang core library. See BUILD-INFO.txt inside the archive for exact toolchain versions."
