@@ -144,3 +144,44 @@ fn link_ir_rejects_bad_versions_stack_modes_recursion_and_truncation() {
         assert!(!output.exists(), "{reason} created an executable");
     }
 }
+
+#[test]
+fn link_ir_version_two_selects_the_runtime_and_validates_the_core_hash() {
+    let scratch = Scratch::new();
+    let ir = scratch.path().join("v2.ll");
+    let executable = scratch.path().join("v2");
+    let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let source = format!(
+        "; nlc-link-ir 2\n; nlc.build program\n; nlc.stack offset\n; nlc.recursion none\n; nlc.runtime c\n; nlc.core {hash}\nsource_filename = \"next-lang\"\ndefine i32 @main(i32 %argc, ptr %argv) {{\nentry:\n  ret i32 0\n}}\n; nlc-link-ir end\n"
+    );
+    fs::write(&ir, source).expect("write version-two IR");
+    let linked = run(&[Path::new("link-ir"), &ir, Path::new("-o"), &executable], scratch.path());
+    assert!(
+        linked.status.success(),
+        "version-two C IR did not link: {}",
+        String::from_utf8_lossy(&linked.stderr)
+    );
+    assert!(Command::new(&executable).output().expect("run version-two executable").status.success());
+
+    for (name, runtime, core_hash) in [
+        ("missing-runtime", "", format!("; nlc.core {hash}\n")),
+        ("unknown-runtime", "; nlc.runtime libc\n", format!("; nlc.core {hash}\n")),
+        ("missing-hash", "; nlc.runtime c\n", String::new()),
+        ("uppercase-hash", "; nlc.runtime core\n", format!("; nlc.core {}\n", "A".repeat(64))),
+    ] {
+        let path = scratch.path().join(format!("{name}.ll"));
+        let content = format!(
+            "; nlc-link-ir 2\n; nlc.build program\n; nlc.stack offset\n; nlc.recursion none\n{runtime}{core_hash}; nlc-link-ir end\n"
+        );
+        fs::write(&path, content).expect("write malformed version-two IR");
+        let output = scratch.path().join(name);
+        let result = run(&[Path::new("link-ir"), &path, Path::new("-o"), &output], scratch.path());
+        assert_eq!(result.status.code(), Some(3), "{name}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).starts_with("nlc: tool failure: invalid nlc-link-ir metadata:"),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!output.exists(), "{name} created an executable");
+    }
+}

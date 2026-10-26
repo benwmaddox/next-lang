@@ -111,6 +111,13 @@ def main() -> int:
                             raise Mismatch("selfhosted compiler rejected a build package", reference_result, self_result)
                         if not same_result(self_result, reference_result):
                             raise Mismatch("built program or test runner differs from Rust nlc", reference_result, self_result)
+                        c_result, c_wrote_ir = run_selfhost(
+                            stage0, reference, root, package, run_env, work, level, "c"
+                        )
+                        if not c_wrote_ir:
+                            raise Mismatch("selfhosted C-runtime comparison leg rejected a build package", reference_result, c_result)
+                        if not same_result(c_result, reference_result):
+                            raise Mismatch("selfhosted C-runtime leg differs from Rust nlc", reference_result, c_result)
                         counts[level]["build"] += 1
                     elif kind == "diagnose":
                         manifest_tool_failure = (
@@ -163,6 +170,11 @@ def main() -> int:
                             raise Mismatch("selfhost rejected a seeded valid package", reference_result, self_result)
                         if not same_result(reference_result, self_result):
                             raise Mismatch("seeded build differs from Rust nlc", reference_result, self_result)
+                        c_result, c_wrote_ir = run_selfhost(
+                            stage0, reference, root, package, run_env, work, level, "c"
+                        )
+                        if not c_wrote_ir or not same_result(reference_result, c_result):
+                            raise Mismatch("seeded C-runtime leg differs from Rust nlc", reference_result, c_result)
                         generated_counts[level]["build"] += 1
                     else:
                         if wrote_ir:
@@ -333,6 +345,7 @@ def run_selfhost(
     env: dict[str, str],
     work: Path,
     level: int,
+    runtime: str = "core",
 ) -> tuple[Result, bool]:
     cwd, package_arg, local = package_cwd(root, package)
     package_path = root / package
@@ -351,6 +364,7 @@ def run_selfhost(
     command = [str(stage0), "build", package_arg, "-o", ir_arg]
     if is_test:
         command.append("--test")
+    command.append(f"--runtime={runtime}")
     compiled = invoke(command, cwd=cwd, env=env)
     if compiled.status != 0:
         return compiled, ir.exists()
@@ -383,16 +397,17 @@ def compare_test_package_main(
     if ref.status == 0:
         ref = invoke([str(exe)], cwd=root, env=env)
     exe.unlink(missing_ok=True)
-    command = [str(stage0), "build", package, "-o", ir.relative_to(root).as_posix()]
-    built = invoke(command, cwd=root, env=env)
-    if built.status != 0:
-        raise Mismatch("test package program build was rejected", ref, built)
-    linked = invoke([str(reference), "link-ir", str(ir), "-o", str(self_exe)], cwd=root, env=env)
-    ir.unlink(missing_ok=True)
-    actual = linked if linked.status != 0 else invoke([str(self_exe)], cwd=root, env=env)
-    self_exe.unlink(missing_ok=True)
-    if not same_result(actual, ref):
-        raise Mismatch("test package build did not run main like Rust nlc", ref, actual)
+    for runtime in ("core", "c"):
+        command = [str(stage0), "build", package, "-o", ir.relative_to(root).as_posix(), f"--runtime={runtime}"]
+        built = invoke(command, cwd=root, env=env)
+        if built.status != 0:
+            raise Mismatch(f"test package {runtime} runtime build was rejected", ref, built)
+        linked = invoke([str(reference), "link-ir", str(ir), "-o", str(self_exe)], cwd=root, env=env)
+        ir.unlink(missing_ok=True)
+        actual = linked if linked.status != 0 else invoke([str(self_exe)], cwd=root, env=env)
+        self_exe.unlink(missing_ok=True)
+        if not same_result(actual, ref):
+            raise Mismatch(f"test package {runtime} runtime main differs from Rust nlc", ref, actual)
 
 
 def normalize_bytes(data: bytes, root: Path, package: str) -> bytes:

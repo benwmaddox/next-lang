@@ -6,6 +6,39 @@ const TY_LONG: long = 1L
 const TY_BOOL: long = 2L
 const TY_UNIT: long = 3L
 const TY_NEVER: long = 4L
+const TY_ADDR: long = 5L
+
+const SYS_NULL: long = 1L
+const SYS_IS_NULL: long = 2L
+const SYS_OFFSET: long = 3L
+const SYS_DISTANCE: long = 4L
+const SYS_FROM_RAW: long = 5L
+const SYS_LOAD8: long = 6L
+const SYS_LOAD32: long = 7L
+const SYS_LOAD64: long = 8L
+const SYS_LOAD_ADDR: long = 9L
+const SYS_STORE8: long = 10L
+const SYS_STORE32: long = 11L
+const SYS_STORE64: long = 12L
+const SYS_STORE_ADDR: long = 13L
+const SYS_LIT: long = 14L
+const SYS_STATE: long = 15L
+const SYS_IS_ERROR: long = 16L
+const SYS_COPY_FORWARD_BULK: long = 17L
+const SYS_FILL_BULK: long = 18L
+const SYS_WRITE: long = 19L
+const SYS_EXIT_GROUP: long = 20L
+const SYS_MAP: long = 21L
+const SYS_PROTECT: long = 22L
+const SYS_IOCTL: long = 23L
+const SYS_STATX: long = 24L
+const SYS_SIGACTION: long = 25L
+const SYS_OPENAT: long = 26L
+const SYS_CLOSE: long = 27L
+const SYS_REPEAT_BYTE: long = 28L
+const SYS_CALL_MAIN: long = 29L
+const SYS_COPY_16: long = 30L
+const SYS_FILL_16: long = 31L
 
 const FACT_NEVER: long = 1L
 const FACT_FALLS_THROUGH: long = 2L
@@ -172,6 +205,9 @@ struct CompilerTables {
     table_failed: bool
     ir_overflow: bool
     ir_terminated: bool
+    core_mode: bool
+    file_id_base: long
+    memory_closure: bool
 }
 
 fn empty_compiler_tables() -> CompilerTables {
@@ -201,7 +237,41 @@ fn empty_compiler_tables() -> CompilerTables {
         table_failed: false,
         ir_overflow: false,
         ir_terminated: false,
+        core_mode: false,
+        file_id_base: 0L,
+        memory_closure: false,
     }
+}
+
+fn reset_compiler_tables(compiler: write CompilerTables) {
+    compiler.child_first.clear()
+    compiler.child_next.clear()
+    compiler.facts.clear()
+    compiler.expected.clear()
+    compiler.token_name_ids.clear()
+    compiler.intern_slots.clear()
+    compiler.functions.clear()
+    compiler.parameters.clear()
+    compiler.tests.clear()
+    compiler.call_edges.clear()
+    compiler.edge_first.clear()
+    compiler.cycle_seen.clear()
+    compiler.cycle_stack.clear()
+    compiler.cycle_cursor.clear()
+    compiler.cycle_path.clear()
+    compiler.emit_loops.clear()
+    compiler.expr_work.clear()
+    compiler.bindings.clear()
+    compiler.scopes.clear()
+    compiler.work.clear()
+    compiler.line_starts.clear()
+    compiler.file_line_ranges.clear()
+    compiler.table_failed = false
+    compiler.ir_overflow = false
+    compiler.ir_terminated = false
+    compiler.core_mode = false
+    compiler.file_id_base = 0L
+    compiler.memory_closure = false
 }
 
 fn add_compiler_links(tables: write ParseTables, compiler: write CompilerTables) {
@@ -292,14 +362,20 @@ fn compiler_diagnostic(
 fn fail_compiler_diagnostic(
     env: Env,
     file: Bytes max 4096,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
     file_index: long,
     absolute_offset: long,
     compiler: CompilerTables,
     message: Ascii max 160,
 ) -> never {
-    match compiler_diagnostic(env.err, file, position_for_offset(file_index, absolute_offset, compiler), message) {
-        ok(_) => env.exit(2),
-        err(_) => env.exit(3),
+    let position = position_for_offset(file_index, files[file_index].base + absolute_offset, compiler)
+    if compiler.core_mode {
+        fail_core_internal(env, file, position, message)
+    } else {
+        match compiler_diagnostic(env.err, file, position, message) {
+            ok(_) => env.exit(2),
+            err(_) => env.exit(3),
+        }
     }
 }
 
@@ -690,6 +766,22 @@ fn known_non_scalar_type(
     token_is_word_at(source, tokens, files, file_index, token, "TextError")
 }
 
+fn is_core_addr_type(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    node: long,
+) -> bool {
+    if !compiler.core_mode || tables.nodes[node].meta0 != 2L { return false }
+    let first = tables.extra[tables.nodes[node].extra]
+    let second = tables.extra[tables.nodes[node].extra + 1L]
+    token_is_word_at(source, tokens, files, file_index, first, "sys") &&
+        token_is_word_at(source, tokens, files, file_index, second, "Addr")
+}
+
 fn is_top_level_function(
     tables: ParseTables,
     compiler: CompilerTables,
@@ -705,6 +797,140 @@ fn is_top_level_function(
         }
     }
     false
+}
+
+fn is_core_sys_receiver(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    node: long,
+    file_index: long,
+) -> bool {
+    if !compiler.core_mode { return false }
+    let receiver = compiler.child_first[node]
+    receiver >= 0L && tables.nodes[receiver].kind == NodeKind.Name &&
+        token_is_word_at(source, tokens, files, file_index, tables.nodes[receiver].token, "sys")
+}
+
+fn core_sys_operation(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    file_index: long,
+    token: long,
+) -> long {
+    if token_is_word_at(source, tokens, files, file_index, token, "null") { SYS_NULL }
+    else if token_is_word_at(source, tokens, files, file_index, token, "is_null") { SYS_IS_NULL }
+    else if token_is_word_at(source, tokens, files, file_index, token, "offset") { SYS_OFFSET }
+    else if token_is_word_at(source, tokens, files, file_index, token, "distance") { SYS_DISTANCE }
+    else if token_is_word_at(source, tokens, files, file_index, token, "from_raw") { SYS_FROM_RAW }
+    else if token_is_word_at(source, tokens, files, file_index, token, "load8") { SYS_LOAD8 }
+    else if token_is_word_at(source, tokens, files, file_index, token, "load32") { SYS_LOAD32 }
+    else if token_is_word_at(source, tokens, files, file_index, token, "load64") { SYS_LOAD64 }
+    else if token_is_word_at(source, tokens, files, file_index, token, "load_addr") { SYS_LOAD_ADDR }
+    else if token_is_word_at(source, tokens, files, file_index, token, "store8") { SYS_STORE8 }
+    else if token_is_word_at(source, tokens, files, file_index, token, "store32") { SYS_STORE32 }
+    else if token_is_word_at(source, tokens, files, file_index, token, "store64") { SYS_STORE64 }
+    else if token_is_word_at(source, tokens, files, file_index, token, "store_addr") { SYS_STORE_ADDR }
+    else if token_is_word_at(source, tokens, files, file_index, token, "lit") { SYS_LIT }
+    else if token_is_word_at(source, tokens, files, file_index, token, "state") { SYS_STATE }
+    else if token_is_word_at(source, tokens, files, file_index, token, "is_error") { SYS_IS_ERROR }
+    else if token_is_word_at(source, tokens, files, file_index, token, "copy_forward_bulk") { SYS_COPY_FORWARD_BULK }
+    else if token_is_word_at(source, tokens, files, file_index, token, "fill_bulk") { SYS_FILL_BULK }
+    else if token_is_word_at(source, tokens, files, file_index, token, "repeat_byte") { SYS_REPEAT_BYTE }
+    else if token_is_word_at(source, tokens, files, file_index, token, "copy_16") { SYS_COPY_16 }
+    else if token_is_word_at(source, tokens, files, file_index, token, "fill_16") { SYS_FILL_16 }
+    else if token_is_word_at(source, tokens, files, file_index, token, "write") { SYS_WRITE }
+    else if token_is_word_at(source, tokens, files, file_index, token, "exit_group") { SYS_EXIT_GROUP }
+    else if token_is_word_at(source, tokens, files, file_index, token, "map") { SYS_MAP }
+    else if token_is_word_at(source, tokens, files, file_index, token, "protect") { SYS_PROTECT }
+    else if token_is_word_at(source, tokens, files, file_index, token, "ioctl") { SYS_IOCTL }
+    else if token_is_word_at(source, tokens, files, file_index, token, "statx") { SYS_STATX }
+    else if token_is_word_at(source, tokens, files, file_index, token, "sigaction") { SYS_SIGACTION }
+    else if token_is_word_at(source, tokens, files, file_index, token, "openat") { SYS_OPENAT }
+    else if token_is_word_at(source, tokens, files, file_index, token, "close") { SYS_CLOSE }
+    else if token_is_word_at(source, tokens, files, file_index, token, "call_main") { SYS_CALL_MAIN }
+    else { -1L }
+}
+
+fn core_sys_argument_count(operation: long) -> long {
+    if operation == SYS_NULL || operation == SYS_STATE { 0L }
+    else if operation == SYS_LIT || operation == SYS_REPEAT_BYTE { 1L }
+    else if operation == SYS_IS_NULL || operation == SYS_FROM_RAW || operation == SYS_IS_ERROR || operation == SYS_EXIT_GROUP || operation == SYS_CLOSE { 1L }
+    else if operation == SYS_OFFSET || operation == SYS_DISTANCE || operation == SYS_LOAD8 || operation == SYS_LOAD32 || operation == SYS_LOAD64 || operation == SYS_LOAD_ADDR || operation == SYS_COPY_16 || operation == SYS_FILL_16 { 2L }
+    else if operation == SYS_PROTECT || operation == SYS_IOCTL || operation == SYS_FILL_BULK { 3L }
+    else if operation == SYS_STORE8 || operation == SYS_STORE32 || operation == SYS_STORE64 || operation == SYS_STORE_ADDR || operation == SYS_COPY_FORWARD_BULK || operation == SYS_WRITE || operation == SYS_CALL_MAIN { 3L }
+    else if operation == SYS_OPENAT || operation == SYS_SIGACTION { 4L }
+    else if operation == SYS_STATX { 5L }
+    else if operation == SYS_MAP { 6L }
+    else { -1L }
+}
+
+fn core_sys_argument_type(operation: long, index: long) -> long {
+    if operation == SYS_IS_NULL && index == 0L { TY_ADDR }
+    else if operation == SYS_OFFSET && index == 0L { TY_ADDR }
+    else if operation == SYS_OFFSET && index == 1L { TY_LONG }
+    else if operation == SYS_DISTANCE && index < 2L { TY_ADDR }
+    else if operation == SYS_COPY_16 && (index == 0L || index == 1L) { TY_ADDR }
+    else if operation == SYS_FILL_16 && index == 0L { TY_ADDR }
+    else if operation == SYS_FILL_16 && index == 1L { TY_LONG }
+    else if operation == SYS_FROM_RAW && index == 0L { TY_LONG }
+    else if (operation == SYS_LOAD8 || operation == SYS_LOAD32 || operation == SYS_LOAD64 || operation == SYS_LOAD_ADDR) && index == 0L { TY_ADDR }
+    else if (operation == SYS_LOAD8 || operation == SYS_LOAD32 || operation == SYS_LOAD64 || operation == SYS_LOAD_ADDR) && index == 1L { TY_LONG }
+    else if (operation == SYS_STORE8 || operation == SYS_STORE32 || operation == SYS_STORE64 || operation == SYS_STORE_ADDR) && index == 0L { TY_ADDR }
+    else if (operation == SYS_STORE8 || operation == SYS_STORE32 || operation == SYS_STORE64 || operation == SYS_STORE_ADDR) && index == 1L { TY_LONG }
+    else if operation == SYS_STORE8 && index == 2L { TY_INT }
+    else if operation == SYS_STORE32 && index == 2L { TY_INT }
+    else if operation == SYS_STORE64 && index == 2L { TY_LONG }
+    else if operation == SYS_STORE_ADDR && index == 2L { TY_ADDR }
+    else if operation == SYS_IS_ERROR && index == 0L { TY_LONG }
+    else if operation == SYS_COPY_FORWARD_BULK && index < 2L { TY_ADDR }
+    else if operation == SYS_COPY_FORWARD_BULK && index == 2L { TY_LONG }
+    else if operation == SYS_FILL_BULK && index == 0L { TY_ADDR }
+    else if operation == SYS_FILL_BULK && index == 1L { TY_INT }
+    else if operation == SYS_FILL_BULK && index == 2L { TY_LONG }
+    else if operation == SYS_REPEAT_BYTE && index == 0L { TY_INT }
+    else if operation == SYS_WRITE && index == 0L { TY_INT }
+    else if operation == SYS_WRITE && index == 1L { TY_ADDR }
+    else if operation == SYS_WRITE && index == 2L { TY_LONG }
+    else if operation == SYS_EXIT_GROUP && index == 0L { TY_INT }
+    else if operation == SYS_MAP && (index == 0L || index == 5L) { if index == 0L { TY_ADDR } else { TY_LONG } }
+    else if operation == SYS_MAP && index == 1L { TY_LONG }
+    else if operation == SYS_MAP && (index == 2L || index == 3L || index == 4L) { TY_INT }
+    else if operation == SYS_PROTECT && index == 0L { TY_ADDR }
+    else if operation == SYS_PROTECT && index == 1L { TY_LONG }
+    else if operation == SYS_PROTECT && index == 2L { TY_INT }
+    else if operation == SYS_IOCTL && index == 0L { TY_INT }
+    else if operation == SYS_IOCTL && index == 1L { TY_LONG }
+    else if operation == SYS_IOCTL && index == 2L { TY_ADDR }
+    else if operation == SYS_STATX && index == 0L { TY_INT }
+    else if operation == SYS_STATX && index == 1L { TY_ADDR }
+    else if operation == SYS_STATX && (index == 2L || index == 3L) { TY_INT }
+    else if operation == SYS_STATX && index == 4L { TY_ADDR }
+    else if operation == SYS_SIGACTION && index == 0L { TY_INT }
+    else if operation == SYS_SIGACTION && (index == 1L || index == 2L) { TY_ADDR }
+    else if operation == SYS_SIGACTION && index == 3L { TY_LONG }
+    else if operation == SYS_OPENAT && index == 0L { TY_INT }
+    else if operation == SYS_OPENAT && index == 1L { TY_ADDR }
+    else if operation == SYS_OPENAT && (index == 2L || index == 3L) { TY_INT }
+    else if operation == SYS_CLOSE && index == 0L { TY_INT }
+    else if operation == SYS_CALL_MAIN && index == 0L { TY_INT }
+    else if operation == SYS_CALL_MAIN && (index == 1L || index == 2L) { TY_ADDR }
+    else if operation == SYS_LIT && index == 0L { TY_ADDR }
+    else { -1L }
+}
+
+fn core_sys_result_type(operation: long) -> long {
+    if operation == SYS_IS_NULL || operation == SYS_IS_ERROR { TY_BOOL }
+    else if operation == SYS_NULL || operation == SYS_OFFSET || operation == SYS_FROM_RAW || operation == SYS_LOAD_ADDR || operation == SYS_STATE || operation == SYS_LIT { TY_ADDR }
+    else if operation == SYS_LOAD8 || operation == SYS_LOAD32 { TY_INT }
+    else if operation == SYS_LOAD64 || operation == SYS_DISTANCE || operation == SYS_WRITE || operation == SYS_MAP || operation == SYS_PROTECT || operation == SYS_IOCTL || operation == SYS_STATX || operation == SYS_SIGACTION || operation == SYS_OPENAT || operation == SYS_CLOSE { TY_LONG }
+    else if operation == SYS_REPEAT_BYTE { TY_LONG }
+    else if operation == SYS_CALL_MAIN { TY_INT }
+    else if operation == SYS_EXIT_GROUP { TY_NEVER }
+    else { TY_UNIT }
 }
 
 fn unsupported_category_for_node(
@@ -727,10 +953,15 @@ fn unsupported_category_for_node(
         NodeKind.ForEach => UNSUPPORTED_NODE,
         NodeKind.Discard => UNSUPPORTED_NODE,
         NodeKind.Match => UNSUPPORTED_NODE,
-        NodeKind.Cast => UNSUPPORTED_NODE,
+        NodeKind.Cast => 0L,
+        NodeKind.CastType => {
+            if token_is_word_at(source, tokens, files, file_index, value.token, "int") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "long") { 0L }
+            else { UNSUPPORTED_NODE }
+        },
         NodeKind.Fit => UNSUPPORTED_NODE,
         NodeKind.Try => UNSUPPORTED_NODE,
-        NodeKind.MethodCall => UNSUPPORTED_NODE,
+        NodeKind.MethodCall => if is_core_sys_receiver(source, tokens, files, tables, compiler, node, file_index) { 0L } else { UNSUPPORTED_NODE },
         NodeKind.IndirectCall => UNSUPPORTED_NODE,
         NodeKind.Index => UNSUPPORTED_NODE,
         NodeKind.OptionalCall => UNSUPPORTED_NODE,
@@ -762,21 +993,24 @@ fn unsupported_category_for_node(
         NodeKind.DeclaredType => UNSUPPORTED_NODE,
         NodeKind.TypeArgument => UNSUPPORTED_TYPE_FORM,
         NodeKind.FitType => UNSUPPORTED_NODE,
-        NodeKind.CastType => UNSUPPORTED_NODE,
         NodeKind.ParameterType => {
-            if (value.flags & FLAG_TYPE_UNIT) != 0L { 0L }
+            if is_core_addr_type(source, tokens, files, tables, compiler, file_index, node) { 0L }
+            else if (value.flags & FLAG_TYPE_UNIT) != 0L { 0L }
             else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
             else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
             else { 0L }
         },
         NodeKind.ResultType => {
-            if (value.flags & FLAG_TYPE_UNIT) != 0L { 0L }
+            if is_core_addr_type(source, tokens, files, tables, compiler, file_index, node) { 0L }
+            else if (value.flags & FLAG_TYPE_UNIT) != 0L { 0L }
+            else if token_is_word_at(source, tokens, files, file_index, value.token, "never") { 0L }
             else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
             else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
             else { 0L }
         },
         NodeKind.Annotation => {
-            if (value.flags & FLAG_TYPE_UNIT) != 0L { 0L }
+            if is_core_addr_type(source, tokens, files, tables, compiler, file_index, node) { 0L }
+            else if (value.flags & FLAG_TYPE_UNIT) != 0L { 0L }
             else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
             else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
             else { 0L }
@@ -800,6 +1034,7 @@ fn unsupported_category_for_node(
         NodeKind.Unit => 0L,
         NodeKind.Integer => 0L,
         NodeKind.Bool => 0L,
+        NodeKind.BytesLiteral => if compiler.core_mode { 0L } else { UNSUPPORTED_NODE },
         NodeKind.Name => {
             if is_function_value_name(files, tables, compiler, node, file_index) { UNSUPPORTED_FUNCTION_VALUE }
             else if builtin_case_name(source, tokens, files, file_index, value.token) { UNSUPPORTED_CASE }
@@ -1178,6 +1413,7 @@ fn scalar_type_name(ty: long) -> Ascii max 16 {
     else if ty == TY_LONG { "long" }
     else if ty == TY_BOOL { "bool" }
     else if ty == TY_UNIT { "()" }
+    else if ty == TY_ADDR { "sys.Addr" }
     else { "never" }
 }
 
@@ -1193,6 +1429,15 @@ fn parse_scalar_type(
 ) -> long {
     let value = tables.nodes[node]
     if (value.flags & FLAG_TYPE_UNIT) != 0L { return TY_UNIT }
+    if compiler.core_mode && value.meta0 == 2L &&
+        token_is_word_at(source, tokens, files, file_index, tables.extra[value.extra], "sys") &&
+        token_is_word_at(source, tokens, files, file_index, tables.extra[value.extra + 1L], "Addr") {
+        return TY_ADDR
+    }
+    if value.kind == NodeKind.ResultType &&
+        token_is_word_at(source, tokens, files, file_index, value.token, "never") {
+        return TY_NEVER
+    }
     if token_is_word_at(source, tokens, files, file_index, value.token, "int") { return TY_INT }
     if token_is_word_at(source, tokens, files, file_index, value.token, "long") { return TY_LONG }
     if token_is_word_at(source, tokens, files, file_index, value.token, "bool") { return TY_BOOL }
@@ -1391,7 +1636,7 @@ fn check_entry_signature(
     }
     let signature = compiler.functions[entry]
     if signature.param_count != 0L || signature.result_ty != TY_UNIT {
-        fail_compiler_diagnostic(env, files[signature.file].name, signature.file, tables.nodes[signature.node].start, compiler, "'main' must take no arguments or one Env parameter, and return () or Result<(), E> with a printable error; use 'fn main()' or 'fn main(env: Env)'")
+        fail_compiler_diagnostic(env, files[signature.file].name, files, signature.file, tables.nodes[signature.node].start, compiler, "'main' must take no arguments or one Env parameter, and return () or Result<(), E> with a printable error; use 'fn main()' or 'fn main(env: Env)'")
     }
     entry
 }
@@ -1592,6 +1837,17 @@ fn natural_node_type(
                 if function >= 0L { compiler.functions[function].result_ty }
                 else { -1L }
             }
+        },
+        NodeKind.MethodCall => {
+            if is_core_sys_receiver(source, tokens, files, tables, compiler, node, file_index) {
+                core_sys_result_type(core_sys_operation(source, tokens, files, file_index, value.token))
+            } else { -1L }
+        },
+        NodeKind.Cast => {
+            let target = compiler.child_first[node]
+            if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "int") { TY_INT }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "long") { TY_LONG }
+            else { -1L }
         },
         NodeKind.Unary => -1L,
         NodeKind.Binary => if value.flags >= 8L && value.flags <= 15L { TY_BOOL } else { -1L },
@@ -1832,7 +2088,7 @@ fn fail_at_message(
     offset: long,
     message: Ascii max 160,
 ) -> never {
-    fail_compiler_diagnostic(env, files[file_index].name, file_index, offset, compiler, message)
+    fail_compiler_diagnostic(env, files[file_index].name, files, file_index, offset, compiler, message)
 }
 
 fn fail_assignment_error(
@@ -1881,19 +2137,37 @@ fn fail_missing_return(
     match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b": error: function '") { ok(_) => (), err(_) => env.exit(3) }
     match write_token_raw(env.err, source, tokens, files[function.file].base, function.name_token) { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(b"' can reach the end without a ") { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(scalar_type_name(result_ty).bytes()) { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(b"; return a value on every path\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+    if result_ty == TY_NEVER {
+        match env.err.write(b"' can complete normally; every path in a '-> never' function must end in a never expression\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+    } else {
+        match env.err.write(b"' can reach the end without a ") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(scalar_type_name(result_ty).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b"; return a value on every path\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+    }
 }
 
 fn fail_no_return_value(
     env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     compiler: CompilerTables,
     file_index: long,
     offset: long,
     result_ty: long,
+    function: FunctionRecord,
 ) -> never {
+    if result_ty == TY_NEVER {
+        let position = position_for_offset(file_index, files[file_index].base + offset, compiler)
+        match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b": error: function '") { ok(_) => (), err(_) => env.exit(3) }
+        match write_token_raw(env.err, source, tokens, files[function.file].base, function.name_token) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b"' returns never and cannot use 'return'; end every path with a never expression\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+    }
     let message: Ascii max 160 = if result_ty == TY_INT { "this function must return int; add a value after 'return'" }
         else if result_ty == TY_LONG { "this function must return long; add a value after 'return'" }
         else if result_ty == TY_BOOL { "this function must return bool; add a value after 'return'" }
@@ -1940,6 +2214,10 @@ fn body_child_expected(
                 compiler.parameters[compiler.functions[function].param_start + child_index].ty
             } else { -1L }
         }
+    } else if kind == NodeKind.MethodCall && is_core_sys_receiver(source, tokens, files, tables, compiler, parent, file_index) {
+        core_sys_argument_type(core_sys_operation(source, tokens, files, file_index, tables.nodes[parent].token), child_index)
+    } else if kind == NodeKind.Cast && child == frame.child0 {
+        -1L
     } else if kind == NodeKind.Unary {
         if tables.nodes[parent].flags == 1L { TY_BOOL } else { frame.expected }
     } else if kind == NodeKind.Binary {
@@ -2067,6 +2345,33 @@ fn check_one_body(
                 compiler.work[frame_index] = frame
                 continue
             }
+            if kind == NodeKind.MethodCall {
+                if !is_core_sys_receiver(source, tokens, files, tables, compiler, node, file_index) {
+                    fail_at_message(env, files, compiler, file_index, syntax.start, "system operations are available only to the core library")
+                }
+                let operation = core_sys_operation(source, tokens, files, file_index, syntax.token)
+                if operation < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "unknown core system operation") }
+                let receiver = compiler.child_first[node]
+                frame.cursor = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
+                frame.auxiliary = operation
+                frame.phase = 1L
+                compiler.work[frame_index] = frame
+                continue
+            }
+            if kind == NodeKind.Cast {
+                let type_node = compiler.child_first[node]
+                let value_node = if type_node >= 0L { compiler.child_next[type_node] } else { -1L }
+                if type_node < 0L || value_node < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "malformed cast expression") }
+                let target_ty = parse_scalar_type(env, source, tokens, files, tables, compiler, file_index, type_node)
+                if !is_numeric_type(target_ty) { fail_at_message(env, files, compiler, file_index, syntax.start, "casts in this subset require int or long") }
+                frame.child0 = value_node
+                frame.child1 = type_node
+                frame.result_ty = target_ty
+                frame.cursor = value_node
+                frame.phase = 1L
+                compiler.work[frame_index] = frame
+                continue
+            }
             if kind == NodeKind.Unary {
                 frame.child0 = compiler.child_first[node]
                 frame.cursor = frame.child0
@@ -2144,6 +2449,8 @@ fn check_one_body(
             }
             if kind == NodeKind.Unit {
                 compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+            } else if kind == NodeKind.BytesLiteral {
+                compiler.facts[node] = NodeFact { ty: TY_ADDR, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
             } else if kind == NodeKind.Integer {
                 let ty = if (syntax.flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else if is_numeric_type(frame.expected) { frame.expected } else { TY_INT }
                 if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
@@ -2179,11 +2486,11 @@ fn check_one_body(
             var child_scope = frame.scope
             var child_loop_depth = frame.loop_depth
             var child_index = -1L
-            if kind == NodeKind.Block || kind == NodeKind.Call {
+            if kind == NodeKind.Block || kind == NodeKind.Call || kind == NodeKind.MethodCall {
                 child = frame.cursor
                 if child >= 0L { frame.cursor = compiler.child_next[child] }
                 child_index = 0L
-                if kind == NodeKind.Call {
+                if kind == NodeKind.Call || kind == NodeKind.MethodCall {
                     var sibling = compiler.child_first[node]
                     var position = 0L
                     for count in 0L..tables.nodes[node].subtree {
@@ -2191,7 +2498,7 @@ fn check_one_body(
                         position += 1L
                         sibling = compiler.child_next[sibling]
                     }
-                    child_index = position
+                    child_index = position - if kind == NodeKind.MethodCall { 1L } else { 0L }
                 }
             } else if kind == NodeKind.Let {
                 child = frame.cursor
@@ -2200,7 +2507,7 @@ fn check_one_body(
                 if frame.cursor == 0L { child = frame.child0; frame.cursor = 1L }
                 else if frame.cursor == 1L { child = frame.child1; frame.cursor = 2L }
                 else { () }
-            } else if kind == NodeKind.Return || kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Expect || kind == NodeKind.Unary {
+            } else if kind == NodeKind.Return || kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Expect || kind == NodeKind.Unary || kind == NodeKind.Cast {
                 child = frame.cursor
                 frame.cursor = -1L
             } else if kind == NodeKind.Binary {
@@ -2283,7 +2590,7 @@ fn check_one_body(
         } else if kind == NodeKind.Return || kind == NodeKind.ReturnStatement {
             if is_test { fail_at_message(env, files, compiler, file_index, syntax.start, "a test cannot return; let the test finish so all expectations run") }
             if frame.child0 < 0L {
-                if result_ty != TY_UNIT { fail_no_return_value(env, files, compiler, file_index, syntax.start, result_ty) }
+                if result_ty != TY_UNIT { fail_no_return_value(env, source, files, tokens, compiler, file_index, syntax.start, result_ty, compiler.functions[function_id]) }
                 else { compiler.facts[node] = NodeFact { ty: TY_NEVER, flags: FACT_NEVER, binding: -1L, function: -1L, literal: 0L } }
             } else {
                 let actual = compiler.facts[frame.child0].ty
@@ -2322,6 +2629,40 @@ fn check_one_body(
                 let ty = function.result_ty
                 compiler.facts[node] = NodeFact { ty, flags: if ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: target, literal: 0L }
             }
+        } else if kind == NodeKind.MethodCall {
+            let operation = frame.auxiliary
+            let expected_count = core_sys_argument_count(operation)
+            let actual_count = count_children(tables, compiler, node) - 1L
+            if expected_count < 0L || actual_count != expected_count {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "core system operation has the wrong number of arguments")
+            }
+            var argument = compiler.child_first[node]
+            if argument >= 0L { argument = compiler.child_next[argument] }
+            for argument_index in 0L..expected_count {
+                if argument < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "core system operation is missing an argument") }
+                let expected_ty = core_sys_argument_type(operation, argument_index)
+                if expected_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "invalid core system operation signature") }
+                require_type(env, files, compiler, file_index, argument, expected_ty, compiler.facts[argument].ty, tables)
+                if operation == SYS_LIT && tables.nodes[argument].kind != NodeKind.BytesLiteral {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "sys.lit requires a byte-string literal")
+                }
+                argument = compiler.child_next[argument]
+            }
+            let result_ty = core_sys_result_type(operation)
+            if frame.expected >= 0L && frame.expected != result_ty && result_ty != TY_NEVER {
+                require_type(env, files, compiler, file_index, node, frame.expected, result_ty, tables)
+            }
+            compiler.facts[node] = NodeFact { ty: result_ty, flags: if result_ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: operation }
+        } else if kind == NodeKind.Cast {
+            let source_ty = compiler.facts[frame.child0].ty
+            let target_ty = frame.result_ty
+            if !is_numeric_type(source_ty) || !is_numeric_type(target_ty) {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "casts in this subset require int and long")
+            }
+            if frame.expected >= 0L && frame.expected != target_ty {
+                require_type(env, files, compiler, file_index, node, frame.expected, target_ty, tables)
+            }
+            compiler.facts[node] = NodeFact { ty: target_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.Unary {
             let child = frame.child0
             let value = compiler.facts[child]
@@ -2398,7 +2739,7 @@ fn check_one_body(
     }
     if compiler.work.count() > 0L { fail_parse_limit(env, files[file_index].name, "self-hosted checker work limit exceeded") }
     let body_fact = compiler.facts[body]
-    if result_ty != TY_UNIT && result_ty != TY_NEVER && (body_fact.flags & FACT_FALLS_THROUGH) != 0L && (tables.nodes[body].flags & FLAG_HAS_TAIL) == 0L {
+    if result_ty != TY_UNIT && (body_fact.flags & FACT_FALLS_THROUGH) != 0L && (tables.nodes[body].flags & FLAG_HAS_TAIL) == 0L {
         fail_missing_return(env, source, files, tokens, compiler, compiler.functions[function_id], result_ty, tables.nodes[body].start)
     }
     if result_ty == TY_UNIT && (body_fact.flags & FACT_FALLS_THROUGH) != 0L && body_fact.ty != TY_UNIT && body_fact.ty != TY_NEVER {
@@ -2599,6 +2940,8 @@ fn llvm_type_name(ty: long) -> Ascii max 8 {
     else if ty == TY_LONG { "i64" }
     else if ty == TY_BOOL { "i1" }
     else if ty == TY_UNIT { "void" }
+    else if ty == TY_NEVER { "void" }
+    else if ty == TY_ADDR { "ptr" }
     else { "i32" }
 }
 
@@ -2614,6 +2957,71 @@ fn ir_write_value_ref(compiler: write CompilerTables, ir: grow Bytes max IR_BUFF
     ir_write_number(compiler, ir, node)
 }
 
+fn ir_write_token_text(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    file_index: long,
+    token: long,
+) {
+    let start = files[file_index].base + tokens[token].start
+    for index in 0L..tokens[token].length { ir_push_byte(compiler, ir, source[start + index]) }
+}
+
+fn core_external_symbol(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    file_index: long,
+    token: long,
+) -> bool {
+    token_is_word_at(source, tokens, files, file_index, token, "nl_core_start") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_core_init") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_context_create") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_context_base_offset") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_context_destroy") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_env_create") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_env_destroy") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_register_file") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_test_selected_index") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_set_test_mode") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_print_int") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_print_long") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_print_bool") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_fail") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_expect_fail_compare") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_expect_fail_bool") ||
+    token_is_word_at(source, tokens, files, file_index, token, "memcpy") ||
+    token_is_word_at(source, tokens, files, file_index, token, "memmove") ||
+    token_is_word_at(source, tokens, files, file_index, token, "memset") ||
+    token_is_word_at(source, tokens, files, file_index, token, "memcmp") ||
+    token_is_word_at(source, tokens, files, file_index, token, "bcmp")
+}
+
+fn ir_write_core_function_symbol(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    function: FunctionRecord,
+    function_id: long,
+) {
+    if !compiler.core_mode {
+        ir_write_ascii(compiler, ir, "@nl_fn_")
+        ir_write_number(compiler, ir, function_id)
+        return
+    }
+    if !core_external_symbol(source, tokens, files, function.file, function.name_token) {
+        ir_write_ascii(compiler, ir, "@nl_core_")
+    } else {
+        ir_push_byte(compiler, ir, 64)
+    }
+    ir_write_token_text(source, files, tokens, compiler, ir, function.file, function.name_token)
+}
+
 fn emit_runtime_failure(
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tables: ParseTables,
@@ -2625,7 +3033,10 @@ fn emit_runtime_failure(
 ) {
     let position = position_for_offset(file_index, files[file_index].base + tables.nodes[node].anchor, compiler)
     ir_write_ascii(compiler, ir, "  br i1 %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %ov.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %ov.ok."); ir_write_number(compiler, ir, node)
-    ir_write_ascii(compiler, ir, "\nov.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(i32 "); ir_write_number(compiler, ir, kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\nov.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+    ir_write_ascii(compiler, ir, "\nov.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+    if compiler.memory_closure { ir_write_ascii(compiler, ir, "  call void @llvm.trap()\n  unreachable\n") }
+    else { ir_write_ascii(compiler, ir, "  call void @nl_fail(i32 "); ir_write_number(compiler, ir, kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index + compiler.file_id_base); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\n") }
+    ir_write_ascii(compiler, ir, "ov.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
 }
 
 fn emit_checked_division(
@@ -2682,6 +3093,144 @@ fn emit_compound_assignment(
     }
 }
 
+fn core_syscall_number(operation: long) -> long {
+    if operation == SYS_WRITE { 1L }
+    else if operation == SYS_EXIT_GROUP { 231L }
+    else if operation == SYS_MAP { 9L }
+    else if operation == SYS_PROTECT { 10L }
+    else if operation == SYS_IOCTL { 16L }
+    else if operation == SYS_STATX { 332L }
+    else if operation == SYS_SIGACTION { 13L }
+    else if operation == SYS_OPENAT { 257L }
+    else if operation == SYS_CLOSE { 3L }
+    else { -1L }
+}
+
+fn emit_sys_method(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    file_index: long,
+) {
+    let syntax = tables.nodes[node]
+    let operation = core_sys_operation(source, tokens, files, file_index, syntax.token)
+    let receiver = compiler.child_first[node]
+    var first_arg = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
+    if operation == SYS_NULL {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = inttoptr i64 0 to ptr\n")
+        return
+    }
+    if operation == SYS_STATE {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr inbounds ["); ir_write_number(compiler, ir, embedded_core_state_bytes()); ir_write_ascii(compiler, ir, " x i8], ptr @nl.core.state, i64 0, i64 0\n")
+        return
+    }
+    if operation == SYS_LIT {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", i64 0\n")
+        return
+    }
+    if operation == SYS_IS_NULL {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq ptr "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", null\n")
+        return
+    }
+    if operation == SYS_OFFSET {
+        let offset_arg = compiler.child_next[first_arg]
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, offset_arg); ir_write_ascii(compiler, ir, "\n")
+        return
+    }
+    if operation == SYS_DISTANCE {
+        let to_arg = compiler.child_next[first_arg]
+        ir_write_ascii(compiler, ir, "  %sys.addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = ptrtoint ptr "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, " to i64\n  %sys.addr2."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = ptrtoint ptr "); ir_write_value_ref(compiler, ir, to_arg); ir_write_ascii(compiler, ir, " to i64\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sub i64 %sys.addr2."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %sys.addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
+        return
+    }
+    if operation == SYS_FROM_RAW {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = inttoptr i64 "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, " to ptr\n")
+        return
+    }
+    if operation == SYS_LOAD8 || operation == SYS_LOAD32 || operation == SYS_LOAD64 || operation == SYS_LOAD_ADDR {
+        let offset_arg = compiler.child_next[first_arg]
+        ir_write_ascii(compiler, ir, "  %sys.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, offset_arg); ir_write_ascii(compiler, ir, "\n")
+        let value_type = if operation == SYS_LOAD8 { "i8" } else if operation == SYS_LOAD32 { "i32" } else if operation == SYS_LOAD64 { "i64" } else { "ptr" }
+        ir_write_ascii(compiler, ir, "  %sys.load."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, value_type); ir_write_ascii(compiler, ir, ", ptr %sys.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+        if operation == SYS_LOAD8 {
+            ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i8 %sys.load."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i32\n")
+        } else {
+            ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = select i1 true, "); ir_write_ascii(compiler, ir, value_type); ir_write_ascii(compiler, ir, " %sys.load."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, value_type); ir_write_ascii(compiler, ir, " %sys.load."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
+        }
+        return
+    }
+    if operation == SYS_STORE8 || operation == SYS_STORE32 || operation == SYS_STORE64 || operation == SYS_STORE_ADDR {
+        let offset_arg = compiler.child_next[first_arg]
+        let value_arg = compiler.child_next[offset_arg]
+        let value_type = if operation == SYS_STORE8 { "i8" } else if operation == SYS_STORE32 { "i32" } else if operation == SYS_STORE64 { "i64" } else { "ptr" }
+        ir_write_ascii(compiler, ir, "  %sys.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, offset_arg); ir_write_ascii(compiler, ir, "\n")
+        if operation == SYS_STORE8 {
+            ir_write_ascii(compiler, ir, "  %sys.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = trunc i32 "); ir_write_value_ref(compiler, ir, value_arg); ir_write_ascii(compiler, ir, " to i8\n  store i8 %sys.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %sys.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+        } else {
+            ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, value_type); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_arg); ir_write_ascii(compiler, ir, ", ptr %sys.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+        }
+        return
+    }
+    if operation == SYS_IS_ERROR {
+        ir_write_ascii(compiler, ir, "  %sys.err.lo."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", -4095\n  %sys.err.hi."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sle i64 "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", -1\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = and i1 %sys.err.lo."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %sys.err.hi."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
+        return
+    }
+    if operation == SYS_REPEAT_BYTE {
+        ir_write_ascii(compiler, ir, "  %sys.repeat.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = trunc i32 "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, " to i8\n  %sys.repeat.base."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i8 %sys.repeat.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i64\n  %sys.repeat.shift8."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = shl i64 %sys.repeat.base."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 8\n  %sys.repeat.pair."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = or i64 %sys.repeat.base."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %sys.repeat.shift8."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %sys.repeat.shift16."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = shl i64 %sys.repeat.pair."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 16\n  %sys.repeat.word."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = or i64 %sys.repeat.pair."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %sys.repeat.shift16."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %sys.repeat.shift32."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = shl i64 %sys.repeat.word."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 32\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = or i64 %sys.repeat.word."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %sys.repeat.shift32."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
+        return
+    }
+    if operation == SYS_COPY_16 {
+        let src_arg = compiler.child_next[first_arg]
+        ir_write_ascii(compiler, ir, "  %sys.copy16.src."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load <16 x i8>, ptr "); ir_write_value_ref(compiler, ir, src_arg); ir_write_ascii(compiler, ir, ", align 1\n  store <16 x i8> %sys.copy16.src."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", align 1\n")
+        return
+    }
+    if operation == SYS_FILL_16 {
+        let value_arg = compiler.child_next[first_arg]
+        ir_write_ascii(compiler, ir, "  %sys.fill16.half."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = bitcast i64 "); ir_write_value_ref(compiler, ir, value_arg); ir_write_ascii(compiler, ir, " to <8 x i8>\n  %sys.fill16.vector."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = shufflevector <8 x i8> %sys.fill16.half."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", <8 x i8> %sys.fill16.half."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", <16 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7, i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7>\n  store <16 x i8> %sys.fill16.vector."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", align 1\n")
+        return
+    }
+    if operation == SYS_COPY_FORWARD_BULK {
+        let src_arg = compiler.child_next[first_arg]
+        let n_arg = compiler.child_next[src_arg]
+        ir_write_ascii(compiler, ir, "  %sys.bulk.result."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call { ptr, ptr, i64 } asm sideeffect \"rep movsb\", \"={di},={si},={cx},0,1,2,~{memory},~{dirflag}\"(ptr "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", ptr "); ir_write_value_ref(compiler, ir, src_arg); ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, n_arg); ir_write_ascii(compiler, ir, ")\n")
+        return
+    }
+    if operation == SYS_FILL_BULK {
+        let value_arg = compiler.child_next[first_arg]
+        let n_arg = compiler.child_next[value_arg]
+        ir_write_ascii(compiler, ir, "  %sys.fill."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = trunc i32 "); ir_write_value_ref(compiler, ir, value_arg); ir_write_ascii(compiler, ir, " to i8\n  %sys.bulk.result."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call { ptr, i64 } asm sideeffect \"rep stosb\", \"={di},={cx},0,{ax},1,~{memory},~{dirflag}\"(ptr "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", i8 %sys.fill."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, n_arg); ir_write_ascii(compiler, ir, ")\n")
+        return
+    }
+    if operation == SYS_CALL_MAIN {
+        let argv_arg = compiler.child_next[first_arg]
+        let envp_arg = compiler.child_next[argv_arg]
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call i32 @main(i32 "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", ptr "); ir_write_value_ref(compiler, ir, argv_arg); ir_write_ascii(compiler, ir, ", ptr "); ir_write_value_ref(compiler, ir, envp_arg); ir_write_ascii(compiler, ir, ")\n")
+        return
+    }
+    let argument_count = core_sys_argument_count(operation)
+    let syscall = core_syscall_number(operation)
+    for argument_index in 0L..argument_count {
+        let argument = child_at(tables, compiler, node, argument_index + 1L)
+        let ty = core_sys_argument_type(operation, argument_index)
+        ir_write_ascii(compiler, ir, "  %sys.arg."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, argument_index); ir_write_ascii(compiler, ir, " = ")
+        if ty == TY_ADDR { ir_write_ascii(compiler, ir, "ptrtoint ptr "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n") }
+        else if ty == TY_INT { ir_write_ascii(compiler, ir, "sext i32 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n") }
+        else if ty == TY_BOOL { ir_write_ascii(compiler, ir, "zext i1 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n") }
+        else { ir_write_ascii(compiler, ir, "add i64 0, "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, "\n") }
+    }
+    if operation == SYS_EXIT_GROUP { ir_write_ascii(compiler, ir, "  ") }
+    else { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = ") }
+    ir_write_ascii(compiler, ir, "call i64 @nl.sys.call"); ir_write_number(compiler, ir, argument_count); ir_write_ascii(compiler, ir, "(i64 "); ir_write_number(compiler, ir, syscall)
+    for argument_index in 0L..argument_count {
+        ir_write_ascii(compiler, ir, ", i64 %sys.arg."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, argument_index)
+    }
+    ir_write_ascii(compiler, ir, ")\n")
+    if operation == SYS_EXIT_GROUP { ir_write_ascii(compiler, ir, "  unreachable\n") }
+}
+
 fn emit_expr_linear(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -2714,6 +3263,10 @@ fn emit_expr_linear(
                 let binding = compiler.facts[current].binding
                 ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
                 match compiler.expr_work.pop() { some(_) => (), none => () }
+            } else if kind == NodeKind.BytesLiteral {
+                let literal = decode_string_token(source, tokens, files[file_index].base, syntax.extra, true)
+                ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = getelementptr inbounds ["); ir_write_number(compiler, ir, literal.count() + 1L); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.core.literal."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i64 0, i64 0\n")
+                match compiler.expr_work.pop() { some(_) => (), none => () }
             } else if kind == NodeKind.Unary {
                 frame.child0 = compiler.child_first[current]
                 frame.phase = 1L
@@ -2729,6 +3282,21 @@ fn emit_expr_linear(
                 frame.cursor = compiler.child_first[current]
                 frame.phase = 1L
                 compiler.expr_work[frame_index] = frame
+            } else if kind == NodeKind.MethodCall {
+                let receiver = compiler.child_first[current]
+                frame.cursor = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
+                frame.phase = 1L
+                compiler.expr_work[frame_index] = frame
+            } else if kind == NodeKind.Cast {
+                let type_node = compiler.child_first[current]
+                frame.child0 = if type_node >= 0L { compiler.child_next[type_node] } else { -1L }
+                frame.child1 = type_node
+                frame.auxiliary = compiler.facts[current].ty
+                frame.phase = 1L
+                compiler.expr_work[frame_index] = frame
+                if frame.child0 >= 0L {
+                    compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+                }
             } else if kind == NodeKind.If {
                 frame.child0 = compiler.child_first[current]
                 frame.child1 = compiler.child_next[frame.child0]
@@ -2769,6 +3337,17 @@ fn emit_expr_linear(
                 ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = extractvalue { "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", i1 } %ov.pair."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", 0\n  %ov.flag."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = extractvalue { "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", i1 } %ov.pair."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", 1\n")
                 let failure_kind = if ty == TY_INT { 4L } else { 8L }
                 emit_runtime_failure(files, tables, compiler, ir, current, file_index, failure_kind)
+            }
+            match compiler.expr_work.pop() { some(_) => (), none => () }
+        } else if kind == NodeKind.Cast && frame.phase == 1L {
+            let source_ty = compiler.facts[frame.child0].ty
+            let target_ty = frame.auxiliary
+            if source_ty == target_ty {
+                ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = add "); ir_write_ascii(compiler, ir, llvm_type_name(target_ty)); ir_write_ascii(compiler, ir, " 0, "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, "\n")
+            } else if source_ty == TY_INT && target_ty == TY_LONG {
+                ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = sext i32 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i64\n")
+            } else {
+                ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", -2147483648\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 2147483647\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler.file_id_base); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.anchor, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.anchor, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n")
             }
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.Return && frame.phase == 17L {
@@ -2843,15 +3422,33 @@ fn emit_expr_linear(
                     let target = compiler.facts[current].function
                     let function = compiler.functions[target]
                     let return_ty = function.result_ty
-                    if return_ty != TY_UNIT { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = ") } else { ir_write_ascii(compiler, ir, "  ") }
-                    ir_write_ascii(compiler, ir, "call "); ir_write_ascii(compiler, ir, llvm_type_name(return_ty)); ir_write_ascii(compiler, ir, " @nl_fn_"); ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top")
+                    if return_ty != TY_UNIT && return_ty != TY_NEVER { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = ") } else { ir_write_ascii(compiler, ir, "  ") }
+                    ir_write_ascii(compiler, ir, "call "); ir_write_ascii(compiler, ir, llvm_type_name(return_ty)); ir_push_byte(compiler, ir, 32)
+                    if compiler.core_mode {
+                        ir_write_core_function_symbol(source, files, tokens, compiler, ir, function, target)
+                        ir_push_byte(compiler, ir, 40)
+                    } else {
+                        ir_write_ascii(compiler, ir, "@nl_fn_"); ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top")
+                    }
                     var arg = first_arg
                     for arg_index in 0L..function.param_count {
-                        ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, llvm_type_name(compiler.parameters[function.param_start + arg_index].ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, arg)
+                        if arg_index > 0L || !compiler.core_mode { ir_write_ascii(compiler, ir, ", ") }
+                        ir_write_ascii(compiler, ir, llvm_type_name(compiler.parameters[function.param_start + arg_index].ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, arg)
                         arg = compiler.child_next[arg]
                     }
                     ir_write_ascii(compiler, ir, ")\n")
+                    if return_ty == TY_NEVER { ir_write_ascii(compiler, ir, "  unreachable\n") }
                 }
+                match compiler.expr_work.pop() { some(_) => (), none => () }
+            }
+        } else if kind == NodeKind.MethodCall {
+            if frame.cursor >= 0L {
+                let argument = frame.cursor
+                frame.cursor = compiler.child_next[argument]
+                compiler.expr_work[frame_index] = frame
+                compiler.expr_work.push(EmitExprFrame { node: argument, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+            } else {
+                emit_sys_method(source, files, tokens, tables, compiler, ir, current, file_index)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             }
         } else if kind == NodeKind.If && frame.phase == 1L {
@@ -3389,20 +3986,33 @@ fn emit_function_definition(
     function_id: long,
 ) {
     let function = compiler.functions[function_id]
-    ir_write_ascii(compiler, ir, "define ")
+    if compiler.core_mode { ir_write_ascii(compiler, ir, "define internal ") }
+    else { ir_write_ascii(compiler, ir, "define ") }
     ir_write_ascii(compiler, ir, llvm_type_name(function.result_ty))
-    ir_write_ascii(compiler, ir, " @nl_fn_")
-    ir_write_number(compiler, ir, function_id)
-    ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top")
+    if compiler.core_mode {
+        ir_push_byte(compiler, ir, 32)
+        ir_write_core_function_symbol(source, files, tokens, compiler, ir, function, function_id)
+        ir_push_byte(compiler, ir, 40)
+    } else {
+        ir_write_ascii(compiler, ir, " @nl_fn_")
+        ir_write_number(compiler, ir, function_id)
+        ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top")
+    }
     for parameter_index in 0L..function.param_count {
         let parameter = compiler.parameters[function.param_start + parameter_index]
         let binding = binding_for_node(compiler, parameter.node)
-        ir_write_ascii(compiler, ir, ", ")
+        if parameter_index > 0L || !compiler.core_mode { ir_write_ascii(compiler, ir, ", ") }
         ir_write_ascii(compiler, ir, llvm_type_name(parameter.ty))
         ir_write_ascii(compiler, ir, " %arg.")
         ir_write_number(compiler, ir, binding)
     }
-    ir_write_ascii(compiler, ir, ") {\nentry:\n")
+    ir_write_ascii(compiler, ir, ")")
+    if compiler.core_mode {
+        if function.result_ty == TY_NEVER { ir_write_ascii(compiler, ir, " noreturn") }
+        ir_write_ascii(compiler, ir, " nounwind")
+        if files[function.file].name == b"memory.nl" { ir_write_ascii(compiler, ir, " \"no-builtins\"=\"true\"") }
+    }
+    ir_write_ascii(compiler, ir, " {\nentry:\n")
     for node in 0L..tables.nodes.count() {
         if tables.nodes[node].kind == NodeKind.Binary && (tables.nodes[node].flags == 14L || tables.nodes[node].flags == 15L) {
             ir_write_ascii(compiler, ir, "  %logic.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca i1, align 1\n")
@@ -3436,7 +4046,9 @@ fn emit_function_definition(
         ir_write_number(compiler, ir, binding)
         ir_write_ascii(compiler, ir, ", align 1\n")
     }
+    compiler.memory_closure = compiler.core_mode && files[function.file].name == b"memory.nl"
     emit_function_body(source, files, tokens, tables, compiler, ir, function.body, function.file, function_id, function.result_ty, false)
+    compiler.memory_closure = false
     ir_write_ascii(compiler, ir, "}\n\n")
 }
 
@@ -3519,8 +4131,10 @@ fn emit_main_function(
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     config: MemoryConfig,
     entry: long,
+    runtime_core: bool,
 ) {
-    ir_write_ascii(compiler, ir, "define i32 @main(i32 %argc, ptr %argv) {\nentry:\n")
+    if runtime_core { ir_write_ascii(compiler, ir, "define i32 @main(i32 %argc, ptr %argv, ptr %envp) {\nentry:\n  call void @nl_core_init(i32 %argc, ptr %argv, ptr %envp)\n") }
+    else { ir_write_ascii(compiler, ir, "define i32 @main(i32 %argc, ptr %argv) {\nentry:\n") }
     if compiler.tests.count() > 0L {
         ir_write_ascii(compiler, ir, "  %nl.selected = call i32 @nl_test_selected_index()\n  switch i32 %nl.selected, label %nl.select.default [\n")
         for test_index in 0L..compiler.tests.count() {
@@ -3583,6 +4197,7 @@ fn emit_main_function(
         ir_write_number(compiler, ir, file_index)
         ir_write_ascii(compiler, ir, ", i64 0, i64 0))\n")
     }
+    if runtime_core { ir_write_ascii(compiler, ir, "  call void @nl_core_register_files()\n") }
     if compiler.tests.count() > 0L {
         ir_write_ascii(compiler, ir, "  switch i32 %nl.selected, label %nl.test.fallback [\n")
         for test_index in 0L..compiler.tests.count() {
@@ -3615,24 +4230,238 @@ fn emit_main_function(
     ir_write_ascii(compiler, ir, "  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 0\n}\n")
 }
 
+fn core_position(file_data: Bytes max FILE_SOURCE_CAPACITY, offset: long) -> SourcePosition {
+    var line = 1L
+    var col = 1L
+    for index in 0L..offset {
+        if file_data[index] == 10 { line += 1L; col = 1L }
+        else { col += 1L }
+    }
+    SourcePosition { line, col }
+}
+
+fn fail_core_internal(
+    env: Env,
+    file: Bytes max 4096,
+    position: SourcePosition,
+    message: Ascii max 160,
+) -> never {
+    match env.err.write(b"nlc: internal error in the core library: ") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(file) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": ") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(message.bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(3), err(_) => env.exit(3) }
+}
+
+fn copy_core_name(name: Ascii max 64) -> Bytes max 4096 {
+    var result: Bytes max 4096 = Bytes.empty()
+    for index in 0L..name.len() { result.push(name.bytes()[index]).unwrap() }
+    result
+}
+
+fn append_embedded_core_sources(
+    env: Env,
+    source: grow Bytes max SOURCE_BUFFER_CAPACITY,
+    files: write list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: write list<Token, TOKEN_STORAGE_CAPACITY>,
+    delimiters: write list<DelimiterKind, MAX_DELIMITER_NESTING>,
+    tables: write ParseTables,
+) {
+    for file_index in 0L..embedded_core_file_count() {
+        let file_name = copy_core_name(embedded_core_file_name(file_index))
+        var file_data: Bytes max FILE_SOURCE_CAPACITY = Bytes.empty()
+        for chunk_index in 0L..embedded_core_chunk_count(file_index) {
+            let chunk = embedded_core_file_chunk(file_index, chunk_index)
+            match file_data.try_append(chunk) {
+                ok(_) => (),
+                err(_) => fail_core_internal(env, file_name, SourcePosition { line: 1L, col: 1L }, "embedded source exceeded its fixed file buffer"),
+            }
+        }
+        match file_data.validate_utf8() {
+            ok(_) => (),
+            err(error) => fail_core_internal(env, file_name, core_position(file_data, error.valid_up_to), "embedded source is not valid UTF-8"),
+        }
+        let file_length = file_data.count()
+        let base = source.count()
+        match source.try_append(file_data) {
+            ok(_) => (),
+            err(_) => fail_core_internal(env, file_name, SourcePosition { line: 1L, col: 1L }, "embedded source exceeded its fixed package buffer"),
+        }
+        let first_token = tokens.count()
+        let summary = match lex_file(source, base, file_length, tokens, delimiters) {
+            ok(value) => value,
+            err(problem) => fail_core_internal(env, file_name, SourcePosition { line: problem.line, col: problem.col }, "embedded source has a lexer error"),
+        }
+        let root = match parse_file(source, tokens, tables, base, file_length, first_token, summary.token_count) {
+            ok(value) => value,
+            err(problem) => fail_core_internal(env, file_name, core_position(file_data, problem.offset), "embedded source has a parser error"),
+        }
+        let core_file = SourceFile { name: file_name, base, length: file_length, first_token, token_count: summary.token_count, end_line: summary.end_line, end_col: summary.end_col, tree_root: root }
+        match files.push(core_file) {
+            ok(_) => (),
+            err(Full) => fail_core_internal(env, b"core", SourcePosition { line: 1L, col: 1L }, "embedded file count exceeded its fixed limit"),
+        }
+    }
+}
+
+fn emit_core_file_globals(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+) {
+    for file_index in 0L..files.count() {
+        let global_file_id = compiler.file_id_base + file_index
+        ir_write_ascii(compiler, ir, "@.nl.file.")
+        ir_write_number(compiler, ir, global_file_id)
+        ir_write_ascii(compiler, ir, " = private unnamed_addr constant [")
+        ir_write_number(compiler, ir, files[file_index].name.count() + 1L)
+        ir_write_ascii(compiler, ir, " x i8] c\"")
+        for index in 0L..files[file_index].name.count() { ir_write_escaped_byte(compiler, ir, files[file_index].name[index]) }
+        ir_write_ascii(compiler, ir, "\\00\", align 1\n")
+    }
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind == NodeKind.BytesLiteral {
+            let syntax = tables.nodes[node]
+            let literal_file = node_file_index(tables.nodes, files, node)
+            let literal = decode_string_token(source, tokens, files[literal_file].base, syntax.extra, true)
+            ir_write_ascii(compiler, ir, "@.nl.core.literal.")
+            ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = private unnamed_addr constant [")
+            ir_write_number(compiler, ir, literal.count() + 1L)
+            ir_write_ascii(compiler, ir, " x i8] c\"")
+            for index in 0L..literal.count() { ir_write_escaped_byte(compiler, ir, literal[index]) }
+            ir_write_ascii(compiler, ir, "\\00\", align 1\n")
+        }
+    }
+}
+
+fn syscall_register(index: long) -> Ascii max 8 {
+    if index == 0L { "rdi" }
+    else if index == 1L { "rsi" }
+    else if index == 2L { "rdx" }
+    else if index == 3L { "r10" }
+    else if index == 4L { "r8" }
+    else { "r9" }
+}
+
+fn emit_one_syscall_helper(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, count: long) {
+    ir_write_ascii(compiler, ir, "define internal i64 @nl.sys.call")
+    ir_write_number(compiler, ir, count)
+    ir_write_ascii(compiler, ir, "(i64 %n")
+    for index in 0L..count {
+        ir_write_ascii(compiler, ir, ", i64 %a")
+        ir_write_number(compiler, ir, index)
+    }
+    ir_write_ascii(compiler, ir, ") alwaysinline nounwind {\nentry:\n  %r = call i64 asm sideeffect \"syscall\", \"={rax},{rax}")
+    for index in 0L..count {
+        ir_push_byte(compiler, ir, 44)
+        ir_push_byte(compiler, ir, 123)
+        ir_write_ascii(compiler, ir, syscall_register(index))
+        ir_push_byte(compiler, ir, 125)
+    }
+    ir_write_ascii(compiler, ir, ",~{rcx},~{r11},~{memory},~{dirflag},~{fpsr},~{flags}\"(i64 %n")
+    for index in 0L..count {
+        ir_write_ascii(compiler, ir, ", i64 %a")
+        ir_write_number(compiler, ir, index)
+    }
+    ir_write_ascii(compiler, ir, ")\n  ret i64 %r\n}\n\n")
+}
+
+fn emit_syscall_helpers(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
+    for count in 0L..7L { emit_one_syscall_helper(compiler, ir, count) }
+}
+
+fn emit_core_registration(files: list<SourceFile, MAX_SOURCE_FILES>, compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
+    ir_write_ascii(compiler, ir, "define internal void @nl_core_register_files() nounwind {\nentry:\n")
+    for file_index in 0L..files.count() {
+        let global_file_id = compiler.file_id_base + file_index
+        ir_write_ascii(compiler, ir, "  call void @nl_register_file(i32 ")
+        ir_write_number(compiler, ir, global_file_id)
+        ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds ([")
+        ir_write_number(compiler, ir, files[file_index].name.count() + 1L)
+        ir_write_ascii(compiler, ir, " x i8], ptr @.nl.file.")
+        ir_write_number(compiler, ir, global_file_id)
+        ir_write_ascii(compiler, ir, ", i64 0, i64 0))\n")
+    }
+    ir_write_ascii(compiler, ir, "  ret void\n}\n\n")
+}
+
+fn emit_core_start_assembly(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
+    ir_write_ascii(compiler, ir, "module asm \".text\"\nmodule asm \".globl _start\"\nmodule asm \".type _start, @function\"\nmodule asm \"_start:\"\nmodule asm \"  .cfi_startproc\"\nmodule asm \"  .cfi_undefined rip\"\nmodule asm \"  xor %ebp, %ebp\"\nmodule asm \"  mov %rsp, %rdi\"\nmodule asm \"  and $-16, %rsp\"\nmodule asm \"  call nl_core_start\"\nmodule asm \"  ud2\"\nmodule asm \"  .cfi_endproc\"\nmodule asm \".size _start, . - _start\"\n")
+    ir_write_ascii(compiler, ir, "@llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section \"llvm.metadata\"\n")
+}
+
+fn compile_embedded_core(
+    env: Env,
+    config: MemoryConfig,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    file_id_base: long,
+    tables: write ParseTables,
+    compiler: write CompilerTables,
+) -> bool {
+    var source: Bytes max SOURCE_BUFFER_CAPACITY = Bytes.empty()
+    var files: list<SourceFile, MAX_SOURCE_FILES> = list {}
+    var tokens: list<Token, TOKEN_STORAGE_CAPACITY> = list {}
+    var delimiters: list<DelimiterKind, MAX_DELIMITER_NESTING> = list {}
+    reset_parse_tables(tables)
+    initialize_parse_tables(tables)
+    append_embedded_core_sources(env, source, files, tokens, delimiters, tables)
+    reset_compiler_tables(compiler)
+    compiler.core_mode = true
+    compiler.file_id_base = file_id_base
+    add_compiler_links(tables, compiler)
+    intern_package_names(env, source, files, tokens, tables, compiler)
+    build_line_start_index(env, source, files, compiler)
+    check_package_eligibility(env, source, files, tokens, tables, compiler)
+    register_package_declarations(env, source, files, tokens, tables, config, compiler)
+    let _entry = check_entry_signature(env, source, files, tokens, tables, compiler, false)
+    check_package_bodies(env, source, files, tokens, tables, config, compiler)
+    check_call_cycles(env, source, files, tokens, tables, compiler)
+    for function_id in 0L..compiler.functions.count() {
+        emit_function_definition(source, files, tokens, tables, compiler, ir, function_id)
+    }
+    emit_core_file_globals(source, files, tokens, tables, compiler, ir)
+    ir_write_ascii(compiler, ir, "@nl.core.state = internal global [")
+    ir_write_number(compiler, ir, embedded_core_state_bytes())
+    ir_write_ascii(compiler, ir, " x i8] zeroinitializer, align 64\n\n")
+    emit_core_registration(files, compiler, ir)
+    emit_syscall_helpers(compiler, ir)
+    ir_write_ascii(compiler, ir, "@llvm.compiler.used = appending global [5 x ptr] [ptr @memcpy, ptr @memmove, ptr @memset, ptr @memcmp, ptr @bcmp], section \"llvm.metadata\"\n")
+    emit_core_start_assembly(compiler, ir)
+    !compiler.ir_overflow
+}
+
 fn compile_selfhost_package(
     env: Env,
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
-    tables: ParseTables,
+    tables: write ParseTables,
     config: MemoryConfig,
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     want_test_build: bool,
+    runtime_core: bool,
+    core_hash: Ascii max 64,
 ) {
     register_package_declarations(env, source, files, tokens, tables, config, compiler)
     let entry = check_entry_signature(env, source, files, tokens, tables, compiler, !want_test_build)
     check_package_bodies(env, source, files, tokens, tables, config, compiler)
     check_call_cycles(env, source, files, tokens, tables, compiler)
-    ir_write_ascii(compiler, ir, "; nlc-link-ir 1\n; nlc.build ")
+    ir_write_ascii(compiler, ir, "; nlc-link-ir 2\n; nlc.build ")
     ir_write_ascii(compiler, ir, if want_test_build { "test" } else { "program" })
     ir_write_ascii(compiler, ir, "\n; nlc.stack offset\n; nlc.recursion none\n")
+    ir_write_ascii(compiler, ir, if runtime_core { "; nlc.runtime core\n" } else { "; nlc.runtime c\n" })
+    ir_write_ascii(compiler, ir, "; nlc.core ")
+    ir_write_ascii(compiler, ir, core_hash)
+    ir_write_ascii(compiler, ir, "\n")
     for test_index in 0L..compiler.tests.count() {
         let test = compiler.tests[test_index]
         let name = decode_string_token(source, tokens, files[test.file].base, test.name_token, false)
@@ -3645,8 +4474,11 @@ fn compile_selfhost_package(
         }
         ir_write_ascii(compiler, ir, "\n")
     }
-    ir_write_ascii(compiler, ir, "source_filename = \"next-lang\"\n\n")
-    ir_write_ascii(compiler, ir, "declare ptr @nl_context_create(i64, i64, ptr)\ndeclare i64 @nl_context_base_offset(ptr)\ndeclare void @nl_context_destroy(ptr)\ndeclare ptr @nl_env_create(i32, ptr, i32)\ndeclare void @nl_env_destroy(ptr)\ndeclare void @nl_register_file(i32, ptr)\ndeclare void @nl_print_int(i32)\ndeclare void @nl_print_long(i64)\ndeclare void @nl_print_bool(i1 zeroext)\ndeclare void @nl_fail(i32, i32, i32, i32) noreturn cold nounwind\ndeclare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.smul.with.overflow.i32(i32, i32)\ndeclare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)\ndeclare void @nl_expect_fail_compare(i32, i32, i32, ptr, i64, i64, i32)\ndeclare void @nl_expect_fail_bool(i32, i32, i32, ptr)\ndeclare i32 @nl_test_selected_index()\ndeclare void @nl_set_test_mode()\n\n")
+    ir_write_ascii(compiler, ir, "source_filename = \"next-lang\"\n\ndeclare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.smul.with.overflow.i32(i32, i32)\ndeclare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)\ndeclare void @llvm.trap()\n")
+    if !runtime_core {
+        ir_write_ascii(compiler, ir, "declare ptr @nl_context_create(i64, i64, ptr)\ndeclare i64 @nl_context_base_offset(ptr)\ndeclare void @nl_context_destroy(ptr)\ndeclare ptr @nl_env_create(i32, ptr, i32)\ndeclare void @nl_env_destroy(ptr)\ndeclare void @nl_register_file(i32, ptr)\ndeclare void @nl_print_int(i32)\ndeclare void @nl_print_long(i64)\ndeclare void @nl_print_bool(i1 zeroext)\ndeclare void @nl_fail(i32, i32, i32, i32) noreturn cold nounwind\ndeclare void @nl_expect_fail_compare(i32, i32, i32, ptr, i64, i64, i32)\ndeclare void @nl_expect_fail_bool(i32, i32, i32, ptr)\ndeclare i32 @nl_test_selected_index()\ndeclare void @nl_set_test_mode()\n")
+    }
+    ir_write_ascii(compiler, ir, "\n")
     for function_id in 0L..compiler.functions.count() {
         emit_function_definition(source, files, tokens, tables, compiler, ir, function_id)
     }
@@ -3654,7 +4486,14 @@ fn compile_selfhost_package(
         emit_test_definition(source, files, tokens, tables, compiler, ir, test_index)
     }
     emit_file_globals(files, source, tokens, tables, compiler, ir)
-    emit_main_function(source, compiler, ir, files, tokens, config, entry)
+    emit_main_function(source, compiler, ir, files, tokens, config, entry, runtime_core)
+    if runtime_core {
+        let user_ir_overflow = compiler.ir_overflow
+        if !compile_embedded_core(env, config, ir, files.count(), tables, compiler) {
+            fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded")
+        }
+        compiler.ir_overflow = compiler.ir_overflow || user_ir_overflow
+    }
     ir_write_ascii(compiler, ir, "\n; nlc-link-ir end\n")
 }
 

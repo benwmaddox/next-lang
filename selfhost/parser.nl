@@ -439,6 +439,38 @@ fn initialize_parse_tables(tables: write ParseTables) {
     }
 }
 
+fn reset_parse_tables(tables: write ParseTables) {
+    tables.state = ParserState {
+        pos: 0L,
+        token_end: 0L,
+        file_base: 0L,
+        file_length: 0L,
+        split_count: 0L,
+        split_index: 0L,
+        split_kind: TokenKind.Eof,
+        last_end: 0L,
+        expression_depth: 0L,
+        expression_depth_adjustment: 0L,
+        cast_depth: 0L,
+        parenthesis_depth: 0L,
+        block_depth: 0L,
+        type_depth: 0L,
+        allow_struct_literals: true,
+        seen_generation: 0L,
+    }
+    tables.nodes.clear()
+    tables.extra.clear()
+    tables.literals.clear()
+    tables.nesting.clear()
+    tables.child_scratch.clear()
+    tables.child_scratch2.clear()
+    tables.if_frames.clear()
+    tables.match_frames.clear()
+    tables.for_frames.clear()
+    tables.seen.clear()
+    tables.file_first_node = 0L
+}
+
 fn same_source_word(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     token: long,

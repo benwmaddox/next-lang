@@ -80,9 +80,16 @@ enum BuildKind {
     Test,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinkRuntime {
+    C,
+    Core,
+}
+
 struct LinkDescription<'a> {
     build_kind: BuildKind,
     stack_mode: StackMode,
+    runtime: LinkRuntime,
     optimization: String,
     recursion: Option<&'a CompileOutput>,
 }
@@ -90,6 +97,7 @@ struct LinkDescription<'a> {
 struct LinkIrMetadata {
     build_kind: BuildKind,
     stack_mode: StackMode,
+    runtime: LinkRuntime,
     tests: Vec<String>,
 }
 
@@ -911,6 +919,7 @@ pub fn link_ir(ir: &Path, output: &Path) -> Result<(), PackageError> {
     let link = LinkDescription {
         build_kind: metadata.build_kind,
         stack_mode: metadata.stack_mode,
+        runtime: metadata.runtime,
         optimization: optimization_level()?,
         recursion: None,
     };
@@ -940,6 +949,7 @@ pub fn test_ir(ir: &Path) -> Result<u8, PackageError> {
     let link = LinkDescription {
         build_kind: metadata.build_kind,
         stack_mode: metadata.stack_mode,
+        runtime: metadata.runtime,
         optimization: optimization_level()?,
         recursion: None,
     };
@@ -1474,6 +1484,7 @@ fn package_link_description(
             BuildKind::Program
         },
         stack_mode: compiled.stack_mode,
+        runtime: LinkRuntime::C,
         optimization: optimization_level()?,
         recursion: Some(compiled),
     })
@@ -1496,9 +1507,11 @@ fn read_link_ir_metadata(ir: &Path) -> Result<LinkIrMetadata, PackageError> {
         PackageError::Tool(format!("invalid nlc-link-ir metadata: {reason}"))
     };
     let lines = source.lines().collect::<Vec<_>>();
-    if lines.first().copied() != Some("; nlc-link-ir 1") {
-        return Err(invalid("missing or unknown header version"));
-    }
+    let version = match lines.first().copied() {
+        Some("; nlc-link-ir 1") => 1,
+        Some("; nlc-link-ir 2") => 2,
+        _ => return Err(invalid("missing or unknown header version")),
+    };
     if lines.last().copied() != Some("; nlc-link-ir end") {
         return Err(invalid("missing end marker"));
     }
@@ -1508,6 +1521,8 @@ fn read_link_ir_metadata(ir: &Path) -> Result<LinkIrMetadata, PackageError> {
 
     let mut build_kind = None;
     let mut stack_mode = None;
+    let mut runtime = None;
+    let mut core_hash = None;
     let mut recursion_seen = false;
     let mut tests = Vec::new();
     for line in lines.iter().skip(1) {
@@ -1539,6 +1554,27 @@ fn read_link_ir_metadata(ir: &Path) -> Result<LinkIrMetadata, PackageError> {
             if value != "none" {
                 return Err(invalid("recursion must be none"));
             }
+        } else if let Some(value) = line.strip_prefix("; nlc.runtime ") {
+            if runtime.is_some() {
+                return Err(invalid("duplicate runtime declaration"));
+            }
+            runtime = Some(match value {
+                "c" => LinkRuntime::C,
+                "core" => LinkRuntime::Core,
+                _ => return Err(invalid("runtime must be c or core")),
+            });
+        } else if let Some(value) = line.strip_prefix("; nlc.core ") {
+            if core_hash.is_some() {
+                return Err(invalid("duplicate core hash"));
+            }
+            if value.len() != 64
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err(invalid("core hash must be a lowercase SHA-256 hex digest"));
+            }
+            core_hash = Some(value.to_owned());
         } else if let Some(value) = line.strip_prefix("; nlc.test ") {
             let (index, encoded) = value
                 .split_once(' ')
@@ -1569,9 +1605,21 @@ fn read_link_ir_metadata(ir: &Path) -> Result<LinkIrMetadata, PackageError> {
     if !recursion_seen {
         return Err(invalid("missing recursion declaration"));
     }
+    let runtime = if version == 1 {
+        if runtime.is_some() || core_hash.is_some() {
+            return Err(invalid("version 1 metadata cannot declare a runtime or core hash"));
+        }
+        LinkRuntime::C
+    } else {
+        runtime.ok_or_else(|| invalid("missing runtime declaration"))?
+    };
+    if version == 2 && core_hash.is_none() {
+        return Err(invalid("missing core hash"));
+    }
     Ok(LinkIrMetadata {
         build_kind,
         stack_mode,
+        runtime,
         tests,
     })
 }
@@ -1591,7 +1639,7 @@ fn clang_internal(
     collect_native_frames: bool,
 ) -> Result<Option<std::collections::HashMap<usize, u64>>, PackageError> {
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/nl_runtime.c");
-    if !runtime.is_file() {
+    if link.runtime == LinkRuntime::C && !runtime.is_file() {
         return Err(PackageError::Tool(format!(
             "runtime source is missing: {}",
             runtime.display()
@@ -1670,15 +1718,25 @@ fn run_clang(
     if collect_stack_sizes {
         command.arg("-fstack-size-section");
     }
-    if link.build_kind == BuildKind::Test {
+    if link.runtime == LinkRuntime::C && link.build_kind == BuildKind::Test {
         command.arg("-DNLC_TEST_BUILD=1");
     }
-    if link.stack_mode.is_offset() {
+    if link.runtime == LinkRuntime::C && link.stack_mode.is_offset() {
         command.arg("-DNLC_STACK_MODE_OFFSET=1");
     }
+    if link.runtime == LinkRuntime::Core {
+        command
+            .arg("-nostdlib")
+            .arg("-static")
+            .arg("-Wl,-e,_start")
+            .arg("-Wl,-no-pie")
+            .arg("-Wl,--build-id=none");
+    }
+    command.arg(ir);
+    if link.runtime == LinkRuntime::C {
+        command.arg(runtime);
+    }
     let result = command
-        .arg(ir)
-        .arg(runtime)
         .arg("-o")
         .arg(output)
         .output()

@@ -123,7 +123,7 @@ unsupported	tests/e1/unsupported_type_text_unused
 unsupported	tests/run/ambiguous_case
 unsupported	tests/run/arithmetic
 diagnose	tests/run/assign_let
-unsupported	tests/run/bad_cast
+build	tests/run/bad_cast
 unsupported	tests/run/bad_shift
 unsupported	tests/run/bad_to_long_method
 unsupported	tests/run/bool_match_non_exhaustive
@@ -438,11 +438,11 @@ unsupported	tests/run/t24_result_case
 unsupported	tests/run/t24_static_string_sum
 unsupported	tests/run/t24_string_tables
 unsupported	tests/run/t24_text_hex_escape
-unsupported	tests/run/t26_never_fallthrough
+diagnose	tests/run/t26_never_fallthrough
 unsupported	tests/run/t26_never_function_type_mismatch
 unsupported	tests/run/t26_never_function_value
-unsupported	tests/run/t26_never_return
-unsupported	tests/run/t26_never_return_expression
+diagnose	tests/run/t26_never_return
+diagnose	tests/run/t26_never_return_expression
 unsupported	tests/run/t26_never_values
 unsupported	tests/run/t29_inline_text_fields
 unsupported	tests/run/t30_copy_down
