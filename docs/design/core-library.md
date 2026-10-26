@@ -44,7 +44,7 @@ Citations of current behaviour are to commit 6a74a81. `runtime/nl_runtime.c` and
 | Data stack: header page, 256 KiB movable mapping, guard page | nl_runtime.c:183-247 | yes (`nl_context_create`, `nl_context_base_offset` at 294-298) | yes |
 | Data stack growth with `mremap`, `NLC_STACK_VERIFY` poisoning | 339-415, 418-438 | no (E1 allocates no regions, E1 spec:225) | no; lands with the first region user (E3) |
 | Native stack bounds through `pthread_getattr_np`, recursion budget | 145-181, 249-271 | no (no recursion in E1) | no |
-| Startup memory claim for globals (overcommit, cgroup, touch pages) | 625-898 | no (no globals) | no |
+| Startup memory claim for shared state (overcommit, cgroup, touch pages) | 625-898 | no (no user globals) | no |
 | File registry (grows with `realloc`) | 529-543, 900-903 | yes | yes, fixed table |
 | Test selection from `NLC_TEST_INDEX`, test mode | 545-557 | yes | yes |
 | `nl_fail`: flush, message, exit 1 or 70 | 905-936 | yes | yes |
@@ -96,7 +96,7 @@ At E1c the self-hosted compiler accepts only E1's subset: `int`, `long`, `bool` 
 
 **Spelling.** `sys.write(fd, data, count)` already parses as a method call on the name `sys`, and `sys.Addr` as a qualified type name in a type position. So neither front end changes, and the byte-for-byte parse comparison between the Rust and self-hosted parsers is unaffected. Only the self-hosted checker gives these forms meaning, and only inside the core library.
 
-**State.** The core library's process state (the output buffers and their lengths, flags, the file table, the page size, the `envp` and `auxv` addresses) lives in one zero-initialised block that the compiler emits as `@nl.core.state = internal global [N x i8] zeroinitializer, align 64`, in BSS. `sys.state()` returns its address. Its size N is set in the core library's manifest (`state_bytes = 147456`). The manifest key is accepted only for the embedded core unit; in a user package it stays an unknown key. Offsets inside the block are functions too (`fn state_lengths() -> long { 0L }`). This is the bottom layer, and it's written plainly.
+**State.** The core library's process state (the output buffers and their lengths, flags, the file table, the page size, the `envp` and `auxv` addresses) lives in one zero-initialised block that the compiler emits as `@nl.core.state = internal global [N x i8] zeroinitializer, align 64`, in BSS. `sys.state()` returns its address. Its size N is set in the core library's manifest (`state_bytes = 147456`). The manifest key is accepted only for the embedded core unit; in a user package it stays an unknown key. Offsets inside the block are functions too (`fn state_lengths() -> long { 0L }`). It is mutable, so it can't become a `const`, and the language has no mutable globals; it is retired into the job context instead (below). This is the bottom layer, and it's written plainly.
 
 **Retiring the bootstrap mechanisms.** Each one stays until the language feature that replaces it reaches the self-hosted compiler, and is retired in that task, with the harness comparing before and after:
 
@@ -106,9 +106,9 @@ At E1c the self-hosted compiler accepts only E1's subset: `int`, `long`, `bool` 
 | Offsets into the state block as functions | a struct describing the state block's layout | E2 (structs) |
 | NUL-terminated `ptr` strings in the hooks | context-passing hooks and compiler-emitted static tables | E3, before the first region-using core function; see "Retiring the hook ABI" |
 | Constants as functions | `const` and constant arrays (T05) | proposed: E3, because E3's `Text` needs the Unicode upper-case table as constant data |
-| `sys.state()` and `state_bytes` | an ordinary `global` struct (T08) | proposed: E3, alongside `const`, because E3 rewrites the output buffers as `Bytes` and the file registry as a static table, which is when the block's layout changes anyway |
+| `sys.state()` and `state_bytes` | a state struct reached through the job context record that `_start` creates and the context-passing hooks carry (no by-name access, as user code has none) | E3, with the context-passing hook ABI (E3a1), laid out as a struct once E3 rewrites the output buffers as `Bytes` and the file registry as a static table; which parts stay per process once the scheduler runs many jobs is the scheduler milestone's question |
 
-PLAN's E list names structs, `Result` and `?` for E2 and `Text`, `Bytes` and builders for E3, but doesn't yet place `const` or globals in either; E2 doesn't include globals. The two "proposed" rows need a matching line in PLAN.md. Until a row's owning task lands, the mechanism stays.
+PLAN's E list names structs, `Result` and `?` for E2 and `Text`, `Bytes` and builders for E3; E3 also adds `const` (but not user globals, which are removed from the language). Until a row's owning task lands, the mechanism stays.
 
 **Rewriting upwards.** As E2 to E4 land, the core library moves to the richer language: `Result` for errors, structs for the context and state layout, `Bytes` for buffers. Each step is compared by the same harness, so a rewrite can't change behaviour unnoticed.
 
@@ -724,7 +724,7 @@ Each operation below keeps its current semantics exactly. All share the path che
 
   - **What the writer holds:** the descriptor, the buffer's offset, length and capacity, the atomic flag with the directory descriptor and temporary name, a failed state, and a link in the job's list of open writers (below). It's a value in the job's region. There's no heap, and no copy beyond the one into the buffer.
   - **`write(piece)`** copies into the buffer. When the piece doesn't fit, it first writes out the buffer, then either copies the piece in or, if the piece alone is at least the buffer's size, writes it straight from where it lies.
-  - **A writer is a unique resource.** It can't be copied: `let other = ir` is refused. It can't be stored in a struct, a collection or a global, or returned. It moves only with `take` (DESIGN.md:415), within its buffer's scope. A function uses it only through a `write FileWriter` parameter, which borrows it exclusively for the call.
+  - **A writer is a unique resource.** It can't be copied: `let other = ir` is refused. It can't be stored in a struct or a collection, or returned. It moves only with `take` (DESIGN.md:415), within its buffer's scope. A function uses it only through a `write FileWriter` parameter, which borrows it exclusively for the call.
   - **The buffer is borrowed exclusively.** From `writer(...)` until the writer ends, the buffer can't be read, written or passed anywhere else, and the checker refuses a buffer whose scope ends before the writer's. When the writer ends, the buffer is usable again, with length 0.
   - **Two ways to end, kept apart:**
     - **`close()` is the commit.** It writes out what's left, closes the descriptor, and for an atomic writer runs steps 4 to 7 of the atomic write. It consumes the writer. A plain writer returns `Result<(), IoError>`; an atomic one returns `Result<(), AtomicWriteError>`.
