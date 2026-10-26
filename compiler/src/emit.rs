@@ -20412,7 +20412,7 @@ impl<'a> FunctionEmitter<'a> {
             self.lltype(element_ty)
         ));
 
-        if cfg!(debug_assertions) {
+        if std::env::var("NLC_OPT_LEVEL").as_deref() != Ok("3") {
             let index_ptr = self.entry_alloca(Ty::Long);
             self.instruction(format!("store i64 1, ptr {index_ptr}, align 1"));
             let cond = self.new_label("binary.search.sorted.cond");

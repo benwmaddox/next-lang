@@ -2338,7 +2338,7 @@ impl Evaluator<'_> {
                             ));
                         }
                     };
-                    if cfg!(debug_assertions)
+                    if std::env::var("NLC_OPT_LEVEL").as_deref() != Ok("3")
                         && items
                             .windows(2)
                             .any(|pair| as_integer(&pair[0]) > as_integer(&pair[1]))
