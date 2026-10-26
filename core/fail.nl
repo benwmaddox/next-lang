@@ -60,6 +60,29 @@ fn nl_expect_fail_compare(file_id: int, line: int, col: int, source: sys.Addr, l
     let _last_write = write_z(1, sys.lit(b"\n"))
 }
 
+fn nl_expect_fail_header(file_id: int, line: int, col: int, source: sys.Addr) {
+    let _flush = nl_core_flush_all()
+    write_z(1, sys.lit(b"  "))
+    write_z(1, file_name(file_id))
+    write_z(1, sys.lit(b":"))
+    write_number(1, (long)line)
+    write_z(1, sys.lit(b":"))
+    write_number(1, (long)col)
+    write_z(1, sys.lit(b": "))
+    write_z(1, source)
+    let _last_write = write_z(1, sys.lit(b"\n"))
+}
+
+fn nl_expect_fail_left() {
+    let _flush = nl_core_flush_all()
+    let _last_write = write_z(1, sys.lit(b"    left:  "))
+}
+
+fn nl_expect_fail_right() {
+    let _flush = nl_core_flush_all()
+    let _last_write = write_z(1, sys.lit(b"    right: "))
+}
+
 fn nl_expect_fail_bool(file_id: int, line: int, col: int, source: sys.Addr) {
     let _flush = nl_core_flush_all()
     write_z(1, sys.lit(b"  "))

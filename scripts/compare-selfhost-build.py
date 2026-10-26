@@ -49,7 +49,7 @@ def main() -> int:
     classifications = read_classifications(table, root)
     discovered = {
         path.relative_to(root).as_posix()
-        for base in (root / "tests/run", root / "tests/test", root / "tests/e1")
+        for base in (root / "tests/run", root / "tests/test", root / "tests/e1", root / "tests/e2")
         for path in base.iterdir()
         if path.is_dir()
     }
@@ -75,6 +75,14 @@ def main() -> int:
             sys.stderr.buffer.write(build.stderr)
             print("could not build the stage-zero selfhost compiler", file=sys.stderr)
             return 1
+
+        ir_bound_sizes = check_struct_helper_ir_bound(stage0, root, env, work)
+        print(
+            "selfhost IR bound: "
+            f"depth 20 = {ir_bound_sizes[20]} bytes; "
+            f"depth 40 = {ir_bound_sizes[40]} bytes; "
+            "linear-growth check passed"
+        )
 
         long_tests = os.environ.get("NLC_LONG_TESTS") == "1"
         levels = (1, 3) if long_tests else (1,)
@@ -347,6 +355,54 @@ def generate_seeded_cases(root: Path, work: Path, count: int) -> list[tuple[str,
     return cases
 
 
+def check_struct_helper_ir_bound(stage0: Path, root: Path, env: dict[str, str], work: Path) -> dict[int, int]:
+    """Compile two shared struct chains using only selfhost and check IR growth."""
+    bound_root = work / "struct-helper-ir-bound"
+    bound_root.mkdir()
+    sizes: dict[int, int] = {}
+    for depth in (20, 40):
+        package = bound_root / f"depth-{depth}"
+        package.mkdir()
+        lines = ["struct S0 { value: int }" ]
+        for level in range(1, depth + 1):
+            lines.append(f"struct S{level} {{ child: S{level - 1} }}")
+        lines.append("fn make0() -> S0 { S0 { value: 1 } }")
+        for level in range(1, depth + 1):
+            lines.append(f"fn make{level}() -> S{level} {{ S{level} {{ child: make{level - 1}() }} }}")
+        lines.append(f"fn main() {{ let value = make{depth}(); print(value); if value == value {{}} }}")
+        source = "\n".join(lines) + "\n"
+        source_path = package / "main.nl"
+        source_path.write_text(source)
+        package_arg = package.relative_to(root).as_posix()
+        ir_path = bound_root / f"depth-{depth}.ll"
+        result = invoke(
+            [str(stage0), "build", package_arg, "-o", ir_path.relative_to(root).as_posix()],
+            cwd=root,
+            env=env,
+            timeout=90,
+        )
+        if result.status != 0 or not ir_path.is_file():
+            raise Mismatch(
+                f"selfhost rejected the depth-{depth} IR-bound package: "
+                f"status={result.status}, stderr={result.stderr[:500]!r}"
+            )
+        ir_size = ir_path.stat().st_size
+        sizes[depth] = ir_size
+        token_count = len(re.findall(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+L?|[^\s]", source))
+        node_bound = token_count * 2 + 8
+        table_entries = (depth + 1) * 2
+        derived_bound = 640 * node_bound + 256 * table_entries + len(source.encode()) + 8 * 1024 * 1024
+        if ir_size > derived_bound:
+            raise Mismatch(
+                f"depth-{depth} generated {ir_size} IR bytes above its derived bound {derived_bound}"
+            )
+    if sizes[40] > 2 * sizes[20] + 16384:
+        raise Mismatch(
+            f"struct helper IR growth is not linear: depth20={sizes[20]}, depth40={sizes[40]}"
+        )
+    return sizes
+
+
 def invoke(command: list[str], cwd: Path, env: dict[str, str], timeout: int = TIMEOUT_SECONDS) -> Result:
     try:
         proc = subprocess.run(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
@@ -362,7 +418,11 @@ def package_cwd(root: Path, package: str) -> tuple[Path, str, bool]:
 
 
 def is_test_package(package: str) -> bool:
-    return package.startswith("tests/test/") or package.startswith("tests/e1/test_")
+    return (
+        package.startswith("tests/test/")
+        or package.startswith("tests/e1/test_")
+        or package.startswith("tests/e2/test_")
+    )
 
 
 def run_reference(reference: Path, root: Path, package: str, env: dict[str, str], work: Path, level: int) -> Result:

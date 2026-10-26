@@ -180,3 +180,29 @@ fn nl_print_bool(value: bool) {
     let count = if value { 5L } else { 6L }
     if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), bytes, count) { nl_fail(20, -1, 0, 0) }
 }
+
+fn nl_print_ascii(bytes: sys.Addr, count: long) {
+    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), bytes, count) { nl_fail(20, -1, 0, 0) }
+}
+
+fn nl_print_newline() {
+    nl_print_ascii(sys.lit(b"\n"), 1L)
+}
+
+fn nl_print_int_raw(value: int) {
+    let scratch = sys.offset(sys.state(), output_scratch() + 512L)
+    let count = decimal_bytes((long)value, scratch)
+    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), scratch, count) { nl_fail(20, -1, 0, 0) }
+}
+
+fn nl_print_long_raw(value: long) {
+    let scratch = sys.offset(sys.state(), output_scratch() + 512L)
+    let count = decimal_bytes(value, scratch)
+    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), scratch, count) { nl_fail(20, -1, 0, 0) }
+}
+
+fn nl_print_bool_raw(value: bool) {
+    let bytes = if value { sys.lit(b"true") } else { sys.lit(b"false") }
+    let count = if value { 4L } else { 5L }
+    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), bytes, count) { nl_fail(20, -1, 0, 0) }
+}

@@ -103,6 +103,8 @@ fn main(env: Env) {
         add_compiler_links(tables, compiler)
         intern_package_names(env, source, files, tokens, tables, compiler)
         build_line_start_index(env, source, files, compiler)
+        index_package_structs(source, files, tokens, tables, compiler)
+        size_package_structs(source, files, tokens, tables, compiler)
         check_package_eligibility(env, source, files, tokens, tables, compiler)
         var ir: Bytes max IR_BUFFER_CAPACITY = Bytes.empty()
         compile_selfhost_package(env, source, files, tokens, tables, config, compiler, ir, want_test_build, runtime_core, embedded_core_hash())

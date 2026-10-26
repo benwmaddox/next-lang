@@ -1,0 +1,6 @@
+Pair { value: 7, enabled: true, empty: Empty {  } }
+Empty {  }
+true
+true
+true
+5

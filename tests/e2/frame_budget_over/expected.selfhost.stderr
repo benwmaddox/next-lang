@@ -1,0 +1,1 @@
+main.nl:516:1: error: not supported by the self-hosted compiler yet: aggregate locals over 1 MiB on one call path

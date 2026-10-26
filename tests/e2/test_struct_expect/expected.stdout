@@ -1,0 +1,10 @@
+FAIL aggregate equality uses evaluation snapshots
+  main.nl:7:5: expect (current == if true {
+        current.value = 9;
+        Snapshot { value: 2 }
+    } else {
+        Snapshot { value: 2 }
+    })
+    left:  Snapshot { value: 1 }
+    right: Snapshot { value: 2 }
+0 passed, 1 failed

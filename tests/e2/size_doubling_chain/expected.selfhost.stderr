@@ -1,0 +1,1 @@
+main.nl:11:1: error: not supported by the self-hosted compiler yet: value types larger than 4096 bytes

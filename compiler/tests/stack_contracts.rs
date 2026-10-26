@@ -218,10 +218,16 @@ fn selfhost_stack_bound_has_an_exact_attributed_path() {
     let worst_case = parse_bytes("  data stack worst case: ");
     let attributed = parse_bytes("  data stack critical path sum: ");
     assert_eq!(attributed, worst_case, "{stdout}");
-    // E1's checker/emitter tables now live in main alongside the parser's
-    // source, token and node buffers. Keep the bound below 4 GiB and require
-    // the table allocation to remain attributed to the compiler's frame.
-    assert!(worst_case < 4_000_000_000, "{stdout}");
+    // E2's layout, defaults, helper and aggregate-frame tables live in main
+    // alongside the parser's source, token and node buffers. Pin their data
+    // stack total and keep it below the fixed six-gigabyte compiler bound.
+    assert_eq!(worst_case, 5_115_732_009, "{stdout}");
+    assert!(worst_case < 6_000_000_000, "{stdout}");
+    assert_eq!(
+        parse_bytes("  data stack reservation: "),
+        5_115_736_064,
+        "{stdout}"
+    );
     assert!(
         stdout.contains("data stack critical path: main ->"),
         "{stdout}"

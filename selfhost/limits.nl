@@ -24,13 +24,18 @@ const FUNCTION_TABLE_CAPACITY: long = MAX_TREE_NODES
 const TEST_TABLE_CAPACITY: long = MAX_TREE_NODES
 const BINDING_TABLE_CAPACITY: long = MAX_TREE_NODES
 const SCOPE_TABLE_CAPACITY: long = MAX_TREE_NODES
-const CALL_EDGE_CAPACITY: long = MAX_TREE_NODES
+// Includes package calls plus per-literal/default helper edges. The graph is
+// linear in syntax plus field entries for the E2 default/call closure.
+const CALL_EDGE_CAPACITY: long = EXTRA_STORAGE_CAPACITY
+const TYPE_TABLE_CAPACITY: long = MAX_TREE_NODES
+const FIELD_TABLE_CAPACITY: long = MAX_TREE_NODES
 const INTERN_NAME_CAPACITY: long = TOKEN_STORAGE_CAPACITY
 const INTERN_HASH_CAPACITY: long = 4194304L
 const CHECK_FRAME_CAPACITY: long = 4096L
 const SOURCE_LINE_START_CAPACITY: long = 67109120L
-// 512 output bytes per accepted syntax node, plus all source bytes for
-// expectation/file strings and 8 MiB for module declarations and fixed tables.
-const IR_BYTES_PER_NODE: long = 512L
+// E2 helpers add one call or constant field index per syntax node, plus one
+// entry-sized block for each type and field helper table entry.
+const IR_BYTES_PER_NODE: long = 640L
+const IR_BYTES_PER_TABLE_ENTRY: long = 256L
 const IR_FIXED_BYTES: long = 8388608L
-const IR_BUFFER_CAPACITY: long = MAX_TREE_NODES * IR_BYTES_PER_NODE + MAX_SOURCE_BYTES_PER_PACKAGE + IR_FIXED_BYTES
+const IR_BUFFER_CAPACITY: long = MAX_TREE_NODES * IR_BYTES_PER_NODE + MAX_TREE_NODES * IR_BYTES_PER_TABLE_ENTRY + MAX_SOURCE_BYTES_PER_PACKAGE + IR_FIXED_BYTES
