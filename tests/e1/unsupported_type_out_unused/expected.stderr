@@ -1,0 +1,1 @@
+main.nl:2:22: error: expected Out, found (); cast explicitly with (Out)value

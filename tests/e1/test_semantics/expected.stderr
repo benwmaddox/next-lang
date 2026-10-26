@@ -1,0 +1,12 @@
+main.nl:62:21: overflow in int addition
+main.nl:66:22: overflow in long addition
+main.nl:70:21: overflow in int subtraction
+main.nl:74:22: overflow in long subtraction
+main.nl:78:17: overflow in int multiplication
+main.nl:82:23: overflow in long multiplication
+main.nl:87:11: overflow in int negation
+main.nl:92:11: overflow in long negation
+main.nl:96:13: divide by zero
+main.nl:100:14: divide by zero
+main.nl:104:21: overflow in int division
+main.nl:108:22: overflow in long division

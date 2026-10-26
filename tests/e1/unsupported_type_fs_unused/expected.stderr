@@ -1,0 +1,1 @@
+main.nl:2:21: error: expected Fs, found (); cast explicitly with (Fs)value

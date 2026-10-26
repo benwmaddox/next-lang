@@ -1,0 +1,1 @@
+main.nl:3:16: error: pool types use pool<T, capacity> or pool<T, capacity, P>; the capacity must be a constant

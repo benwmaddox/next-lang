@@ -1,0 +1,1 @@
+main.nl:3:16: error: type 'Result' has the wrong number of parameters; use Result<T, E>

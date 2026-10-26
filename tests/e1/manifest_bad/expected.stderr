@@ -1,0 +1,1 @@
+nlc: tool failure: tests/e1/manifest_bad/package.toml:1: expected capabilities to be an array such as ["fs", "out"]

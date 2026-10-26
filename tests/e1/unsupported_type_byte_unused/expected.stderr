@@ -1,0 +1,1 @@
+main.nl:2:23: error: expected byte, found (); cast explicitly with (byte)value

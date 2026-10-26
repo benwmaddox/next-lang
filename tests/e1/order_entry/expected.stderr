@@ -1,0 +1,1 @@
+main.nl:1:1: error: package must define 'fn main()'; add an entry point that takes no arguments and returns ()

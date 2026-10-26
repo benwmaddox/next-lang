@@ -1,0 +1,1 @@
+main.nl:2:16: error: Text needs a bound; write 'Text max N' or 'Text bytes max N'

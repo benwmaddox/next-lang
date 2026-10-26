@@ -1,0 +1,50 @@
+ok   arithmetic boundaries and signs
+FAIL short circuit suppresses failure
+  main.nl:31:5: expect false && (1 / 0 == 0)
+    value: false
+FAIL comparison expectation failure
+  main.nl:38:5: expect 2 == 3
+    left:  2
+    right: 3
+FAIL long comparison expectation failure
+  main.nl:43:5: expect 2L == 3L
+    left:  2
+    right: 3
+FAIL bool comparison expectation failure
+  main.nl:47:5: expect true == false
+    left:  true
+    right: false
+FAIL bool expectation failure
+  main.nl:51:5: expect false
+    value: false
+FAIL multiline expectation failure
+  main.nl:55:5: expect (
+        true &&
+        false
+    )
+    value: false
+FAIL int addition overflow
+  test 'int addition overflow' ended with a runtime failure (exit code 70)
+FAIL long addition overflow
+  test 'long addition overflow' ended with a runtime failure (exit code 70)
+FAIL int subtraction overflow
+  test 'int subtraction overflow' ended with a runtime failure (exit code 70)
+FAIL long subtraction overflow
+  test 'long subtraction overflow' ended with a runtime failure (exit code 70)
+FAIL int multiplication overflow
+  test 'int multiplication overflow' ended with a runtime failure (exit code 70)
+FAIL long multiplication overflow
+  test 'long multiplication overflow' ended with a runtime failure (exit code 70)
+FAIL int negation overflow
+  test 'int negation overflow' ended with a runtime failure (exit code 70)
+FAIL long negation overflow
+  test 'long negation overflow' ended with a runtime failure (exit code 70)
+FAIL int division by zero
+  test 'int division by zero' ended with a runtime failure (exit code 70)
+FAIL long remainder by zero
+  test 'long remainder by zero' ended with a runtime failure (exit code 70)
+FAIL int minimum division by minus one
+  test 'int minimum division by minus one' ended with a runtime failure (exit code 70)
+FAIL long minimum division by minus one
+  test 'long minimum division by minus one' ended with a runtime failure (exit code 70)
+1 passed, 18 failed
