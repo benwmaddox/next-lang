@@ -29,7 +29,7 @@ A summary of the whole design, with a small complete program. Each piece points 
 - **Values and bounds:** records, enums, `Option` and `Result`; numbers with ranges (`int 0..=100`); text with a maximum (`Text max 80`, `Ascii max 32`). Everything that can grow has a bound the compiler knows (Types; Loops can't quietly fill a stack).
 - **Where data lives:** locals on a job's stacks, freed when their scope ends; a database for records; frozen pools for big shared read-only data; shared state for live data many jobs read and one writer changes; program state (passed as a parameter) for a game's world (Memory).
 - **Collections** are bounded values: `T[N]`, `list`, `pool` (stable slots with ids), `map`, `set`, `queue`, `ring`, `grid` (Memory, Collections).
-- **Jobs:** each request, task or tick is a job on a worker thread, with its own stacks; it can wait for I/O without `async` (Threads and data stacks).
+- **Jobs:** `main`, each request and each spawned task is a job on a worker thread, with its own stacks; it can wait for I/O without `async`. A function that may be started as a job is marked `@[job]` (Threads and data stacks, Function attributes).
 - **Effects:** what a function may touch (the database, the network, the clock) is part of its type and comes from capabilities the program's entry point hands down (Effects and capabilities).
 - **One declaration, every layer:** a field's `max 80` is also the database's check, the form's limit and the API's schema (One declaration, every layer).
 - **Tests in the language:** `test` blocks with `expect`, scenarios, `check fast == reference` (Correctness tools).
@@ -54,7 +54,8 @@ struct Presence { who: map<Room.Key, set<Name, 200>, 1000> }
 // created once in main (`shared Presence {}`) and passed to the jobs that read it
 
 // chat/pages.nl: what people see
-page room(room_key: Room.Key, db: Db<Chat>, online: shared Presence) -> Html {
+@[page]
+fn room(room_key: Room.Key, db: Db<Chat>, online: shared Presence) -> Html {
     let found = db.read {                      // reads only the room; Messages may see a newer version
         Room.get(room_key)
     }
@@ -70,7 +71,8 @@ page room(room_key: Room.Key, db: Db<Chat>, online: shared Presence) -> Html {
 
 // A page piece. `live` on its use above means: when this room is signalled,
 // open pages re-run this piece, which loads the current rows itself.
-piece Messages(room_key: Room.Key, db: Db<Chat>) -> Html {
+@[piece]
+fn Messages(room_key: Room.Key, db: Db<Chat>) -> Html {
     let recent = db.read {
         Message.where(.room == room_key).order(.key desc).limit(50)   // newest 50, by key
     }
@@ -80,7 +82,8 @@ piece Messages(room_key: Room.Key, db: Db<Chat>) -> Html {
 }
 
 // chat/actions.nl: what changes data
-action post(room_key: Room.Key, body: Body, me: Viewer, db: Db<Chat>) -> Result<(), PostError> {
+@[action]
+fn post(room_key: Room.Key, body: Body, me: Viewer, db: Db<Chat>) -> Result<(), PostError> {
     if body.trim() == "" { return err(PostError.Empty) }
     let added = db.transaction {
         Message.add(Message { room: room_key, author: me.name, body })
@@ -377,7 +380,7 @@ A **job** is the unit that owns stacks: its own data stack and native stack, iso
 - **A server's** `main` opens the database, creates its `shared` values and calls `serve`; each request is a job with its own stacks, so its memory is bounded per request and freed by resetting its stack.
 - **A service job** is how a component keeps mutable state of its own that isn't shared and isn't in `main` (a cache, a log writer, a game's audio mixer): other jobs reach it only by queue. The writer for shared state is the built-in case of this pattern.
 - **Choosing a form:** CPU work over data is a `parallel for` (structured, chunks read without copying, results in a fixed order); independent concurrent tasks are spawned jobs; I/O concurrency is straight-line code, since a waiting job suspends and its worker runs others; data many jobs read while it changes is a `shared` value; large read-only data built once is a frozen pool.
-- **Entry points:** a package's manifest lists the functions that start jobs (`main`, routes, spawned and service functions), each with its own stack cap, `strict_stack` and time limit. With no globals, a job's inputs are exactly its parameters, which is what the compiler's per-entry-point stack bounds and `inspect stacks` are computed from.
+- **Entry points:** the functions that may start jobs are `main` and those marked `@[job]` (or a server kind that implies it; Function attributes), each with its own stack cap, `strict_stack` and time limit, which the manifest can override per deployment. With no globals, a job's inputs are exactly its parameters, which is what the compiler's per-entry-point stack bounds and `inspect stacks` are computed from.
 - **Spawning** (open question, below): the direction is structured concurrency. A spawned job lives inside a scope that waits for all of them, cancels the others when one fails and passes its deadline down; because the parent waits, children may take read-only views of the parent's values without copying, as parallel loops do. Jobs that outlive their starter (services) are started with an explicit form and take only copies and queue ends.
 
 ### Thread kinds and jobs
@@ -738,6 +741,28 @@ The Database column applies to database records. State (program, job or shared) 
 
 This is also where refinement types pay twice: the same `int 0..=100` that a form enforces is the fact that removes an overflow check.
 
+## Function attributes
+
+Decided 2026-10-26 (Ben). There is one way to declare a function, `fn`. What kind of function it is, and how the runtime may start it, is written as attributes in front of it, `@[name]` or `@[name(arguments)]`, several separated by commas or on separate lines:
+
+```
+@[page]
+fn room(room_key: Room.Key, db: Db<Chat>, online: shared Presence) -> Html { ... }
+
+@[job(stack_cap = 8 GiB, time_limit = 2 s)]
+fn nightly_report(db: Db<Chat>, fs: Fs) -> Result<(), ReportError> { ... }
+
+@[versions(x86-64-v3, x86-64-v4)]
+fn blur(pixels: write Bytes) { ... }
+```
+
+- **A fixed set, defined by the language and checked.** No user-defined attributes and no macros. An unknown or misspelt attribute is a build error with a "did you mean". An attribute adds rules and meaning to a function; it never changes how its body is read.
+- **The set:**
+  - `@[job]`: the function may be started as a job (spawned, started as a service, or a route target). Called directly it is an ordinary call on the caller's stacks, so tests and reuse are unchanged. Only `@[job]` functions can be started as jobs; `spawn f(x)` on an unmarked function is a build error naming the fix. Its parameters are checked once, at the declaration: copies of flat values, capabilities, `shared` handles and queue ends (read-only views only where spawning is scoped; Open questions under Threads). Its arguments set the job's own settings: `stack_cap`, `strict_stack`, `time_limit`, with the manifest able to override them per deployment. The compiler's per-entry-point stack bounds and `inspect stacks` cover exactly `main` and the job functions.
+  - `@[page]`, `@[action]`, `@[api]`, `@[piece]`: the server kinds (Pages and live updates). Each checks its result type and its parameters' sources, makes the function a route target or page piece, and `@[page]`, `@[action]` and `@[api]` imply `@[job]`. `main` is always a job.
+  - `@[versions(...)]`: compile once per listed CPU level plus a fallback, chosen at startup (Performance model).
+- **What stays keywords:** parameter modes (`write`, `grow`, `take`), `const`, the `shared` type, and `test "name" { }` blocks (they aren't callable functions, and their name is a sentence).
+
 ## Effects and capabilities
 
 What a function may touch is part of its type, inferred across calls, and granted only by the program's entry point (Hobthrush's model).
@@ -796,7 +821,7 @@ LLVM runs the same optimization passes for every architecture, but their choices
   - *macOS* with both Intel and Apple silicon needs two builds (one per architecture), joined into one universal binary.
 - **`native` is an opt-in for local runs.** It means the machine doing the build, which may differ from a colleague's laptop or a test server, so it's never the default and never used for a build that will be shared or deployed; those use the v2 default or an explicit level. The resolved feature set, OS and ABI, compiler version and flags are part of every cache key and artifact identity, so a change of build machine can't reuse objects built for different features.
 - **A safe start.** Startup code, the feature check, the dispatcher, the refusal message and anything that can run before the check (dependency initialisers included) are compiled for the platform's *safe-start baseline*, which is no higher than the selected minimum target: x86-64 v1 (Android x86-64: v2, which is also its minimum), and link-time optimization (LTO, which inlines across modules) is kept from moving newer instructions into them. The check uses what the operating system says is usable, not the CPU's name: on x86, CPUID plus whether the OS saves the wider vector registers (OSXSAVE and XGETBV); on Linux and Android arm64, the kernel's HWCAP flags. A binary started where its features are missing refuses with a message naming them. On machines with mixed cores or in virtual machines, only features usable on every core count.
-- **Multiple versions of hot functions.** For any minimum target, a function marked `versions(x86-64-v3, x86-64-v4)` is compiled once per listed level above the minimum, plus a fallback copy (a *clone*) at the minimum, and one is chosen at startup. So a default v2 build can add v3 and v4 (AVX-512) paths, and a v3 build a v4 path; no clone lets a v3 build run on a v2 machine. Automatic selection (LLVM's function multiversioning) depends on the platform's linker and executable format, so the design tests it per platform (Windows PE, Linux and Android ELF, macOS Mach-O) and falls back to a dispatcher that sets a function pointer at startup. Every version keeps the same calling interface, and tests and benchmarks can force each one, as long as the machine supports it (forcing never skips the feature check). Only marked functions are copied; `inspect build` lists them and their sizes.
+- **Multiple versions of hot functions.** For any minimum target, a function marked `@[versions(x86-64-v3, x86-64-v4)]` is compiled once per listed level above the minimum, plus a fallback copy (a *clone*) at the minimum, and one is chosen at startup. So a default v2 build can add v3 and v4 (AVX-512) paths, and a v3 build a v4 path; no clone lets a v3 build run on a v2 machine. Automatic selection (LLVM's function multiversioning) depends on the platform's linker and executable format, so the design tests it per platform (Windows PE, Linux and Android ELF, macOS Mach-O) and falls back to a dispatcher that sets a function pointer at startup. Every version keeps the same calling interface, and tests and benchmarks can force each one, as long as the machine supports it (forcing never skips the feature check). Only marked functions are copied; `inspect build` lists them and their sizes.
 - **Profile-guided builds.** A release build may take a profile recorded from running real workloads (which branches and calls are hot), which LLVM uses to lay out code, inline and predict branches. Gains vary by program and are measured, not assumed. For builds to stay reproducible, a profile is a file in the repository, keyed by the source, compiler, flags, dependencies and the workload it came from; a profile that no longer matches is rejected with a message, not silently used. BOLT, which reorders a linked program's code from a profile, is a later option mainly for Linux servers on x86-64 and arm64.
 - **LTO,** already above: whole-program inlining across modules and the runtime.
 
@@ -839,7 +864,7 @@ How code is organised, how servers produce pages, and how games talk to the scre
 
 ### Pages and live updates (servers)
 
-- **Pages are functions that return `Html`** (decided 2026-10-24). JSON endpoints are their own kind, `api`, with a typed result and one function mapping errors to responses (decided 2026-10-24), next to `page` and `action`. Their body is HTML with `{expression}` holes, as in crudspec: `<p>Hello {name}!</p>`. Holes are escaped for where they appear (text, an attribute, a URL), so a value can't inject markup. Escaping alone doesn't make a link safe (a `javascript:` address escapes cleanly), so `href` and `src` holes take a `Url` value, whose parsing allows only `http`, `https`, `mailto` and relative addresses unless a page declares more. `for` and `if` work inside the HTML.
+- **Pages are functions that return `Html`** (decided 2026-10-24). JSON endpoints are their own kind, `@[api]`, with a typed result and one function mapping errors to responses (decided 2026-10-24), next to `@[page]` and `@[action]` (Function attributes). Their body is HTML with `{expression}` holes, as in crudspec: `<p>Hello {name}!</p>`. Holes are escaped for where they appear (text, an attribute, a URL), so a value can't inject markup. Escaping alone doesn't make a link safe (a `javascript:` address escapes cleanly), so `href` and `src` holes take a `Url` value, whose parsing allows only `http`, `https`, `mailto` and relative addresses unless a page declares more. `for` and `if` work inside the HTML.
 - **Defaults follow HTML:** plain lowercase tags are HTML elements; a capitalised tag is a page piece declared in the language (`<MessageList room={id}/>`).
 - **Forms are bound to actions:** `<form action={post(id)}>` generates the route, the field names and the checks. Field limits come from the action's parameter types (One declaration, every layer), so the form and the server can't disagree.
 - **Caching:** a page piece that is cacheable (no effects, read-only inputs; Effects and capabilities) is rendered once and kept, keyed by its inputs and their snapshot version; per-request pieces are rendered once per page (Burin's render-once).
@@ -928,12 +953,13 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - Reusable definitions that hold their own ids take an owner parameter (`struct Node<P> { parent: Option<Id<P>> }`), checked at compile time; ids stay 64 bits.
 - Ranges are Rust-style: `a..b` excludes `b` and `a..=b` includes it, everywhere (`int 0..=100`, `for i in 0..8`); loop counters take their type from their bounds and use.
 - Clarity: compound assignment (`+=` and the rest, same checks); unsuffixed literals take their type from context; `??` may `continue` or `break`; `discard` drops `Full` on purpose, from the built-in capacity operations only (collection adds, `try_append`, `Bytes.push`), never from an arbitrary `Result`; named refinements (`type Size = int 1..=3`, cast as `(Size)(x)`); widening methods like `.to_long()`.
-- Parameter modes are written before the type (`write T`, `grow T`; read unwritten). JSON endpoints are an `api` kind. Rate limits stay exact through the writer in v1.
+- Parameter modes are written before the type (`write T`, `grow T`; read unwritten). JSON endpoints are an `@[api]` function. Rate limits stay exact through the writer in v1.
 - Ranges may be `wrap` (stored values wrap around into the range; float wrapping ranges are half-open) or `clamp` (pinned to the nearest end); plain ranges fail on out-of-range values, and input from outside is always checked, never wrapped or clamped.
 - Functions are values (named functions only); there are no closures, and context is passed as an explicit parameter; built-in scoped blocks (`db.read`, `transaction`, routes, `parallel for` bodies) may read locals but can't be stored or returned. Lengths, counts and indexes are `long`.
 - Numbers use C#'s names and widths (`int` is 32-bit, `long` 64-bit, `float` and `double`), lowercase like C#'s keywords. No implicit conversions between number types: every one is a cast, and narrowing casts are checked. A plain `double` or `float` never holds NaN; an operation that would produce one fails the job (`double nan` allows it).
 - x86-64 builds target `x86-64-v2` by default; v3 and above are opt-in with a build flag or manifest setting, and public software adds v3/v4 clones of hot functions.
 - Game replays are exact on the same build and platform; a failed tick stops the game with its recorded inputs. Pages are HTML with `{…}` holes, `live` elements and `signal`; games have a fixed-step `tick(input)` and a read-only `draw(frame)`, as in StasisLang.
+- One function form, `fn`, with a fixed, checked set of attributes (`@[job]`, `@[page]`, `@[action]`, `@[api]`, `@[piece]`, `@[versions(...)]`) in place of function keywords (2026-10-26, Function attributes); only `@[job]` functions can be started as jobs.
 - Mutable globals are removed from the language (2026-10-26): program state is a local in `main` (or the entry point), passed as `write app: App`; shared state is passed to jobs as a `shared` parameter; `const` stays for immutable named values and tables. By-name access to mutable state was a hidden effect that forced effect inference on globals, created write-argument overlaps and evaluation-order bugs; now all state changes are visible at the call site.
 - Static state is meant to be used lightly: most data lives in locals on stacks (bounded collections are ordinary values), in databases or in frozen pools; `inspect memory` warns past a shared-state budget.
 - Shared state is sized at build time and allocated in full at startup, never allocating after; program state is part of the entry point's stack; data stacks, job state and frozen batches stay per job, reserved and committed as used.
