@@ -966,7 +966,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - A transaction's checks and writes run on the writer against its latest version, with no waits inside.
 - Generic constraints are named interfaces with explicit `impl`s (C#/Rust style), static only: copied per type, no interface-typed values.
 - Reusable definitions that hold their own ids take an owner parameter (`struct Node<P> { parent: Option<Id<P>> }`), checked at compile time; ids stay 64 bits.
-- Ranges: `a..b` excludes `b` and `a to b` includes it, everywhere (`int 0 to 100`, `for i in 0..8`; `to` replaced Rust's `..=` on 2026-10-27); loop counters take their type from their bounds and use.
+- Ranges: `a..b` excludes `b` and `a to b` includes it, everywhere (`int 0 to 100`, `for i in 0..8`; `to` replaced Rust's `..=` on 2026-10-27; `..=` still works, deprecated, with a warning); loop counters take their type from their bounds and use.
 - Clarity: compound assignment (`+=` and the rest, same checks); unsuffixed literals take their type from context; `??` may `continue` or `break`; `discard` drops `Full` on purpose, from the built-in capacity operations only (collection adds, `try_append`, `Bytes.push`), never from an arbitrary `Result`; named refinements (`type Size = int 1 to 3`, cast as `(Size)(x)`); widening methods like `.to_long()`.
 - Parameter modes are written before the type (`write T`, `grow T`; read unwritten). JSON endpoints are an `@[api]` function. Rate limits stay exact through the writer in v1.
 - Ranges may be `wrap` (stored values wrap around into the range; float wrapping ranges are half-open) or `clamp` (pinned to the nearest end); plain ranges fail on out-of-range values, and input from outside is always checked, never wrapped or clamped.
