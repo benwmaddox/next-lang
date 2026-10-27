@@ -458,3 +458,49 @@ As E2's rules (release builds, `ulimit -v 8000000`, the bench lock, best of five
 ## Report
 
 docs/tasks/E2i-report.md, E3a1-report.md, E3a2-report.md (which also covers the merge), E3b-report.md, E3c-report.md, E3d1-report.md, E3d2-report.md, E3e-report.md, E3f1-report.md and E3f2-report.md, each covering: the counts per class before and after, movements and expected-output changes; reference fixes and their fixtures; the checker order as extended and any difference from this file; the construct table as it now stands; the interfaces and ABI as built (type kinds, the location descriptor, region planning, growth points, the exit function and its cleanups); shared functions edited outside the ownership table, with reasons; the merge's steps and movements; the relocation check's positive evidence; the measurements, each labelled with its measure; what was awkward to write in next-lang; and the plan for the next step.
+
+## Language friction fixes (from the LangArena and Osprey ports)
+
+Porting LangArena (bench/langarena/) and Osprey (bench/osprey/) to next-lang through stage 0 surfaced these (docs/bench/2026-10-27-osprey-stage0.md and the porting reports). Stage 0 is frozen, so each is a requirement of a self-hosted step, with a fixture. Ben decided on 2026-10-27 to add `while` and fix the rest. Stage-0 crashes listed here were reported by the porting agents and are reproduced as fixtures before being called fixed.
+
+- **E3b** (small syntax, alongside Full and pop): `while cond { … }` (DESIGN "while loops": `break`/`continue`, iteration scopes, the step budget when the loop isn't provably ending); bitwise not `~`; the compound assignments `<<=`, `>>=`, `&=`, `|=`, `^=` (already in DESIGN); an `if`/`else if` chain without a final `else` accepted as a statement; integer literals without a suffix taking `long` from their context (DESIGN: unsuffixed literals take their type from context). Fixtures for each, `expected` class where stage 0 rejects them.
+- **E3c** (text): the `(byte)x` cast; indexing, iterating and slicing `Ascii`, and `Ascii` to `Bytes`; `Ascii.contains` and `starts_with`; slicing or converting a large `Bytes`/`Ascii` without a temporary as large as the source (a fixture with a 1 MB value passed through a helper and sliced); `.bytes()` on a `const` (stage 0 gave a bare "unknown enum" error); `str` results bounded by the argument's actual range (`str(int)` 11 characters, `str(long)` 20, a refined range less).
+- **E3d1** (builders, `grow`): `out += x` on a `grow` parameter (stage 0 needed `discard out.try_append(x)`); `grow` on a struct field, not only a bare `Bytes`; a `write` parameter's struct field receiving a longer `Ascii` (check against the `grow` width defect under the stage-0 reference fixes).
+- **E3d2/E3e** (stack sizing, nested collections): two large lists held at once, and a large `Ascii` passed through a helper, exhausted stage 0's data stack despite its reservation; a list of capacity above ~20,000 of an enum with payloads segfaulted. The moving stack should make all three work: fixtures under the forced-relocation check.
+- **E3f1** (I/O): reading standard input; small helpers for command-line arguments (parsing an argument as a number, comparing it with a literal).
+- **E4s** (what self-compilation needs): recursion with calls about as cheap as C's (Osprey: fib 4.5x, hanoi 5.6x, tak 3.9x slower than Rust in stage 0; PLAN P1 item 3b) and a data-stack bound that accounts for recursion depth; `sort_by` passing its context by reference (a 1.6 MB context crashed clang in stage 0).
+- **E4** (parity): `map` tables with headroom above their declared live capacity and tombstone cleanup (a full map probed the whole table on every miss: CacheSimulation took over 2 minutes), with a timed full-map fixture; `Bytes` as a map key; iterating `for v, k in map` with `Ascii` keys (stage 0 produced invalid LLVM).
+- **Later, after B1:** a regex library built at compile time (PLAN item 7; Template::Regex and Etc::LogParser use hand-written scanners until then).
+
+## Process spawning (E3g)
+
+E3g gives the core library a way to start a child process and wait for it. It is Linux x86-64 only, and it uses no C library. The decision comes from the spec's PLAN item 4 (E3g, Ben 2026-10-27). PLAN's self-hosting prerequisites table still describes a "small C binding as a bridge", which contradicts this decision; the conflict is listed under open questions and PLAN.md is not edited here.
+
+**Syscalls.** `vfork` (58) or `clone(CLONE_VM | CLONE_VFORK | SIGCHLD)`, `execve` (59), `wait4` (61), `exit_group` (231), and `pipe2` (293) with `O_CLOEXEC` for reporting exec errors. The implementation picks one of the two fork forms in its first commit and records it in the report.
+
+**Capability.** A `Process` capability is granted by the manifest in the same way as `Fs`. The manifest key name is fixed in the first commit. A program without the grant that calls spawn fails at check time, not at run time.
+
+**Argument and environment building.** `argv` and `envp` are arrays of pointers to NUL-terminated strings. The compiler sizes everything in a first pass, then fills it in a second pass, so the total is known before any write. Storage comes from the data stack only. If the total does not fit, the call fails with kind 18 before `fork`, and no child is created.
+
+**Result shape.** The call returns the result type that E2c's wrappers use, with an exit status or a signal as the success value. Errors (missing executable, `E2BIG`, `EAGAIN`, `ENOMEM`, and the rest) use E2c's error type and wrapper functions.
+
+**Exec failure reporting.** A missing executable must come back as a `Result` error, not as child exit status 127. The child writes its `errno` to the close-on-exec pipe before exiting. The parent reads the pipe: end of file means `execve` succeeded, and a value means the exec failed. The child must never return from the function that issued the fork. It runs a leaf routine that calls `execve` and then `exit_group`, so a compiler-emitted wrapper never resumes twice.
+
+**Pinning.** Every stack address handed to the kernel is in a pinned region: `argv`, `envp`, the `wait4` status slot and the pipe buffer. The pin is taken before `argv` is built and held through `execve` and `wait4`, then released in the parent. Relocation in the child is fatal, so the pin covers the whole child window. This follows the pinning rules in docs/design/core-library.md ("The stack is pinned while the kernel holds an address into it").
+
+**Wait.** `wait4` is retried on `EINTR`. The status word is decoded as exited (low byte zero, code in the next byte) or signalled (signal number in the low seven bits).
+
+**First user.** The self-hosted compiler runs clang itself instead of handing its IR to stage 0's link path. The reference is compiler/src/driver.rs: `link_ir` (line 919), `clang_flags(link, collect_stack_sizes)` (line 1854) and `run_clang` (line 1881), whose `command.args(clang_flags(...))` call is at line 1889. The self-hosted driver builds the same flag list, behind an option, until its output matches stage 0's bit for bit on the test corpus.
+
+**Fixtures.**
+- `true` exits 0 and `false` exits 1, each read back as a status.
+- An exit code of 42 from `sh -c 'exit 42'`.
+- A signal: `sh -c 'kill -9 $$'` reports signal 9.
+- A missing executable returns the error, not status 127.
+- Argument quoting: arguments with spaces, quotes, an empty argument and non-ASCII bytes arrive unchanged, checked by a child that echoes them to a file.
+- A large argument list (for example 10,000 short arguments, under `ARG_MAX`) runs; one above the limit returns `E2BIG`.
+- Relocation forced during argument evaluation: run under `NLC_TEST_STACK_FORCE_MOVE=1`, forcing a move while `argv` is being filled, and check the child sees the right values.
+
+**Acceptance.** All fixtures pass on the self-hosted compiler. The clang path produces the same binary as the stage-0 path on the test corpus. The bootstrap still runs without the option. The report records the chosen fork form, the manifest key, the stack stats, and the cost of one spawn-and-wait in microseconds.
+
+**Open questions.** The stage-0 side of these fixtures needs a process capability, but stage 0 is frozen (2026-10-26), so expected results may have to be recorded from the spec rather than compared with stage 0. The PLAN C-binding conflict above needs a manager decision.
