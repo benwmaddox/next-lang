@@ -63,7 +63,7 @@ def read_classifications(path: Path, root: Path) -> dict[str, str]:
         if not line or line.startswith("#"):
             continue
         parts = line.split("\t")
-        if len(parts) != 2 or parts[0] not in ("build", "diagnose", "rejects", "unsupported"):
+        if len(parts) != 2 or parts[0] not in ("build", "diagnose", "rejects", "unsupported", "expected"):
             raise CheckError(f"{path}:{number}: expected class<TAB>package")
         if parts[1] in result:
             raise CheckError(f"{path}:{number}: duplicate package {parts[1]}")
@@ -253,7 +253,10 @@ def check_package(
         if stats[4] > 0:
             package_relocated = True
 
-    if package.startswith(("tests/e3/a1_", "tests/e3/merge_", "tests/e3/a2_relocation_")) and not package_relocated:
+    if (
+        package.startswith(("tests/e3/a1_", "tests/e3/merge_", "tests/e3/a2_relocation_", "tests/e3/e3b_relocation_"))
+        or package == "tests/e3/e3b_relocation"
+    ) and not package_relocated:
         raise CheckError(f"directed relocation fixture {package} never relocated at O{level}")
 
     if package == "tests/e3/a1_core_probes":
@@ -311,7 +314,7 @@ def main() -> int:
         missing = sorted(discovered - set(classifications))
         extra = sorted(set(classifications) - discovered)
         raise CheckError(f"classification table mismatch: missing={missing}, extra={extra}")
-    build_packages = [package for package, kind in classifications.items() if kind == "build"]
+    build_packages = [package for package, kind in classifications.items() if kind in ("build", "expected")]
     changed = changed_paths(root, args.changed)
     packages = select_packages(
         build_packages,

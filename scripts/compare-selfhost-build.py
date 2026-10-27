@@ -367,7 +367,7 @@ def main() -> int:
         )
 
         counts = {
-            level: {kind: 0 for kind in ("build", "diagnose", "rejects", "unsupported", "mismatches")}
+            level: {kind: 0 for kind in ("build", "diagnose", "rejects", "unsupported", "expected", "mismatches")}
             for level in levels
         }
         generated_cases = []
@@ -442,6 +442,24 @@ def main() -> int:
         def check_classified_package(
             package: str, kind: str, run_env: dict[str, str], package_work: Path, level: int
         ) -> None:
+            if kind == "expected":
+                expected = expected_result(root, package)
+                for runtime in runtimes:
+                    self_result, wrote_ir = run_selfhost(
+                        stage0, reference, root, package, run_env, package_work, level, runtime
+                    )
+                    if not wrote_ir:
+                        raise Mismatch(
+                            f"selfhosted {runtime}-runtime comparison leg rejected an expected-output package",
+                            selfhost=self_result,
+                        )
+                    if normalize_result(self_result, root, package) != expected:
+                        raise Mismatch(
+                            "selfhost output differs from the package's committed expected.* files",
+                            selfhost=self_result,
+                        )
+                return
+
             reference_result = reference_for(package, package_work)
             expected = expected_result(root, package)
             if normalize_result(reference_result, root, package) != expected:
@@ -679,6 +697,7 @@ def main() -> int:
                 f"diagnosed and matching {counts[level]['diagnose']}; "
                 f"rejected by new name rule {counts[level]['rejects']}; "
                 f"unsupported {counts[level]['unsupported']}; "
+                f"expected outputs matched {counts[level]['expected']}; "
                 f"mismatches {counts[level]['mismatches']}; "
                 f"seeded builds {generated_counts[level]['build']}; "
                 f"seeded diagnostics {generated_counts[level]['diagnose']}; "
@@ -711,7 +730,7 @@ def read_classifications(path: Path, root: Path) -> dict[str, str]:
         if not line or line.startswith("#"):
             continue
         parts = line.split("\t")
-        if len(parts) != 2 or parts[0] not in ("build", "diagnose", "rejects", "unsupported"):
+        if len(parts) != 2 or parts[0] not in ("build", "diagnose", "rejects", "unsupported", "expected"):
             raise ValueError(f"{path}:{number}: expected class<TAB>package")
         package = parts[1]
         if package in result:

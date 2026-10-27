@@ -1,0 +1,13 @@
+[Wrapped(7), Empty]
+ok(())
+[Wrapped(7), Empty, Wrapped(9)]
+true
+some(Wrapped(9))
+some(Empty)
+some(Wrapped(7))
+[]
+[Item { choice: Wrapped(11), maybe: some(5) }, Item { choice: Empty, maybe: none }]
+Wrapped(11)
+some(5)
+some(Item { choice: Empty, maybe: none })
+[Item { choice: Wrapped(11), maybe: some(5) }]

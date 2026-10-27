@@ -106,6 +106,7 @@ fn main(env: Env) {
         intern_package_names(env, source, files, tokens, tables, compiler)
         build_line_start_index(env, source, files, compiler)
         index_package_enums(source, files, tokens, tables, compiler)
+        intern_builtin_full(source, files, tokens, compiler)
         index_package_structs(source, files, tokens, tables, compiler)
         intern_written_type_instances(env, source, tokens, files, tables, compiler)
         size_package_types(source, files, tokens, tables, compiler)

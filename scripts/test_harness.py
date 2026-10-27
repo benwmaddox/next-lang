@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 
 
-CLASSES = ("build", "diagnose", "rejects", "unsupported")
+CLASSES = ("build", "diagnose", "rejects", "unsupported", "expected")
 
 
 def worker_count() -> int:

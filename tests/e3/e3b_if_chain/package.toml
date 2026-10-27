@@ -1,0 +1,3 @@
+[package]
+name = "e3b-if-chain"
+capabilities = ["out"]

@@ -34,10 +34,15 @@ enum TokenKind {
     SlashEq,
     PercentEq,
     ShrEq,
+    ShlEq,
+    AndEq,
+    OrEq,
+    CaretEq,
     Eq,
     EqEq,
     Bang,
     BangEq,
+    Tilde,
     Lt,
     Le,
     Gt,
@@ -291,7 +296,10 @@ fn lex_file(
                 }
             },
             60 => {
-                if remaining >= 2L && source[absolute + 1L] == 60 {
+                if remaining >= 3L && source[absolute + 1L] == 60 && source[absolute + 2L] == 61 {
+                    kind = TokenKind.ShlEq
+                    unit_width = 3L
+                } else if remaining >= 2L && source[absolute + 1L] == 60 {
                     kind = TokenKind.Shl
                     unit_width = 2L
                 } else if remaining >= 2L && source[absolute + 1L] == 61 {
@@ -396,6 +404,9 @@ fn lex_file(
                 if remaining >= 2L && source[absolute + 1L] == 38 {
                     kind = TokenKind.AndAnd
                     unit_width = 2L
+                } else if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.AndEq
+                    unit_width = 2L
                 } else {
                     kind = TokenKind.And
                     unit_width = 1L
@@ -404,6 +415,9 @@ fn lex_file(
             124 => {
                 if remaining >= 2L && source[absolute + 1L] == 124 {
                     kind = TokenKind.OrOr
+                    unit_width = 2L
+                } else if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.OrEq
                     unit_width = 2L
                 } else {
                     kind = TokenKind.Or
@@ -419,7 +433,16 @@ fn lex_file(
             44 => { kind = TokenKind.Comma; unit_width = 1L },
             58 => { kind = TokenKind.Colon; unit_width = 1L },
             59 => { kind = TokenKind.Semicolon; unit_width = 1L },
-            94 => { kind = TokenKind.Caret; unit_width = 1L },
+            94 => {
+                if remaining >= 2L && source[absolute + 1L] == 61 {
+                    kind = TokenKind.CaretEq
+                    unit_width = 2L
+                } else {
+                    kind = TokenKind.Caret
+                    unit_width = 1L
+                }
+            },
+            126 => { kind = TokenKind.Tilde; unit_width = 1L },
             _ => return err(token_error(LexProblemKind.UnexpectedCharacter, start, start_line, start_col, value)),
         }
 

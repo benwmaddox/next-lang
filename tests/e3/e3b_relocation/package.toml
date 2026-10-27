@@ -1,0 +1,3 @@
+[package]
+name = "e3b-relocation"
+capabilities = ["out"]

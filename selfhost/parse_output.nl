@@ -547,6 +547,7 @@ fn dump_node_kind(kind: NodeKind) -> Ascii max 24 {
         NodeKind.CasePattern => "CasePattern",
         NodeKind.PatternBinding => "PatternBinding",
         NodeKind.IgnoredPatternBinding => "IgnoredPatternBinding",
+        NodeKind.While => "While",
     }
 }
 
@@ -876,6 +877,8 @@ fn wire_token_tag(kind: TokenKind) -> long {
         TokenKind.AndAnd => 44L, TokenKind.Or => 45L, TokenKind.OrOr => 46L,
         TokenKind.Caret => 47L, TokenKind.Shl => 48L, TokenKind.Shr => 49L,
         TokenKind.Eof => 50L,
+        TokenKind.Tilde => 51L, TokenKind.ShlEq => 52L, TokenKind.AndEq => 53L,
+        TokenKind.OrEq => 54L, TokenKind.CaretEq => 55L,
     }
 }
 
@@ -911,6 +914,7 @@ fn wire_node_tag(kind: NodeKind) -> long {
         NodeKind.WildcardPattern => 70L, NodeKind.BoolPattern => 71L,
         NodeKind.CasePattern => 72L, NodeKind.PatternBinding => 73L,
         NodeKind.IgnoredPatternBinding => 74L,
+        NodeKind.While => 75L,
     }
 }
 

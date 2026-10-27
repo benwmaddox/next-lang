@@ -25,36 +25,18 @@ build	tests/e1/smoke
 build	tests/e1/test_semantics
 build	tests/e1/tolong
 diagnose	tests/e1/unknown_type
-unsupported	tests/e1/unsupported_assign_shr_test
-unsupported	tests/e1/unsupported_assign_shr_unreachable
-unsupported	tests/e1/unsupported_assign_shr_unused
 unsupported	tests/e1/unsupported_op_+pct_test
 unsupported	tests/e1/unsupported_op_+pct_unreachable
 unsupported	tests/e1/unsupported_op_+pct_unused
 unsupported	tests/e1/unsupported_op_-pct_test
 unsupported	tests/e1/unsupported_op_-pct_unreachable
 unsupported	tests/e1/unsupported_op_-pct_unused
-unsupported	tests/e1/unsupported_op_and_test
-unsupported	tests/e1/unsupported_op_and_unreachable
-unsupported	tests/e1/unsupported_op_and_unused
-unsupported	tests/e1/unsupported_op_gtgt_test
-unsupported	tests/e1/unsupported_op_gtgt_unreachable
-unsupported	tests/e1/unsupported_op_gtgt_unused
-unsupported	tests/e1/unsupported_op_ltlt_test
-unsupported	tests/e1/unsupported_op_ltlt_unreachable
-unsupported	tests/e1/unsupported_op_ltlt_unused
-unsupported	tests/e1/unsupported_op_or_test
-unsupported	tests/e1/unsupported_op_or_unreachable
-unsupported	tests/e1/unsupported_op_or_unused
 diagnose	tests/e1/unsupported_op_qq_test
 diagnose	tests/e1/unsupported_op_qq_unreachable
 diagnose	tests/e1/unsupported_op_qq_unused
 unsupported	tests/e1/unsupported_op_wrapmul_test
 unsupported	tests/e1/unsupported_op_wrapmul_unreachable
 unsupported	tests/e1/unsupported_op_wrapmul_unused
-unsupported	tests/e1/unsupported_op_xor_test
-unsupported	tests/e1/unsupported_op_xor_unreachable
-unsupported	tests/e1/unsupported_op_xor_unused
 unsupported	tests/e1/unsupported_type_ascii_test
 unsupported	tests/e1/unsupported_type_ascii_unreachable
 unsupported	tests/e1/unsupported_type_ascii_unused
@@ -76,9 +58,6 @@ unsupported	tests/e1/unsupported_type_filekind_unused
 unsupported	tests/e1/unsupported_type_fs_test
 unsupported	tests/e1/unsupported_type_fs_unreachable
 unsupported	tests/e1/unsupported_type_fs_unused
-unsupported	tests/e1/unsupported_type_full_test
-unsupported	tests/e1/unsupported_type_full_unreachable
-unsupported	tests/e1/unsupported_type_full_unused
 unsupported	tests/e1/unsupported_type_grid_test
 unsupported	tests/e1/unsupported_type_grid_unreachable
 unsupported	tests/e1/unsupported_type_grid_unused
@@ -178,7 +157,6 @@ diagnose	tests/run/ambiguous_case
 rejects	tests/run/arithmetic
 diagnose	tests/run/assign_let
 build	tests/run/bad_cast
-unsupported	tests/run/bad_shift
 diagnose	tests/run/bad_to_long_method
 diagnose	tests/run/bool_match_non_exhaustive
 diagnose	tests/run/break_outside_loop
@@ -217,7 +195,6 @@ rejects	tests/run/mod_min_div_neg_one
 diagnose	tests/run/none_inference
 unsupported	tests/run/o1_offset_slice
 diagnose	tests/run/option_question_wrong_return
-unsupported	tests/run/optional_result_receiver
 build	tests/run/overflow_add
 build	tests/run/overflow_add_assign
 build	tests/run/overflow_mul
@@ -290,10 +267,7 @@ unsupported	tests/run/t06_bad_default
 rejects	tests/run/t06_core
 rejects	tests/run/t06_discard_capacity
 unsupported	tests/run/t06_layout
-unsupported	tests/run/t06_nested_remove_parent
 unsupported	tests/run/t06_oversized_nested
-unsupported	tests/run/t06_places_eval
-unsupported	tests/run/t06_view_pop
 unsupported	tests/run/t07_assign_pool
 unsupported	tests/run/t07_collect_remove
 unsupported	tests/run/t07_const
@@ -391,7 +365,6 @@ unsupported	tests/run/t14_ascii_take_widen
 unsupported	tests/run/t14_ascii_use_after_take
 unsupported	tests/run/t14_ascii_values
 unsupported	tests/run/t14_ascii_write_append
-unsupported	tests/run/t15_append_growth
 unsupported	tests/run/t15_loop_overflow
 unsupported	tests/run/t15_uninferred_loop_builder
 unsupported	tests/run/t16_ascii_read_text
@@ -519,7 +492,6 @@ build	tests/e2/noshadow_reference_default_shadow
 unsupported	tests/run/noshadow_arithmetic
 build	tests/run/noshadow_div_min_div_neg_one
 build	tests/run/noshadow_mod_min_div_neg_one
-unsupported	tests/run/noshadow_enums
 build	tests/run/noshadow_loops
 build	tests/run/noshadow_shadow_builtin_err
 build	tests/run/noshadow_shadow_builtin_none
@@ -537,7 +509,6 @@ build	tests/run/noshadow_shadow_package_type
 build	tests/run/noshadow_shadow_parameter_package_function
 build	tests/run/noshadow_shadow_var_visible
 unsupported	tests/run/noshadow_t04_core
-unsupported	tests/run/noshadow_t06_core
 unsupported	tests/run/noshadow_t06_discard_capacity
 unsupported	tests/run/noshadow_t07_zero_capacity
 unsupported	tests/run/noshadow_t13_stack_contracts
@@ -649,3 +620,63 @@ build	tests/test/t13_stack_exhaustion
 build	tests/test/t17_large_reservation
 build	tests/test/t17_startup_reservation
 # E3a2 end
+
+# E3b begin
+diagnose	tests/run/optional_result_receiver
+diagnose	tests/run/t06_view_pop
+build	tests/e3/e3b_capacity
+build	tests/e3/e3b_optional
+build	tests/e3/e3b_proven
+build	tests/e3/e3b_range_inclusive
+build	tests/e3/e3b_relocation
+build	tests/e3/e3b_sum_collection
+build	tests/e3/e3b_write_question
+diagnose	tests/e3/e3b_discard_pop
+diagnose	tests/e3/e3b_proven_branch
+# Stage 0 lacks compound bitwise assignments.
+expected	tests/e3/e3b_compound
+# Stage 0 requires a final else even for a statement chain.
+expected	tests/e3/e3b_if_chain
+# Stage 0 does not parse the `to` range separator.
+expected	tests/e3/e3b_range_to
+# Stage 0 does not parse bitwise not.
+expected	tests/e3/e3b_tilde
+# Stage 0 does not parse while loops.
+expected	tests/e3/e3b_while
+# Stage 0 requires an L suffix for long literals outside int range.
+expected	tests/e3/e3b_long_context
+# Stage 0 does not parse while loops; the selfhost step budget fails a runaway loop.
+expected	tests/e3/e3b_while_budget
+# E3b now implements these bitwise operators and compound shift assignments.
+build	tests/e1/unsupported_assign_shr_test
+build	tests/e1/unsupported_assign_shr_unreachable
+build	tests/e1/unsupported_assign_shr_unused
+build	tests/e1/unsupported_op_and_test
+build	tests/e1/unsupported_op_and_unreachable
+build	tests/e1/unsupported_op_and_unused
+build	tests/e1/unsupported_op_gtgt_test
+build	tests/e1/unsupported_op_gtgt_unreachable
+build	tests/e1/unsupported_op_gtgt_unused
+build	tests/e1/unsupported_op_ltlt_test
+build	tests/e1/unsupported_op_ltlt_unreachable
+build	tests/e1/unsupported_op_ltlt_unused
+build	tests/e1/unsupported_op_or_test
+build	tests/e1/unsupported_op_or_unreachable
+build	tests/e1/unsupported_op_or_unused
+build	tests/e1/unsupported_op_xor_test
+build	tests/e1/unsupported_op_xor_unreachable
+build	tests/e1/unsupported_op_xor_unused
+# Full misuse reaches the checker, and removing a live-view blocker reaches the pop checker.
+diagnose	tests/e1/unsupported_type_full_test
+diagnose	tests/e1/unsupported_type_full_unreachable
+diagnose	tests/e1/unsupported_type_full_unused
+build	tests/run/bad_shift
+diagnose	tests/run/t06_nested_remove_parent
+# These packages are rejected by the no-shadowing rule because Full is a built-in name.
+rejects	tests/run/t15_append_growth
+rejects	tests/run/noshadow_t06_core
+build	tests/run/noshadow_enums
+# E3b restores aggregate array defaults alongside the collection work.
+build	tests/run/t06_places_eval
+build	tests/e3/e3b_array_default
+# E3b end

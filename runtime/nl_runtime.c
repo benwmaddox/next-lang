@@ -927,6 +927,7 @@ _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col)
         case 16: message = "index out of range"; break;
         case 17: message = "binary_search requires sorted input"; break;
         case 21: message = "clamp lower bound is greater than its upper bound"; break;
+        case 23: message = "loop step budget exhausted"; break;
         case 18: message = "data stack exhausted"; break;
         case 19: message = "recursion budget exhausted"; break;
         case 20: message = "standard output write failed"; break;

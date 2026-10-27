@@ -1,0 +1,1 @@
+main.nl:3:13: error: discard accepts only built-in operations whose Result error is capacity Full

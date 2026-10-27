@@ -27,6 +27,13 @@ checks. On a reference-cache hit, the Rust frontend does not rebuild and run
 the package; the Rust `nlc` linker/test runner still validates the newly
 generated selfhost IR. The Rust suite skips these selfhost-owned checks.
 
+The `expected` classification is for packages whose syntax or behavior the
+stage-zero compiler cannot serve as a reference. The build comparison runs the
+selfhost compiler, then compares its status, stdout, and stderr directly with
+the package's committed `expected.exit`, `expected.stdout`, and
+`expected.stderr` files. These packages also participate in relocation checks
+when selected by the relocation harness.
+
 Under `NLC_FRONTEND=selfhost`, `language` and `parse_dump` would drive the
 hybrid frontend (the self-hosted lexer and parser feeding the frozen stage-0
 checker), which is parse parity with stage 0; they run only with

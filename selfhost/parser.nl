@@ -218,6 +218,7 @@ enum NodeKind {
     CasePattern,
     PatternBinding,
     IgnoredPatternBinding,
+    While,
 }
 
 struct Node {
@@ -1597,6 +1598,9 @@ recursive fn parse_statement_candidate(
     if cursor_word_is(source, tables, tokens, "for") {
         return ok(ParseCandidate { node: parse_for_statement(source, tokens, tables)?, is_statement: true })
     }
+    if cursor_word_is(source, tables, tokens, "while") {
+        return ok(ParseCandidate { node: parse_while_statement(source, tokens, tables)?, is_statement: true })
+    }
     if cursor_word_is(source, tables, tokens, "break") || cursor_word_is(source, tables, tokens, "continue") {
         let token = cursor_next(tables, tokens)
         let kind = if token_is_word(source, tokens, token.token, tables.state.file_base, "break") { NodeKind.BreakStatement } else { NodeKind.ContinueStatement }
@@ -1746,6 +1750,10 @@ recursive fn parse_expression_statement_candidate(
         else if next.kind == TokenKind.SlashEq { 4L }
         else if next.kind == TokenKind.PercentEq { 5L }
         else if next.kind == TokenKind.ShrEq { 6L }
+        else if next.kind == TokenKind.ShlEq { 7L }
+        else if next.kind == TokenKind.AndEq { 8L }
+        else if next.kind == TokenKind.OrEq { 9L }
+        else if next.kind == TokenKind.CaretEq { 10L }
         else { -1L }
     if assignment >= 0L {
         let kind = tables.nodes[expression].kind
@@ -1803,6 +1811,24 @@ recursive fn parse_for_statement(
     err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: tables.state.last_end, token: tables.state.pos })
 }
 
+recursive fn parse_while_statement(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: write ParseTables,
+) -> Result<long, ParseError> {
+    let start = cursor_expect_word(source, tables, tokens, "while", ParseProblemKind.ExpectedForName)?
+    let old_allow = tables.state.allow_struct_literals
+    tables.state.allow_struct_literals = false
+    let parsed_condition = parse_expression(source, tokens, tables, 0L)
+    tables.state.allow_struct_literals = old_allow
+    let condition = parsed_condition?
+    cursor_skip_newlines(tables, tokens)
+    let body = parse_block(source, tokens, tables)?
+    let first = node_first_child(tables.nodes, condition)
+    let end = tables.nodes[body].end
+    append_node(tables, NodeKind.While, first, start.token, start.start, end, start.start, 0L, -1L, 0L)
+}
+
 recursive fn parse_for_header(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -1837,10 +1863,12 @@ recursive fn parse_for_header(
     let first_expr = collection_or_start?
     cursor_skip_newlines(tables, tokens)
     let inclusive = cursor_take(tables, tokens, TokenKind.RangeInclusive)
-    let is_range = inclusive || cursor_take(tables, tokens, TokenKind.Range)
+    let to_range = cursor_word_is(source, tables, tokens, "to")
+    if to_range { cursor_next(tables, tokens) }
+    let is_range = inclusive || to_range || cursor_take(tables, tokens, TokenKind.Range)
     if is_range {
         if index_count > 0L { return err(ParseError { kind: ParseProblemKind.RangeForBindings, offset: start.start, token: start.token }) }
-        if inclusive { flags = flags | FLAG_INCLUSIVE }
+        if inclusive || to_range { flags = flags | FLAG_INCLUSIVE }
         let old_allow_end = tables.state.allow_struct_literals
         tables.state.allow_struct_literals = false
         let end_expr = parse_expression(source, tokens, tables, 0L)
@@ -2032,11 +2060,12 @@ recursive fn parse_prefix(
         let node = append_node(tables, NodeKind.Unary, first, token.token, token.start, end, token.start, 0L, -1L, 0L)?
         return postfix_expression(source, tokens, tables, ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start: token.start, end })
     }
-    if token.kind == TokenKind.Bang {
+    if token.kind == TokenKind.Bang || token.kind == TokenKind.Tilde {
         let value = parse_expression(source, tokens, tables, 11L)?
         let first = node_first_child(tables.nodes, value)
         let end = tables.nodes[value].end
-        let node = append_node(tables, NodeKind.Unary, first, token.token, token.start, end, token.start, 1L, -1L, 0L)?
+        let unary_kind = if token.kind == TokenKind.Bang { 1L } else { 2L }
+        let node = append_node(tables, NodeKind.Unary, first, token.token, token.start, end, token.start, unary_kind, -1L, 0L)?
         return postfix_expression(source, tokens, tables, ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start: token.start, end })
     }
     if token.kind == TokenKind.LParen {
@@ -2895,6 +2924,7 @@ recursive fn parse_if_after_condition(
     var condition = initial_condition
     var clause_count = 1L
     var expression = -1L
+    var chain_has_else = false
     for clause_step in 0L..MAX_PARSER_DEPTH {
         let then_block = parse_block(source, tokens, tables)?
         let saved_pos = tables.state.pos
@@ -2937,8 +2967,9 @@ recursive fn parse_if_after_condition(
             tables.state.split_index = saved_split_index
             tables.state.last_end = saved_last_end
         }
+        chain_has_else = has_else
         let first = node_first_child(tables.nodes, condition)
-        let flags = if has_else { FLAG_HAS_ELSE } else { 0L }
+        let flags = if chain_has_else { FLAG_HAS_ELSE } else { 0L }
         let end = if has_else { tables.nodes[else_block].end } else { tables.nodes[then_block].end }
         expression = append_node(tables, NodeKind.If, first, current_if.token, current_if.start, end, current_if.start, flags, -1L, 0L)?
         break
@@ -2952,7 +2983,7 @@ recursive fn parse_if_after_condition(
         let nested_end = tables.nodes[expression].end
         let synthetic_block = append_node(tables, NodeKind.Block, node_first_child(tables.nodes, expression), -1L, nested_start, nested_end, nested_start, FLAG_SYNTHETIC | FLAG_HAS_TAIL, -1L, 0L)?
         let first = node_first_child(tables.nodes, frame.condition)
-        expression = append_node(tables, NodeKind.If, first, frame.token, frame.start, nested_end, frame.start, FLAG_HAS_ELSE, -1L, 0L)?
+        expression = append_node(tables, NodeKind.If, first, frame.token, frame.start, nested_end, frame.start, if chain_has_else { FLAG_HAS_ELSE } else { 0L }, -1L, 0L)?
     }
     ok(ExprRef { node: expression, pending_kind: 0L, token: -1L, extra_token: -1L, start: tables.nodes[expression].start, end: tables.nodes[expression].end })
 }
@@ -2964,7 +2995,7 @@ fn expression_has_postfix(tables: ParseTables, tokens: list<Token, TOKEN_STORAGE
 
 fn expression_starts_nested(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
     let token = cursor_peek(tables, tokens, 0L)
-    if token.kind == TokenKind.Bang { return true }
+    if token.kind == TokenKind.Bang || token.kind == TokenKind.Tilde { return true }
     if token.kind == TokenKind.LParen { return cursor_peek(tables, tokens, 1L).kind != TokenKind.RParen }
     if token.kind == TokenKind.Minus {
         if cursor_peek(tables, tokens, 1L).kind == TokenKind.Number { return expression_has_postfix(tables, tokens, 2L, false) }
