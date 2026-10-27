@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pre-commit check (Ben, 2026-10-27): run both full cargo test suites on exactly
 # what is staged, within one hour, before any commit that touches code.
-# Commits that change only docs (*.md, docs/) or these hook scripts skip it. Install with
+# Commits that change only docs (*.md, docs/), bench/ or these hook scripts skip it. Install with
 # scripts/install-hooks.sh. Works from Git for Windows (re-runs itself in WSL)
 # or directly inside WSL.
 set -euo pipefail
@@ -13,8 +13,9 @@ if [[ "$(uname -s)" != Linux ]]; then
 fi
 
 changed="$(git diff --cached --name-only)"
-if [[ -z "$changed" ]] || ! grep -qvE '^docs/|\.md$|^scripts/(precommit-full|install-hooks)\.sh$' <<<"$changed"; then
-    echo "pre-commit: only docs or hook scripts changed, skipping the full suites"
+# bench/ isn't used by any cargo test, so benchmark-only commits skip too.
+if [[ -z "$changed" ]] || ! grep -qvE '^docs/|^bench/|\.md$|^scripts/(precommit-full|install-hooks)\.sh$' <<<"$changed"; then
+    echo "pre-commit: only docs, benchmarks or hook scripts changed, skipping the full suites"
     exit 0
 fi
 
