@@ -34,27 +34,27 @@ fn neighbors(board: Board, x: long, y: long, w: long, h: long) -> long {
     let right = if x == w - 1L { 0L } else { x + 1L }
     let up = if y == 0L { h - 1L } else { y - 1L }
     let down = if y == h - 1L { 0L } else { y + 1L }
-    var count = 0L
-    if board.alive[up * w + left] { count += 1L }
-    if board.alive[up * w + x] { count += 1L }
-    if board.alive[up * w + right] { count += 1L }
-    if board.alive[y * w + left] { count += 1L }
-    if board.alive[y * w + right] { count += 1L }
-    if board.alive[down * w + left] { count += 1L }
-    if board.alive[down * w + x] { count += 1L }
-    if board.alive[down * w + right] { count += 1L }
-    count
+    var count_value = 0L
+    if board.alive[up * w + left] { count_value += 1L }
+    if board.alive[up * w + x] { count_value += 1L }
+    if board.alive[up * w + right] { count_value += 1L }
+    if board.alive[y * w + left] { count_value += 1L }
+    if board.alive[y * w + right] { count_value += 1L }
+    if board.alive[down * w + left] { count_value += 1L }
+    if board.alive[down * w + x] { count_value += 1L }
+    if board.alive[down * w + right] { count_value += 1L }
+    count_value
 }
 
 fn next_generation(board: write Board, w: long, h: long) {
     for y: long in 0L..h {
         for x: long in 0L..w {
-            let count = neighbors(board, x, y, w, h)
+            let count_value = neighbors(board, x, y, w, h)
             let index = y * w + x
             if board.alive[index] {
-                board.next[index] = count == 2L || count == 3L
+                board.next[index] = count_value == 2L || count_value == 3L
             } else {
-                board.next[index] = count == 3L
+                board.next[index] = count_value == 3L
             }
         }
     }

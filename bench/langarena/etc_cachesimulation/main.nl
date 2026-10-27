@@ -39,10 +39,10 @@ fn new_cache(capacity: long) -> Cache {
     Cache { capacity: capacity, index: map {}, nodes: list {}, free: list {}, head: -1, tail: -1, size: 0L }
 }
 
-// LangArena's next_int(max): the LCG step, then floor(last / IM * max).
-fn next_int(last: write long, max: long) -> long {
+// LangArena's next_int(max_value): the LCG step, then floor(last / IM * max_value).
+fn next_int(last: write long, max_value: long) -> long {
     last = (last * IA + IC) % IM
-    last * max / IM
+    last * max_value / IM
 }
 
 fn move_to_front(cache: write Cache, node: int) {

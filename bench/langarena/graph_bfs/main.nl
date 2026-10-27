@@ -7,9 +7,9 @@ const MAX_ENTRIES: long = 11000000L   // 2 x edges; the run parameters give 5,28
 
 struct Rng { last: long }
 
-fn next_int(rng: write Rng, max: long) -> long {
+fn next_int(rng: write Rng, max_value: long) -> long {
     rng.last = (rng.last * 3877L + 29573L) % 139968L
-    rng.last * max / 139968L
+    rng.last * max_value / 139968L
 }
 
 fn is_run_mode(env: Env) -> bool {

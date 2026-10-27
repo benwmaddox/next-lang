@@ -10,9 +10,9 @@ fn is_run_mode(env: Env) -> bool {
     }
 }
 
-fn next_int(seed: write long, max: long) -> long {
+fn next_int(seed: write long, max_value: long) -> long {
     seed = (seed * 3877L + 29573L) % 139968L
-    (seed * max) / 139968L
+    (seed * max_value) / 139968L
 }
 
 fn digest_word(data: list<byte, 1100000>) -> long {

@@ -69,9 +69,9 @@ fn execute(program: Program) -> long {
     var pos = 0L
     var pc = 0L
     var result = 0L
-    let count = program.commands.count()
+    let count_value = program.commands.count()
     for _step: long in 0L..STEP_LIMIT {
-        if pc >= count { break }
+        if pc >= count_value { break }
         let command = program.commands[pc]
         if command == OP_INC {
             tape[pos] = (tape[pos] + 1) % 256

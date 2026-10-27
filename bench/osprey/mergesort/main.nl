@@ -62,24 +62,24 @@ fn merge(arena: write Arena, a: long, an: long, b: long, bn: long) -> long {
 
 // Naive top-down merge sort: deal the segment into two fresh halves by
 // alternating elements, sort both, merge. Returns the start of the sorted segment.
-recursive fn merge_sort(arena: write Arena, start: long, len: long) -> long {
-    if len < 2L {
+recursive fn merge_sort(arena: write Arena, start: long, len_value: long) -> long {
+    if len_value < 2L {
         return start
     }
     let evens = arena.count()
-    for k: long in 0L..len {
+    for k: long in 0L..len_value {
         if k % 2L == 0L {
             arena.push(arena[start + k]).unwrap()
         }
     }
     let odds = arena.count()
-    for k: long in 0L..len {
+    for k: long in 0L..len_value {
         if k % 2L == 1L {
             arena.push(arena[start + k]).unwrap()
         }
     }
-    let even_len = (len + 1L) / 2L
-    let odd_len = len / 2L
+    let even_len = (len_value + 1L) / 2L
+    let odd_len = len_value / 2L
     let sorted_evens = merge_sort(arena, evens, even_len)
     let sorted_odds = merge_sort(arena, odds, odd_len)
     merge(arena, sorted_evens, even_len, sorted_odds, odd_len)

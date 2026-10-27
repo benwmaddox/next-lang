@@ -17,9 +17,9 @@ struct Coordinate {
     name: Bytes max 64
 }
 
-fn next_int(rng: write Rng, max: long) -> long {
+fn next_int(rng: write Rng, max_value: long) -> long {
     rng.last = (rng.last * 3877L + 29573L) % 139968L
-    rng.last * max / 139968L
+    rng.last * max_value / 139968L
 }
 
 // next_float(1.0) rounded to a whole number of `unit`ths (exact: no tie can occur for this generator).
@@ -39,8 +39,8 @@ fn put(out: grow Bytes max 4194304, piece: Bytes max 64) {
     discard out.try_append(piece)
 }
 
-// value >= 0, zero-padded on the left to at least `width` digits.
-fn put_number(out: grow Bytes max 4194304, value: long, width: long) {
+// value >= 0, zero-padded on the left to at least `width_value` digits.
+fn put_number(out: grow Bytes max 4194304, value: long, width_value: long) {
     var digits: list<int, 24> = list {}
     var rest = value
     for _d in 0L..20L {
@@ -49,7 +49,7 @@ fn put_number(out: grow Bytes max 4194304, value: long, width: long) {
         if rest == 0L { break }
     }
     for _pad in 0L..24L {
-        if digits.count() >= width { break }
+        if digits.count() >= width_value { break }
         discard digits.push(48)
     }
     for k in 0L..digits.count() {

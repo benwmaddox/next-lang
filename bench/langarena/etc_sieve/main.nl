@@ -1,4 +1,4 @@
-// Etc::Sieve: sieve of Eratosthenes up to `limit`, `iterations` times; sums (last prime + count).
+// Etc::Sieve: sieve of Eratosthenes up to `limit`, `iterations` times; sums (last prime + count_value).
 const TEST_LIMIT: long = 1000L
 const TEST_ITERATIONS: long = 3L
 const RUN_LIMIT: long = 3000000L
@@ -37,16 +37,16 @@ fn sieve(limit: long) -> long {
         }
     }
     var last_prime = 2L
-    var count = 1L
+    var count_value = 1L
     let odds = (limit - 3L) / 2L + 1L
     for k: long in 0L..odds {
         let n = 3L + k * 2L
         if primes[n] {
             last_prime = n
-            count += 1L
+            count_value += 1L
         }
     }
-    last_prime + count
+    last_prime + count_value
 }
 
 fn main(env: Env) {

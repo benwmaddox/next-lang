@@ -18,10 +18,10 @@ fn is_run_mode(env: Env) -> bool {
     }
 }
 
-// LangArena's next_int(max): the LCG step, then floor(last / IM * max).
-fn next_int(last: write long, max: long) -> long {
+// LangArena's next_int(max_value): the LCG step, then floor(last / IM * max_value).
+fn next_int(last: write long, max_value: long) -> long {
     last = (last * IA + IC) % IM
-    last * max / IM
+    last * max_value / IM
 }
 
 fn checksum_word(word: Ascii max 8) -> long {
@@ -48,7 +48,7 @@ fn generate(text: write list<byte, 400000>, words: long, word_len: long) {
     }
 }
 
-// The checksum contribution of one pass: max count + checksum(max word) + distinct words.
+// The checksum contribution of one pass: max_value count + checksum(max_value word) + distinct words.
 // Distinct words are kept in first-seen order (`words`, `counts`); `slot_of` finds a word's place.
 fn count_words(text: list<byte, 400000>) -> long {
     var slot_of: map<Ascii max 8, int, 65536> = map {}

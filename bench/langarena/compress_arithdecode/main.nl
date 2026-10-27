@@ -107,11 +107,11 @@ fn arith_encode(data: list<byte, 100005>) -> Encoded {
     Encoded { data: out, frequencies: frequencies }
 }
 
-fn read_bit(bytes: Bytes max 200010, byte_pos: write long, bit_pos: write long, current: write long) -> long {
+fn read_bit(bytes_value: Bytes max 200010, byte_pos: write long, bit_pos: write long, current: write long) -> long {
     if bit_pos == 8L {
         byte_pos += 1L
         bit_pos = 0L
-        current = if byte_pos < bytes.count() { bytes[byte_pos].to_long() } else { 0L }
+        current = if byte_pos < bytes_value.count() { bytes_value[byte_pos].to_long() } else { 0L }
     }
     let bit = (current >> (7L - bit_pos)) & 1L
     bit_pos += 1L

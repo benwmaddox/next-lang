@@ -58,7 +58,7 @@ fn put(page: grow Bytes max 8000000, text: Ascii max 160) {
 }
 
 // Builds the template text and the variable table (LangArena's TemplateBase.prepare).
-fn prepare(text: grow Bytes max 8000000, vars: write Vars, count: long) {
+fn prepare(text: grow Bytes max 8000000, vars: write Vars, count_value: long) {
     put(text, "<html><body>")
     put(text, "<h1>{{TITLE}}</h1>")
     vars.set("TITLE", "Template title").unwrap()
@@ -66,7 +66,7 @@ fn prepare(text: grow Bytes max 8000000, vars: write Vars, count: long) {
     put(text, LOREM)
     put(text, "</p>")
     put(text, "<table>")
-    for i: int in 0..(int)count {
+    for i: int in 0..(int)count_value {
         if i % 3 == 0 { put(text, "<!-- {comment} -->") }
         put(text, "<tr>")
         put(text, "<td>{{ FIRST_NAME" + str(i) + " }}</td>")
@@ -85,19 +85,19 @@ fn prepare(text: grow Bytes max 8000000, vars: write Vars, count: long) {
 fn is_space(c: long) -> bool { c == 32L || (c >= 9L && c <= 13L) }
 
 fn render(text: Page, vars: Vars, out: grow Bytes max 8000000) {
-    let len = text.len()
+    let len_value = text.len()
     var i = 0L
-    for _step: long in 0L..len {
-        if i >= len { break }
+    for _step: long in 0L..len_value {
+        if i >= len_value { break }
         var copied = true
-        if i + 1L < len && text[i] == 123 && text[i + 1L] == 123 {
+        if i + 1L < len_value && text[i] == 123 && text[i + 1L] == 123 {
             var j = i + 2L
-            for _scan: long in j..len {
-                if j + 1L >= len { break }
+            for _scan: long in j..len_value {
+                if j + 1L >= len_value { break }
                 if text[j] == 125 && text[j + 1L] == 125 { break }
                 j += 1L
             }
-            if j + 1L < len {
+            if j + 1L < len_value {
                 // the key between the braces, trimmed
                 var from = i + 2L
                 var to = j
@@ -136,12 +136,12 @@ fn checksum_bytes(text: Page) -> long {
 
 fn main(env: Env) {
     let run = is_run_mode(env)
-    let count = if run { RUN_COUNT } else { TEST_COUNT }
+    let count_value = if run { RUN_COUNT } else { TEST_COUNT }
     let iterations = if run { RUN_ITERATIONS } else { TEST_ITERATIONS }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
     var text: Page = Bytes.empty()
     var vars: Vars = map {}
-    prepare(text, vars, count)
+    prepare(text, vars, count_value)
     var rendered: Page = Bytes.empty()
     var total = 0L
     for _round: long in 0L..(warmup + iterations) {

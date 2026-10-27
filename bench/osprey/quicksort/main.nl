@@ -36,20 +36,20 @@ type Arena = list<long, 400000>
 
 // Naive first-element-pivot quicksort: split the tail into two fresh segments
 // around the pivot, sort both, join. Returns the start of the sorted segment.
-recursive fn quicksort(arena: write Arena, start: long, len: long) -> long {
-    if len == 0L {
+recursive fn quicksort(arena: write Arena, start: long, len_value: long) -> long {
+    if len_value == 0L {
         return start
     }
     let pivot = arena[start]
     let below = arena.count()
-    for k: long in 1L..len {
+    for k: long in 1L..len_value {
         if arena[start + k] < pivot {
             arena.push(arena[start + k]).unwrap()
         }
     }
     let below_len = arena.count() - below
     let at_least = arena.count()
-    for k: long in 1L..len {
+    for k: long in 1L..len_value {
         if arena[start + k] >= pivot {
             arena.push(arena[start + k]).unwrap()
         }

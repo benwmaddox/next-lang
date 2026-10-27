@@ -1,4 +1,4 @@
-// Etc::LogParser: generate an access log, then count LangArena's 13 patterns in it.
+// Etc::LogParser: generate an access log, then count_value LangArena's 13 patterns in it.
 // The patterns are matched by hand-written scanners that follow the regex semantics
 // (leftmost, non-overlapping, alternatives in order) because next-lang has no regex library.
 const TEST_LINES: long = 10L
@@ -206,7 +206,7 @@ fn count_alternatives(log: Log, patterns: Bytes max 64, ignore_case: bool) -> lo
             from = k + 1L
         }
     }
-    var count = 0L
+    var count_value = 0L
     var next_free = 0L
     let size = log.len()
     for i: long in 0L..size {
@@ -227,33 +227,33 @@ fn count_alternatives(log: Log, patterns: Bytes max 64, ignore_case: bool) -> lo
                 }
             }
             if hit > 0L {
-                count += 1L
+                count_value += 1L
                 next_free = i + hit
             }
         }
     }
-    count
+    count_value
 }
 
 // " [5][0-9]{2} | [4][0-9]{2} "
 fn count_errors(log: Log) -> long {
-    var count = 0L
+    var count_value = 0L
     var next_free = 0L
     for i: long in 0L..log.len() {
         if i >= next_free && at(log, i) == 32L {
             let lead = at(log, i + 1L)
             if (lead == 53L || lead == 52L) && is_digit(at(log, i + 2L)) && is_digit(at(log, i + 3L)) && at(log, i + 4L) == 32L {
-                count += 1L
+                count_value += 1L
                 next_free = i + 5L
             }
         }
     }
-    count
+    count_value
 }
 
 // \d+\.\d+\.\d+\.35
 fn count_ips(log: Log) -> long {
-    var count = 0L
+    var count_value = 0L
     var next_free = 0L
     for i: long in 0L..log.len() {
         if i >= next_free && is_digit(at(log, i)) {
@@ -263,19 +263,19 @@ fn count_ips(log: Log) -> long {
                 if e2 > e1 + 1L && at(log, e2) == 46L {
                     let e3 = digits_end(log, e2 + 1L)
                     if e3 > e2 + 1L && at(log, e3) == 46L && at(log, e3 + 1L) == 51L && at(log, e3 + 2L) == 53L {
-                        count += 1L
+                        count_value += 1L
                         next_free = e3 + 3L
                     }
                 }
             }
         }
     }
-    count
+    count_value
 }
 
 // /api/[^ "]+
 fn count_api_calls(log: Log) -> long {
-    var count = 0L
+    var count_value = 0L
     var next_free = 0L
     for i: long in 0L..log.len() {
         if i >= next_free && at(log, i) == 47L && starts_with(log, i, b"/api/") {
@@ -286,17 +286,17 @@ fn count_api_calls(log: Log) -> long {
                 j += 1L
             }
             if j > i + 5L {
-                count += 1L
+                count_value += 1L
                 next_free = j
             }
         }
     }
-    count
+    count_value
 }
 
 // POST [^ ]* HTTP
 fn count_post_requests(log: Log) -> long {
-    var count = 0L
+    var count_value = 0L
     var next_free = 0L
     for i: long in 0L..log.len() {
         if i >= next_free && at(log, i) == 80L && starts_with(log, i, b"POST ") {
@@ -307,12 +307,12 @@ fn count_post_requests(log: Log) -> long {
                 j += 1L
             }
             if at(log, j) == 32L && starts_with(log, j + 1L, b"HTTP") {
-                count += 1L
+                count_value += 1L
                 next_free = j + 5L
             }
         }
     }
-    count
+    count_value
 }
 
 // literal followed by [^&\s"]+ ; returns the match end or -1
@@ -350,23 +350,23 @@ fn keyed_optional_sep_end(log: Log, k: long, name: Bytes max 16, tail: Bytes max
 
 // password=[^&\s"]+
 fn count_passwords(log: Log) -> long {
-    var count = 0L
+    var count_value = 0L
     var next_free = 0L
     for i: long in 0L..log.len() {
         if i >= next_free && at(log, i) == 112L {
             let e = keyed_end(log, i, b"password=")
             if e > 0L {
-                count += 1L
+                count_value += 1L
                 next_free = e
             }
         }
     }
-    count
+    count_value
 }
 
 // token=[^&\s"]+|api[_-]?key=[^&\s"]+
 fn count_tokens(log: Log) -> long {
-    var count = 0L
+    var count_value = 0L
     var next_free = 0L
     for i: long in 0L..log.len() {
         if i >= next_free {
@@ -378,33 +378,33 @@ fn count_tokens(log: Log) -> long {
                 e = keyed_optional_sep_end(log, i, b"api", b"key=")
             } else {}
             if e > 0L {
-                count += 1L
+                count_value += 1L
                 next_free = e
             }
         }
     }
-    count
+    count_value
 }
 
 // session[_-]?id=[^&\s"]+
 fn count_sessions(log: Log) -> long {
-    var count = 0L
+    var count_value = 0L
     var next_free = 0L
     for i: long in 0L..log.len() {
         if i >= next_free && at(log, i) == 115L {
             let e = keyed_optional_sep_end(log, i, b"session", b"id=")
             if e > 0L {
-                count += 1L
+                count_value += 1L
                 next_free = e
             }
         }
     }
-    count
+    count_value
 }
 
 // [a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}
 fn count_emails(log: Log) -> long {
-    var count = 0L
+    var count_value = 0L
     var next_free = 0L
     for i: long in 0L..log.len() {
         if i >= next_free && is_local(at(log, i)) {
@@ -436,18 +436,18 @@ fn count_emails(log: Log) -> long {
                     }
                 }
                 if found > 0L {
-                    count += 1L
+                    count_value += 1L
                     next_free = found
                 }
             }
         }
     }
-    count
+    count_value
 }
 
 // \[\d+/\w+/\d+:1[3-7]:\d+:\d+ [+\-]\d+\]
 fn count_peak_hours(log: Log) -> long {
-    var count = 0L
+    var count_value = 0L
     var next_free = 0L
     for i: long in 0L..log.len() {
         if i >= next_free && at(log, i) == 91L {
@@ -465,7 +465,7 @@ fn count_peak_hours(log: Log) -> long {
                             if e5 > e4 + 1L && at(log, e5) == 32L && (sign == 43L || sign == 45L) {
                                 let e6 = digits_end(log, e5 + 2L)
                                 if e6 > e5 + 2L && at(log, e6) == 93L {
-                                    count += 1L
+                                    count_value += 1L
                                     next_free = e6 + 1L
                                 }
                             }
@@ -475,7 +475,7 @@ fn count_peak_hours(log: Log) -> long {
             }
         }
     }
-    count
+    count_value
 }
 
 fn total_matches(log: Log) -> long {

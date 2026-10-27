@@ -19,9 +19,9 @@ struct Maze {
     neighbors: int[7840000]    // 4 cell indices per cell
 }
 
-fn next_int(rng: write Rng, max: long) -> long {
+fn next_int(rng: write Rng, max_value: long) -> long {
     rng.last = (rng.last * 3877L + 29573L) % 139968L
-    rng.last * max / 139968L
+    rng.last * max_value / 139968L
 }
 
 fn is_run_mode(env: Env) -> bool {
@@ -119,8 +119,8 @@ fn generate(maze: write Maze) {
     }
 }
 
-fn new_maze(width: long, height: long, rng: write Rng) -> Maze {
-    var maze = Maze { width, height, kind: fill(WALL), neighbors: fill(0) }
+fn new_maze(width_value: long, height: long, rng: write Rng) -> Maze {
+    var maze = Maze { width: width_value, height, kind: fill(WALL), neighbors: fill(0) }
     link_neighbors(maze, rng)
     maze
 }
@@ -148,18 +148,18 @@ fn maze_checksum(maze: Maze) -> long {
 
 fn main(env: Env) {
     let run = is_run_mode(env)
-    let width = if run { 1400L } else { 200L }
+    let width_value = if run { 1400L } else { 200L }
     let height = if run { 1400L } else { 30L }
     let iterations = if run { 10L } else { 2L }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
 
     var rng = Rng { last: 42L }
-    var maze = new_maze(width, height, rng)
+    var maze = new_maze(width_value, height, rng)
     var result = 0L
     for _round in 0L..warmup + iterations {
         reset(maze)
         generate(maze)
-        result += maze.kind[(height / 2L) * width + width / 2L].to_long()
+        result += maze.kind[(height / 2L) * width_value + width_value / 2L].to_long()
     }
     print((result + maze_checksum(maze)) % 4294967296L)
 }
