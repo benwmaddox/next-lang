@@ -10,6 +10,8 @@ One language that is hard to get wrong, quick to work in, and within about 10% o
 - **Easy:** a small edit to a small or medium program is running again within about 3 s (an aspiration, not a promise for every program), a release builds in under 30 s, and every error names the fix. Measured by edit-to-running time and the mutation harness's "did you mean" rate.
 - **Efficient:** no garbage collector, no allocation in steady state, compute at 0.9x of C or better, servers within 1.2x of the optimized Rust port's memory. Measured on DEFLATE, a Campfire-class server, a game simulation and a parallel tool (see Validation).
 
+**Where it fits** (Ben, 2026-10-27): a concise language for work where stack and arena allocation pay off: web apps and APIs, CLIs and tools, and other request-shaped programs that create many short-lived values and free them together, with long-lived state kept as bounded trees (a game's world, a server's live data). Programs whose core is a large, long-lived, constantly rewired graph of objects (a GUI object tree, an in-memory graph database, a general-purpose garbage-collected heap) are not the target; they can be written with pools and typed ids, but other languages suit them better.
+
 Non-goals for the first version:
 
 - Full dependent types or proofs of arbitrary properties (refinements stay decidable, see Types).
