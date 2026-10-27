@@ -197,7 +197,11 @@ func (p *Program) reach(roots []types.Object) *Reach {
 		}
 	}
 	sort.SliceStable(r.Order, func(i, j int) bool {
-		return p.Fset.Position(r.Order[i].Pos()).String() < p.Fset.Position(r.Order[j].Pos()).String()
+		pi, pj := p.Fset.Position(r.Order[i].Pos()), p.Fset.Position(r.Order[j].Pos())
+		if pi.Filename != pj.Filename {
+			return pi.Filename < pj.Filename
+		}
+		return pi.Offset < pj.Offset
 	})
 	return r
 }

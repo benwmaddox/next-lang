@@ -5,6 +5,7 @@
 //
 //	go2nl census  -config cfg.json [-detail N]   report what the roots reach
 //	go2nl convert -config cfg.json               write the next-lang package
+//	go2nl corpus  -nlc path/to/nlc               run the Go-vs-next-lang oracle corpus
 package main
 
 import (
@@ -19,6 +20,16 @@ func main() {
 		usage()
 	}
 	cmd := os.Args[1]
+	if cmd == "corpus" {
+		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+		dir := fs.String("dir", "corpus", "corpus directory (a Go module)")
+		nlc := fs.String("nlc", "nlc", "stage 0 compiler")
+		out := fs.String("out", "out/corpus", "where converted programs go")
+		only := fs.String("only", "", "run only programs whose name contains this")
+		fs.Parse(os.Args[2:])
+		abs, _ := filepath.Abs(*out)
+		os.Exit(runCorpus(*dir, *nlc, abs, *only))
+	}
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	cfgPath := fs.String("config", "go2nl.json", "config file")
 	detail := fs.Int("detail", 20, "sites listed per census category (-1 for all)")
