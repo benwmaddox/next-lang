@@ -25,13 +25,16 @@ type fnConv struct {
 	named   []string
 	// variadicParams are the parameters that hold a variadic ...T as a list.
 	variadicParams map[types.Object]bool
+	// boundParams hold a bound method value's receiver (see cloneName).
+	boundParams map[types.Object]*types.Func
+	boundArgs   map[ast.Expr]string // receivers passed for bound method values in the current call
 	// tailIf is the if statement that ends the block being converted.
 	tailIf *ast.IfStmt
 	noPre  bool
 }
 
 func (c *conv) newFunc(fn *types.Func) *fnConv {
-	return &fnConv{c: c, fn: fn, names: newNamer(c.top), locals: map[types.Object]string{}, variadicParams: map[types.Object]bool{}}
+	return &fnConv{c: c, fn: fn, names: newNamer(c.top), locals: map[types.Object]string{}, variadicParams: map[types.Object]bool{}, boundParams: map[types.Object]*types.Func{}}
 }
 
 func (f *fnConv) line(format string, args ...any) {
@@ -79,6 +82,22 @@ func (c *conv) emitFunc(name string, fn *types.Func, recv *ast.FieldList, ft *as
 		if n != nil {
 			obj = c.p.Info.Defs[n]
 		}
+		if m := c.curBound[idx]; m != nil {
+			// This parameter holds the receiver of a bound method value.
+			rt := c.resolve(m.Signature().Recv().Type())
+			mode := ""
+			if mp := c.modes.funcs[m]; mp != nil && mp.write[0] {
+				mode = "write "
+			}
+			name := f.tmp("unused")
+			if obj != nil && n.Name != "_" {
+				name = f.local(obj)
+				f.boundParams[obj] = m
+			}
+			params = append(params, fmt.Sprintf("%s: %s%s", name, mode, c.nlType(rt, "")))
+			idx++
+			return
+		}
 		mode := ""
 		if pi != nil && pi.write[idx] {
 			mode = "write "
@@ -122,7 +141,7 @@ func (c *conv) emitFunc(name string, fn *types.Func, recv *ast.FieldList, ft *as
 		c.decide("method becomes a function taking the receiver first")
 	}
 	for _, fl := range ft.Params.List {
-		t := c.p.Info.TypeOf(fl.Type)
+		t := c.typeOf(fl.Type)
 		if len(fl.Names) == 0 {
 			addParam(nil, t)
 		}
@@ -239,14 +258,14 @@ func (f *fnConv) stmt(s ast.Stmt) {
 		f.exprStmt(s.X)
 	case *ast.IncDecStmt:
 		one := "1"
-		if c.intBase(info.TypeOf(s.X)) == "long" {
+		if c.intBase(c.typeOf(s.X)) == "long" {
 			one = "1L"
 		}
 		op := "+="
 		if s.Tok == token.DEC {
 			op = "-="
 		}
-		if ix, ok := ast.Unparen(s.X).(*ast.IndexExpr); ok && isMap(info.TypeOf(ix.X)) {
+		if ix, ok := ast.Unparen(s.X).(*ast.IndexExpr); ok && isMap(c.typeOf(ix.X)) {
 			bin := "+"
 			if s.Tok == token.DEC {
 				bin = "-"
@@ -278,7 +297,7 @@ func (f *fnConv) stmt(s ast.Stmt) {
 					if i < len(vs.Values) {
 						f.defineVar(obj, vs.Values[i])
 					} else {
-						t := obj.Type()
+						t := c.resolve(obj.Type())
 						f.line("var %s: %s = %s", f.local(obj), c.nlType(t, ""), c.zero(t, ""))
 					}
 				}
@@ -329,7 +348,7 @@ func (f *fnConv) exprStmt(e ast.Expr) {
 					c.decide("panic stops the program with a failure (exit status 1, Go's is 2)")
 					return
 				case "clear":
-					if isMap(c.p.Info.TypeOf(call.Args[0])) {
+					if isMap(c.typeOf(call.Args[0])) {
 						f.line("%s = map {}", f.place(call.Args[0]))
 						c.decide("clear(m) becomes m = map {}")
 					} else {
@@ -354,7 +373,7 @@ func info(c *conv) *types.Info { return c.p.Info }
 // defineVar declares a new local with an initial value.
 func (f *fnConv) defineVar(obj types.Object, value ast.Expr) {
 	c := f.c
-	t := obj.Type()
+	t := c.resolve(obj.Type())
 	if _, ok := t.Underlying().(*types.Pointer); ok {
 		f.checkFresh(value)
 	}
@@ -446,7 +465,7 @@ func isAppend(c *conv, call *ast.CallExpr) bool {
 
 func (f *fnConv) assign(s *ast.AssignStmt) {
 	c := f.c
-	info := c.p.Info
+	_ = c.p.Info
 	if s.Tok != token.DEFINE && s.Tok != token.ASSIGN {
 		f.opAssign(s)
 		return
@@ -470,10 +489,10 @@ func (f *fnConv) assign(s *ast.AssignStmt) {
 			}
 			return
 		case *ast.IndexExpr:
-			if isMap(info.TypeOf(r.X)) {
+			if isMap(c.typeOf(r.X)) {
 				t := f.tmp("found")
 				f.line("let %s = %s", t, f.mapGetOption(r))
-				vt := info.TypeOf(r.X).Underlying().(*types.Map).Elem()
+				vt := c.typeOf(r.X).Underlying().(*types.Map).Elem()
 				f.assignFrom(s.Lhs[0], fmt.Sprintf("%s ?? %s", t, c.zero(vt, "")), s.Tok == token.DEFINE)
 				f.assignFrom(s.Lhs[1], t+".is_some()", s.Tok == token.DEFINE)
 				c.decide("v, ok := m[k] reads the map once into an Option")
@@ -488,7 +507,7 @@ func (f *fnConv) assign(s *ast.AssignStmt) {
 	var temps []string
 	for _, r := range s.Rhs {
 		t := f.tmp("value")
-		lt := info.TypeOf(r)
+		lt := c.typeOf(r)
 		f.line("let %s: %s = %s", t, c.nlType(lt, ""), f.valueExpr(r, lt))
 		temps = append(temps, t)
 	}
@@ -506,11 +525,11 @@ func (f *fnConv) assignFrom(l ast.Expr, value string, define bool) {
 			return
 		}
 		if obj := info.Defs[id]; obj != nil && define {
-			f.line("var %s: %s = %s", f.local(obj), c.nlType(obj.Type(), ""), value)
+			f.line("var %s: %s = %s", f.local(obj), c.nlType(c.resolve(obj.Type()), ""), value)
 			return
 		}
 	}
-	if ix, ok := ast.Unparen(l).(*ast.IndexExpr); ok && isMap(info.TypeOf(ix.X)) {
+	if ix, ok := ast.Unparen(l).(*ast.IndexExpr); ok && isMap(c.typeOf(ix.X)) {
 		f.mapSet(ix, value)
 		return
 	}
@@ -532,7 +551,7 @@ func (f *fnConv) assignOne(l, r ast.Expr, define bool) {
 			return
 		}
 	}
-	lt := info.TypeOf(l)
+	lt := c.typeOf(l)
 	if call, ok := ast.Unparen(r).(*ast.CallExpr); ok && isAppend(c, call) {
 		f.appendStmt(l, call)
 		return
@@ -540,7 +559,7 @@ func (f *fnConv) assignOne(l, r ast.Expr, define bool) {
 	if _, ok := lt.Underlying().(*types.Pointer); ok {
 		f.checkFresh(r)
 	}
-	if ix, ok := ast.Unparen(l).(*ast.IndexExpr); ok && isMap(info.TypeOf(ix.X)) {
+	if ix, ok := ast.Unparen(l).(*ast.IndexExpr); ok && isMap(c.typeOf(ix.X)) {
 		f.mapSet(ix, f.valueExpr(r, lt))
 		return
 	}
@@ -554,10 +573,10 @@ func (f *fnConv) appendStmt(l ast.Expr, call *ast.CallExpr) {
 		c.fail(call, "append", "append whose result isn't assigned back to its first argument")
 	}
 	target := f.place(l)
-	elem := c.p.Info.TypeOf(l).Underlying().(*types.Slice).Elem()
+	elem := c.typeOf(l).Underlying().(*types.Slice).Elem()
 	if call.Ellipsis.IsValid() {
 		src := call.Args[1]
-		if isGoString(c.p.Info.TypeOf(src)) {
+		if isGoString(c.typeOf(src)) {
 			c.fail(call, "append", "append of a string's bytes")
 		}
 		item := f.tmp("item")
@@ -576,11 +595,11 @@ func (f *fnConv) appendStmt(l ast.Expr, call *ast.CallExpr) {
 
 func (f *fnConv) opAssign(s *ast.AssignStmt) {
 	c := f.c
-	info := c.p.Info
+	_ = c.p.Info
 	l, r := s.Lhs[0], s.Rhs[0]
 	op := strings.TrimSuffix(s.Tok.String(), "=")
-	lt := info.TypeOf(l)
-	if ix, ok := ast.Unparen(l).(*ast.IndexExpr); ok && isMap(info.TypeOf(ix.X)) {
+	lt := c.typeOf(l)
+	if ix, ok := ast.Unparen(l).(*ast.IndexExpr); ok && isMap(c.typeOf(ix.X)) {
 		f.mapSet(ix, f.binary(op, f.expr(ix), r, lt, lt))
 		return
 	}
@@ -924,7 +943,7 @@ func (f *fnConv) rangeStmt(s *ast.RangeStmt) {
 	if id, ok := s.Value.(*ast.Ident); ok && id.Name != "_" {
 		val = info.Defs[id]
 	}
-	xt := info.TypeOf(s.X)
+	xt := c.typeOf(s.X)
 	enter := func(head string) {
 		t := &target{isLoop: true}
 		outer := f.enter(t)

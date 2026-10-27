@@ -284,3 +284,45 @@ fn go_pad_left(s: Bytes max go_string_max, width: long, pad: byte) -> Bytes max 
     out.try_append(s).unwrap()
     out
 }
+
+// unicode.RangeTable and unicode.Is. Go searches short tables linearly and long
+// ones by halving; both give the same answer on sorted ranges, so this halves.
+struct GoRange { lo: int = 0, hi: int = 0, stride: int = 1 }
+struct GoRangeTable {
+    r16: list<GoRange, 512> = list {}
+    r32: list<GoRange, 512> = list {}
+    latin_offset: long = 0L
+}
+
+fn go_unicode_in_ranges(ranges: list<GoRange, 512>, r: int) -> bool {
+    var lo: long = 0L
+    var hi: long = ranges.count()
+    for step in 0L..64L {
+        if lo >= hi { break }
+        let m = lo + (hi - lo) / 2L
+        let range = ranges[m]
+        if range.lo <= r && r <= range.hi {
+            return range.stride == 1 || (r - range.lo) % range.stride == 0
+        }
+        if r < range.lo { hi = m } else { lo = m + 1L }
+    }
+    false
+}
+
+fn go_unicode_Is(table: GoRangeTable, r: int) -> bool {
+    if r < 0 { return false }
+    let n16 = table.r16.count()
+    if n16 > 0L && r <= table.r16[n16 - 1L].hi { return go_unicode_in_ranges(table.r16, r) }
+    if table.r32.count() > 0L && r >= table.r32[0L].lo { return go_unicode_in_ranges(table.r32, r) }
+    false
+}
+
+// strings.Join
+fn go_strings_Join(parts: list<Bytes max go_string_max, go_slice_max>, sep: Bytes max go_string_max) -> Bytes max go_string_max {
+    var out: Bytes max go_string_max = b""
+    for part, index in parts {
+        if index > 0L { out.try_append(sep).unwrap() }
+        out.try_append(part).unwrap()
+    }
+    out
+}

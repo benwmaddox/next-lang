@@ -188,7 +188,7 @@ func (f *fnConv) switchStmt(s *ast.SwitchStmt) {
 	tag := ""
 	var tagType types.Type
 	if s.Tag != nil {
-		tagType = c.p.Info.TypeOf(s.Tag)
+		tagType = c.typeOf(s.Tag)
 		tag = f.tmp("tag")
 		f.line("let %s: %s = %s", tag, c.nlType(tagType, ""), f.valueExpr(s.Tag, tagType))
 	}

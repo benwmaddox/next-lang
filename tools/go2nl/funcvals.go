@@ -93,7 +93,7 @@ func (c *conv) findFuncValues() {
 		ast.Inspect(body, func(n ast.Node) bool {
 			switch n := n.(type) {
 			case *ast.FuncLit:
-				sig, ok := c.p.Info.TypeOf(n).(*types.Signature)
+				sig, ok := c.typeOf(n).(*types.Signature)
 				if !ok {
 					return true
 				}
@@ -180,7 +180,7 @@ func (f *fnConv) funcValue(e ast.Expr) string {
 		if m == nil {
 			c.fail(x, "closure", "function literal not found by the pre-pass")
 		}
-		c.familyOf(c.p.Info.TypeOf(x))
+		c.familyOf(c.typeOf(x))
 		c.liftLiteral(m)
 		return fmt.Sprintf("%dL", m.id)
 	case *ast.Ident, *ast.SelectorExpr:
@@ -229,7 +229,7 @@ func (c *conv) liftLiteral(m *member) {
 		}
 		return true
 	})
-	sig := c.p.Info.TypeOf(lit).(*types.Signature)
+	sig := c.typeOf(lit).(*types.Signature)
 	text := c.emitFunc(m.name, nil, nil, lit.Type, lit.Body, sig)
 	c.extra = append(c.extra, fmt.Sprintf("// function literal lifted from %s (%s)\n%s", c.p.objName(m.in), c.p.pos(lit), text))
 	c.decide("function literal that captures nothing is lifted to a top-level function")
@@ -316,8 +316,8 @@ func (c *conv) variadicMax() int64 { return c.cfg.capacity("default.variadic", "
 
 // variadicType is the list a variadic parameter ...T becomes.
 func (c *conv) variadicType(elem types.Type) string {
-	c.decide(fmt.Sprintf("variadic ...T becomes list<T, %d>", c.variadicMax()))
-	return fmt.Sprintf("list<%s, %d>", c.nlType(elem, ""), c.variadicMax())
+	c.decide("variadic ...T becomes list<T, go_variadic_max>")
+	return fmt.Sprintf("list<%s, go_variadic_max>", c.nlType(elem, ""))
 }
 
 func isEmptyInterface(t types.Type) bool {
@@ -328,7 +328,7 @@ func isEmptyInterface(t types.Type) bool {
 // box converts a value to Go's any, which next-lang holds as the GoAny enum.
 func (f *fnConv) box(e ast.Expr) string {
 	c := f.c
-	t := c.p.Info.TypeOf(e)
+	t := c.typeOf(e)
 	c.decide("any becomes the GoAny enum (strings, integers and booleans only)")
 	if isNilType(t) {
 		return "GoAny.Nil"
@@ -369,7 +369,7 @@ func (f *fnConv) callArgs(e *ast.CallExpr, sig *types.Signature, pi *paramInfo, 
 	for i := 0; i < fixed && i < len(e.Args); i++ {
 		write := pi != nil && first+i < len(pi.write) && pi.write[first+i]
 		a := f.argFor(e.Args[i], pi, first+i, sig.Params().At(i).Type())
-		if !write && mentions(c, e.Args[i], writeRoots) {
+		if _, bound := f.boundArgs[e.Args[i]]; !write && !bound && mentions(c, e.Args[i], writeRoots) {
 			// Go copies the value before the call; next-lang refuses a read
 			// argument that overlaps a write one, so copy it first.
 			t := f.tmp("arg")
@@ -416,6 +416,9 @@ func (f *fnConv) callArgs(e *ast.CallExpr, sig *types.Signature, pi *paramInfo, 
 }
 
 func (f *fnConv) argFor(a ast.Expr, pi *paramInfo, i int, pt types.Type) string {
+	if v, ok := f.boundArgs[a]; ok {
+		return v
+	}
 	if pi != nil && i < len(pi.write) && pi.write[i] {
 		return f.place(a)
 	}
@@ -426,7 +429,7 @@ func (f *fnConv) argFor(a ast.Expr, pi *paramInfo, i int, pt types.Type) string 
 		if v := f.funcValue(a); v != "" {
 			return v
 		}
-		if isNilType(f.c.p.Info.TypeOf(a)) {
+		if isNilType(f.c.typeOf(a)) {
 			return "0L"
 		}
 	}

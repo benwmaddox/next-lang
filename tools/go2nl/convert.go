@@ -66,6 +66,12 @@ type conv struct {
 	recursive map[*types.Func]bool
 	// Read-only string-keyed map variables converted to lookup functions.
 	lookups map[types.Object]lookupTable
+	// Generic instances (generics.go) and the substitution of the one being emitted.
+	instances   map[string]*instance
+	rangeTables map[types.Object]string // unicode.RangeTable variables: their lookup function
+	instOrder   []*instance
+	subst       map[*types.TypeParam]types.Type
+	curBound    map[int]*types.Func // bound parameters of the copy being emitted
 	// Function values (funcvals.go).
 	families     map[string]*family
 	litMember    map[*ast.FuncLit]*member
@@ -95,6 +101,8 @@ func convert(p *Program, r *Reach, cfg *Config) *Result {
 		tuples:       map[*types.Func]string{},
 		lookups:      map[types.Object]lookupTable{},
 		lifted:       map[*member]bool{},
+		instances:    map[string]*instance{},
+		rangeTables:  map[types.Object]string{},
 		usedFamilies: map[*family]bool{},
 	}
 	// Reserve the shim's names so converted code never takes one.
@@ -115,6 +123,7 @@ func convert(p *Program, r *Reach, cfg *Config) *Result {
 	for _, obj := range r.Order {
 		c.convertDecl(obj)
 	}
+	c.emitInstances()
 	if len(c.usedFamilies) > 0 {
 		func() {
 			defer func() {
@@ -161,6 +170,7 @@ func (c *conv) convertDecl(obj types.Object) {
 	c.decisions = map[string]bool{}
 	c.extra = nil
 	var text string
+	genericDecl := false
 	func() {
 		defer func() {
 			if e := recover(); e != nil {
@@ -178,6 +188,11 @@ func (c *conv) convertDecl(obj types.Object) {
 		}()
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
+			if isGeneric(obj.(*types.Func)) {
+				rec.Status = "generic: converted per instantiation"
+				genericDecl = true
+				return
+			}
 			text = c.funcDecl(obj.(*types.Func), d)
 			rec.Target = c.valueName(obj)
 		case *ast.TypeSpec:
@@ -203,6 +218,13 @@ func (c *conv) convertDecl(obj types.Object) {
 		b = &strings.Builder{}
 		c.res.files[file] = b
 	}
+	if genericDecl {
+		if _, seen := c.res.convertedObjs[obj]; !seen {
+			c.res.convertedObjs[obj] = true
+		}
+		c.res.Decls = append(c.res.Decls, rec)
+		return
+	}
 	c.res.convertedObjs[obj] = text != ""
 	if text == "" {
 		c.res.Failed++
@@ -226,6 +248,7 @@ func (c *conv) stringMax() int64 {
 // nlType is the next-lang spelling of a Go type. where names the field or
 // variable, for capacity lookups ("pkg.Type.field").
 func (c *conv) nlType(t types.Type, where string) string {
+	t = c.resolve(t)
 	switch t := t.(type) {
 	case *types.Alias:
 		return c.nlType(types.Unalias(t), where)
@@ -262,15 +285,21 @@ func (c *conv) nlType(t types.Type, where string) string {
 		if b, ok := t.Elem().Underlying().(*types.Basic); ok && b.Kind() == types.Byte {
 			c.fail(nil, "string-conv", "[]byte (no rule yet; Go strings are Bytes)")
 		}
-		n := c.cfg.capacity(where, "default.slice", defaultSliceMax)
-		c.decide(fmt.Sprintf("slice []T becomes list<T, %d>; append past %d fails the program", n, n))
-		return fmt.Sprintf("list<%s, %d>", c.nlType(t.Elem(), where+"[]"), n)
+		cap := "go_slice_max"
+		if n, ok := c.cfg.Capacities[where]; ok {
+			cap = fmt.Sprint(n)
+		}
+		c.decide("slice []T becomes list<T, go_slice_max> (or its configured capacity); append past it fails the program")
+		return fmt.Sprintf("list<%s, %s>", c.nlType(t.Elem(), where+"[]"), cap)
 	case *types.Array:
 		return fmt.Sprintf("%s[%d]", c.nlType(t.Elem(), where+"[]"), t.Len())
 	case *types.Map:
-		n := c.cfg.capacity(where, "default.map", defaultMapMax)
-		c.decide(fmt.Sprintf("map becomes map<K, V, %d>; a new key past %d fails the program", n, n))
-		return fmt.Sprintf("map<%s, %s, %d>", c.mapKeyType(t.Key()), c.nlType(t.Elem(), where+"[]"), n)
+		cap := "go_map_max"
+		if n, ok := c.cfg.Capacities[where]; ok {
+			cap = fmt.Sprint(n)
+		}
+		c.decide("map becomes map<K, V, go_map_max> (or its configured capacity); a new key past it fails the program")
+		return fmt.Sprintf("map<%s, %s, %s>", c.mapKeyType(t.Key()), c.nlType(t.Elem(), where+"[]"), cap)
 	case *types.Signature:
 		return c.familyOf(t).typeName
 	case *types.Interface:
@@ -290,6 +319,7 @@ func (c *conv) nlType(t types.Type, where string) string {
 }
 
 func (c *conv) mapKeyType(t types.Type) string {
+	t = c.resolve(t)
 	if isGoString(t) {
 		c.decide("string map keys are Ascii (Bytes isn't hashable); a non-ASCII key is never found")
 		return "Ascii max go_string_max"
@@ -335,6 +365,7 @@ func (c *conv) basicType(t *types.Basic) string {
 // intBase is "long", "int" or "byte": the type a refined alias is built on,
 // which decides literal suffixes and casts.
 func (c *conv) intBase(t types.Type) string {
+	t = c.resolve(t)
 	b, ok := t.Underlying().(*types.Basic)
 	if !ok {
 		return ""
@@ -352,6 +383,7 @@ func (c *conv) intBase(t types.Type) string {
 
 // zero is the next-lang zero value of a Go type.
 func (c *conv) zero(t types.Type, where string) string {
+	t = c.resolve(t)
 	if isErrorType(t) {
 		return "0L"
 	}
@@ -465,6 +497,13 @@ func (c *conv) globalDecl(v *types.Var, spec *ast.ValueSpec) string {
 	if value == nil {
 		return fmt.Sprintf("const %s: %s = %s\n", c.valueName(v), t, c.zero(v.Type(), c.p.objName(v)))
 	}
+	if u, ok := ast.Unparen(value).(*ast.UnaryExpr); ok {
+		if cl, ok := ast.Unparen(u.X).(*ast.CompositeLit); ok {
+			if n, ok := c.p.Info.TypeOf(cl).(*types.Named); ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "unicode" && n.Obj().Name() == "RangeTable" {
+				return c.rangeTableDecl(v, cl)
+			}
+		}
+	}
 	// Composite literals of maps and slices are built by a helper function,
 	// which next-lang evaluates at compile time.
 	if cl, ok := ast.Unparen(value).(*ast.CompositeLit); ok {
@@ -544,6 +583,7 @@ func (c *conv) writtenGlobals() map[types.Object]bool {
 
 // literal writes a constant value as a next-lang literal of the type Go gave it.
 func (c *conv) literal(v constant.Value, t types.Type, n ast.Node) string {
+	t = c.resolve(t)
 	if t == nil {
 		t = types.Default(types.Typ[types.UntypedInt])
 	}
@@ -635,7 +675,12 @@ func (r *Result) writeTo(dir string) error {
 			return err
 		}
 	}
-	config := fmt.Sprintf("// Generated by go2nl: capacities from the conversion config.\n\nconst go_string_max: long = %dL\n", r.cfg.capacity("default.string", "", defaultStringMax))
+	config := fmt.Sprintf("// Generated by go2nl: capacities from the conversion config.\n\n"+
+		"const go_string_max: long = %dL\nconst go_slice_max: long = %dL\nconst go_map_max: long = %dL\nconst go_variadic_max: long = %dL\n",
+		r.cfg.capacity("default.string", "", defaultStringMax),
+		r.cfg.capacity("default.slice", "", defaultSliceMax),
+		r.cfg.capacity("default.map", "", defaultMapMax),
+		r.cfg.capacity("default.variadic", "", 8))
 	if err := os.WriteFile(filepath.Join(dir, "go2nl_config.nl"), []byte(config), 0o644); err != nil {
 		return err
 	}

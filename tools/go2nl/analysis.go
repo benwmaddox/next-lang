@@ -140,6 +140,9 @@ func (m *modes) mutatedPlaces(n ast.Node) []mutation {
 		switch f := fun.(type) {
 		case *ast.Ident:
 			callee, _ = info.Uses[f].(*types.Func)
+			if b, ok := info.Uses[f].(*types.Builtin); ok && b.Name() == "clear" && len(n.Args) > 0 {
+				out = append(out, mutation{&ast.IndexExpr{X: n.Args[0]}, false})
+			}
 			if b, ok := info.Uses[f].(*types.Builtin); ok && b.Name() == "delete" && len(n.Args) > 0 {
 				out = append(out, mutation{&ast.IndexExpr{X: n.Args[0]}, false})
 			}
@@ -175,6 +178,17 @@ func (m *modes) mutatedPlaces(n ast.Node) []mutation {
 		for i, a := range n.Args {
 			if off+i < len(pi.write) && pi.write[off+i] {
 				out = append(out, mutation{a, true})
+			}
+		}
+		for _, a := range n.Args {
+			if sel, ok := ast.Unparen(a).(*ast.SelectorExpr); ok {
+				if s := info.Selections[sel]; s != nil && s.Kind() == types.MethodVal {
+					if mf, ok := s.Obj().(*types.Func); ok {
+						if mp := m.funcs[mf.Origin()]; mp != nil && mp.write[0] {
+							out = append(out, mutation{sel.X, true})
+						}
+					}
+				}
 			}
 		}
 		return out

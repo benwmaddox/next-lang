@@ -40,6 +40,8 @@ var stdlibTable = map[string]stdFn{
 	"unicode/utf8.DecodeLastRuneInString": {shim: "go_utf8_DecodeLastRuneInString", tuple: true},
 	"unicode/utf8.RuneLen":                {shim: "go_utf8_RuneLen"},
 	"unicode/utf16.IsSurrogate":           {shim: "go_utf16_IsSurrogate"},
+	"unicode.Is":                          {shim: "go_unicode_Is"},
+	"strings.Join":                        {shim: "go_strings_Join"},
 	"unicode/utf16.DecodeRune":            {shim: "go_utf16_DecodeRune"},
 	"unicode/utf16.EncodeRune":            {shim: "go_utf16_EncodeRune", tuple: true},
 }
@@ -50,6 +52,8 @@ func (c *conv) stdlibType(t *types.Named) (string, string, bool) {
 	case "strings.Builder":
 		c.decide("strings.Builder becomes a Bytes builder")
 		return "Bytes max go_string_max", `b""`, true
+	case "unicode.RangeTable":
+		return "GoRangeTable", "GoRangeTable {}", true
 	}
 	return "", "", false
 }
@@ -76,7 +80,7 @@ func (f *fnConv) stdlibCall(name string, e *ast.CallExpr) string {
 		if len(e.Args) != 1 {
 			c.fail(e, "stdlib-call", "fmt.Println with %d arguments", len(e.Args))
 		}
-		t := info.TypeOf(e.Args[0])
+		t := c.typeOf(e.Args[0])
 		if b, ok := t.Underlying().(*types.Basic); ok && b.Info()&(types.IsInteger|types.IsBoolean|types.IsString) != 0 {
 			c.decide("fmt.Println of one integer, bool or string becomes print")
 			return "print(" + f.valueExpr(e.Args[0], types.Default(t)) + ")"
@@ -88,6 +92,17 @@ func (f *fnConv) stdlibCall(name string, e *ast.CallExpr) string {
 		// Only debug.Fail's panic message uses it; panics don't keep messages.
 		c.decide("fmt.Sprint for a panic message becomes an empty string (panics keep no message)")
 		return `b""`
+	case "unicode.Is":
+		if id, ok := ast.Unparen(e.Args[0]).(*ast.Ident); ok {
+			v := info.Uses[id]
+			if c.rangeTables[v] == "" && c.r.Objs[v] {
+				c.rangeTables[v] = c.valueName(v) + "_is"
+			}
+			if fn := c.rangeTables[v]; fn != "" {
+				return fn + "(" + f.valueExpr(e.Args[1], types.Typ[types.Int32]) + ")"
+			}
+		}
+		c.fail(e, "stdlib-call", "unicode.Is of a table that isn't a package variable")
 	case "errors.Is":
 		return "(" + f.valueExpr(e.Args[0], nil) + " == " + f.valueExpr(e.Args[1], nil) + ")"
 	}
@@ -163,7 +178,7 @@ func (f *fnConv) sprintf(e *ast.CallExpr) string {
 		ai++
 		flush()
 		var piece string
-		at := c.p.Info.TypeOf(a)
+		at := c.typeOf(a)
 		switch verb {
 		case 's':
 			if !isGoString(at) {
@@ -208,4 +223,146 @@ func (f *fnConv) sprintf(e *ast.CallExpr) string {
 		out = "go_concat(" + out + ", " + p + ")"
 	}
 	return out
+}
+
+// rangeTable converts a unicode.RangeTable literal (the generated identifier
+// tables) into the shim's GoRangeTable: its R16 and R32 ranges as integers.
+func (f *fnConv) rangeTable(e *ast.CompositeLit) string {
+	c := f.c
+	c.decide("unicode.RangeTable becomes GoRangeTable, looked up by the gostd shim's unicode.Is")
+	lists := map[string][]string{}
+	latin := "0L"
+	for _, el := range e.Elts {
+		kv, ok := el.(*ast.KeyValueExpr)
+		if !ok {
+			c.fail(e, "composite", "unicode.RangeTable literal without field names")
+		}
+		name := kv.Key.(*ast.Ident).Name
+		switch name {
+		case "R16", "R32":
+			cl, ok := ast.Unparen(kv.Value).(*ast.CompositeLit)
+			if !ok {
+				c.fail(kv.Value, "composite", "RangeTable.%s that isn't a literal", name)
+			}
+			var items []string
+			for _, r := range cl.Elts {
+				rl, ok := r.(*ast.CompositeLit)
+				if !ok || len(rl.Elts) != 3 {
+					c.fail(r, "composite", "RangeTable range that isn't {lo, hi, stride}")
+				}
+				var v [3]string
+				for i, x := range rl.Elts {
+					if kv2, ok := x.(*ast.KeyValueExpr); ok {
+						x = kv2.Value
+					}
+					tv := c.p.Info.Types[x]
+					if tv.Value == nil {
+						c.fail(x, "composite", "RangeTable range bound that isn't a constant")
+					}
+					v[i] = tv.Value.ExactString()
+				}
+				items = append(items, fmt.Sprintf("GoRange { lo: %s, hi: %s, stride: %s }", v[0], v[1], v[2]))
+			}
+			lists[strings.ToLower(name)] = items
+		case "LatinOffset":
+			tv := c.p.Info.Types[kv.Value]
+			if tv.Value == nil {
+				c.fail(kv.Value, "composite", "LatinOffset that isn't a constant")
+			}
+			latin = tv.Value.ExactString() + "L"
+		}
+	}
+	var fields []string
+	for _, k := range []string{"r16", "r32"} {
+		if items, ok := lists[k]; ok && len(items) > 0 {
+			if len(items) > 512 {
+				c.fail(e, "composite", "RangeTable with %d ranges, more than the shim's 512", len(items))
+			}
+			fields = append(fields, k+": ["+strings.Join(items, ",\n        ")+"]")
+		}
+	}
+	fields = append(fields, "latin_offset: "+latin)
+	return "GoRangeTable {\n        " + strings.Join(fields, ",\n        ") + "\n    }"
+}
+
+// rangeTableDecl converts a package variable holding a unicode.RangeTable
+// literal into three constant int arrays (lo, hi, stride; R16 then R32, which
+// stay sorted) and a function deciding membership by halving, which is what
+// unicode.Is answers. Stage 0 can't pass a large constant struct to a function
+// (its data-stack bound leaves it out), but large constant int arrays work.
+func (c *conv) rangeTableDecl(v *types.Var, cl *ast.CompositeLit) string {
+	var lo, hi, stride []string
+	for _, el := range cl.Elts {
+		kv, ok := el.(*ast.KeyValueExpr)
+		if !ok {
+			c.fail(cl, "composite", "unicode.RangeTable literal without field names")
+		}
+		name := kv.Key.(*ast.Ident).Name
+		if name != "R16" && name != "R32" {
+			continue
+		}
+		list, ok := ast.Unparen(kv.Value).(*ast.CompositeLit)
+		if !ok {
+			c.fail(kv.Value, "composite", "RangeTable.%s that isn't a literal", name)
+		}
+		for _, r := range list.Elts {
+			rl, ok := r.(*ast.CompositeLit)
+			if !ok || len(rl.Elts) != 3 {
+				c.fail(r, "composite", "RangeTable range that isn't {lo, hi, stride}")
+			}
+			var vals [3]string
+			for i, x := range rl.Elts {
+				if kv2, ok := x.(*ast.KeyValueExpr); ok {
+					x = kv2.Value
+				}
+				tv := c.p.Info.Types[x]
+				if tv.Value == nil {
+					c.fail(x, "composite", "RangeTable bound that isn't a constant")
+				}
+				vals[i] = tv.Value.ExactString()
+			}
+			lo, hi, stride = append(lo, vals[0]), append(hi, vals[1]), append(stride, vals[2])
+		}
+	}
+	name := c.valueName(v)
+	n := len(lo)
+	if n == 0 {
+		c.fail(cl, "composite", "empty RangeTable")
+	}
+	c.rangeTables[v] = name + "_is"
+	c.top.used[name+"_is"] = true
+	c.decide("unicode.RangeTable becomes constant lo/hi/stride arrays and a lookup function (unicode.Is)")
+	wrap := func(xs []string) string {
+		var b strings.Builder
+		for i, x := range xs {
+			if i > 0 {
+				b.WriteString(", ")
+				if i%12 == 0 {
+					b.WriteString("\n    ")
+				}
+			}
+			b.WriteString(x)
+		}
+		return b.String()
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "const %s_lo: int[%d] = [\n    %s\n]\n", name, n, wrap(lo))
+	fmt.Fprintf(&b, "const %s_hi: int[%d] = [\n    %s\n]\n", name, n, wrap(hi))
+	fmt.Fprintf(&b, "const %s_stride: int[%d] = [\n    %s\n]\n", name, n, wrap(stride))
+	fmt.Fprintf(&b, `fn %[1]s_is(r: int) -> bool {
+    if r < %[1]s_lo[0L] || r > %[1]s_hi[%[2]dL] { return false }
+    var lo: long = 0L
+    var hi: long = %[3]dL
+    for step in 0L..64L {
+        if lo >= hi { break }
+        let m = lo + (hi - lo) / 2L
+        if %[1]s_lo[m] <= r && r <= %[1]s_hi[m] {
+            return %[1]s_stride[m] == 1 || (r - %[1]s_lo[m]) %% %[1]s_stride[m] == 0
+        }
+        if r < %[1]s_lo[m] { hi = m } else { lo = m + 1L }
+    }
+    false
+}
+`, name, n-1, n)
+	return b.String()
 }

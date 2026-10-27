@@ -16,6 +16,16 @@ func (f *fnConv) valueExpr(e ast.Expr, want types.Type) string {
 		if isErrorType(want) && f.c.isNilIdent(e) {
 			return "0L"
 		}
+		if f.c.isNilIdent(e) {
+			switch want.Underlying().(type) {
+			case *types.Map:
+				f.c.nlType(want, "")
+				return "map {}"
+			case *types.Slice:
+				f.c.nlType(want, "")
+				return "list {}"
+			}
+		}
 		if _, ok := want.Underlying().(*types.Signature); ok {
 			if f.c.isNilIdent(e) {
 				return "0L"
@@ -24,7 +34,7 @@ func (f *fnConv) valueExpr(e ast.Expr, want types.Type) string {
 				return v
 			}
 		}
-		if isEmptyInterface(want) && !isEmptyInterface(f.c.p.Info.TypeOf(e)) {
+		if isEmptyInterface(want) && !isEmptyInterface(f.c.typeOf(e)) {
 			return f.box(e)
 		}
 	}
@@ -200,7 +210,7 @@ func (f *fnConv) place(e ast.Expr) string {
 			return f.place(x.X) + c.embedPath(x, sel) + "." + fieldName(x.Sel.Name)
 		}
 	case *ast.IndexExpr:
-		xt := c.p.Info.TypeOf(x.X).Underlying()
+		xt := c.typeOf(x.X).Underlying()
 		if _, ok := xt.(*types.Map); ok {
 			c.fail(x, "map", "map element changed in place")
 		}
@@ -216,7 +226,7 @@ func (f *fnConv) place(e ast.Expr) string {
 // indexValue converts an index: next-lang indexes are long.
 func (f *fnConv) indexValue(e ast.Expr) string {
 	c := f.c
-	t := c.p.Info.TypeOf(e)
+	t := c.typeOf(e)
 	if tv := c.p.Info.Types[e]; tv.Value != nil {
 		return c.literal(tv.Value, types.Typ[types.Int], e)
 	}
@@ -242,13 +252,13 @@ func (f *fnConv) index(e *ast.IndexExpr) string {
 	if _, ok := info.Instances[rootIdent(e.X)]; ok {
 		c.fail(e, "generic", "generic instantiation")
 	}
-	xt := info.TypeOf(e.X).Underlying()
+	xt := c.typeOf(e.X).Underlying()
 	if p, ok := xt.(*types.Pointer); ok {
 		xt = p.Elem().Underlying()
 	}
 	switch xt.(type) {
 	case *types.Map:
-		return "(" + f.mapGetOption(e) + " ?? " + c.zero(info.TypeOf(e), "") + ")"
+		return "(" + f.mapGetOption(e) + " ?? " + c.zero(c.typeOf(e), "") + ")"
 	}
 	return f.expr(e.X) + "[" + f.indexValue(e.Index) + "]"
 }
@@ -283,7 +293,7 @@ func (f *fnConv) mapGetOption(e *ast.IndexExpr) string {
 	if lt, ok := f.lookupOf(e.X); ok {
 		return lt.get + "(" + f.valueExpr(e.Index, nil) + ")"
 	}
-	mt := c.p.Info.TypeOf(e.X)
+	mt := c.typeOf(e.X)
 	m := mt.Underlying().(*types.Map)
 	if isGoString(m.Key()) {
 		if tv := c.p.Info.Types[e.Index]; tv.Value == nil {
@@ -297,7 +307,7 @@ func (f *fnConv) mapGetOption(e *ast.IndexExpr) string {
 }
 
 func (f *fnConv) mapSet(ix *ast.IndexExpr, value string) {
-	mt := f.c.p.Info.TypeOf(ix.X)
+	mt := f.c.typeOf(ix.X)
 	f.line("%s.set(%s, %s).unwrap()", f.place(ix.X), f.mapKey(mt, ix.Index), value)
 	f.c.decide("m[k] = v becomes m.set(k, v).unwrap()")
 }
@@ -307,7 +317,7 @@ func (f *fnConv) slice(e *ast.SliceExpr) string {
 	if e.Slice3 {
 		c.fail(e, "slice-expr", "three-index slice")
 	}
-	xt := c.p.Info.TypeOf(e.X)
+	xt := c.typeOf(e.X)
 	if !isGoString(xt) {
 		c.fail(e, "slice-expr", "slicing a %s (only strings so far)", xt)
 	}
@@ -324,7 +334,7 @@ func (f *fnConv) slice(e *ast.SliceExpr) string {
 
 func (f *fnConv) unary(e *ast.UnaryExpr) string {
 	c := f.c
-	t := c.p.Info.TypeOf(e)
+	t := c.typeOf(e)
 	switch e.Op {
 	case token.SUB:
 		return "-(" + f.expr(e.X) + ")"
@@ -373,14 +383,28 @@ var binOps = map[token.Token]string{
 
 func (f *fnConv) binaryExpr(e *ast.BinaryExpr) string {
 	c := f.c
-	info := c.p.Info
-	lt, rt := info.TypeOf(e.X), info.TypeOf(e.Y)
+	_ = c.p.Info
+	lt, rt := c.typeOf(e.X), c.typeOf(e.Y)
 	if isNilType(lt) || isNilType(rt) {
 		other, ot := e.X, lt
 		if isNilType(lt) {
 			other, ot = e.Y, rt
 		}
 		_, isFn := ot.Underlying().(*types.Signature)
+		switch ot.Underlying().(type) {
+		case *types.Map:
+			// next-lang has no nil map: an unset map is empty, which is how
+			// the lazy "if m == nil { m = make(...) }" uses it.
+			c.decide("maps are never nil: m == nil is false (lazy creation still works)")
+			return map[token.Token]string{token.EQL: "false", token.NEQ: "true"}[e.Op]
+		case *types.Slice:
+			c.decide("slices are never nil: s == nil is s.count() == 0")
+			return "(" + f.expr(other) + ".count() " + binOps[e.Op] + " 0L)"
+		}
+		if id, ok := ast.Unparen(other).(*ast.Ident); ok && f.boundParams[c.p.Info.Uses[id]] != nil {
+			// A bound method value is never nil.
+			return map[token.Token]string{token.EQL: "false", token.NEQ: "true"}[e.Op]
+		}
 		if (isFn || isErrorType(ot)) && (e.Op == token.EQL || e.Op == token.NEQ) {
 			return "(" + f.expr(other) + " " + binOps[e.Op] + " 0L)"
 		}
@@ -426,7 +450,7 @@ func (f *fnConv) shiftCount(e ast.Expr, lt types.Type) string {
 	if tv := c.p.Info.Types[e]; tv.Value != nil {
 		return c.literal(tv.Value, lt, e)
 	}
-	ct := c.p.Info.TypeOf(e)
+	ct := c.typeOf(e)
 	if c.intBase(ct) == c.intBase(lt) {
 		return f.expr(e)
 	}
@@ -489,12 +513,24 @@ func (f *fnConv) call(e *ast.CallExpr) string {
 	// Conversions T(x).
 	if tv, ok := info.Types[fun]; ok && tv.IsType() {
 		to := tv.Type
-		from := info.TypeOf(e.Args[0])
+		from := c.typeOf(e.Args[0])
 		if c.intBase(to) != "" && c.intBase(from) != "" {
 			return f.convertInt(f.expr(e.Args[0]), from, to)
 		}
 		if types.Identical(to.Underlying(), from.Underlying()) {
 			return f.expr(e.Args[0])
+		}
+		if cl, ok := ast.Unparen(e.Args[0]).(*ast.CompositeLit); ok && isGoString(to) {
+			if s, ok := from.Underlying().(*types.Slice); ok && c.intBase(s.Elem()) == "byte" {
+				// string([]byte{a, b, c}): the bytes, pushed one by one.
+				bs := f.tmp("bytes")
+				f.pre("var %s: Bytes max go_string_max = b\"\"", bs)
+				for _, el := range cl.Elts {
+					f.pre("%s.push(%s).unwrap()", bs, f.valueExpr(el, s.Elem()))
+				}
+				c.decide("string([]byte{...}) builds the bytes one by one")
+				return bs
+			}
 		}
 		if isGoString(to) && c.intBase(from) != "" {
 			// string(r): the UTF-8 encoding of rune r, U+FFFD if r is invalid.
@@ -512,13 +548,22 @@ func (f *fnConv) call(e *ast.CallExpr) string {
 		}
 	}
 	callee := calleeFunc(c, e)
+	if id, ok := fun.(*ast.Ident); ok && callee == nil {
+		if m := f.boundParams[info.Uses[id]]; m != nil {
+			// Calling a bound method value: call the method on the receiver.
+			mp := c.modes.funcs[m]
+			recvArg := f.ident(id)
+			args := append([]string{recvArg}, f.callArgs(e, m.Signature(), mp, 1, map[types.Object]bool{info.Uses[id]: true})...)
+			return c.valueName(m) + "(" + strings.Join(args, ", ") + ")"
+		}
+	}
 	if callee == nil {
 		// A call through a function value: the family's dispatcher.
-		sig, ok := info.TypeOf(e.Fun).Underlying().(*types.Signature)
+		sig, ok := c.typeOf(e.Fun).Underlying().(*types.Signature)
 		if !ok {
 			c.fail(e, "func-value", "call of %s", c.exprString(e.Fun))
 		}
-		fam := c.familyOf(info.TypeOf(e.Fun))
+		fam := c.familyOf(c.typeOf(e.Fun))
 		pi := &paramInfo{write: make([]bool, sig.Params().Len())}
 		for i := range pi.write {
 			pi.write[i] = fam.writes(c, i)
@@ -553,8 +598,48 @@ func (f *fnConv) call(e *ast.CallExpr) string {
 			idx = 1
 		}
 	}
-	args = append(args, f.callArgs(e, callee.Signature(), pi, idx, c.writeRootsOf(e, pi, recv))...)
-	return c.valueName(callee) + "(" + strings.Join(args, ", ") + ")"
+	calleeName := c.valueName(callee)
+	calleeSig := callee.Signature()
+	if isGeneric(callee) {
+		id := rootIdent(fun)
+		if sel, ok := fun.(*ast.SelectorExpr); ok {
+			id = sel.Sel
+		}
+		calleeName = c.instanceName(callee, id)
+		calleeSig = c.resolve(info.Instances[id].Type).(*types.Signature)
+	}
+	if bound, recvs := c.boundMethods(e, idx); bound != nil {
+		if isGeneric(callee) {
+			c.fail(e, "generic", "method value passed to a generic function")
+		}
+		calleeName = c.cloneName(callee, bound)
+		f.boundArgs = map[ast.Expr]string{}
+		for i, m := range bound {
+			arg := e.Args[i-idx]
+			x := recvs[i]
+			sel := ast.Unparen(arg).(*ast.SelectorExpr)
+			path := c.embedPath(sel, info.Selections[sel])
+			if mp := c.modes.funcs[m]; mp != nil && mp.write[0] {
+				f.boundArgs[arg] = f.place(x) + path
+			} else {
+				f.boundArgs[arg] = f.expr(x) + path
+			}
+		}
+	}
+	roots := c.writeRootsOf(e, pi, recv)
+	for a := range f.boundArgs {
+		sel := ast.Unparen(a).(*ast.SelectorExpr)
+		if mf, ok := info.Selections[sel].Obj().(*types.Func); ok {
+			if mp := c.modes.funcs[mf.Origin()]; mp != nil && mp.write[0] {
+				if id := rootIdent(sel.X); id != nil {
+					roots[info.Uses[id]] = true
+				}
+			}
+		}
+	}
+	args = append(args, f.callArgs(e, calleeSig, pi, idx, roots)...)
+	f.boundArgs = nil
+	return calleeName + "(" + strings.Join(args, ", ") + ")"
 }
 
 func (f *fnConv) builtin(name string, e *ast.CallExpr) string {
@@ -562,7 +647,7 @@ func (f *fnConv) builtin(name string, e *ast.CallExpr) string {
 	info := c.p.Info
 	switch name {
 	case "len":
-		t := info.TypeOf(e.Args[0]).Underlying()
+		t := c.typeOf(e.Args[0]).Underlying()
 		if p, ok := t.(*types.Pointer); ok {
 			t = p.Elem().Underlying()
 		}
@@ -578,7 +663,7 @@ func (f *fnConv) builtin(name string, e *ast.CallExpr) string {
 			return fmt.Sprintf("%dL", t.Len())
 		}
 	case "min", "max":
-		t := info.TypeOf(e)
+		t := c.typeOf(e)
 		out := f.valueExpr(e.Args[0], t)
 		for _, a := range e.Args[1:] {
 			out = name + "(" + out + ", " + f.valueExpr(a, t) + ")"
@@ -587,7 +672,7 @@ func (f *fnConv) builtin(name string, e *ast.CallExpr) string {
 	case "append":
 		c.fail(e, "append", "append used as a value")
 	case "make":
-		t := info.TypeOf(e)
+		t := c.typeOf(e)
 		switch t.Underlying().(type) {
 		case *types.Map:
 			c.nlType(t, "")
@@ -612,7 +697,10 @@ func (f *fnConv) builtin(name string, e *ast.CallExpr) string {
 
 func (f *fnConv) composite(e *ast.CompositeLit) string {
 	c := f.c
-	t := c.p.Info.TypeOf(e)
+	t := c.typeOf(e)
+	if n, ok := t.(*types.Named); ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "unicode" && n.Obj().Name() == "RangeTable" {
+		return f.rangeTable(e)
+	}
 	switch u := t.Underlying().(type) {
 	case *types.Struct:
 		var fields []string
