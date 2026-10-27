@@ -13,7 +13,7 @@ A general-purpose compiled language for servers, games and command-line tools. I
 ```
 struct Unit {
     name: Ascii max 32
-    hp: int 0..=1000                       // a range: checked on every write, stored in 16 bits
+    hp: int 0 to 1000                       // a range: checked on every write, stored in 16 bits
     inventory: list<Item, 8>               // at most 8 items, stored inside the unit
 }
 
@@ -31,7 +31,7 @@ fn describe(u: Unit) -> Ascii max 64 {
 ## Values and types
 
 - **Structs, enums with data, `Option`, `Result`, `match`** (exhaustive), `?` to pass an error up, `??` for a fallback.
-- **Ranges as types:** `int 0..=100`, `long`, `byte`. A value outside its range can't be stored; the compiler uses ranges to pick storage width and to remove checks it can prove unnecessary.
+- **Ranges as types:** `int 0 to 100`, `long`, `byte`. A value outside its range can't be stored; the compiler uses ranges to pick storage width and to remove checks it can prove unnecessary.
 - **Three text types:** `Text` (always valid UTF-8, validated once at the boundary, so nothing re-checks it), `Ascii` (one byte per character, the compact form) and `Bytes` (raw data). Each stored text has a maximum: `Text max 80`.
 - **Interpolated strings** `$"{a} and {b}"` cost the same as hand-written concatenation: the size is known at build time and the text is written straight into its destination.
 - **Effects and capabilities:** what a function may touch (database, files, network, clock, randomness, output) is part of its type, inferred across calls, and granted only by the entry point as values (`Db`, `Fs`, `Clock`). A library can't reach the network unless someone hands it a capability, and tests and replays can supply fixed clocks and random sources.
@@ -42,7 +42,7 @@ This is the core of the design. The idea being tested: a stack-and-arena model g
 
 **Every value has a known maximum size.** Collections (`T[N]`, `list`, `pool`, `map`, `set`, `queue`, `ring`, `grid`) carry their capacity in their type, and texts their maximum length. So a collection is an ordinary value: it can be a local, a field, a parameter or a result, stored inline, with no pointer to chase.
 
-**Data is laid out by field, not by object.** A `list<Unit, 4096>` stores all the `hp` values together, all the names together, and so on (structure of arrays). A loop that touches only `hp` streams through only `hp`, and LLVM can vectorise it. Ranges shrink storage further (`int 0..=1000` takes 16 bits).
+**Data is laid out by field, not by object.** A `list<Unit, 4096>` stores all the `hp` values together, all the names together, and so on (structure of arrays). A loop that touches only `hp` streams through only `hp`, and LLVM can vectorise it. Ranges shrink storage further (`int 0 to 1000` takes 16 bits).
 
 **Each job has its own data stack, and allocation is a pointer bump.**
 - A local value, a function's result, a text being built: each takes the next bytes on the job's data stack. Allocating is adding to a pointer and comparing it with the end; there's no `malloc`, no free list and no lock.

@@ -13,20 +13,20 @@ An arcade game: a ship that turns, thrusts and fires, and rocks that split when 
 const SCREEN = Vector2(960.0, 540.0)
 const TAU: float = 6.2831855                // 2π, one full turn
 
-type Size = int 1..=3                         // 3 is a big rock, 1 the smallest
-type Lives = int 0..=3
+type Size = int 1 to 3                         // 3 is a big rock, 1 the smallest
+type Lives = int 0 to 3
 
 struct Ship {
     pos: Vector2 = SCREEN * 0.5
     vel: Vector2 = Vector2.zero
     angle: float 0.0..TAU wrap = 0.0       // radians; turning past 2π wraps to 0
-    cooldown: int 0..=15 clamp = 0            // ticks until the next shot; counting down stops at 0
-    invulnerable_ticks: int 0..=120 clamp = 0 // after a respawn: 120 ticks, 2 s
+    cooldown: int 0 to 15 clamp = 0            // ticks until the next shot; counting down stops at 0
+    invulnerable_ticks: int 0 to 120 clamp = 0 // after a respawn: 120 ticks, 2 s
     lives: Lives = 3
 }
 
 struct Rock { pos: Vector2, vel: Vector2, size: Size }
-struct Bullet { pos: Vector2, vel: Vector2, ttl: int 0..=60 }
+struct Bullet { pos: Vector2, vel: Vector2, ttl: int 0 to 60 }
 
 struct Game {
     ship: Ship = Ship {}
@@ -151,7 +151,7 @@ fn split(g: write Game, r: Rock) {
     }                                        // discard: a full field just drops the fragment
 }
 
-fn spawn_wave(g: write Game, n: int 1..=8) {
+fn spawn_wave(g: write Game, n: int 1 to 8) {
     for k in 0..n {
         let start = Vector2(g.rng.next_float(0.0, SCREEN.x), 0.0)   // along the top edge
         let vel = direction(g.rng.next_float(0.0, TAU)) * 1.2
@@ -223,12 +223,12 @@ test "the bullet limit holds" {
 }
 ```
 
-**What it exercises:** Rust-style ranges (`int 1..=3`, `for k in 0..2`); float literals with no `f`, taking `float` from context; named refinements (`Size`, `Lives`) and a cast to one (`(Size)(r.size - 1)`); a wrapping range on the angle and clamping ones on the timers, with `+=` and `-=` applying them; removing every hit rock before adding fragments; expiring bullets before they move; a respawn grace period; `?? continue`; `discard` where dropping a value is intended; `Full` handled where it matters (`fire`); pools with typed ids; removing after a loop, not during it; a widening method (`.to_long()`); random state in the game state; a read-only `draw` with a declared draw-list capacity; tests on a local `Game`.
+**What it exercises:** Rust-style ranges (`int 1 to 3`, `for k in 0..2`); float literals with no `f`, taking `float` from context; named refinements (`Size`, `Lives`) and a cast to one (`(Size)(r.size - 1)`); a wrapping range on the angle and clamping ones on the timers, with `+=` and `-=` applying them; removing every hit rock before adding fragments; expiring bullets before they move; a respawn grace period; `?? continue`; `discard` where dropping a value is intended; `Full` handled where it matters (`fire`); pools with typed ids; removing after a loop, not during it; a widening method (`.to_long()`); random state in the game state; a read-only `draw` with a declared draw-list capacity; tests on a local `Game`.
 
 **Open points it raised:**
 
 - *Restarting:* resetting the whole game (`g = Game {}`) replaces pools, which the design's Later list says needs a rule for generations.
-- *Ranges:* resolved (2026-10-24): `..` excludes its end and `..=` includes it, everywhere, so `Size = int 1..=3` and `for k in 0..2` (two iterations) no longer use one spelling for two meanings.
+- *Ranges:* resolved (2026-10-24): `..` excludes its end and `to` includes it (written `..=` until 2026-10-27), everywhere, so `Size = int 1 to 3` and `for k in 0..2` (two iterations) no longer use one spelling for two meanings.
 - *`Frame max 100`* is a guess at how `draw` declares its draw-list capacity.
 
 ## 2. A tool: logsum
@@ -238,7 +238,7 @@ A command-line tool that reads a directory of web-server access logs and prints 
 ```
 // logsum/main.nl
 type UrlPath = Ascii max 200
-type HttpStatus = int 100..=599
+type HttpStatus = int 100 to 599
 
 enum ToolError { Usage, Io(IoError), TooManyFiles }
 
@@ -389,7 +389,7 @@ A JSON API over the chat server's database: list a room's messages a page at a t
 type Address = Ascii max 45                  // IPv6 text is at most 45 characters
 
 struct Bucket {
-    tokens: int 0..=60 = 60
+    tokens: int 0 to 60 = 60
     refilled_through: Instant                // tokens have been added for all time up to here
 }
 
