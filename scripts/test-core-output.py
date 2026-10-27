@@ -38,6 +38,14 @@ def build(package: str, stem: str, runtime: str, *, test: bool = False) -> tuple
     return ir, executable
 
 
+def replace_main_call(source: str, replacement: str, description: str) -> str:
+    entry_call = re.compile(r"^  call void @nl_fn_[0-9]+\(ptr %nl\.ctx, i64 %nl\.top\)\n", re.MULTILINE)
+    result, count = entry_call.subn(replacement, source, count=1)
+    if count != 1:
+        raise RuntimeError(f"could not locate main entry call for the {description} probe")
+    return result
+
+
 def assert_failure(executable: Path, *, test_mode: bool = False) -> None:
     environment = os.environ.copy()
     if test_mode:
@@ -107,23 +115,23 @@ def assert_line_buffered(executable: Path) -> bytes:
 
 def add_partial_write_probe(ir_path: Path) -> None:
     source = ir_path.read_text()
-    main = re.compile(r"^define i32 @main\(i32 %argc, ptr %argv, ptr %envp\) \{\n.*?^\}\n", re.MULTILINE | re.DOTALL)
-    replacement = '''define i32 @main(i32 %argc, ptr %argv, ptr %envp) {
-entry:
-  call void @nl_core_init(i32 %argc, ptr %argv, ptr %envp)
-  call void @nl_set_test_mode()
-  call void @nl_core_nl_test_configure_write_fault_sequence(i32 1, i64 2, i32 2, i64 5)
+    replacement = '''  call void @nl_set_test_mode(ptr %nl.ctx)
+  call void @nl_core_nl_test_configure_write_fault_sequence(ptr %nl.ctx, i32 1, i64 2, i32 2, i64 5)
   %bytes = getelementptr [6 x i8], ptr @.nl.output.probe, i64 0, i64 0
-  %queued = call i1 @nl_core_nl_core_output_write(i32 1, ptr %bytes, i64 6)
+  %queued = call i1 @nl_core_nl_core_output_write(ptr %nl.ctx, i32 1, ptr %bytes, i64 6)
   br i1 %queued, label %check.flush, label %fail.91
 check.flush:
-  %first_flush = call i1 @nl_core_nl_core_flush_all()
+  %first_flush = call i1 @nl_core_nl_core_flush_all(ptr %nl.ctx)
   %flush_failed = xor i1 %first_flush, true
   br i1 %flush_failed, label %check.tail, label %fail.92
 check.tail:
-  %length_ptr = getelementptr [147456 x i8], ptr @nl.core.state, i64 0, i64 131072
+  %state.slot = getelementptr i8, ptr %nl.ctx, i64 144
+  %state = load ptr, ptr %state.slot, align 8
+  %length.offset = call i64 @nl_core_output_length_slot(ptr %nl.ctx, i32 0)
+  %length_ptr = getelementptr i8, ptr %state, i64 %length.offset
   %length = load i64, ptr %length_ptr, align 1
-  %b0p = getelementptr [147456 x i8], ptr @nl.core.state, i64 0, i64 0
+  %buffer.offset = call i64 @nl_core_output_buffer(ptr %nl.ctx, i32 0)
+  %b0p = getelementptr i8, ptr %state, i64 %buffer.offset
   %b1p = getelementptr i8, ptr %b0p, i64 1
   %b2p = getelementptr i8, ptr %b0p, i64 2
   %b3p = getelementptr i8, ptr %b0p, i64 3
@@ -142,11 +150,11 @@ check.tail:
   %tail_and_length = and i1 %tail_ok, %length_ok
   br i1 %tail_and_length, label %retry, label %fail.93
 retry:
-  call void @nl_core_nl_test_clear_write_fault()
-  %retry_ok = call i1 @nl_core_nl_core_flush_all()
+  call void @nl_core_nl_test_clear_write_fault(ptr %nl.ctx)
+  %retry_ok = call i1 @nl_core_nl_core_flush_all(ptr %nl.ctx)
   br i1 %retry_ok, label %pass, label %fail.94
 pass:
-  ret i32 0
+  br label %nl.probe.done
 fail.91:
   ret i32 91
 fail.92:
@@ -155,11 +163,9 @@ fail.93:
   ret i32 93
 fail.94:
   ret i32 94
-}
+nl.probe.done:
 '''
-    result, count = main.subn(replacement, source, count=1)
-    if count != 1:
-        raise RuntimeError("could not locate the core-mode main function for the injected-write probe")
+    result = replace_main_call(source, replacement, "injected-write")
     result = result.replace(
         'source_filename = "next-lang"\n',
         'source_filename = "next-lang"\n@.nl.output.probe = private unnamed_addr constant [6 x i8] c"abcdef", align 1\n',
@@ -170,26 +176,20 @@ fail.94:
 
 def add_eintr_probe(ir_path: Path) -> None:
     source = ir_path.read_text()
-    main = re.compile(r"^define i32 @main\(i32 %argc, ptr %argv, ptr %envp\) \{\n.*?^\}\n", re.MULTILINE | re.DOTALL)
-    replacement = '''define i32 @main(i32 %argc, ptr %argv, ptr %envp) {
-entry:
-  call void @nl_core_init(i32 %argc, ptr %argv, ptr %envp)
-  call void @nl_set_test_mode()
-  call void @nl_core_nl_test_configure_write_fault(i64 1, i32 2, i64 4)
+    replacement = '''  call void @nl_set_test_mode(ptr %nl.ctx)
+  call void @nl_core_nl_test_configure_write_fault(ptr %nl.ctx, i64 1, i32 2, i64 4)
   %bytes = getelementptr [3 x i8], ptr @.nl.output.probe, i64 0, i64 0
-  %queued = call i1 @nl_core_nl_core_output_write(i32 1, ptr %bytes, i64 3)
-  %flushed = call i1 @nl_core_nl_core_flush_all()
+  %queued = call i1 @nl_core_nl_core_output_write(ptr %nl.ctx, i32 1, ptr %bytes, i64 3)
+  %flushed = call i1 @nl_core_nl_core_flush_all(ptr %nl.ctx)
   %ok = and i1 %queued, %flushed
   br i1 %ok, label %pass, label %fail
 pass:
-  ret i32 0
+  br label %nl.probe.done
 fail:
   ret i32 98
-}
+nl.probe.done:
 '''
-    result, count = main.subn(replacement, source, count=1)
-    if count != 1:
-        raise RuntimeError("could not locate main for the EINTR probe")
+    result = replace_main_call(source, replacement, "EINTR")
     result = result.replace(
         'source_filename = "next-lang"\n',
         'source_filename = "next-lang"\n@.nl.output.probe = private unnamed_addr constant [3 x i8] c"xyz", align 1\n',
@@ -200,24 +200,20 @@ fail:
 
 def add_shared_terminal_probe(ir_path: Path) -> None:
     source = ir_path.read_text()
-    main = re.compile(r"^define i32 @main\(i32 %argc, ptr %argv, ptr %envp\) \{\n.*?^\}\n", re.MULTILINE | re.DOTALL)
-    replacement = '''define i32 @main(i32 %argc, ptr %argv, ptr %envp) {
-entry:
-  call void @nl_core_init(i32 %argc, ptr %argv, ptr %envp)
+    replacement = '''
   %out = getelementptr [1 x i8], ptr @.nl.output.out, i64 0, i64 0
   %err = getelementptr [1 x i8], ptr @.nl.output.err, i64 0, i64 0
-  %out_ok = call i1 @nl_core_nl_core_output_write(i32 1, ptr %out, i64 1)
-  %err_ok = call i1 @nl_core_nl_core_output_write(i32 2, ptr %err, i64 1)
-  %flush_ok = call i1 @nl_core_nl_core_flush_all()
+  %out_ok = call i1 @nl_core_nl_core_output_write(ptr %nl.ctx, i32 1, ptr %out, i64 1)
+  %err_ok = call i1 @nl_core_nl_core_output_write(ptr %nl.ctx, i32 2, ptr %err, i64 1)
+  %flush_ok = call i1 @nl_core_nl_core_flush_all(ptr %nl.ctx)
   %both = and i1 %out_ok, %err_ok
   %ok = and i1 %both, %flush_ok
-  %status = select i1 %ok, i32 0, i32 95
-  ret i32 %status
-}
+  br i1 %ok, label %nl.probe.done, label %nl.probe.fail
+nl.probe.fail:
+  ret i32 95
+nl.probe.done:
 '''
-    result, count = main.subn(replacement, source, count=1)
-    if count != 1:
-        raise RuntimeError("could not locate main for the shared-terminal probe")
+    result = replace_main_call(source, replacement, "shared-terminal")
     result = result.replace(
         'source_filename = "next-lang"\n',
         'source_filename = "next-lang"\n@.nl.output.out = private unnamed_addr constant [1 x i8] c"A", align 1\n@.nl.output.err = private unnamed_addr constant [1 x i8] c"B", align 1\n',
@@ -319,21 +315,14 @@ def main() -> int:
                 f"terminal ordering mismatch: shared={same_terminal!r}, separate={separate_terminals!r}"
             )
 
-        for runtime in ("core", "c"):
-            output_rel = output_package.relative_to(ROOT).as_posix()
-            _, program = build(output_rel, "output", runtime)
-            assert_failure(program)
-            test_rel = test_package.relative_to(ROOT).as_posix()
-            _, test_program = build(test_rel, "test", runtime, test=True)
-            assert_failure(test_program, test_mode=True)
+        output_rel = output_package.relative_to(ROOT).as_posix()
+        _, program = build(output_rel, "output", "core")
+        assert_failure(program)
+        test_rel = test_package.relative_to(ROOT).as_posix()
+        _, test_program = build(test_rel, "test", "core", test=True)
+        assert_failure(test_program, test_mode=True)
 
-        pty_bytes = {}
-        for runtime in ("core", "c"):
-            output_rel = output_package.relative_to(ROOT).as_posix()
-            _, program = build(output_rel, "output", runtime)
-            pty_bytes[runtime] = assert_line_buffered(program)
-        if pty_bytes["core"] != pty_bytes["c"]:
-            raise RuntimeError("pseudo-terminal bytes differ between core and C runtime")
+        assert_line_buffered(program)
         print("core output checks passed: partial writes, EINTR retries, pipes, /dev/full, line buffering, shared and separate terminals")
     return 0
 

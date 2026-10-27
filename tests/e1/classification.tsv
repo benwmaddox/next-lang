@@ -142,8 +142,6 @@ diagnose	tests/e2/enum_recursive
 diagnose	tests/e2/enum_recursive_mutual
 diagnose	tests/e2/enum_registration_order
 build	tests/e2/enum_size_exact
-unsupported	tests/e2/enum_size_over
-unsupported	tests/e2/enum_size_padding
 diagnose	tests/e2/enum_unknown_payload
 unsupported	tests/e2/frame_budget_chain
 build	tests/e2/frame_budget_exact
@@ -173,10 +171,7 @@ rejects	tests/e2/reference_unit_erasure
 diagnose	tests/e2/reference_unit_field
 diagnose	tests/e2/result_coalesce_int
 diagnose	tests/e2/size_direct_cycle
-unsupported	tests/e2/size_doubling_chain
 diagnose	tests/e2/size_mutual_cycle
-unsupported	tests/e2/size_over
-unsupported	tests/e2/size_padding
 diagnose	tests/e2/size_unknown_with_large_part
 build	tests/e2/struct_equal_print
 build	tests/e2/struct_fields
@@ -618,3 +613,19 @@ unsupported	tests/test/noshadow_t24_byte_escape
 unsupported	tests/test/noshadow_t25_bytes
 unsupported	tests/test/noshadow_t32_number_format
 # noshadow end
+
+# E3a begin
+# E3a1 regions and merged large-sum support
+build	tests/e3/a1_core_probes
+build	tests/e3/a1_large_region
+build	tests/e3/a1_loop_region
+build	tests/e3/a1_two_phase
+build	tests/e3/a1_nested_region
+build	tests/e2/size_doubling_chain
+build	tests/e2/size_over
+build	tests/e2/size_padding
+build	tests/e2/enum_size_over
+build	tests/e2/enum_size_padding
+build	tests/e3/merge_regions
+build	tests/e3/merge_native_budget
+# E3a end

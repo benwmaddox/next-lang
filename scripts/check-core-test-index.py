@@ -11,7 +11,9 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-NLC = Path.home() / ".cache/next-lang/target/debug/nlc"
+# E3a1 begin: use the worktree's isolated stage-zero build when configured.
+NLC = Path(os.environ.get("CARGO_TARGET_DIR", str(Path.home() / ".cache/next-lang/target-e3a"))) / "debug" / "nlc"
+# E3a1 end
 VALUES = [
     ("0", True),
     (" 0", True),
@@ -58,7 +60,8 @@ def main() -> int:
             'fn main() { print(67890) }\n'
             'test "selection marker" { print(12345); expect true }\n'
         )
-        for runtime in ("c", "core"):
+        # E3a1 begin: the context-passing hook ABI is core-only.
+        for runtime in ("core",):
             ir = work / f"{runtime}.ll"
             executable = work / runtime
             rel_ir = ir.relative_to(ROOT).as_posix()
@@ -97,7 +100,8 @@ def main() -> int:
                         f"{runtime} NLC_TEST_INDEX={value!r}: status={result.returncode}, "
                         f"stdout={result.stdout!r}, stderr={result.stderr!r}, expected={expected!r}"
                     )
-        print("NLC_TEST_INDEX C/core selection matched for whitespace, sign, -0, invalid suffix, and overflow cases")
+        # E3a1 end
+        print("NLC_TEST_INDEX core selection matched for whitespace, sign, -0, invalid suffix, and overflow cases")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return 0

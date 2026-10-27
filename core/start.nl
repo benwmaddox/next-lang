@@ -27,26 +27,39 @@ fn count_entries(values: sys.Addr) -> long {
     0L
 }
 
-fn nl_register_file(file_id: int, name: sys.Addr) {
-    if file_id >= 0 && file_id < 1024 {
-        sys.store_addr(sys.state(), state_file_table() + (long)file_id * 8L, name)
+// E3a1 begin: file names and lengths arrive as a static descriptor table.
+fn nl_register_files(first_file_id: int, table: sys.Addr, file_count: int) {
+    let state = sys.state()
+    for index in 0L..(long)file_count {
+        let file_id = (long)first_file_id + index
+        if file_id >= 0L && file_id < 1024L {
+            let table_offset = index * 16L
+            let name = sys.load_addr(table, table_offset)
+            let name_length = sys.load64(table, table_offset + 8L)
+            let state_offset = state_file_table() + file_id * 16L
+            sys.store_addr(state, state_offset, name)
+            sys.store64(state, state_offset + 8L, name_length)
+        }
     }
 }
+// E3a1 end
 
+// E3a1 begin: startup carries auxv directly into context creation.
 fn nl_core_start(initial: sys.Addr) -> never {
     let argc = sys.load64(initial, 0L)
     let argv = sys.offset(initial, 8L)
     let envp = sys.offset(argv, (argc + 1L) * 8L)
     let auxv = sys.offset(envp, (count_entries(envp) + 1L) * 8L)
-    sys.store_addr(sys.state(), state_auxv(), auxv)
-    let status = sys.call_main((int)argc, argv, envp)
+    let status = sys.call_main((int)argc, argv, envp, auxv)
     sys.exit_group(status)
 }
+// E3a1 end
 
-fn nl_core_init(argc: int, argv: sys.Addr, envp: sys.Addr) {
+// E3a1 begin: process initialization receives the job context and test hooks.
+fn nl_core_init(argc: int, argv: sys.Addr, envp: sys.Addr, auxv: sys.Addr) {
     let state = sys.state()
     sys.store_addr(state, state_envp(), envp)
-    let auxv = sys.load_addr(state, state_auxv())
+    sys.store_addr(state, state_auxv(), auxv)
     sys.store64(state, state_page_size(), auxiliary_value(auxv, 6L))
     sys.store32(state, state_print_fd(), 1)
     sys.store32(state, state_test_mode(), 0)
@@ -66,6 +79,7 @@ fn nl_core_init(argc: int, argv: sys.Addr, envp: sys.Addr) {
         sys.exit_group(1)
     }
 }
+// E3a1 end
 
 fn find_environment(key: sys.Addr, key_length: long) -> sys.Addr {
     let envp = sys.load_addr(sys.state(), state_envp())

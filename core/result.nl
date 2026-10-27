@@ -53,3 +53,21 @@ fn close(fd: int) -> Result<long, Errno> {
     if sys.is_error(raw) { return err(result_errno(raw)) }
     ok(raw)
 }
+
+fn remap(address: sys.Addr, old_length: long, new_length: long, flags: int, new_address: sys.Addr) -> Result<long, Errno> {
+    let raw = sys.remap(address, old_length, new_length, flags, new_address)
+    if sys.is_error(raw) { return err(result_errno(raw)) }
+    ok(raw)
+}
+
+fn unmap(address: sys.Addr, length: long) -> Result<long, Errno> {
+    let raw = sys.unmap(address, length)
+    if sys.is_error(raw) { return err(result_errno(raw)) }
+    ok(raw)
+}
+
+fn clock_gettime(clock: int, output: sys.Addr) -> Result<long, Errno> {
+    let raw = sys.clock_gettime(clock, output)
+    if sys.is_error(raw) { return err(result_errno(raw)) }
+    ok(raw)
+}

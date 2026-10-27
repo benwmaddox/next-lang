@@ -47,11 +47,15 @@ def main() -> int:
     env["NLC_FRONTEND"] = "rust"
     env.setdefault("CARGO_TARGET_DIR", str(Path.home() / ".cache/next-lang/target"))
 
+    # E3a1 begin: include its directed fixtures and retire the C comparison leg.
+    long_tests = os.environ.get("NLC_LONG_TESTS") == "1"
+    levels = (1, 3) if long_tests else (1,)
+    runtimes = ("core",)
     table = root / "tests/e1/classification.tsv"
     classifications = read_classifications(table, root)
     discovered = {
         path.relative_to(root).as_posix()
-        for base in (root / "tests/run", root / "tests/test", root / "tests/e1", root / "tests/e2")
+        for base in (root / "tests/run", root / "tests/test", root / "tests/e1", root / "tests/e2", root / "tests/e3")
         for path in base.iterdir()
         if path.is_dir()
     }
@@ -60,6 +64,7 @@ def main() -> int:
         extra = sorted(set(classifications) - discovered)
         print(f"classification table does not match package directories; missing={missing}, extra={extra}", file=sys.stderr)
         return 1
+    # E3a1 end
 
     work = Path(tempfile.mkdtemp(prefix=".selfhost-build-compare-", dir=root))
     try:
@@ -92,9 +97,6 @@ def main() -> int:
             + "; sub-quadratic growth check passed"
         )
 
-        long_tests = os.environ.get("NLC_LONG_TESTS") == "1"
-        levels = (1, 3) if long_tests else (1,)
-        runtimes = ("core", "c") if long_tests else ("core",)
         counts = {
             level: {kind: 0 for kind in ("build", "diagnose", "rejects", "unsupported", "mismatches")}
             for level in levels

@@ -20,7 +20,7 @@ fn raw_fallible_system_calls_stay_inside_result_wrappers() {
     sources.sort();
 
     let raw_calls = [
-        ("write", "write", "nl_core_sys_write"),
+        ("write", "write", "nl_core_sys_write,startup_write_all"),
         ("map", "map", ""),
         ("protect", "protect", ""),
         ("ioctl", "ioctl", ""),
@@ -28,10 +28,14 @@ fn raw_fallible_system_calls_stay_inside_result_wrappers() {
         ("sigaction", "sigaction", ""),
         ("openat", "openat", ""),
         ("close", "close", ""),
+        ("remap", "remap", ""),
+        ("unmap", "unmap", ""),
+        ("clock_gettime", "clock_gettime", ""),
     ];
     let mut wrapper_calls = vec![0usize; raw_calls.len()];
     let mut wrapper_checks = vec![0usize; raw_calls.len()];
     let mut raw_injected_writes = 0usize;
+    let mut startup_raw_error_checks = 0usize;
 
     for path in &sources {
         let source = fs::read_to_string(path).expect("read core source");
@@ -55,6 +59,8 @@ fn raw_fallible_system_calls_stay_inside_result_wrappers() {
                     .find(|(_, (_, wrapper, _))| *wrapper == function)
                 {
                     wrapper_checks[index] += 1;
+                } else if function == "startup_write_all" {
+                    startup_raw_error_checks += 1;
                 } else {
                     panic!(
                         "sys.is_error appears outside a Result wrapper in {} ({function})",
@@ -67,7 +73,11 @@ fn raw_fallible_system_calls_stay_inside_result_wrappers() {
                 if !code.contains(&format!("sys.{call}(")) {
                     continue;
                 }
-                if !raw_exception.is_empty() && function == *raw_exception {
+                if !raw_exception.is_empty()
+                    && raw_exception
+                        .split(',')
+                        .any(|exception| function == exception)
+                {
                     raw_injected_writes += 1;
                 } else if function == *wrapper {
                     wrapper_calls[index] += 1;
@@ -86,7 +96,7 @@ fn raw_fallible_system_calls_stay_inside_result_wrappers() {
             };
             if !raw_exception.is_empty() {
                 assert!(
-                    body.contains(&format!("{raw_exception}(")),
+                    body.contains("nl_core_sys_write("),
                     "write wrapper must preserve test-mode fault injection"
                 );
             } else {
@@ -103,8 +113,12 @@ fn raw_fallible_system_calls_stay_inside_result_wrappers() {
     }
 
     assert!(
-        raw_injected_writes > 0,
-        "the write fault injector must retain the raw syscall backend"
+        raw_injected_writes >= 2,
+        "the write fault injector and pre-context startup writer must retain raw syscall backends"
+    );
+    assert!(
+        startup_raw_error_checks > 0,
+        "the pre-context startup writer must inspect raw write errors"
     );
     for (index, (call, _, _)) in raw_calls.iter().enumerate() {
         assert_eq!(
