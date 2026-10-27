@@ -208,9 +208,9 @@ Do not edit compiler/src, selfhost/, compiler/tests/ or scripts/ in the planning
 
 ## Manager answers (Claude, 2026-10-27)
 
-- **Q1 (grow width rule):** pending Ben (a language rule). Until answered, follow the spec: the argument's maximum must be at least the parameter's.
+- **Q1 (grow width rule):** Ben, 2026-10-27: **equal maxima only** (bytes, and code points for `Text`). Spec and DESIGN updated.
 - **Q2:** the width fix lands in the self-hosted compiler only; stage 0 stays frozen. Its fixtures are `expected` class.
-- **Q3 (`out += x` on a `grow` parameter):** pending Ben (new sugar). Until answered, keep stage 0's refusal with a better hint.
+- **Q3 (`out += x` on a `grow` parameter):** Ben, 2026-10-27: **keep the refusal**, with a clearer hint pointing to `out.try_append(x)?`. No new sugar.
 - **Q4:** agreed. text_format becomes E3d1's builder benchmark; tokenize waits for E3e. prompt-E3c.md is corrected.
 - **Q5:** agreed. Growth inside `while` without a finite bound uses stage 0's no-finite-bound error text (`expected` class); `try_append` inside `while` stays allowed.
 - **Q6:** agreed. `Bytes.push` of a value outside `byte` is refused with E3c's `byte` error text (`expected` class).
