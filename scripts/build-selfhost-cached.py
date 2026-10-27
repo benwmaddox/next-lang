@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build or reuse stage 0, keyed by selfhost/core sources and the reference nlc.
+"""Build or reuse stage 0, keyed by selfhost/core sources and stage-0 sources.
 
 The cache lives in CARGO_TARGET_DIR and is shared by the build, lexer/parser,
 and relocation checks. A test-only edit therefore leaves the compiler build
@@ -36,9 +36,18 @@ def cache_key(root: Path, reference: Path) -> str:
             digest.update(relative)
             digest.update(len(content).to_bytes(8, "little"))
             digest.update(content)
-    compiler = reference.read_bytes()
-    digest.update(b"reference-nlc\0")
-    digest.update(hashlib.sha256(compiler).digest())
+    # Stage 0 is identified by its sources (rustc's version is added below),
+    # not by the nlc binary, which embeds its checkout path and so differs for
+    # every pre-commit snapshot.
+    digest.update(b"reference-nlc-sources\0")
+    stage0_files = [root / "Cargo.lock", root / "compiler/Cargo.toml", root / "compiler/build.rs"]
+    stage0_files += sorted(path for path in (root / "compiler/src").rglob("*") if path.is_file())
+    for path in stage0_files:
+        if path.is_file():
+            relative = path.relative_to(root).as_posix().encode()
+            content = path.read_bytes()
+            digest.update(len(relative).to_bytes(8, "little") + relative)
+            digest.update(len(content).to_bytes(8, "little") + content)
     for name in ("NLC_STACK_MODE", "TARGET"):
         digest.update(name.encode() + b"\0" + os.environ.get(name, "").encode() + b"\0")
     for tool in ("clang", "rustc"):

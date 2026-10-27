@@ -4,6 +4,9 @@ use std::process::Command;
 
 #[test]
 fn every_run_fixture_matches_its_expected_result() {
+    if hybrid_frontend_check_is_on_demand() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler directory has a workspace root");
@@ -59,6 +62,9 @@ fn every_run_fixture_matches_its_expected_result() {
 
 #[test]
 fn every_test_fixture_matches_its_expected_result() {
+    if hybrid_frontend_check_is_on_demand() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler directory has a workspace root");
@@ -158,6 +164,9 @@ fn every_test_fixture_matches_its_expected_result() {
 
 #[test]
 fn build_command_writes_a_runnable_native_program() {
+    if hybrid_frontend_check_is_on_demand() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler directory has a workspace root");
@@ -214,4 +223,13 @@ fn replace_temp_paths(text: &str) -> String {
     }
     result.push_str(rest);
     result
+}
+
+// Under NLC_FRONTEND=selfhost these tests drive the hybrid frontend (the
+// self-hosted lexer and parser feeding the frozen stage-0 checker), which is
+// parse parity with stage 0. The build comparison covers the self-hosted
+// compiler end to end, so the hybrid runs are on demand (NLC_STAGE0_PARITY=1).
+fn hybrid_frontend_check_is_on_demand() -> bool {
+    std::env::var("NLC_FRONTEND").as_deref() == Ok("selfhost")
+        && std::env::var("NLC_STAGE0_PARITY").as_deref() != Ok("1")
 }

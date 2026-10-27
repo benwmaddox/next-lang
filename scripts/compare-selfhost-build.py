@@ -45,10 +45,39 @@ class Result:
     build_status: int | None = None
 
 
+def stage0_source_hash(root: Path) -> str:
+    digest = hashlib.sha256()
+    compiler = root / "compiler"
+    files = [root / "Cargo.lock", compiler / "Cargo.toml", compiler / "build.rs"]
+    files += sorted(path for path in (compiler / "src").rglob("*") if path.is_file())
+    for path in files:
+        if path.is_file():
+            relative = path.relative_to(root).as_posix().encode()
+            content = path.read_bytes()
+            digest.update(len(relative).to_bytes(8, "little") + relative)
+            digest.update(len(content).to_bytes(8, "little") + content)
+    rustc = subprocess.run(["rustc", "-vV"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    digest.update(rustc.stdout)
+    return digest.hexdigest()
+
+
+# Variables that only describe where the run happens (cargo's per-checkout
+# paths, the shell's working directory) are left out of the key, and the
+# checkout root is replaced by a placeholder in the rest.
+def keyed_environment(root: Path, env: dict[str, str]) -> list[tuple[str, str]]:
+    root_text = str(root)
+    return sorted(
+        (name, value.replace(root_text, "<root>"))
+        for name, value in env.items()
+        if not name.startswith(("CARGO", "RUST", "__CF"))
+        and name not in ("PWD", "OLDPWD", "_", "SHLVL", "OUT_DIR")
+    )
+
+
 class ReferenceResultCache:
     """Persistent cache of normalized stage-zero reference results."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self, root: Path, reference: Path, env: dict[str, str], disabled: bool):
         target = Path(env["CARGO_TARGET_DIR"])
@@ -56,7 +85,10 @@ class ReferenceResultCache:
             target = root / target
         self.directory = target.resolve() / "next-lang-reference-results"
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.reference_hash = hashlib.sha256(reference.read_bytes()).hexdigest()
+        # Stage 0 is identified by its sources and toolchain, not by the built
+        # binary: the binary embeds its checkout path, which differs for every
+        # pre-commit snapshot.
+        self.reference_hash = stage0_source_hash(root)
         clang = subprocess.run(
             ["clang", "--version"],
             stdout=subprocess.PIPE,
@@ -100,13 +132,13 @@ class ReferenceResultCache:
                 digest.update(b"file\0" + len(relative).to_bytes(8, "little") + relative)
                 digest.update(len(content).to_bytes(8, "little") + content)
 
+        environment = keyed_environment(root, env)
         environment_hash = hashlib.sha256(
-            json.dumps(sorted(env.items()), separators=(",", ":")).encode()
+            json.dumps(environment, separators=(",", ":")).encode()
         ).hexdigest()
         invocation_hash = hashlib.sha256(
             json.dumps(invocation, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-        environment = sorted(env.items())
         inputs = {
             "version": self.VERSION,
             "stage0_nlc_sha256": self.reference_hash,

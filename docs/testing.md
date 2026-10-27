@@ -1,26 +1,47 @@
 # Testing
 
+## Working loop (implementers)
+
+While working on a step, use the focused selectors below (`--only`, `--class`,
+`--changed`) on the packages you touch. Run the full selfhost suite
+(`NLC_FRONTEND=selfhost cargo test --offline --release -q --test '*'`) once at
+the end of the step, not after every change; the pre-commit hook runs it again
+on every commit. Run the Rust suite only if you change stage 0
+(`compiler/src/`), which is frozen. Stage-0 parity (`NLC_STAGE0_PARITY=1`)
+is for deliberate audits, not the everyday loop.
+
+## Suites
+
 Run the release suites with `NLC_FRONTEND=rust cargo test --offline --release`
-and `NLC_FRONTEND=selfhost cargo test --offline --release`. Set
-`CARGO_TARGET_DIR=$HOME/.cache/next-lang/target-s3` for this worktree. The
+and `NLC_FRONTEND=selfhost cargo test --offline --release`. The
 package comparison harnesses default to half the logical CPUs; set
 `NLC_TEST_JOBS` to choose another worker count.
 
 The regular selfhost suite checks every classified package against the
 selfhosted compiler at O1. It also runs the O1 relocation matrix, E2 reference
-audit, context-offset and interface checks, and the input-policy cases (which
-drive both frontends). The build comparison keeps checking the Rust reference
+audit, context-offset and interface checks, and the self-hosted side of the
+input-policy cases. The build comparison keeps checking the Rust reference
 result against each package's checked-in `expected.*` files and compares the
 selfhost result on every run. It also runs the IR-bound and enum-scaling
 checks. On a reference-cache hit, the Rust frontend does not rebuild and run
 the package; the Rust `nlc` linker/test runner still validates the newly
 generated selfhost IR. The Rust suite skips these selfhost-owned checks.
 
+Under `NLC_FRONTEND=selfhost`, `language` and `parse_dump` would drive the
+hybrid frontend (the self-hosted lexer and parser feeding the frozen stage-0
+checker), which is parse parity with stage 0; they run only with
+`NLC_STAGE0_PARITY=1`. The stage-0 side of the input-policy cases also runs
+only in that mode.
+
 Rust reference results are stored under
 `$CARGO_TARGET_DIR/next-lang-reference-results`. Each cache key hashes the
-stage-zero `nlc` binary, all package files, O1, the commands and stdin passed
-by the harness, the complete environment passed to the reference command
-(including the retained `NLC_*` values), and the clang version. Entries contain the normalized build status,
+stage-zero sources (`compiler/src/`, `compiler/Cargo.toml`, `Cargo.lock`) and
+the rustc version, all package files, the optimization level, the commands and
+stdin passed by the harness, the environment passed to the reference command
+(including the retained `NLC_*` values, with the checkout root replaced by a
+placeholder and cargo's path variables, `PWD` and `OLDPWD` left out), and the
+clang version. The key does not depend on the checkout path, so pre-commit
+snapshots reuse it. Entries contain the normalized build status,
 diagnostics, run status, stdout and stderr. Cache files are published
 atomically, so concurrent workers or suites can safely fill the same key. To
 discard the reference results, remove that directory; the separately cached
@@ -76,14 +97,17 @@ matrix runs with `NLC_LONG_TESTS=1`.
 
 The lexer/parser, build, and relocation harnesses share the cached stage-zero
 selfhost executable under `$CARGO_TARGET_DIR/next-lang-test-selfhost`. Its key
-includes the `selfhost/` and `core/` sources, reference `nlc` binary,
+includes the `selfhost/` and `core/` sources, the stage-0 sources,
 target/platform, `NLC_STACK_MODE`, and clang/rustc versions. Editing only test
 packages therefore does not rebuild the compiler. A mismatch report includes
 the first differing output diff; results are shown in package order regardless
 of worker completion order.
 
-The pre-commit hook snapshots the staged tree and always runs
-`NLC_FRONTEND=selfhost cargo test --offline --release -q`. It also runs the
-Rust suite when staged files touch `compiler/src/`, `compiler/Cargo.toml`, or
+The pre-commit hook snapshots the staged tree and always runs the selfhost
+integration tests (`NLC_FRONTEND=selfhost cargo test --offline --release -q
+--test '*'`; the library's unit tests cover frozen stage 0). It also runs the
+full Rust suite when staged files touch `compiler/src/`, `compiler/Cargo.toml`, or
 `compiler/build.rs`. The one-hour timeout, 8 GB virtual-memory limit, and skip
-for docs-, benchmark-, and hook-only commits remain in effect.
+for docs-, benchmark-, and hook-only commits remain in effect. Commits take
+turns through `$HOME/.cache/next-lang/precommit.lock`, because the main
+checkout and worktrees share the hook's build directory.

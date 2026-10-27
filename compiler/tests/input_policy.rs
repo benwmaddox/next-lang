@@ -50,6 +50,16 @@ fn run_input_policy_once() -> bool {
     std::env::var("NLC_FRONTEND").as_deref() == Ok("selfhost")
 }
 
+// Stage 0 is frozen, so its side of each boundary is checked only on demand
+// (NLC_STAGE0_PARITY=1); regular runs check the self-hosted frontend.
+fn policy_frontends() -> &'static [&'static str] {
+    if std::env::var("NLC_STAGE0_PARITY").as_deref() == Ok("1") {
+        &["rust", "selfhost"]
+    } else {
+        &["selfhost"]
+    }
+}
+
 fn get_default_commands() -> &'static [&'static str] {
     &["parse", "build"]
 }
@@ -206,7 +216,7 @@ fn input_policy_file_count() {
     } else {
         get_default_commands()
     };
-    let frontends = &["rust", "selfhost"];
+    let frontends = policy_frontends();
     let limit_msg = "source file limit of 256 per package exceeded";
 
     // N: one checked source and 255 empty files
@@ -250,7 +260,7 @@ fn input_policy_per_file_bytes() {
     } else {
         get_default_commands()
     };
-    let frontends = &["rust", "selfhost"];
+    let frontends = policy_frontends();
     let limit_msg = "source byte limit of 16777216 per file exceeded";
 
     // N: exact file limit
@@ -291,7 +301,7 @@ fn input_policy_package_bytes() {
     } else {
         get_default_commands()
     };
-    let frontends = &["rust", "selfhost"];
+    let frontends = policy_frontends();
     let limit_msg = "source byte limit of 67108864 per package exceeded";
 
     // N: four files totaling exactly the limit
@@ -336,7 +346,7 @@ fn input_policy_per_file_tokens() {
     } else {
         get_default_commands()
     };
-    let frontends = &["rust", "selfhost"];
+    let frontends = policy_frontends();
     let limit_msg = "token limit of 1000000 per file exceeded";
 
     // N: exactly one million tokens
@@ -375,7 +385,7 @@ fn input_policy_package_tokens() {
     } else {
         get_default_commands()
     };
-    let frontends = &["rust", "selfhost"];
+    let frontends = policy_frontends();
     let limit_msg = "token limit of 4000000 per package exceeded";
 
     // N: four files at one million tokens each
@@ -416,7 +426,7 @@ fn input_policy_nodes() {
     } else {
         get_default_commands()
     };
-    let frontends = &["rust", "selfhost"];
+    let frontends = policy_frontends();
     let limit_msg = "node limit of 2000000 per package exceeded";
 
     // N: three files with statements that hit the node limit
@@ -453,7 +463,7 @@ fn input_policy_work() {
     } else {
         get_default_commands()
     };
-    let frontends = &["rust", "selfhost"];
+    let frontends = policy_frontends();
     let limit_msg = "parse work limit of 72000000 units per package exceeded";
 
     // N: Construct a valid package hitting the work bound exactly.
@@ -534,7 +544,7 @@ fn input_policy_nesting() {
     } else {
         get_default_commands()
     };
-    let frontends = &["rust", "selfhost"];
+    let frontends = policy_frontends();
     let limit_msg = "expression nesting limit of 1000 exceeded";
 
     // N: nesting at exactly 1000
@@ -570,7 +580,7 @@ fn input_policy_invalid_utf8() {
     let nlc = env!("CARGO_BIN_EXE_nlc");
     let scratch = Scratch::new();
     let all_commands = get_all_commands();
-    let frontends = &["rust", "selfhost"];
+    let frontends = policy_frontends();
     let package = scratch.package();
 
     write_package(&package, vec![("main.nl", b"fn main() {}\n\xff".to_vec())]);

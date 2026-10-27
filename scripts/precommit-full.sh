@@ -19,6 +19,15 @@ if [[ -z "$changed" ]] || ! grep -qvE '^docs/|^bench/|\.md$|^scripts/(precommit-
     exit 0
 fi
 
+# Concurrent commits (main checkout and worktrees) share one build directory;
+# take turns so one suite never runs a binary built for another snapshot.
+mkdir -p "$HOME/.cache/next-lang"
+exec 9>"$HOME/.cache/next-lang/precommit.lock"
+if ! flock -n 9; then
+    echo "pre-commit: waiting for another commit's suites to finish ..."
+    flock 9
+fi
+
 snapshot="$(mktemp -d /tmp/next-lang-precommit.XXXXXX)"
 trap 'rm -rf -- "$snapshot"' EXIT
 git checkout-index -a -f --prefix="$snapshot/"
@@ -37,7 +46,9 @@ ulimit -v 8000000
 export CARGO_TARGET_DIR="$HOME/.cache/next-lang/target-precommit"
 start=$(date +%s)
 status=0
-suite_command='NLC_FRONTEND=selfhost cargo test --offline --release -q'
+# Integration tests only: the library's unit tests cover frozen stage 0 and run
+# with the Rust suite when compiler sources change.
+suite_command="NLC_FRONTEND=selfhost cargo test --offline --release -q --test '*'"
 if (( run_rust )); then
     suite_command+=' && NLC_FRONTEND=rust cargo test --offline --release -q'
 fi
