@@ -4,13 +4,13 @@ Oct 23, 2026 · Ben Maddox. Working copy, refined with Codex; reviews and replie
 
 ## Goals and non-goals
 
-One language that is hard to get wrong, quick to work in, and within about 10% of C on CPU and memory, for servers, games and tools (weighted equally). Each goal has a test, not an adjective:
+One language that is hard to get wrong, quick to work in, and within about 10% of C on CPU and memory, first for servers (web apps and APIs) and tools (CLIs), then games once that foundation is solid (Ben, 2026-10-27: games will come, foundation first). Each goal has a test, not an adjective:
 
 - **Correct:** the compiler enforces a stated set of properties (no null, no data races, no dangling ids, exhaustive matches, refinements, effects), and the language's own tests catch most of the rest. Measured by seeded slips caught at build time, scenarios passing, and fast-versus-reference checks. No language catches every wrong program; this one aims to catch the common ones before production.
 - **Easy:** a small edit to a small or medium program is running again within about 3 s (an aspiration, not a promise for every program), a release builds in under 30 s, and every error names the fix. Measured by edit-to-running time and the mutation harness's "did you mean" rate.
 - **Efficient:** no garbage collector, no allocation in steady state, compute at 0.9x of C or better, servers within 1.2x of the optimized Rust port's memory. Measured on DEFLATE, a Campfire-class server, a game simulation and a parallel tool (see Validation).
 
-**Where it fits** (Ben, 2026-10-27): a concise language for work where stack and arena allocation pay off: web apps and APIs, CLIs and tools, and other request-shaped programs that create many short-lived values and free them together, with long-lived state kept as bounded trees (a game's world, a server's live data). Programs whose core is a large, long-lived, constantly rewired graph of objects (a GUI object tree, an in-memory graph database, a general-purpose garbage-collected heap) are not the target; they can be written with pools and typed ids, but other languages suit them better.
+**Where it fits** (Ben, 2026-10-27): a concise language for work where stack and arena allocation pay off: web apps and APIs, CLIs and tools, and other request-shaped programs that create many short-lived values and free them together, with long-lived state kept as bounded trees (a server's live data, and later a game's world). Programs whose core is a large, long-lived, constantly rewired graph of objects (a GUI object tree, an in-memory graph database, a general-purpose garbage-collected heap) are not the target; they can be written with pools and typed ids, but other languages suit them better.
 
 Non-goals for the first version:
 
