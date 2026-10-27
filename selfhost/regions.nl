@@ -24,6 +24,18 @@ fn next_location_serial(ir: grow Bytes max IR_BUFFER_CAPACITY) -> long {
     ir.count()
 }
 
+// Keep language values disjoint from the stable context header in LLVM's
+// alias model. Call this only for typed stores emitted through user-language
+// locations; raw sys accesses and context maintenance stay unclassified.
+fn emit_program_storage_tbaa(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
+    if !compiler.core_mode { ir_write_ascii(compiler, ir, ", !tbaa !9003") }
+}
+
+fn emit_storage_tbaa_metadata(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
+    ir_write_ascii(compiler, ir,
+        "\n!9000 = !{!\"next-lang context and program storage\"}\n!9001 = !{!\"context base\", !9000}\n!9002 = !{!9001, !9001, i64 0}\n!9004 = !{!\"program storage\", !9000}\n!9003 = !{!9004, !9004, i64 0}\n")
+}
+
 fn compiler_file_id_base(compiler: CompilerTables) -> long {
     if !compiler.core_mode { 0L }
     else if compiler.file_id_base >= COMPILER_TEST_BUILD_FLAG { compiler.file_id_base - COMPILER_TEST_BUILD_FLAG }
@@ -52,6 +64,16 @@ fn region_node_has_binding(compiler: CompilerTables, node: long) -> bool {
     false
 }
 
+fn region_subtree_has_effect(tables: ParseTables, first_node: long, root: long) -> bool {
+    let first = first_node - tables.nodes[first_node].subtree + 1L
+    for candidate in first..root + 1L {
+        let kind = tables.nodes[candidate].kind
+        if kind == NodeKind.Assign || kind == NodeKind.Call || kind == NodeKind.MethodCall ||
+            kind == NodeKind.OptionalCall || kind == NodeKind.Try { return true }
+    }
+    false
+}
+
 fn region_node_is_collection_method_receiver(
     tables: ParseTables,
     compiler: CompilerTables,
@@ -62,8 +84,27 @@ fn region_node_is_collection_method_receiver(
     let kind = type_kind(compiler, compiler.facts[node].ty)
     if kind != TYPE_KIND_ARRAY && kind != TYPE_KIND_LIST { return false }
     for parent in 0L..tables.nodes.count() {
-        if compiler.child_first[parent] == node && tables.nodes[parent].kind == NodeKind.MethodCall {
-            return true
+        if compiler.child_first[parent] == node {
+            if tables.nodes[parent].kind == NodeKind.MethodCall {
+                if syntax_kind == NodeKind.Index {
+                    // Method arguments run after the receiver has been read.
+                    // Preserve its region snapshot if an argument can mutate
+                    // the value before the method consumes it.
+                    let mutator = compiler.child_next[node]
+                    if mutator >= 0L && region_subtree_has_effect(tables, mutator, parent) { return false }
+                }
+                return true
+            }
+            if tables.nodes[parent].kind == NodeKind.Index {
+                let index = compiler.child_next[node]
+                if index < 0L { return false }
+                // Evaluating an effectful index can mutate the collection
+                // after the receiver's evaluation point. Keep the planned
+                // snapshot storage in that case; only borrow the receiver
+                // when its value remains stable through index evaluation.
+                if region_subtree_has_effect(tables, index, index) { return false }
+                return true
+            }
         }
     }
     false
@@ -325,11 +366,14 @@ fn emit_region_scope_enter(
     let function_id = region_function_for_block(tables, compiler, block)
     let body = region_body_for_block(tables, compiler, block)
     if function_id == -9223372036854775807L || body < 0L { compiler.ir_overflow = true; return }
+    let end_offset = region_scope_end_offset(tables, compiler, body, function_id, block)
+    // A block with no live values has no stack effect. Its per-iteration
+    // scope bookkeeping would only reload and republish an unchanged top.
+    if end_offset < 0L { return }
     ir_write_ascii(compiler, ir, "  %nl.scope.saved."); ir_write_number(compiler, ir, block)
     ir_write_ascii(compiler, ir, " = load i64, ptr %nl.top.current.slot, align 8\n  store i64 %nl.scope.saved.")
     ir_write_number(compiler, ir, block); ir_write_ascii(compiler, ir, ", ptr %nl.scope.top.")
     ir_write_number(compiler, ir, block); ir_push_byte(compiler, ir, 10)
-    let end_offset = region_scope_end_offset(tables, compiler, body, function_id, block)
     if end_offset >= 0L {
         let position = position_for_offset(file_id, files[file_id].base + tables.nodes[block].anchor, compiler)
         let core_file_id = file_id + compiler_file_id_base(compiler)
@@ -398,8 +442,7 @@ fn emit_region_scope_enter(
         ir_write_ascii(compiler, ir, ", i64 %nl.scope.end."); ir_write_number(compiler, ir, block)
         ir_write_ascii(compiler, ir, ", i64 %nl.scope.saved."); ir_write_number(compiler, ir, block)
         ir_write_ascii(compiler, ir, "\n  store i64 %nl.scope.target."); ir_write_number(compiler, ir, block)
-        ir_write_ascii(compiler, ir, ", ptr %nl.top.current.slot, align 8\n  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.target.")
-        ir_write_number(compiler, ir, block); ir_write_ascii(compiler, ir, ")\n  call void @nl_context_note_peak(ptr %nl.ctx, i64 %nl.scope.target.")
+        ir_write_ascii(compiler, ir, ", ptr %nl.top.current.slot, align 8\n  call void @nl_context_note_peak(ptr %nl.ctx, i64 %nl.scope.target.")
         ir_write_number(compiler, ir, block); ir_write_ascii(compiler, ir, ")\n")
     }
     let first = body - tables.nodes[body].subtree + 1L
@@ -416,10 +459,14 @@ fn emit_region_scope_enter(
     }
 }
 
-fn emit_region_scope_exit(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, block: long) {
+fn emit_region_scope_exit(tables: ParseTables, compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, block: long) {
     if compiler.core_mode || compiler.expected[0L] <= 0L { return }
+    let function_id = region_function_for_block(tables, compiler, block)
+    let body = region_body_for_block(tables, compiler, block)
+    if function_id == -9223372036854775807L || body < 0L { compiler.ir_overflow = true; return }
+    if region_scope_end_offset(tables, compiler, body, function_id, block) < 0L { return }
     let serial = next_location_serial(ir)
-    ir_write_ascii(compiler, ir, "  %nl.scope.restore."); ir_write_number(compiler, ir, block); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = load i64, ptr %nl.scope.top."); ir_write_number(compiler, ir, block); ir_write_ascii(compiler, ir, ", align 8\n  store i64 %nl.scope.restore."); ir_write_number(compiler, ir, block); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %nl.top.current.slot, align 8\n  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore."); ir_write_number(compiler, ir, block); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ")\n")
+    ir_write_ascii(compiler, ir, "  %nl.scope.restore."); ir_write_number(compiler, ir, block); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = load i64, ptr %nl.scope.top."); ir_write_number(compiler, ir, block); ir_write_ascii(compiler, ir, ", align 8\n  store i64 %nl.scope.restore."); ir_write_number(compiler, ir, block); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %nl.top.current.slot, align 8\n")
 }
 
 fn emit_current_top_load(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, node: long) {

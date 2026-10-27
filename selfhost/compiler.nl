@@ -6821,7 +6821,9 @@ fn lower_scope_exit(
     // Restore the incoming top on function exits. Loop resets are emitted at
     // branch sites, which know the loop body's region scope.
     if !compiler.core_mode && (exit_kind == EXIT_RETURN || exit_kind == EXIT_RETURN_VALUE || exit_kind == EXIT_TEST_SUCCESS || exit_kind == EXIT_TEST_FAILURE || exit_kind == EXIT_FALLTHROUGH) {
-        ir_write_ascii(compiler, ir, "  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.top)\n")
+        if compiler.expected[0L] > 0L {
+            ir_write_ascii(compiler, ir, "  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.top)\n")
+        }
     } else { () }
     // E3a1 end
     if exit_kind == EXIT_RETURN { ir_write_ascii(compiler, ir, "  ret void\n") }
@@ -7322,10 +7324,12 @@ fn emit_store_scalar(
     value_node: long,
 ) {
     if ty == TY_BOOL {
-        ir_write_ascii(compiler, ir, "  %bool.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, " to i8\n  store i8 %bool.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+        ir_write_ascii(compiler, ir, "  %bool.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, " to i8\n  store i8 %bool.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1")
     } else {
-        ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+        ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1")
     }
+    emit_program_storage_tbaa(compiler, ir)
+    ir_push_byte(compiler, ir, 10)
 }
 
 // Recompute a place pointer after evaluating the assignment value. A call on
@@ -7402,10 +7406,12 @@ fn emit_store_scalar_to_place(
 ) {
     let address_id = emit_late_place_address(tables, compiler, ir, node)
     if ty == TY_BOOL {
-        ir_write_ascii(compiler, ir, "  %late.bool.store."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, " to i8\n  store i8 %late.bool.store."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", align 1\n")
+        ir_write_ascii(compiler, ir, "  %late.bool.store."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, " to i8\n  store i8 %late.bool.store."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", align 1")
     } else {
-        ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", align 1\n")
+        ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", align 1")
     }
+    emit_program_storage_tbaa(compiler, ir)
+    ir_push_byte(compiler, ir, 10)
 }
 
 fn emit_load_scalar(
@@ -7628,8 +7634,10 @@ fn emit_compound_assignment(
         emit_runtime_failure(files, tables, compiler, ir, node, file_index, failure_kind)
         let address_id = if place_target { emit_late_place_address(tables, compiler, ir, target) } else { -1L }
         ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " %asgn.value."); ir_write_number(compiler, ir, node)
-        if place_target { ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", align 1\n") }
-        else { ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
+        if place_target { ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", align 1") }
+        else { ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1") }
+        emit_program_storage_tbaa(compiler, ir)
+        ir_push_byte(compiler, ir, 10)
     } else {
         if op == 4L || op == 5L { emit_checked_division(files, tables, compiler, ir, node, file_index, target, value, ty, op == 5L) }
         else if op == 6L || op == 7L { emit_checked_shift(files, tables, compiler, ir, node, file_index, target, value, ty, op == 7L) }
@@ -7643,10 +7651,12 @@ fn emit_compound_assignment(
         let address_id = if place_target { emit_late_place_address(tables, compiler, ir, target) } else { -1L }
         if place_target {
             ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, node)
-            ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", align 1\n")
+            ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", align 1")
         } else {
-            ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
+            ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1")
         }
+        emit_program_storage_tbaa(compiler, ir)
+        ir_push_byte(compiler, ir, 10)
     }
 }
 
@@ -7747,6 +7757,26 @@ fn is_stack_address_node(
     tables.nodes[node].kind == NodeKind.MethodCall &&
         is_core_sys_receiver(source, tokens, files, tables, compiler, node, file_index) &&
         core_sys_operation(source, tokens, files, file_index, tables.nodes[node].token) == SYS_STACK_ADDR
+}
+
+fn is_context_base_load(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    node: long,
+    file_index: long,
+) -> bool {
+    if !compiler.core_mode { return false }
+    for function_id in 0L..compiler.functions.count() {
+        let function = compiler.functions[function_id]
+        if function.file != file_index || !token_is_word_at(source, tokens, files, function.file, function.name_token, "nl_context_current_base") { continue }
+        let body = function.body
+        let first = body - tables.nodes[body].subtree + 1L
+        if node >= first && node <= body { return true }
+    }
+    false
 }
 // E3a1 end
 
@@ -7873,7 +7903,11 @@ fn emit_sys_method(
         let offset_arg = compiler.child_next[first_arg]
         ir_write_ascii(compiler, ir, "  %sys.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, offset_arg); ir_write_ascii(compiler, ir, "\n")
         let value_type = if operation == SYS_LOAD8 { "i8" } else if operation == SYS_LOAD32 { "i32" } else if operation == SYS_LOAD64 { "i64" } else { "ptr" }
-        ir_write_ascii(compiler, ir, "  %sys.load."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, value_type); ir_write_ascii(compiler, ir, ", ptr %sys.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+        ir_write_ascii(compiler, ir, "  %sys.load."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, value_type); ir_write_ascii(compiler, ir, ", ptr %sys.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1")
+        if operation == SYS_LOAD_ADDR && is_context_base_load(source, files, tokens, tables, compiler, node, file_index) {
+            ir_write_ascii(compiler, ir, ", !tbaa !9002")
+        }
+        ir_push_byte(compiler, ir, 10)
         if operation == SYS_LOAD8 {
             ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i8 %sys.load."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i32\n")
         } else {
@@ -8569,7 +8603,7 @@ fn emit_expr_linear(
                 let is_break = (syntax.flags & FLAG_VALUE) != 0L
                 let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
                 // E3a1 subsection
-                emit_region_scope_exit(compiler, ir, loop.body)
+                emit_region_scope_exit(tables, compiler, ir, loop.body)
                 // E3a1 subsection end
                 let target_kind = if tables.nodes[loop.node].kind == NodeKind.While { 1L } else { 0L }
                 if is_break { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, target_kind, loop.node, TY_UNIT, -1L) }
@@ -9136,7 +9170,7 @@ fn emit_expr_linear(
                     let source_node = aggregate_source_id(tables, compiler, tail)
                     emit_aggregate_copy(compiler, ir, result_ty, aggregate_destination_location(compiler, 0L, current), aggregate_source_location(compiler, source_kind, source_node))
                 }
-                emit_region_scope_exit(compiler, ir, arm)
+                emit_region_scope_exit(tables, compiler, ir, arm)
                 ir_write_ascii(compiler, ir, "  br label %match.arm.cont."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, frame.auxiliary); ir_push_byte(compiler, ir, 10)
                 ir_write_ascii(compiler, ir, "match.arm.cont."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, frame.auxiliary); ir_write_ascii(compiler, ir, ":\n  br label %match.end."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 10)
             }
@@ -9324,7 +9358,7 @@ fn emit_expr_linear(
                 } else if tables.nodes[statement].kind == NodeKind.BreakStatement || tables.nodes[statement].kind == NodeKind.ContinueStatement {
                     let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
                     // E3a1 subsection
-                    emit_region_scope_exit(compiler, ir, loop.body)
+                    emit_region_scope_exit(tables, compiler, ir, loop.body)
                     // E3a1 subsection end
                     let target_kind = if tables.nodes[loop.node].kind == NodeKind.While { 1L } else { 0L }
                     if tables.nodes[statement].kind == NodeKind.BreakStatement { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, target_kind, loop.node, TY_UNIT, -1L) }
@@ -9340,7 +9374,7 @@ fn emit_expr_linear(
                 compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
             } else {
                 // E3a1 subsection
-                emit_region_scope_exit(compiler, ir, current)
+                emit_region_scope_exit(tables, compiler, ir, current)
                 if frame.auxiliary >= 0L {
                     lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, frame.auxiliary, TY_UNIT, -1L)
                 }
@@ -9370,7 +9404,7 @@ fn emit_expr_linear(
                 }
             } else { () }
             // E3a1 subsection
-            if frame.reachable { emit_region_scope_exit(compiler, ir, current) }
+            if frame.reachable { emit_region_scope_exit(tables, compiler, ir, current) }
             if frame.reachable && frame.auxiliary >= 0L {
                 lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, frame.auxiliary, TY_UNIT, -1L)
             }
@@ -9669,7 +9703,7 @@ fn emit_function_body(
         if frame.cursor < 0L {
             // E3a1 subsection
             if frame.node != body && frame.reachable {
-                emit_region_scope_exit(compiler, ir, frame.node)
+                emit_region_scope_exit(tables, compiler, ir, frame.node)
             }
             // E3a1 subsection end
             if frame.node == body && frame.reachable {
@@ -9887,7 +9921,7 @@ fn emit_function_body(
         } else if kind == NodeKind.BreakStatement || kind == NodeKind.ContinueStatement {
             let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
             // E3a1 subsection
-            emit_region_scope_exit(compiler, ir, loop.body)
+            emit_region_scope_exit(tables, compiler, ir, loop.body)
             // E3a1 subsection end
             let target_kind = if tables.nodes[loop.node].kind == NodeKind.While { 1L } else { 0L }
             if kind == NodeKind.BreakStatement { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, target_kind, loop.node, TY_UNIT, -1L) }
@@ -11565,6 +11599,7 @@ fn compile_selfhost_package(
         fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded")
     }
     compiler.ir_overflow = compiler.ir_overflow || user_ir_overflow
+    emit_storage_tbaa_metadata(compiler, ir)
     ir_write_ascii(compiler, ir, "\n; nlc-link-ir end\n")
 }
 // E3a1 end
