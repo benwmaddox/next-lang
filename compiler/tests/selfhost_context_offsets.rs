@@ -2,8 +2,8 @@ use std::path::Path;
 use std::process::Command;
 
 fn run_frontend_independent_check() -> bool {
-    // The C ABI probe and core source checks do not use the suite frontend.
-    std::env::var("NLC_FRONTEND").as_deref() != Ok("selfhost")
+    // The context ABI checks are part of the selfhost-owned suite.
+    std::env::var("NLC_FRONTEND").as_deref() == Ok("selfhost")
 }
 
 #[test]

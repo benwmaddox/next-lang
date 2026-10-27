@@ -11,8 +11,13 @@ to override. The stage-zero compiler is shared through a source-hash cache in
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 import difflib
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -22,6 +27,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 
@@ -39,6 +45,198 @@ class Result:
     build_status: int | None = None
 
 
+class ReferenceResultCache:
+    """Persistent cache of normalized stage-zero reference results."""
+
+    VERSION = 1
+
+    def __init__(self, root: Path, reference: Path, env: dict[str, str], disabled: bool):
+        target = Path(env["CARGO_TARGET_DIR"])
+        if not target.is_absolute():
+            target = root / target
+        self.directory = target.resolve() / "next-lang-reference-results"
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.reference_hash = hashlib.sha256(reference.read_bytes()).hexdigest()
+        clang = subprocess.run(
+            ["clang", "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            text=True,
+        )
+        if clang.returncode != 0:
+            raise RuntimeError(f"cannot identify clang: {clang.stdout.strip()}")
+        self.clang_version = clang.stdout
+        self.disabled = disabled
+        self._lock = threading.Lock()
+        self.hits = 0
+        self.misses = 0
+        self.forced = 0
+
+    def _key(
+        self,
+        root: Path,
+        package: str,
+        env: dict[str, str],
+        level: int,
+        invocation: dict[str, object],
+    ) -> tuple[str, dict[str, object]]:
+        digest = hashlib.sha256()
+        package_path = root / package
+        if not package_path.is_dir():
+            raise Mismatch(f"reference package is missing: {package}")
+        for path in sorted(package_path.rglob("*"), key=lambda item: item.relative_to(package_path).as_posix()):
+            if path.is_symlink():
+                relative = path.relative_to(package_path).as_posix().encode()
+                target = os.readlink(path).encode()
+                digest.update(b"symlink\0" + len(relative).to_bytes(8, "little") + relative)
+                digest.update(len(target).to_bytes(8, "little") + target)
+                if path.is_file():
+                    content = path.read_bytes()
+                    digest.update(b"file\0" + len(content).to_bytes(8, "little") + content)
+            elif path.is_file():
+                relative = path.relative_to(package_path).as_posix().encode()
+                content = path.read_bytes()
+                digest.update(b"file\0" + len(relative).to_bytes(8, "little") + relative)
+                digest.update(len(content).to_bytes(8, "little") + content)
+
+        environment_hash = hashlib.sha256(
+            json.dumps(sorted(env.items()), separators=(",", ":")).encode()
+        ).hexdigest()
+        invocation_hash = hashlib.sha256(
+            json.dumps(invocation, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        environment = sorted(env.items())
+        inputs = {
+            "version": self.VERSION,
+            "stage0_nlc_sha256": self.reference_hash,
+            "package": package,
+            "package_files_sha256": digest.hexdigest(),
+            "optimization_level": level,
+            "environment": environment,
+            "invocation": invocation,
+            "clang_version": self.clang_version,
+        }
+        encoded = json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
+        key_inputs = {
+            "stage0_nlc_sha256": self.reference_hash,
+            "package_files_sha256": digest.hexdigest(),
+            "optimization_level": str(level),
+            "environment_sha256": environment_hash,
+            "invocation_sha256": invocation_hash,
+            "clang_version_sha256": hashlib.sha256(self.clang_version.encode()).hexdigest(),
+            "environment_variable_hashes": {
+                name: hashlib.sha256(value.encode()).hexdigest() for name, value in environment
+            },
+        }
+        return hashlib.sha256(encoded).hexdigest(), key_inputs
+
+    def get_or_run(
+        self,
+        root: Path,
+        package: str,
+        env: dict[str, str],
+        level: int,
+        invocation: dict[str, object],
+        run: Callable[[], Result],
+    ) -> Result:
+        key, key_inputs = self._key(root, package, env, level, invocation)
+        entry = self.directory / f"{key}.json"
+        if not self.disabled:
+            result = self._read(entry, key, package)
+            if result is not None:
+                with self._lock:
+                    self.hits += 1
+                return result
+            with self._lock:
+                self.misses += 1
+        else:
+            with self._lock:
+                self.forced += 1
+
+        result = run()
+        normalized = Result(
+            status=result.status,
+            stdout=normalize_bytes(result.stdout, root, package),
+            stderr=normalize_bytes(result.stderr, root, package),
+            build_status=result.build_status,
+        )
+        self._write(entry, key, package, key_inputs, normalized)
+        return normalized
+
+    def _read(self, entry: Path, key: str, package: str) -> Result | None:
+        try:
+            payload = json.loads(entry.read_text())
+            if (
+                payload.get("version") != self.VERSION
+                or payload.get("key") != key
+                or payload.get("package") != package
+            ):
+                return None
+            result = payload["result"]
+            return Result(
+                status=int(result["status"]),
+                stdout=base64.b64decode(result["stdout"], validate=True),
+                stderr=base64.b64decode(result["stderr"], validate=True),
+                build_status=(
+                    None if result["build_status"] is None else int(result["build_status"])
+                ),
+            )
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+            IndexError,
+            binascii.Error,
+            json.JSONDecodeError,
+        ):
+            return None
+
+    def _write(
+        self,
+        entry: Path,
+        key: str,
+        package: str,
+        key_inputs: dict[str, object],
+        result: Result,
+    ) -> None:
+        payload = {
+            "version": self.VERSION,
+            "key": key,
+            "package": package,
+            "key_inputs": key_inputs,
+            "result": {
+                "status": result.status,
+                "stdout": base64.b64encode(result.stdout).decode("ascii"),
+                "stderr": base64.b64encode(result.stderr).decode("ascii"),
+                "build_status": result.build_status,
+            },
+        }
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{key}.", suffix=".tmp", dir=self.directory
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(payload, output, sort_keys=True, separators=(",", ":"))
+                output.flush()
+                os.fsync(output.fileno())
+            # Replacing a single file is atomic, including when another worker
+            # or suite publishes the same key at the same time.
+            os.replace(temporary, entry)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def summary(self) -> str:
+        with self._lock:
+            return (
+                f"stage-0 reference cache: hits={self.hits} misses={self.misses} "
+                f"forced-fresh={self.forced} directory={self.directory}"
+            )
+
+
 def status_code(code: int | None) -> int:
     return code if code is not None and code >= 0 else 128
 
@@ -46,6 +244,11 @@ def status_code(code: int | None) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--reference", required=True, type=Path)
+    parser.add_argument(
+        "--no-reference-cache",
+        action="store_true",
+        help="run stage-zero nlc afresh instead of reading cached reference results",
+    )
     add_filter_arguments(parser)
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
@@ -56,12 +259,25 @@ def main() -> int:
 
     env = os.environ.copy()
     env.pop("NLC_TEST_INDEX", None)
+    # The tool runner assigns this a new value per command; it is not a test
+    # input and would defeat reuse of otherwise identical reference results.
+    env.pop("CODEX_TOOL_CALL_ID", None)
     env["NLC_FRONTEND"] = "rust"
     env.setdefault("CARGO_TARGET_DIR", str(Path.home() / ".cache/next-lang/target"))
+    parity_mode = os.environ.get("NLC_STAGE0_PARITY") == "1"
+    long_tests = os.environ.get("NLC_LONG_TESTS") == "1"
+    if parity_mode and not long_tests:
+        print("NLC_STAGE0_PARITY=1 requires NLC_LONG_TESTS=1", file=sys.stderr)
+        return 2
+    reference_cache = ReferenceResultCache(
+        root,
+        reference,
+        env,
+        disabled=args.no_reference_cache or parity_mode,
+    )
     jobs = worker_count()
 
     # E3a1 begin: include its directed fixtures and retire the C comparison leg.
-    long_tests = os.environ.get("NLC_LONG_TESTS") == "1"
     levels = (1, 3) if long_tests else (1,)
     runtimes = ("core",)
     table = root / "tests/e1/classification.tsv"
@@ -122,8 +338,10 @@ def main() -> int:
             level: {kind: 0 for kind in ("build", "diagnose", "rejects", "unsupported", "mismatches")}
             for level in levels
         }
-        generated_count = int(os.environ.get("NLC_E1_GENERATED_COUNT", "8"))
-        generated_cases = generate_seeded_cases(root, work, generated_count)
+        generated_cases = []
+        if parity_mode and long_tests:
+            generated_count = int(os.environ.get("NLC_E1_GENERATED_COUNT", "8"))
+            generated_cases = generate_seeded_cases(root, work, generated_count)
         generated_classes = dict(generated_cases)
         selected_generated = set(
             select_packages(
@@ -152,7 +370,13 @@ def main() -> int:
             if package not in reference_results:
                 try:
                     reference_results[package] = run_reference(
-                        reference, root, package, reference_env, package_work, 1
+                        reference,
+                        root,
+                        package,
+                        reference_env,
+                        package_work,
+                        1,
+                        reference_cache,
                     )
                 except (Mismatch, subprocess.TimeoutExpired, OSError) as error:
                     reference_results[package] = error
@@ -169,7 +393,12 @@ def main() -> int:
             if test_main_reference is None and test_main_reference_error is None:
                 try:
                     test_main_reference = build_reference_main(
-                        reference, root, "tests/test/harness", reference_env, package_work
+                        reference,
+                        root,
+                        "tests/test/harness",
+                        reference_env,
+                        package_work,
+                        reference_cache,
                     )
                 except (Mismatch, subprocess.TimeoutExpired, OSError) as error:
                     test_main_reference_error = error
@@ -202,7 +431,7 @@ def main() -> int:
                             reference_result,
                             self_result,
                         )
-                    if not same_result(self_result, reference_result):
+                    if not same_normalized_result(self_result, reference_result, root, package):
                         raise Mismatch(
                             f"built program or {runtime}-runtime test runner differs from Rust nlc",
                             reference_result,
@@ -226,7 +455,8 @@ def main() -> int:
                         "selfhosted compiler wrote IR after a rejection", reference_result, self_result
                     )
                 if not same_rejection(self_result, reference_result) and not (
-                    manifest_tool_failure and same_result(self_result, reference_result)
+                    manifest_tool_failure
+                    and same_normalized_result(self_result, reference_result, root, package)
                 ):
                     raise Mismatch(
                         "selfhost did not reject with an error like Rust nlc", reference_result, self_result
@@ -313,7 +543,7 @@ def main() -> int:
                             reference_result,
                             self_result,
                         )
-                    if not same_result(reference_result, self_result):
+                    if not same_normalized_result(reference_result, self_result, root, package):
                         raise Mismatch(
                             f"seeded {runtime}-runtime build differs from Rust nlc",
                             reference_result,
@@ -431,6 +661,7 @@ def main() -> int:
         )
         return 1 if mismatches else 0
     finally:
+        print(reference_cache.summary())
         shutil.rmtree(work, ignore_errors=True)
 
 
@@ -629,7 +860,41 @@ def is_test_package(package: str) -> bool:
     )
 
 
-def run_reference(reference: Path, root: Path, package: str, env: dict[str, str], work: Path, level: int) -> Result:
+def run_reference(
+    reference: Path,
+    root: Path,
+    package: str,
+    env: dict[str, str],
+    work: Path,
+    level: int,
+    cache: ReferenceResultCache,
+) -> Result:
+    cwd, package_arg, local = package_cwd(root, package)
+    if is_test_package(package):
+        commands = [["--frontend=rust", "test", package_arg]]
+    else:
+        commands = [
+            ["--frontend=rust", "build", package_arg, "-o", "<output>"],
+            ["<output>"],
+        ]
+    invocation: dict[str, object] = {
+        "cwd": cwd.relative_to(root).as_posix() or ".",
+        "commands": commands,
+        "stdin": None,
+    }
+    return cache.get_or_run(
+        root,
+        package,
+        env,
+        level,
+        invocation,
+        lambda: run_reference_uncached(reference, root, package, env, work, level),
+    )
+
+
+def run_reference_uncached(
+    reference: Path, root: Path, package: str, env: dict[str, str], work: Path, level: int
+) -> Result:
     cwd, package_arg, local = package_cwd(root, package)
     if is_test_package(package):
         result = invoke(
@@ -648,6 +913,7 @@ def run_reference(reference: Path, root: Path, package: str, env: dict[str, str]
         env=env,
     )
     if built.status != 0:
+        built.build_status = built.status
         return built
     generated_file = package_path / "a.txt"
     had_generated_file = generated_file.exists()
@@ -709,6 +975,35 @@ def run_selfhost(
 
 
 def build_reference_main(
+    reference: Path,
+    root: Path,
+    package: str,
+    env: dict[str, str],
+    work: Path,
+    cache: ReferenceResultCache,
+) -> Result:
+    invocation: dict[str, object] = {
+        "cwd": ".",
+        "commands": [
+            ["--frontend=rust", "build", package, "-o", "<output>"],
+            ["<output>"],
+        ],
+        "stdin": None,
+    }
+    result = cache.get_or_run(
+        root,
+        package,
+        env,
+        1,
+        invocation,
+        lambda: build_reference_main_uncached(reference, root, package, env, work),
+    )
+    if result.build_status != 0:
+        raise Mismatch("could not build Rust reference main for the test harness", result)
+    return result
+
+
+def build_reference_main_uncached(
     reference: Path, root: Path, package: str, env: dict[str, str], work: Path
 ) -> Result:
     exe = work / f"reference-main-{os.getpid()}"
@@ -718,9 +1013,12 @@ def build_reference_main(
         env=env,
     )
     if build.status != 0:
-        raise Mismatch("could not build Rust reference main for the test harness", build)
+        build.build_status = build.status
+        return build
     try:
-        return invoke([str(exe)], cwd=root, env=env)
+        result = invoke([str(exe)], cwd=root, env=env)
+        result.build_status = 0
+        return result
     finally:
         exe.unlink(missing_ok=True)
 
@@ -748,7 +1046,7 @@ def compare_test_package_main(
         ir.unlink(missing_ok=True)
         actual = linked if linked.status != 0 else invoke([str(self_exe)], cwd=root, env=env)
         self_exe.unlink(missing_ok=True)
-        if not same_result(actual, reference_result):
+        if not same_normalized_result(actual, reference_result, root, package):
             raise Mismatch(
                 f"test package {runtime} runtime main differs from Rust nlc",
                 reference_result,
@@ -771,8 +1069,8 @@ def normalize_result(result: Result, root: Path, package: str) -> tuple[int, byt
     )
 
 
-def same_result(left: Result, right: Result) -> bool:
-    return (left.status, left.stdout, left.stderr) == (right.status, right.stdout, right.stderr)
+def same_normalized_result(left: Result, right: Result, root: Path, package: str) -> bool:
+    return normalize_result(left, root, package) == normalize_result(right, root, package)
 
 
 def same_rejection(selfhost: Result, reference: Result) -> bool:

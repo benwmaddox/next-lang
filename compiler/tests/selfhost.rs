@@ -2,17 +2,23 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-// These checks select their frontends explicitly and therefore have identical
-// inputs and results in both full-suite invocations. Run them with the Rust
-// suite only; suite-specific behavior remains covered by language tests.
+// Selfhost-specific parity and policy checks belong to the selfhost suite.
 fn run_frontend_independent_check() -> bool {
-    std::env::var("NLC_FRONTEND").as_deref() != Ok("selfhost")
+    std::env::var("NLC_FRONTEND").as_deref() == Ok("selfhost")
 }
 
 #[test]
 fn selfhosted_lexer_and_parser_match_the_rust_reference() {
     if !run_frontend_independent_check() {
         return;
+    }
+    let stage0_parity = std::env::var("NLC_STAGE0_PARITY").as_deref() == Ok("1");
+    if stage0_parity {
+        assert_eq!(
+            std::env::var("NLC_LONG_TESTS").as_deref(),
+            Ok("1"),
+            "NLC_STAGE0_PARITY=1 requires NLC_LONG_TESTS=1"
+        );
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -35,29 +41,35 @@ fn selfhosted_lexer_and_parser_match_the_rust_reference() {
         .trim()
         .to_owned();
 
-    for (mode, label) in [("--tokens", "lexer"), ("--parse", "parser")] {
-        let comparison = Command::new(root.join("scripts/compare-selfhost.sh"))
-            .arg(mode)
-            .arg("--reference")
-            .arg(nlc)
-            .arg("--selfhost")
-            .arg(&selfhost)
-            .current_dir(root)
-            .output()
-            .unwrap_or_else(|error| panic!("run the selfhost {label} comparison harness: {error}"));
-        assert!(
-            comparison.status.success(),
-            "selfhost {label} comparison failed (status {:?}):\n{}\n{}",
-            comparison.status.code(),
-            String::from_utf8_lossy(&comparison.stdout),
-            String::from_utf8_lossy(&comparison.stderr)
-        );
+    if stage0_parity {
+        for (mode, label) in [("--tokens", "lexer"), ("--parse", "parser")] {
+            let comparison = Command::new(root.join("scripts/compare-selfhost.sh"))
+                .arg(mode)
+                .arg("--reference")
+                .arg(nlc)
+                .arg("--selfhost")
+                .arg(&selfhost)
+                .current_dir(root)
+                .output()
+                .unwrap_or_else(|error| {
+                    panic!("run the selfhost {label} comparison harness: {error}")
+                });
+            assert!(
+                comparison.status.success(),
+                "selfhost {label} comparison failed (status {:?}):\n{}\n{}",
+                comparison.status.code(),
+                String::from_utf8_lossy(&comparison.stdout),
+                String::from_utf8_lossy(&comparison.stderr)
+            );
+        }
     }
 
-    let comparison = Command::new(root.join("scripts/compare-selfhost.sh"))
-        .arg("--build")
-        .arg("--reference")
-        .arg(nlc)
+    let mut command = Command::new(root.join("scripts/compare-selfhost.sh"));
+    command.arg("--build").arg("--reference").arg(nlc);
+    if stage0_parity {
+        command.arg("--no-reference-cache");
+    }
+    let comparison = command
         .current_dir(root)
         .output()
         .expect("run the selfhost build comparison harness");
