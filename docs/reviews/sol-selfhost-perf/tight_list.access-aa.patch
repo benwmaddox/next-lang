@@ -1,0 +1,30 @@
+--- tight_list.access.ll
++++ tight_list.access-aa.ll
+@@ -148,7 +148,7 @@
+   %coll.push.ptr.21 = getelementptr i8, ptr %loc.pointer.6319, i64 %coll.push.offset.21
+   store i64 %v20, ptr %coll.push.ptr.21, align 1
+   %coll.push.next.21 = add i64 %coll.push.count.21, 1
+-  store i64 %coll.push.next.21, ptr %loc.pointer.6319, align 1
++  store i64 %coll.push.next.21, ptr %loc.pointer.6319, align 1, !tbaa !9003
+   br label %coll.push.done.21
+ coll.push.done.21:
+   %nl.scope.restore.23.7154 = load i64, ptr %nl.scope.top.23, align 8
+@@ -1902,7 +1902,7 @@
+   %v991 = add i64 0, 7
+   %v992 = add i64 0, 56
+   %sys.ptr.993 = getelementptr i8, ptr %v989, i64 %v992
+-  %sys.load.993 = load ptr, ptr %sys.ptr.993, align 1
++  %sys.load.993 = load ptr, ptr %sys.ptr.993, align 1, !tbaa !9002
+   %v993 = select i1 true, ptr %sys.load.993, ptr %sys.load.993
+   ret ptr %v993
+ }
+@@ -12190,4 +12190,9 @@
+ module asm ".size _start, . - _start"
+ @llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section "llvm.metadata"
+ 
++!9000 = !{!"Sol context versus program storage"}
++!9001 = !{!"context base", !9000}
++!9002 = !{!9001, !9001, i64 0}
++!9004 = !{!"program storage", !9000}
++!9003 = !{!9004, !9004, i64 0}
+ ; nlc-link-ir end

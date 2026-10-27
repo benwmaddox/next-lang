@@ -1,0 +1,80 @@
+--- calls.sh.ll
++++ calls.weights.ll
+@@ -463,7 +463,7 @@
+   %coll.index.count.104 = load i64, ptr %coll.index.count.ptr.104, align 1
+   %coll.index.high.104 = icmp sge i64 %v103, %coll.index.count.104
+   %coll.index.invalid.104 = or i1 %coll.index.negative.104, %coll.index.high.104
+-  br i1 %coll.index.invalid.104, label %coll.index.fail.104, label %coll.index.ok.104
++  br i1 %coll.index.invalid.104, label %coll.index.fail.104, label %coll.index.ok.104, !prof !9010
+ coll.index.fail.104:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 35, i32 30)
+   unreachable
+@@ -516,7 +516,7 @@
+   %coll.index.count.110 = load i64, ptr %coll.index.count.ptr.110, align 1
+   %coll.index.high.110 = icmp sge i64 %v109, %coll.index.count.110
+   %coll.index.invalid.110 = or i1 %coll.index.negative.110, %coll.index.high.110
+-  br i1 %coll.index.invalid.110, label %coll.index.fail.110, label %coll.index.ok.110
++  br i1 %coll.index.invalid.110, label %coll.index.fail.110, label %coll.index.ok.110, !prof !9010
+ coll.index.fail.110:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 36, i32 30)
+   unreachable
+@@ -569,7 +569,7 @@
+   %coll.index.count.116 = load i64, ptr %coll.index.count.ptr.116, align 1
+   %coll.index.high.116 = icmp sge i64 %v115, %coll.index.count.116
+   %coll.index.invalid.116 = or i1 %coll.index.negative.116, %coll.index.high.116
+-  br i1 %coll.index.invalid.116, label %coll.index.fail.116, label %coll.index.ok.116
++  br i1 %coll.index.invalid.116, label %coll.index.fail.116, label %coll.index.ok.116, !prof !9010
+ coll.index.fail.116:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 37, i32 30)
+   unreachable
+@@ -622,7 +622,7 @@
+   %coll.index.count.122 = load i64, ptr %coll.index.count.ptr.122, align 1
+   %coll.index.high.122 = icmp sge i64 %v121, %coll.index.count.122
+   %coll.index.invalid.122 = or i1 %coll.index.negative.122, %coll.index.high.122
+-  br i1 %coll.index.invalid.122, label %coll.index.fail.122, label %coll.index.ok.122
++  br i1 %coll.index.invalid.122, label %coll.index.fail.122, label %coll.index.ok.122, !prof !9010
+ coll.index.fail.122:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 38, i32 30)
+   unreachable
+@@ -675,7 +675,7 @@
+   %coll.index.count.129 = load i64, ptr %coll.index.count.ptr.129, align 1
+   %coll.index.high.129 = icmp sge i64 %v128, %coll.index.count.129
+   %coll.index.invalid.129 = or i1 %coll.index.negative.129, %coll.index.high.129
+-  br i1 %coll.index.invalid.129, label %coll.index.fail.129, label %coll.index.ok.129
++  br i1 %coll.index.invalid.129, label %coll.index.fail.129, label %coll.index.ok.129, !prof !9010
+ coll.index.fail.129:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 39, i32 45)
+   unreachable
+@@ -720,7 +720,7 @@
+   %ov.pair.132 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v126, i64 %v131)
+   %asgn.value.132 = extractvalue { i64, i1 } %ov.pair.132, 0
+   %ov.flag.132 = extractvalue { i64, i1 } %ov.pair.132, 1
+-  br i1 %ov.flag.132, label %ov.fail.132, label %ov.ok.132
++  br i1 %ov.flag.132, label %ov.fail.132, label %ov.ok.132, !prof !9010
+ ov.fail.132:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 39, i32 22)
+   unreachable
+@@ -735,7 +735,7 @@
+   %coll.index.count.136 = load i64, ptr %coll.index.count.ptr.136, align 1
+   %coll.index.high.136 = icmp sge i64 %v135, %coll.index.count.136
+   %coll.index.invalid.136 = or i1 %coll.index.negative.136, %coll.index.high.136
+-  br i1 %coll.index.invalid.136, label %coll.index.fail.136, label %coll.index.ok.136
++  br i1 %coll.index.invalid.136, label %coll.index.fail.136, label %coll.index.ok.136, !prof !9010
+ coll.index.fail.136:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 40, i32 45)
+   unreachable
+@@ -780,7 +780,7 @@
+   %ov.pair.139 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v133, i64 %v138)
+   %asgn.value.139 = extractvalue { i64, i1 } %ov.pair.139, 0
+   %ov.flag.139 = extractvalue { i64, i1 } %ov.pair.139, 1
+-  br i1 %ov.flag.139, label %ov.fail.139, label %ov.ok.139
++  br i1 %ov.flag.139, label %ov.fail.139, label %ov.ok.139, !prof !9010
+ ov.fail.139:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 40, i32 22)
+   unreachable
+@@ -12813,4 +12813,5 @@
+ module asm ".size _start, . - _start"
+ @llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section "llvm.metadata"
+ 
++!9010 = !{!"branch_weights", i32 1, i32 2000}
+ ; nlc-link-ir end

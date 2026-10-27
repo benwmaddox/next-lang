@@ -1,0 +1,26 @@
+--- struct_update.sh.ll
++++ struct_update.sync.ll
+@@ -387,7 +387,6 @@
+ coll.push.done.81:
+   %nl.scope.restore.83.17457 = load i64, ptr %nl.scope.top.83, align 8
+   store i64 %nl.scope.restore.83.17457, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.83.17457)
+   br label %for.increment.84
+ for.increment.84:
+   %for.current.84 = load i64, ptr %local.2, align 1
+@@ -792,7 +791,6 @@
+   store i64 %asgn.value.121, ptr %local.7, align 1
+   %nl.scope.restore.122.42548 = load i64, ptr %nl.scope.top.122, align 8
+   store i64 %nl.scope.restore.122.42548, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.122.42548)
+   br label %for.increment.123
+ for.increment.123:
+   %for.current.123 = load i64, ptr %local.9, align 1
+@@ -802,7 +800,6 @@
+ for.end.123:
+   %nl.scope.restore.124.43016 = load i64, ptr %nl.scope.top.124, align 8
+   store i64 %nl.scope.restore.124.43016, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.124.43016)
+   br label %for.increment.125
+ for.increment.125:
+   %for.current.125 = load i64, ptr %local.8, align 1

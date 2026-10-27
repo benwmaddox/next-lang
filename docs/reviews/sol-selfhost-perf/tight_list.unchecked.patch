@@ -1,0 +1,137 @@
+--- tight_list.sh.ll
++++ tight_list.unchecked.ll
+@@ -147,12 +147,11 @@
+   %coll.push.ptr.21 = getelementptr i8, ptr %loc.pointer.6307, i64 %coll.push.offset.21
+   store i64 %v20, ptr %coll.push.ptr.21, align 1
+   %coll.push.next.21 = add i64 %coll.push.count.21, 1
+-  store i64 %coll.push.next.21, ptr %loc.pointer.6307, align 1
++  store i64 %coll.push.next.21, ptr %loc.pointer.6307, align 1, !tbaa !9003
+   br label %coll.push.done.21
+ coll.push.done.21:
+   %nl.scope.restore.23.7142 = load i64, ptr %nl.scope.top.23, align 8
+   store i64 %nl.scope.restore.23.7142, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.23.7142)
+   br label %for.increment.24
+ for.increment.24:
+   %for.current.24 = load i64, ptr %local.2, align 1
+@@ -184,36 +183,6 @@
+ for.body.54:
+   %nl.scope.saved.53 = load i64, ptr %nl.top.current.slot, align 8
+   store i64 %nl.scope.saved.53, ptr %nl.scope.top.53
+-  %nl.scope.rem.53 = urem i64 %nl.scope.saved.53, 8
+-  %nl.scope.pad.raw.53 = sub i64 8, %nl.scope.rem.53
+-  %nl.scope.is.aligned.53 = icmp eq i64 %nl.scope.rem.53, 0
+-  %nl.scope.pad.53 = select i1 %nl.scope.is.aligned.53, i64 0, i64 %nl.scope.pad.raw.53
+-  %nl.scope.base.53 = add i64 %nl.scope.saved.53, %nl.scope.pad.53
+-  %nl.scope.align.overflow.53 = icmp ult i64 %nl.scope.base.53, %nl.scope.saved.53
+-  %nl.scope.end.53 = add i64 %nl.scope.base.53, 800008
+-  %nl.scope.end.overflow.53 = icmp ult i64 %nl.scope.end.53, %nl.scope.base.53
+-  %nl.scope.overflow.53 = or i1 %nl.scope.align.overflow.53, %nl.scope.end.overflow.53
+-  br i1 %nl.scope.overflow.53, label %nl.scope.fail.53, label %nl.scope.check.53
+-nl.scope.fail.53:
+-  call void @nl_fail(ptr %nl.ctx, i32 18, i32 0, i32 12, i32 40)
+-  unreachable
+-nl.scope.check.53:
+-  %nl.scope.more.53 = icmp ugt i64 %nl.scope.end.53, %nl.scope.saved.53
+-  br i1 %nl.scope.more.53, label %nl.scope.reserve.53, label %nl.scope.ready.53
+-nl.scope.reserve.53:
+-  %nl.scope.reserved.53 = call i64 @nl_context_reservation_bytes(ptr %nl.ctx)
+-  %nl.scope.grow.53 = icmp ugt i64 %nl.scope.end.53, %nl.scope.reserved.53
+-  br i1 %nl.scope.grow.53, label %nl.scope.slow.53, label %nl.scope.ready.53
+-nl.scope.slow.53:
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.end.53)
+-  call void @nl_stack_grow(ptr %nl.ctx, i64 %nl.scope.end.53, i32 0, i32 12, i32 40)
+-  br label %nl.scope.ready.53
+-nl.scope.ready.53:
+-  %nl.scope.target.53 = select i1 %nl.scope.more.53, i64 %nl.scope.end.53, i64 %nl.scope.saved.53
+-  store i64 %nl.scope.target.53, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.target.53)
+-  call void @nl_context_note_peak(ptr %nl.ctx, i64 %nl.scope.target.53)
+-  %region.offset.33 = add i64 %nl.scope.base.53, 0
+   %v34 = load i64, ptr %local.5, align 1
+   %loc.offset.10346 = add i64 %region.offset.4, 0
+   %loc.base.10346 = call ptr @nl_context_current_base(ptr %nl.ctx)
+@@ -223,7 +192,7 @@
+   %coll.index.count.35 = load i64, ptr %coll.index.count.ptr.35, align 1
+   %coll.index.high.35 = icmp sge i64 %v34, %coll.index.count.35
+   %coll.index.invalid.35 = or i1 %coll.index.negative.35, %coll.index.high.35
+-  br i1 %coll.index.invalid.35, label %coll.index.fail.35, label %coll.index.ok.35
++  br i1 false, label %coll.index.fail.35, label %coll.index.ok.35
+ coll.index.fail.35:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 13, i32 28)
+   unreachable
+@@ -236,7 +205,7 @@
+   %ov.pair.37 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v35, i64 %v36)
+   %v37 = extractvalue { i64, i1 } %ov.pair.37, 0
+   %ov.flag.37 = extractvalue { i64, i1 } %ov.pair.37, 1
+-  br i1 %ov.flag.37, label %ov.fail.37, label %ov.ok.37
++  br i1 false, label %ov.fail.37, label %ov.ok.37
+ ov.fail.37:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 13, i32 35)
+   unreachable
+@@ -274,7 +243,7 @@
+   %ov.pair.46 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v44, i64 %v45)
+   %asgn.value.46 = extractvalue { i64, i1 } %ov.pair.46, 0
+   %ov.flag.46 = extractvalue { i64, i1 } %ov.pair.46, 1
+-  br i1 %ov.flag.46, label %ov.fail.46, label %ov.ok.46
++  br i1 false, label %ov.fail.46, label %ov.ok.46
+ ov.fail.46:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 15, i32 26)
+   unreachable
+@@ -282,7 +251,6 @@
+   store i64 %asgn.value.46, ptr %local.3, align 1
+   %nl.scope.restore.47.13245 = load i64, ptr %nl.scope.top.47, align 8
+   store i64 %nl.scope.restore.47.13245, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.47.13245)
+   br label %if.expr.end.52
+ if.expr.else.52:
+   %nl.scope.saved.51 = load i64, ptr %nl.top.current.slot, align 8
+@@ -292,7 +260,7 @@
+   %ov.pair.50 = call { i64, i1 } @llvm.ssub.with.overflow.i64(i64 %v48, i64 %v49)
+   %asgn.value.50 = extractvalue { i64, i1 } %ov.pair.50, 0
+   %ov.flag.50 = extractvalue { i64, i1 } %ov.pair.50, 1
+-  br i1 %ov.flag.50, label %ov.fail.50, label %ov.ok.50
++  br i1 false, label %ov.fail.50, label %ov.ok.50
+ ov.fail.50:
+   call void @nl_fail(ptr %nl.ctx, i32 6, i32 0, i32 17, i32 26)
+   unreachable
+@@ -300,12 +268,10 @@
+   store i64 %asgn.value.50, ptr %local.3, align 1
+   %nl.scope.restore.51.14123 = load i64, ptr %nl.scope.top.51, align 8
+   store i64 %nl.scope.restore.51.14123, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.51.14123)
+   br label %if.expr.end.52
+ if.expr.end.52:
+   %nl.scope.restore.53.14395 = load i64, ptr %nl.scope.top.53, align 8
+   store i64 %nl.scope.restore.53.14395, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.53.14395)
+   br label %for.increment.54
+ for.increment.54:
+   %for.current.54 = load i64, ptr %local.5, align 1
+@@ -315,7 +281,6 @@
+ for.end.54:
+   %nl.scope.restore.55.14851 = load i64, ptr %nl.scope.top.55, align 8
+   store i64 %nl.scope.restore.55.14851, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.55.14851)
+   br label %for.increment.56
+ for.increment.56:
+   %for.current.56 = load i64, ptr %local.4, align 1
+@@ -1931,7 +1896,7 @@
+   %v991 = add i64 0, 7
+   %v992 = add i64 0, 56
+   %sys.ptr.993 = getelementptr i8, ptr %v989, i64 %v992
+-  %sys.load.993 = load ptr, ptr %sys.ptr.993, align 1
++  %sys.load.993 = load ptr, ptr %sys.ptr.993, align 1, !tbaa !9002
+   %v993 = select i1 true, ptr %sys.load.993, ptr %sys.load.993
+   ret ptr %v993
+ }
+@@ -12219,4 +12184,9 @@
+ module asm ".size _start, . - _start"
+ @llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section "llvm.metadata"
+ 
++!9000 = !{!"Sol context versus program storage"}
++!9001 = !{!"context base", !9000}
++!9002 = !{!9001, !9001, i64 0}
++!9004 = !{!"program storage", !9000}
++!9003 = !{!9004, !9004, i64 0}
+ ; nlc-link-ir end

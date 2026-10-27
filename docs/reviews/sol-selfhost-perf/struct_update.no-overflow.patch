@@ -1,0 +1,192 @@
+--- struct_update.sh.ll
++++ struct_update.no-overflow.ll
+@@ -337,16 +337,16 @@
+   store i64 %v69, ptr %local.6, align 1
+   %v72 = load i64, ptr %local.3, align 1
+   %addr.73 = getelementptr i8, ptr %agg.80, i64 0
+-  store i64 %v72, ptr %addr.73, align 1
++  store i64 %v72, ptr %addr.73, align 1, !tbaa !9003
+   %v74 = load i64, ptr %local.4, align 1
+   %addr.75 = getelementptr i8, ptr %agg.80, i64 8
+-  store i64 %v74, ptr %addr.75, align 1
++  store i64 %v74, ptr %addr.75, align 1, !tbaa !9003
+   %v76 = load i64, ptr %local.5, align 1
+   %addr.77 = getelementptr i8, ptr %agg.80, i64 16
+-  store i64 %v76, ptr %addr.77, align 1
++  store i64 %v76, ptr %addr.77, align 1, !tbaa !9003
+   %v78 = load i64, ptr %local.6, align 1
+   %addr.79 = getelementptr i8, ptr %agg.80, i64 24
+-  store i64 %v78, ptr %addr.79, align 1
++  store i64 %v78, ptr %addr.79, align 1, !tbaa !9003
+   %loc.offset.14649 = add i64 %region.offset.13, 0
+   %loc.base.14649 = call ptr @nl_context_current_base(ptr %nl.ctx)
+   %loc.pointer.14649 = getelementptr i8, ptr %loc.base.14649, i64 %loc.offset.14649
+@@ -362,32 +362,31 @@
+   %coll.dynamic.lane.dest.15276 = getelementptr i8, ptr %loc.pointer.14649, i64 %coll.dynamic.lane.offset.15276
+   %coll.dynamic.lane.src.15276 = getelementptr i8, ptr %agg.80, i64 0
+   %coll.dynamic.lane.value.15276 = load i64, ptr %coll.dynamic.lane.src.15276, align 1
+-  store i64 %coll.dynamic.lane.value.15276, ptr %coll.dynamic.lane.dest.15276, align 1
++  store i64 %coll.dynamic.lane.value.15276, ptr %coll.dynamic.lane.dest.15276, align 1, !tbaa !9003
+   %coll.dynamic.lane.bytes.15776 = mul i64 %coll.push.count.81, 8
+   %coll.dynamic.lane.offset.15776 = add i64 32776, %coll.dynamic.lane.bytes.15776
+   %coll.dynamic.lane.dest.15776 = getelementptr i8, ptr %loc.pointer.14649, i64 %coll.dynamic.lane.offset.15776
+   %coll.dynamic.lane.src.15776 = getelementptr i8, ptr %agg.80, i64 8
+   %coll.dynamic.lane.value.15776 = load i64, ptr %coll.dynamic.lane.src.15776, align 1
+-  store i64 %coll.dynamic.lane.value.15776, ptr %coll.dynamic.lane.dest.15776, align 1
++  store i64 %coll.dynamic.lane.value.15776, ptr %coll.dynamic.lane.dest.15776, align 1, !tbaa !9003
+   %coll.dynamic.lane.bytes.16280 = mul i64 %coll.push.count.81, 8
+   %coll.dynamic.lane.offset.16280 = add i64 65544, %coll.dynamic.lane.bytes.16280
+   %coll.dynamic.lane.dest.16280 = getelementptr i8, ptr %loc.pointer.14649, i64 %coll.dynamic.lane.offset.16280
+   %coll.dynamic.lane.src.16280 = getelementptr i8, ptr %agg.80, i64 16
+   %coll.dynamic.lane.value.16280 = load i64, ptr %coll.dynamic.lane.src.16280, align 1
+-  store i64 %coll.dynamic.lane.value.16280, ptr %coll.dynamic.lane.dest.16280, align 1
++  store i64 %coll.dynamic.lane.value.16280, ptr %coll.dynamic.lane.dest.16280, align 1, !tbaa !9003
+   %coll.dynamic.lane.bytes.16785 = mul i64 %coll.push.count.81, 8
+   %coll.dynamic.lane.offset.16785 = add i64 98312, %coll.dynamic.lane.bytes.16785
+   %coll.dynamic.lane.dest.16785 = getelementptr i8, ptr %loc.pointer.14649, i64 %coll.dynamic.lane.offset.16785
+   %coll.dynamic.lane.src.16785 = getelementptr i8, ptr %agg.80, i64 24
+   %coll.dynamic.lane.value.16785 = load i64, ptr %coll.dynamic.lane.src.16785, align 1
+-  store i64 %coll.dynamic.lane.value.16785, ptr %coll.dynamic.lane.dest.16785, align 1
++  store i64 %coll.dynamic.lane.value.16785, ptr %coll.dynamic.lane.dest.16785, align 1, !tbaa !9003
+   %coll.push.next.81 = add i64 %coll.push.count.81, 1
+-  store i64 %coll.push.next.81, ptr %loc.pointer.14649, align 1
++  store i64 %coll.push.next.81, ptr %loc.pointer.14649, align 1, !tbaa !9003
+   br label %coll.push.done.81
+ coll.push.done.81:
+   %nl.scope.restore.83.17457 = load i64, ptr %nl.scope.top.83, align 8
+   store i64 %nl.scope.restore.83.17457, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.83.17457)
+   br label %for.increment.84
+ for.increment.84:
+   %for.current.84 = load i64, ptr %local.2, align 1
+@@ -419,41 +418,6 @@
+ for.body.123:
+   %nl.scope.saved.122 = load i64, ptr %nl.top.current.slot, align 8
+   store i64 %nl.scope.saved.122, ptr %nl.scope.top.122
+-  %nl.scope.rem.122 = urem i64 %nl.scope.saved.122, 8
+-  %nl.scope.pad.raw.122 = sub i64 8, %nl.scope.rem.122
+-  %nl.scope.is.aligned.122 = icmp eq i64 %nl.scope.rem.122, 0
+-  %nl.scope.pad.122 = select i1 %nl.scope.is.aligned.122, i64 0, i64 %nl.scope.pad.raw.122
+-  %nl.scope.base.122 = add i64 %nl.scope.saved.122, %nl.scope.pad.122
+-  %nl.scope.align.overflow.122 = icmp ult i64 %nl.scope.base.122, %nl.scope.saved.122
+-  %nl.scope.end.122 = add i64 %nl.scope.base.122, 786480
+-  %nl.scope.end.overflow.122 = icmp ult i64 %nl.scope.end.122, %nl.scope.base.122
+-  %nl.scope.overflow.122 = or i1 %nl.scope.align.overflow.122, %nl.scope.end.overflow.122
+-  br i1 %nl.scope.overflow.122, label %nl.scope.fail.122, label %nl.scope.check.122
+-nl.scope.fail.122:
+-  call void @nl_fail(ptr %nl.ctx, i32 18, i32 0, i32 26, i32 38)
+-  unreachable
+-nl.scope.check.122:
+-  %nl.scope.more.122 = icmp ugt i64 %nl.scope.end.122, %nl.scope.saved.122
+-  br i1 %nl.scope.more.122, label %nl.scope.reserve.122, label %nl.scope.ready.122
+-nl.scope.reserve.122:
+-  %nl.scope.reserved.122 = call i64 @nl_context_reservation_bytes(ptr %nl.ctx)
+-  %nl.scope.grow.122 = icmp ugt i64 %nl.scope.end.122, %nl.scope.reserved.122
+-  br i1 %nl.scope.grow.122, label %nl.scope.slow.122, label %nl.scope.ready.122
+-nl.scope.slow.122:
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.end.122)
+-  call void @nl_stack_grow(ptr %nl.ctx, i64 %nl.scope.end.122, i32 0, i32 26, i32 38)
+-  br label %nl.scope.ready.122
+-nl.scope.ready.122:
+-  %nl.scope.target.122 = select i1 %nl.scope.more.122, i64 %nl.scope.end.122, i64 %nl.scope.saved.122
+-  store i64 %nl.scope.target.122, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.target.122)
+-  call void @nl_context_note_peak(ptr %nl.ctx, i64 %nl.scope.target.122)
+-  %region.offset.93 = add i64 %nl.scope.base.122, 0
+-  %region.offset.97 = add i64 %nl.scope.base.122, 131080
+-  %region.offset.102 = add i64 %nl.scope.base.122, 262160
+-  %region.offset.106 = add i64 %nl.scope.base.122, 393240
+-  %region.offset.112 = add i64 %nl.scope.base.122, 524320
+-  %region.offset.116 = add i64 %nl.scope.base.122, 655400
+   %v94 = load i64, ptr %local.9, align 1
+   %loc.offset.21031 = add i64 %region.offset.13, 0
+   %loc.base.21031 = call ptr @nl_context_current_base(ptr %nl.ctx)
+@@ -553,7 +517,7 @@
+   %ov.pair.101 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v96, i64 %v100)
+   %asgn.value.101 = extractvalue { i64, i1 } %ov.pair.101, 0
+   %ov.flag.101 = extractvalue { i64, i1 } %ov.pair.101, 1
+-  br i1 %ov.flag.101, label %ov.fail.101, label %ov.ok.101
++  br i1 false, label %ov.fail.101, label %ov.ok.101
+ ov.fail.101:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 27, i32 32)
+   unreachable
+@@ -564,7 +528,7 @@
+   %coll.field.index.bytes.57334000096 = mul i64 %v94, 8
+   %coll.field.index.offset.57334000096 = add i64 8, %coll.field.index.bytes.57334000096
+   %addr.57334000096 = getelementptr i8, ptr %loc.pointer.27643, i64 %coll.field.index.offset.57334000096
+-  store i64 %asgn.value.101, ptr %addr.57334000096, align 1
++  store i64 %asgn.value.101, ptr %addr.57334000096, align 1, !tbaa !9003
+   %v103 = load i64, ptr %local.9, align 1
+   %loc.offset.28196 = add i64 %region.offset.13, 0
+   %loc.base.28196 = call ptr @nl_context_current_base(ptr %nl.ctx)
+@@ -664,7 +628,7 @@
+   %ov.pair.110 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v105, i64 %v109)
+   %asgn.value.110 = extractvalue { i64, i1 } %ov.pair.110, 0
+   %ov.flag.110 = extractvalue { i64, i1 } %ov.pair.110, 1
+-  br i1 %ov.flag.110, label %ov.fail.110, label %ov.ok.110
++  br i1 false, label %ov.fail.110, label %ov.ok.110
+ ov.fail.110:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 28, i32 32)
+   unreachable
+@@ -675,7 +639,7 @@
+   %coll.field.index.bytes.71790000105 = mul i64 %v103, 8
+   %coll.field.index.offset.71790000105 = add i64 32776, %coll.field.index.bytes.71790000105
+   %addr.71790000105 = getelementptr i8, ptr %loc.pointer.34871, i64 %coll.field.index.offset.71790000105
+-  store i64 %asgn.value.110, ptr %addr.71790000105, align 1
++  store i64 %asgn.value.110, ptr %addr.71790000105, align 1, !tbaa !9003
+   %v113 = load i64, ptr %local.9, align 1
+   %loc.offset.35429 = add i64 %region.offset.13, 0
+   %loc.base.35429 = call ptr @nl_context_current_base(ptr %nl.ctx)
+@@ -775,7 +739,7 @@
+   %ov.pair.120 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v115, i64 %v119)
+   %v120 = extractvalue { i64, i1 } %ov.pair.120, 0
+   %ov.flag.120 = extractvalue { i64, i1 } %ov.pair.120, 1
+-  br i1 %ov.flag.120, label %ov.fail.120, label %ov.ok.120
++  br i1 false, label %ov.fail.120, label %ov.ok.120
+ ov.fail.120:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 29, i32 44)
+   unreachable
+@@ -784,7 +748,7 @@
+   %ov.pair.121 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v111, i64 %v120)
+   %asgn.value.121 = extractvalue { i64, i1 } %ov.pair.121, 0
+   %ov.flag.121 = extractvalue { i64, i1 } %ov.pair.121, 1
+-  br i1 %ov.flag.121, label %ov.fail.121, label %ov.ok.121
++  br i1 false, label %ov.fail.121, label %ov.ok.121
+ ov.fail.121:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 29, i32 22)
+   unreachable
+@@ -792,7 +756,6 @@
+   store i64 %asgn.value.121, ptr %local.7, align 1
+   %nl.scope.restore.122.42548 = load i64, ptr %nl.scope.top.122, align 8
+   store i64 %nl.scope.restore.122.42548, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.122.42548)
+   br label %for.increment.123
+ for.increment.123:
+   %for.current.123 = load i64, ptr %local.9, align 1
+@@ -802,7 +765,6 @@
+ for.end.123:
+   %nl.scope.restore.124.43016 = load i64, ptr %nl.scope.top.124, align 8
+   store i64 %nl.scope.restore.124.43016, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.124.43016)
+   br label %for.increment.125
+ for.increment.125:
+   %for.current.125 = load i64, ptr %local.8, align 1
+@@ -2529,7 +2491,7 @@
+   %v991 = add i64 0, 7
+   %v992 = add i64 0, 56
+   %sys.ptr.993 = getelementptr i8, ptr %v989, i64 %v992
+-  %sys.load.993 = load ptr, ptr %sys.ptr.993, align 1
++  %sys.load.993 = load ptr, ptr %sys.ptr.993, align 1, !tbaa !9002
+   %v993 = select i1 true, ptr %sys.load.993, ptr %sys.load.993
+   ret ptr %v993
+ }
+@@ -12817,4 +12779,9 @@
+ module asm ".size _start, . - _start"
+ @llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section "llvm.metadata"
+ 
++!9000 = !{!"Sol context versus program storage"}
++!9001 = !{!"context base", !9000}
++!9002 = !{!9001, !9001, i64 0}
++!9004 = !{!"program storage", !9000}
++!9003 = !{!9004, !9004, i64 0}
+ ; nlc-link-ir end

@@ -1,0 +1,75 @@
+--- calls.access.ll
++++ calls.access-aa.ll
+@@ -343,16 +343,16 @@
+   store i64 %v78, ptr %local.8, align 1
+   %v81 = load i64, ptr %local.5, align 1
+   %addr.82 = getelementptr i8, ptr %agg.89, i64 0
+-  store i64 %v81, ptr %addr.82, align 1
++  store i64 %v81, ptr %addr.82, align 1, !tbaa !9003
+   %v83 = load i64, ptr %local.6, align 1
+   %addr.84 = getelementptr i8, ptr %agg.89, i64 8
+-  store i64 %v83, ptr %addr.84, align 1
++  store i64 %v83, ptr %addr.84, align 1, !tbaa !9003
+   %v85 = load i64, ptr %local.7, align 1
+   %addr.86 = getelementptr i8, ptr %agg.89, i64 16
+-  store i64 %v85, ptr %addr.86, align 1
++  store i64 %v85, ptr %addr.86, align 1, !tbaa !9003
+   %v87 = load i64, ptr %local.8, align 1
+   %addr.88 = getelementptr i8, ptr %agg.89, i64 24
+-  store i64 %v87, ptr %addr.88, align 1
++  store i64 %v87, ptr %addr.88, align 1, !tbaa !9003
+   %loc.offset.15390 = add i64 %region.offset.30, 0
+   %loc.base.15390 = call ptr @nl_context_current_base(ptr %nl.ctx)
+   %loc.pointer.15390 = getelementptr i8, ptr %loc.base.15390, i64 %loc.offset.15390
+@@ -368,27 +368,27 @@
+   %coll.dynamic.lane.dest.16017 = getelementptr i8, ptr %loc.pointer.15390, i64 %coll.dynamic.lane.offset.16017
+   %coll.dynamic.lane.src.16017 = getelementptr i8, ptr %agg.89, i64 0
+   %coll.dynamic.lane.value.16017 = load i64, ptr %coll.dynamic.lane.src.16017, align 1
+-  store i64 %coll.dynamic.lane.value.16017, ptr %coll.dynamic.lane.dest.16017, align 1
++  store i64 %coll.dynamic.lane.value.16017, ptr %coll.dynamic.lane.dest.16017, align 1, !tbaa !9003
+   %coll.dynamic.lane.bytes.16517 = mul i64 %coll.push.count.90, 8
+   %coll.dynamic.lane.offset.16517 = add i64 8200, %coll.dynamic.lane.bytes.16517
+   %coll.dynamic.lane.dest.16517 = getelementptr i8, ptr %loc.pointer.15390, i64 %coll.dynamic.lane.offset.16517
+   %coll.dynamic.lane.src.16517 = getelementptr i8, ptr %agg.89, i64 8
+   %coll.dynamic.lane.value.16517 = load i64, ptr %coll.dynamic.lane.src.16517, align 1
+-  store i64 %coll.dynamic.lane.value.16517, ptr %coll.dynamic.lane.dest.16517, align 1
++  store i64 %coll.dynamic.lane.value.16517, ptr %coll.dynamic.lane.dest.16517, align 1, !tbaa !9003
+   %coll.dynamic.lane.bytes.17020 = mul i64 %coll.push.count.90, 8
+   %coll.dynamic.lane.offset.17020 = add i64 16392, %coll.dynamic.lane.bytes.17020
+   %coll.dynamic.lane.dest.17020 = getelementptr i8, ptr %loc.pointer.15390, i64 %coll.dynamic.lane.offset.17020
+   %coll.dynamic.lane.src.17020 = getelementptr i8, ptr %agg.89, i64 16
+   %coll.dynamic.lane.value.17020 = load i64, ptr %coll.dynamic.lane.src.17020, align 1
+-  store i64 %coll.dynamic.lane.value.17020, ptr %coll.dynamic.lane.dest.17020, align 1
++  store i64 %coll.dynamic.lane.value.17020, ptr %coll.dynamic.lane.dest.17020, align 1, !tbaa !9003
+   %coll.dynamic.lane.bytes.17525 = mul i64 %coll.push.count.90, 8
+   %coll.dynamic.lane.offset.17525 = add i64 24584, %coll.dynamic.lane.bytes.17525
+   %coll.dynamic.lane.dest.17525 = getelementptr i8, ptr %loc.pointer.15390, i64 %coll.dynamic.lane.offset.17525
+   %coll.dynamic.lane.src.17525 = getelementptr i8, ptr %agg.89, i64 24
+   %coll.dynamic.lane.value.17525 = load i64, ptr %coll.dynamic.lane.src.17525, align 1
+-  store i64 %coll.dynamic.lane.value.17525, ptr %coll.dynamic.lane.dest.17525, align 1
++  store i64 %coll.dynamic.lane.value.17525, ptr %coll.dynamic.lane.dest.17525, align 1, !tbaa !9003
+   %coll.push.next.90 = add i64 %coll.push.count.90, 1
+-  store i64 %coll.push.next.90, ptr %loc.pointer.15390, align 1
++  store i64 %coll.push.next.90, ptr %loc.pointer.15390, align 1, !tbaa !9003
+   br label %coll.push.done.90
+ coll.push.done.90:
+   %nl.scope.restore.92.18197 = load i64, ptr %nl.scope.top.92, align 8
+@@ -2496,7 +2496,7 @@
+   %v991 = add i64 0, 7
+   %v992 = add i64 0, 56
+   %sys.ptr.993 = getelementptr i8, ptr %v989, i64 %v992
+-  %sys.load.993 = load ptr, ptr %sys.ptr.993, align 1
++  %sys.load.993 = load ptr, ptr %sys.ptr.993, align 1, !tbaa !9002
+   %v993 = select i1 true, ptr %sys.load.993, ptr %sys.load.993
+   ret ptr %v993
+ }
+@@ -12784,4 +12784,9 @@
+ module asm ".size _start, . - _start"
+ @llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section "llvm.metadata"
+ 
++!9000 = !{!"Sol context versus program storage"}
++!9001 = !{!"context base", !9000}
++!9002 = !{!9001, !9001, i64 0}
++!9004 = !{!"program storage", !9000}
++!9003 = !{!9004, !9004, i64 0}
+ ; nlc-link-ir end
