@@ -21,7 +21,9 @@ const TY_UNIT: long = 3L
 const TY_NEVER: long = 4L
 const TY_ADDR: long = 5L
 const TY_STRUCT_BASE: long = 6L
-const MAX_VALUE_SIZE: long = 4097L
+// E3a1 begin: struct storage sizes are exact through signed long limits.
+const MAX_VALUE_SIZE: long = 9223372036854775807L
+// E3a1 end
 
 const TYPE_KIND_SCALAR: long = 1L
 const TYPE_KIND_UNIT: long = 2L
@@ -91,6 +93,18 @@ const SYS_REPEAT_BYTE: long = 28L
 const SYS_CALL_MAIN: long = 29L
 const SYS_COPY_16: long = 30L
 const SYS_FILL_16: long = 31L
+// E3a1 begin: context offsets, movable-stack addresses, and growth syscalls.
+const SYS_CONTEXT_OFFSET: long = 32L
+const SYS_CONTEXT_SIZE: long = 33L
+const SYS_STACK_ADDR: long = 34L
+const SYS_STACK_LOAD8: long = 35L
+const SYS_STACK_STORE8: long = 36L
+const SYS_REMAP: long = 37L
+const SYS_UNMAP: long = 38L
+const SYS_CLOCK_GETTIME: long = 39L
+const SYS_IS_TEST_BUILD: long = 40L
+const SYS_CONTEXT: long = 41L
+// E3a1 end
 
 const FACT_NEVER: long = 1L
 const FACT_FALLS_THROUGH: long = 2L
@@ -131,6 +145,11 @@ struct StorageLocation {
     copies: long
     index: long
 }
+
+// E3a1 begin: per-function region offsets reuse the post-check expected-type
+// scratch array, so region planning adds no input-sized table to CompilerTables.
+// The threshold is a test hook; production residency remains 4096 bytes.
+// E3a1 end
 
 struct ExitCleanupRecord {
     scope_id: long
@@ -213,7 +232,9 @@ struct CallEdge {
 
 struct EmitLoop {
     node: long
-    binding: long
+    // E3a1 begin
+    body: long
+    // E3a1 end
 }
 
 struct EmitExprFrame {
@@ -1071,6 +1092,7 @@ fn resolve_value_type(
     -1L
 }
 
+// E3a1 begin: exact struct layout sizing replaces E2's 4,097-byte cap.
 fn size_add_saturated(left: long, right: long) -> long {
     if left >= MAX_VALUE_SIZE || right >= MAX_VALUE_SIZE || left > MAX_VALUE_SIZE - right { MAX_VALUE_SIZE }
     else { left + right }
@@ -1084,6 +1106,7 @@ fn size_align_saturated(value: long, align: long) -> long {
         else { size_add_saturated(value, align - remainder) }
     }
 }
+// E3a1 end
 
 fn value_type_size(compiler: CompilerTables, ty: long) -> long {
     if ty < 0L || ty >= compiler.type_records.count() { return -1L }
@@ -1215,6 +1238,7 @@ fn size_package_structs(
     }
 }
 
+// E3a1 begin: shared compiler integration.
 fn type_node_is_oversized(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -1226,8 +1250,15 @@ fn type_node_is_oversized(
 ) -> bool {
     let ty = resolve_value_type(source, tokens, files, tables, compiler, file_index, node)
     if !is_aggregate_type(compiler, ty) { return false }
-    value_type_size(compiler, ty) > 4096L
+    // E3a1 moves large structs into data-stack regions. Keep E2's gate only
+    // for oversized sum types, which E3b will place in regions later.
+    // E3a1 subsection
+    let kind = type_kind(compiler, ty)
+    (kind == TYPE_KIND_ENUM || kind == TYPE_KIND_OPTION || kind == TYPE_KIND_RESULT) &&
+        value_type_size(compiler, ty) > 4096L
+    // E3a1 subsection end
 }
+// E3a1 end
 // TYPE MODULE END
 
 fn is_core_addr_type(
@@ -1306,6 +1337,18 @@ fn core_sys_operation(
     else if token_is_word_at(source, tokens, files, file_index, token, "repeat_byte") { SYS_REPEAT_BYTE }
     else if token_is_word_at(source, tokens, files, file_index, token, "copy_16") { SYS_COPY_16 }
     else if token_is_word_at(source, tokens, files, file_index, token, "fill_16") { SYS_FILL_16 }
+    // E3a1 begin
+    else if token_is_word_at(source, tokens, files, file_index, token, "context_offset") { SYS_CONTEXT_OFFSET }
+    else if token_is_word_at(source, tokens, files, file_index, token, "context_size") { SYS_CONTEXT_SIZE }
+    else if token_is_word_at(source, tokens, files, file_index, token, "context") { SYS_CONTEXT }
+    else if token_is_word_at(source, tokens, files, file_index, token, "is_test_build") { SYS_IS_TEST_BUILD }
+    else if token_is_word_at(source, tokens, files, file_index, token, "stack_addr") { SYS_STACK_ADDR }
+    else if token_is_word_at(source, tokens, files, file_index, token, "stack_load8") { SYS_STACK_LOAD8 }
+    else if token_is_word_at(source, tokens, files, file_index, token, "stack_store8") { SYS_STACK_STORE8 }
+    else if token_is_word_at(source, tokens, files, file_index, token, "remap") { SYS_REMAP }
+    else if token_is_word_at(source, tokens, files, file_index, token, "unmap") { SYS_UNMAP }
+    else if token_is_word_at(source, tokens, files, file_index, token, "clock_gettime") { SYS_CLOCK_GETTIME }
+    // E3a1 end
     else if token_is_word_at(source, tokens, files, file_index, token, "write") { SYS_WRITE }
     else if token_is_word_at(source, tokens, files, file_index, token, "exit_group") { SYS_EXIT_GROUP }
     else if token_is_word_at(source, tokens, files, file_index, token, "map") { SYS_MAP }
@@ -1319,21 +1362,51 @@ fn core_sys_operation(
     else { -1L }
 }
 
+// E3a1 begin: shared compiler integration.
 fn core_sys_argument_count(operation: long) -> long {
     if operation == SYS_NULL || operation == SYS_STATE { 0L }
+    // E3a1 subsection
+    else if operation == SYS_CONTEXT_SIZE || operation == SYS_IS_TEST_BUILD || operation == SYS_CONTEXT { 0L }
+    else if operation == SYS_CONTEXT_OFFSET { 1L }
+    else if operation == SYS_STACK_ADDR || operation == SYS_STACK_LOAD8 { 2L }
+    else if operation == SYS_STACK_STORE8 { 3L }
+    else if operation == SYS_UNMAP || operation == SYS_CLOCK_GETTIME { 2L }
+    else if operation == SYS_REMAP { 5L }
+    // E3a1 subsection end
     else if operation == SYS_LIT || operation == SYS_REPEAT_BYTE { 1L }
     else if operation == SYS_IS_NULL || operation == SYS_FROM_RAW || operation == SYS_IS_ERROR || operation == SYS_EXIT_GROUP || operation == SYS_CLOSE { 1L }
     else if operation == SYS_OFFSET || operation == SYS_DISTANCE || operation == SYS_LOAD8 || operation == SYS_LOAD32 || operation == SYS_LOAD64 || operation == SYS_LOAD_ADDR || operation == SYS_COPY_16 || operation == SYS_FILL_16 { 2L }
     else if operation == SYS_PROTECT || operation == SYS_IOCTL || operation == SYS_FILL_BULK { 3L }
-    else if operation == SYS_STORE8 || operation == SYS_STORE32 || operation == SYS_STORE64 || operation == SYS_STORE_ADDR || operation == SYS_COPY_FORWARD_BULK || operation == SYS_WRITE || operation == SYS_CALL_MAIN { 3L }
+    else if operation == SYS_CALL_MAIN { 4L }
+    else if operation == SYS_STORE8 || operation == SYS_STORE32 || operation == SYS_STORE64 || operation == SYS_STORE_ADDR || operation == SYS_COPY_FORWARD_BULK || operation == SYS_WRITE { 3L }
     else if operation == SYS_OPENAT || operation == SYS_SIGACTION { 4L }
     else if operation == SYS_STATX { 5L }
     else if operation == SYS_MAP { 6L }
     else { -1L }
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn core_sys_argument_type(operation: long, index: long) -> long {
-    if operation == SYS_IS_NULL && index == 0L { TY_ADDR }
+    // E3a1 subsection
+    if operation == SYS_CONTEXT_OFFSET && index == 0L { TY_LONG }
+    else if operation == SYS_STACK_ADDR && index == 0L { TY_ADDR }
+    else if operation == SYS_STACK_ADDR && index == 1L { TY_LONG }
+    else if operation == SYS_STACK_LOAD8 && index == 0L { TY_ADDR }
+    else if operation == SYS_STACK_LOAD8 && index == 1L { TY_LONG }
+    else if operation == SYS_STACK_STORE8 && index == 0L { TY_ADDR }
+    else if operation == SYS_STACK_STORE8 && index == 1L { TY_LONG }
+    else if operation == SYS_STACK_STORE8 && index == 2L { TY_INT }
+    else if operation == SYS_REMAP && index == 0L { TY_ADDR }
+    else if operation == SYS_REMAP && (index == 1L || index == 2L) { TY_LONG }
+    else if operation == SYS_REMAP && index == 3L { TY_INT }
+    else if operation == SYS_REMAP && index == 4L { TY_ADDR }
+    else if operation == SYS_UNMAP && index == 0L { TY_ADDR }
+    else if operation == SYS_UNMAP && index == 1L { TY_LONG }
+    else if operation == SYS_CLOCK_GETTIME && index == 0L { TY_INT }
+    else if operation == SYS_CLOCK_GETTIME && index == 1L { TY_ADDR }
+    // E3a1 subsection end
+    else if operation == SYS_IS_NULL && index == 0L { TY_ADDR }
     else if operation == SYS_OFFSET && index == 0L { TY_ADDR }
     else if operation == SYS_OFFSET && index == 1L { TY_LONG }
     else if operation == SYS_DISTANCE && index < 2L { TY_ADDR }
@@ -1382,12 +1455,22 @@ fn core_sys_argument_type(operation: long, index: long) -> long {
     else if operation == SYS_CLOSE && index == 0L { TY_INT }
     else if operation == SYS_CALL_MAIN && index == 0L { TY_INT }
     else if operation == SYS_CALL_MAIN && (index == 1L || index == 2L) { TY_ADDR }
+    else if operation == SYS_CALL_MAIN && index == 3L { TY_ADDR }
     else if operation == SYS_LIT && index == 0L { TY_ADDR }
     else { -1L }
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn core_sys_result_type(operation: long) -> long {
-    if operation == SYS_IS_NULL || operation == SYS_IS_ERROR { TY_BOOL }
+    // E3a1 subsection
+    if operation == SYS_CONTEXT_OFFSET || operation == SYS_CONTEXT_SIZE { TY_LONG }
+    else if operation == SYS_IS_TEST_BUILD { TY_BOOL }
+    else if operation == SYS_CONTEXT || operation == SYS_STACK_ADDR { TY_ADDR }
+    else if operation == SYS_STACK_LOAD8 { TY_INT }
+    else if operation == SYS_REMAP || operation == SYS_UNMAP || operation == SYS_CLOCK_GETTIME { TY_LONG }
+    // E3a1 subsection end
+    else if operation == SYS_IS_NULL || operation == SYS_IS_ERROR { TY_BOOL }
     else if operation == SYS_NULL || operation == SYS_OFFSET || operation == SYS_FROM_RAW || operation == SYS_LOAD_ADDR || operation == SYS_STATE || operation == SYS_LIT { TY_ADDR }
     else if operation == SYS_LOAD8 || operation == SYS_LOAD32 { TY_INT }
     else if operation == SYS_LOAD64 || operation == SYS_DISTANCE || operation == SYS_WRITE || operation == SYS_MAP || operation == SYS_PROTECT || operation == SYS_IOCTL || operation == SYS_STATX || operation == SYS_SIGACTION || operation == SYS_OPENAT || operation == SYS_CLOSE { TY_LONG }
@@ -1396,6 +1479,7 @@ fn core_sys_result_type(operation: long) -> long {
     else if operation == SYS_EXIT_GROUP { TY_NEVER }
     else { TY_UNIT }
 }
+// E3a1 end
 
 fn unsupported_category_for_node(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -1410,16 +1494,10 @@ fn unsupported_category_for_node(
     match value.kind {
         NodeKind.Program => 0L,
         NodeKind.Enum => UNSUPPORTED_NODE,
-        NodeKind.Struct => {
-            if value.aux > 0L { UNSUPPORTED_NODE }
-            else {
-                var oversized = false
-                for type_index in 0L..struct_type_count(compiler) {
-                    if struct_record(compiler, type_index).node == node && type_state(compiler, struct_type_id(compiler, type_index)) == 2L && struct_record(compiler, type_index).size > 4096L { oversized = true }
-                }
-                if oversized { UNSUPPORTED_LARGE_VALUE } else { 0L }
-            }
-        },
+        // E3a1 begin: large struct declarations are valid; their values use
+        // data-stack regions. Large sums remain gated by type_node_is_oversized.
+        NodeKind.Struct => if value.aux > 0L { UNSUPPORTED_NODE } else { 0L },
+        // E3a1 end
         NodeKind.StructField => 0L,
         NodeKind.FieldType => if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE } else { 0L },
         NodeKind.TypeAlias => UNSUPPORTED_NODE,
@@ -4112,6 +4190,38 @@ fn ir_write_test_global(
     ir_write_ascii(compiler, ir, "'\\00\", align 1\n")
 }
 
+// E3a1 begin: hooks receive compiler-emitted pointer/length tables.
+fn emit_file_table_global(
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    first_file_id: long,
+) {
+    ir_write_ascii(compiler, ir, "@.nl.file.table.")
+    ir_write_number(compiler, ir, first_file_id)
+    ir_write_ascii(compiler, ir, " = private constant [")
+    ir_write_number(compiler, ir, files.count())
+    ir_write_ascii(compiler, ir, " x { ptr, i64 }] ")
+    if files.count() == 0L {
+        ir_write_ascii(compiler, ir, "zeroinitializer, align 8\n")
+        return
+    }
+    ir_write_ascii(compiler, ir, "[")
+    for file_index in 0L..files.count() {
+        if file_index > 0L { ir_write_ascii(compiler, ir, ", ") }
+        let file_id = first_file_id + file_index
+        ir_write_ascii(compiler, ir, "{ ptr, i64 } { ptr getelementptr inbounds ([")
+        ir_write_number(compiler, ir, files[file_index].name.count() + 1L)
+        ir_write_ascii(compiler, ir, " x i8], ptr @.nl.file.")
+        ir_write_number(compiler, ir, file_id)
+        ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 ")
+        ir_write_number(compiler, ir, files[file_index].name.count())
+        ir_write_ascii(compiler, ir, " }")
+    }
+    ir_write_ascii(compiler, ir, "], align 8\n")
+}
+// E3a1 end
+
 fn ir_write_expect_global(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     tables: ParseTables,
@@ -4157,35 +4267,71 @@ fn native_location(anchor_kind: long, anchor_node: long, byte_offset: long) -> S
     StorageLocation { origin: LOCATION_NATIVE, anchor_kind, anchor_node, byte_offset, copies: 1L, index: 0L }
 }
 
-fn aggregate_destination_location(kind: long, node: long) -> StorageLocation {
-    if kind == 0L { native_location(0L, node, 0L) }
-    else if kind == 1L { native_location(1L, node, 0L) }
-    else if kind == 2L { native_location(4L, 0L, 0L) }
-    else { native_location(2L, node, 0L) }
+// E3a1 begin: resolve native-slot anchors through the per-function plan.
+fn compiler_location(compiler: CompilerTables, anchor_kind: long, anchor_node: long, byte_offset: long) -> StorageLocation {
+    let native = native_location(anchor_kind, anchor_node, byte_offset)
+    if region_has_slot(compiler, anchor_kind, anchor_node) {
+        StorageLocation { origin: LOCATION_DATA_STACK, anchor_kind, anchor_node, byte_offset, copies: 1L, index: 0L }
+    } else { native }
 }
+// E3a1 end
 
-fn aggregate_source_location(kind: long, node: long) -> StorageLocation {
-    if kind == 0L { native_location(0L, node, 0L) }
-    else if kind == 1L { native_location(1L, node, 0L) }
-    else if kind == 2L { native_location(3L, node, 0L) }
-    else { native_location(2L, node, 0L) }
+// E3a1 begin: shared compiler integration.
+fn aggregate_destination_location(compiler: CompilerTables, kind: long, node: long) -> StorageLocation {
+    if kind == 0L { compiler_location(compiler, 0L, node, 0L) }
+    else if kind == 1L { compiler_location(compiler, 1L, node, 0L) }
+    // User function results carry a relocatable descriptor. Core helpers keep
+    // their no-growth pointer ABI and use anchor kind 4 directly.
+    else if kind == 2L { compiler_location(compiler, 9L, 0L, 0L) }
+    else { compiler_location(compiler, 2L, node, 0L) }
 }
+// E3a1 end
 
-fn emit_location_pointer(
+// E3a1 begin: shared compiler integration.
+fn aggregate_source_location(compiler: CompilerTables, kind: long, node: long) -> StorageLocation {
+    if kind == 0L { compiler_location(compiler, 0L, node, 0L) }
+    else if kind == 1L { compiler_location(compiler, 1L, node, 0L) }
+    else if kind == 2L { compiler_location(compiler, 3L, node, 0L) }
+    else { compiler_location(compiler, 2L, node, 0L) }
+}
+// E3a1 end
+
+// E3a1 begin: materialize a movable address immediately before its use.
+fn emit_location_pointer_materialization(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     location: StorageLocation,
-) {
-    // E2i has native slots only; other origins and lane geometry fail closed
-    // until the region and collection owners implement them.
-    if location.origin != LOCATION_NATIVE || location.copies != 1L || location.index != 0L || location.byte_offset != 0L {
+    ) -> long {
+    if location.copies != 1L || location.index != 0L {
         compiler.ir_overflow = true
-        return
+        return -1L
     }
-    if location.anchor_kind == 0L { ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, location.anchor_node) }
+    let serial = next_location_serial(ir)
+    if location.origin == LOCATION_DATA_STACK {
+        let slot = region_find_slot(compiler, location.anchor_kind, location.anchor_node)
+        if slot < 0L { compiler.ir_overflow = true; return -1L }
+        if location.byte_offset == 0L { ir_write_ascii(compiler, ir, "  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %region.offset."); ir_write_number(compiler, ir, slot); ir_write_ascii(compiler, ir, ", 0\n") }
+        else { ir_write_ascii(compiler, ir, "  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %region.offset."); ir_write_number(compiler, ir, slot); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, location.byte_offset); ir_write_ascii(compiler, ir, "\n") }
+        ir_write_ascii(compiler, ir, "  %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @nl_context_current_base(ptr %nl.ctx)\n  %loc.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n")
+        return serial
+    } else if location.anchor_kind == 3L || location.anchor_kind == 9L {
+        if location.anchor_kind == 3L {
+            ir_write_ascii(compiler, ir, "  %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = select i1 true, ptr %arg.anchor."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, ", ptr %arg.anchor."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, "\n  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %arg.offset."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, location.byte_offset); ir_write_ascii(compiler, ir, "\n")
+        } else {
+            ir_write_ascii(compiler, ir, "  %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = select i1 true, ptr %nl.dest.anchor, ptr %nl.dest.anchor\n  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %nl.dest.offset, "); ir_write_number(compiler, ir, location.byte_offset); ir_write_ascii(compiler, ir, "\n")
+        }
+        ir_write_ascii(compiler, ir, "  %loc.is.stack."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = icmp eq ptr %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", null\n  %loc.native.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n  %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @nl_context_current_base(ptr %nl.ctx)\n  %loc.stack.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n  %loc.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = select i1 %loc.is.stack."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %loc.stack.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %loc.native.pointer."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
+        return serial
+    } else { -1L }
+}
+// E3a1 end
+
+// E3a1 begin: shared compiler integration.
+fn emit_location_pointer_reference(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, location: StorageLocation, serial: long) {
+    if serial >= 0L { ir_write_ascii(compiler, ir, "%loc.pointer."); ir_write_number(compiler, ir, serial) }
+    else if location.anchor_kind == 0L { ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, location.anchor_node) }
     else if location.anchor_kind == 1L { ir_write_ascii(compiler, ir, "%local."); ir_write_number(compiler, ir, location.anchor_node) }
     else if location.anchor_kind == 2L { ir_write_ascii(compiler, ir, "%addr."); ir_write_number(compiler, ir, location.anchor_node) }
-    else if location.anchor_kind == 3L { ir_write_ascii(compiler, ir, "%arg."); ir_write_number(compiler, ir, location.anchor_node) }
     else if location.anchor_kind == 4L { ir_write_ascii(compiler, ir, "%nl.dest") }
     else if location.anchor_kind == 5L { ir_write_ascii(compiler, ir, "%nl.source") }
     else if location.anchor_kind == 6L { ir_write_ascii(compiler, ir, "%nl.left") }
@@ -4193,6 +4339,50 @@ fn emit_location_pointer(
     else if location.anchor_kind == 8L { ir_write_ascii(compiler, ir, "%nl.value") }
     else { compiler.ir_overflow = true }
 }
+// E3a1 end
+
+// E3a1 begin: shared compiler integration.
+fn emit_location_pointer(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, location: StorageLocation) {
+    let serial = emit_location_pointer_materialization(compiler, ir, location)
+    emit_location_pointer_reference(compiler, ir, location, serial)
+}
+// E3a1 end
+
+// E3a1 begin: by-reference user calls carry movable locations as null+offset.
+fn emit_location_descriptor_argument(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    location: StorageLocation,
+) {
+    if location.copies != 1L || location.index != 0L { compiler.ir_overflow = true; return }
+    if location.origin == LOCATION_DATA_STACK {
+        let offset = region_slot_offset(compiler, location.anchor_kind, location.anchor_node)
+        let slot = region_find_slot(compiler, location.anchor_kind, location.anchor_node)
+        if offset < 0L || slot < 0L || location.byte_offset != 0L { compiler.ir_overflow = true; return }
+        ir_write_ascii(compiler, ir, "ptr null, i64 %region.offset."); ir_write_number(compiler, ir, slot)
+    } else if location.anchor_kind == 3L {
+        if location.byte_offset != 0L { compiler.ir_overflow = true; return }
+        ir_write_ascii(compiler, ir, "ptr %arg.anchor."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, ", i64 %arg.offset."); ir_write_number(compiler, ir, location.anchor_node)
+    } else if location.anchor_kind == 9L {
+        if location.byte_offset != 0L { compiler.ir_overflow = true; return }
+        ir_write_ascii(compiler, ir, "ptr %nl.dest.anchor, i64 %nl.dest.offset")
+    } else {
+        ir_write_ascii(compiler, ir, "ptr ")
+        if location.anchor_kind == 0L { ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, location.anchor_node) }
+        else if location.anchor_kind == 1L { ir_write_ascii(compiler, ir, "%local."); ir_write_number(compiler, ir, location.anchor_node) }
+        else if location.anchor_kind == 2L { ir_write_ascii(compiler, ir, "%addr."); ir_write_number(compiler, ir, location.anchor_node) }
+        else { compiler.ir_overflow = true; return }
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, location.byte_offset)
+    }
+}
+
+fn emit_location_descriptor_parameter(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, prefix: Ascii max 32, binding: long) {
+    ir_write_ascii(compiler, ir, "ptr %"); ir_write_ascii(compiler, ir, prefix); ir_write_ascii(compiler, ir, ".anchor")
+    if prefix == "arg" { ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, binding) }
+    ir_write_ascii(compiler, ir, ", i64 %"); ir_write_ascii(compiler, ir, prefix); ir_write_ascii(compiler, ir, ".offset")
+    if prefix == "arg" { ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, binding) }
+}
+// E3a1 end
 
 fn emit_location_argument(
     compiler: write CompilerTables,
@@ -4203,25 +4393,37 @@ fn emit_location_argument(
     emit_location_pointer(compiler, ir, location)
 }
 
+// E3a1 begin: shared compiler integration.
 fn emit_location_parameter(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     binding: long,
 ) {
-    emit_location_argument(compiler, ir, native_location(3L, binding, 0L))
+    emit_location_descriptor_parameter(compiler, ir, "arg", binding)
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_hidden_destination_argument(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     destination: StorageLocation,
 ) {
-    emit_location_argument(compiler, ir, destination)
+    emit_location_descriptor_argument(compiler, ir, destination)
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_hidden_destination_parameter(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
-    emit_location_argument(compiler, ir, native_location(4L, 0L, 0L))
+    emit_location_argument(compiler, ir, compiler_location(compiler, 4L, 0L, 0L))
 }
+// E3a1 end
+
+// E3a1 begin
+fn emit_hidden_descriptor_parameter(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
+    emit_location_descriptor_parameter(compiler, ir, "nl.dest", 0L)
+}
+// E3a1 end
 
 fn lower_scope_exit(
     compiler: write CompilerTables,
@@ -4239,6 +4441,13 @@ fn lower_scope_exit(
         let cleanup = compiler.exit_cleanups[compiler.exit_cleanups.count() - cleanup_step - 1L]
         if cleanup.scope_id == scope_id { emit_registered_exit_cleanup(compiler, ir, cleanup) }
     }
+    // E3a1 begin
+    // Restore the incoming top on function exits. Loop resets are emitted at
+    // branch sites, which know the loop body's region scope.
+    if !compiler.core_mode && (exit_kind == EXIT_RETURN || exit_kind == EXIT_RETURN_VALUE || exit_kind == EXIT_TEST_SUCCESS || exit_kind == EXIT_TEST_FAILURE || exit_kind == EXIT_FALLTHROUGH) {
+        ir_write_ascii(compiler, ir, "  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.top)\n")
+    } else { () }
+    // E3a1 end
     if exit_kind == EXIT_RETURN { ir_write_ascii(compiler, ir, "  ret void\n") }
     else if exit_kind == EXIT_RETURN_VALUE {
         ir_write_ascii(compiler, ir, "  ret "); ir_write_ascii(compiler, ir, llvm_type_name(value_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, "\n")
@@ -4262,6 +4471,7 @@ fn lower_scope_exit(
     } else { compiler.ir_overflow = true }
 }
 
+// E3a1 begin: shared compiler integration.
 fn emit_layout_address(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
@@ -4269,16 +4479,18 @@ fn emit_layout_address(
     location: StorageLocation,
 ) {
     if location.origin != LOCATION_NATIVE || location.copies != 1L || location.index != 0L {
-        compiler.ir_overflow = true
-        return
+        if location.origin != LOCATION_DATA_STACK || location.copies != 1L || location.index != 0L { compiler.ir_overflow = true; return }
     }
+    let pointer_location = compiler_location(compiler, location.anchor_kind, location.anchor_node, 0L)
+    let pointer_serial = emit_location_pointer_materialization(compiler, ir, pointer_location)
     ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, result_node)
     ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
-    let pointer_location = native_location(location.anchor_kind, location.anchor_node, 0L)
-    emit_location_pointer(compiler, ir, pointer_location)
+    emit_location_pointer_reference(compiler, ir, pointer_location, pointer_serial)
     ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, location.byte_offset); ir_write_ascii(compiler, ir, "\n")
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_aggregate_address(
     tables: ParseTables,
     compiler: write CompilerTables,
@@ -4290,14 +4502,15 @@ fn emit_aggregate_address(
     let receiver = compiler.child_first[node]
     if tables.nodes[receiver].kind == NodeKind.Name {
         let binding = compiler.facts[receiver].binding
-        if compiler.bindings[binding].parameter { emit_layout_address(compiler, ir, node, native_location(3L, binding, field.offset)) }
-        else { emit_layout_address(compiler, ir, node, native_location(1L, binding, field.offset)) }
+        if compiler.bindings[binding].parameter { emit_layout_address(compiler, ir, node, compiler_location(compiler, 3L, binding, field.offset)) }
+        else { emit_layout_address(compiler, ir, node, compiler_location(compiler, 1L, binding, field.offset)) }
     } else if tables.nodes[receiver].kind == NodeKind.Field {
-        emit_layout_address(compiler, ir, node, native_location(2L, receiver, field.offset))
+        emit_layout_address(compiler, ir, node, compiler_location(compiler, 2L, receiver, field.offset))
     } else {
-        emit_layout_address(compiler, ir, node, native_location(0L, receiver, field.offset))
+        emit_layout_address(compiler, ir, node, compiler_location(compiler, 0L, receiver, field.offset))
     }
 }
+// E3a1 end
 
 fn emit_field_path_value(
     tables: ParseTables,
@@ -4323,6 +4536,7 @@ fn emit_field_path_value(
     compiler.type_walk.clear()
 }
 
+// E3a1 begin: shared compiler integration.
 fn emit_aggregate_copy(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
@@ -4330,14 +4544,19 @@ fn emit_aggregate_copy(
     destination: StorageLocation,
     source: StorageLocation,
 ) {
+    let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
+    let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
     ir_write_ascii(compiler, ir, "  call void ")
     emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY)
     ir_push_byte(compiler, ir, 40)
-    emit_location_argument(compiler, ir, destination)
+    ir_write_ascii(compiler, ir, "ptr %nl.ctx, ptr ")
+    emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
     ir_write_ascii(compiler, ir, ", ")
-    emit_location_argument(compiler, ir, source)
+    ir_write_ascii(compiler, ir, "ptr ")
+    emit_location_pointer_reference(compiler, ir, source, source_pointer)
     ir_write_ascii(compiler, ir, ")\n")
 }
+// E3a1 end
 
 fn emit_type_helper_symbol(
     compiler: write CompilerTables,
@@ -4370,19 +4589,25 @@ fn emit_default_field_helper_symbol(
     ir_write_number(compiler, ir, field_index)
 }
 
+// E3a1 begin: shared compiler integration.
 fn emit_type_helper_call_one(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     type_id: long,
     operation: long,
     operand: StorageLocation,
+    pointer: long,
 ) {
     emit_type_helper_symbol(compiler, ir, type_id, operation)
     ir_push_byte(compiler, ir, 40)
-    emit_location_argument(compiler, ir, operand)
+    ir_write_ascii(compiler, ir, "ptr %nl.ctx, ")
+    ir_write_ascii(compiler, ir, "ptr ")
+    emit_location_pointer_reference(compiler, ir, operand, pointer)
     ir_push_byte(compiler, ir, 41)
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_type_helper_call_two(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
@@ -4390,14 +4615,20 @@ fn emit_type_helper_call_two(
     operation: long,
     first: StorageLocation,
     second: StorageLocation,
+    first_pointer: long,
+    second_pointer: long,
 ) {
     emit_type_helper_symbol(compiler, ir, type_id, operation)
     ir_push_byte(compiler, ir, 40)
-    emit_location_argument(compiler, ir, first)
+    ir_write_ascii(compiler, ir, "ptr %nl.ctx, ")
+    ir_write_ascii(compiler, ir, "ptr ")
+    emit_location_pointer_reference(compiler, ir, first, first_pointer)
     ir_write_ascii(compiler, ir, ", ")
-    emit_location_argument(compiler, ir, second)
+    ir_write_ascii(compiler, ir, "ptr ")
+    emit_location_pointer_reference(compiler, ir, second, second_pointer)
     ir_push_byte(compiler, ir, 41)
 }
+// E3a1 end
 
 fn aggregate_source_kind(tables: ParseTables, compiler: CompilerTables, node: long) -> long {
     if tables.nodes[node].kind == NodeKind.Field { 3L }
@@ -4452,6 +4683,7 @@ fn ir_write_token_text(
     for index in 0L..tokens[token].length { ir_push_byte(compiler, ir, source[start + index]) }
 }
 
+// E3a1 begin: shared compiler integration.
 fn core_external_symbol(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -4463,10 +4695,19 @@ fn core_external_symbol(
     token_is_word_at(source, tokens, files, file_index, token, "nl_core_init") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_context_create") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_context_base_offset") ||
+    // E3a1 subsection
+    token_is_word_at(source, tokens, files, file_index, token, "nl_context_current_base") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_context_current_limit") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_context_reservation_bytes") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_context_set_top_offset") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_context_note_peak") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_context_set_entry_name") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_stack_grow") ||
+    // E3a1 subsection end
     token_is_word_at(source, tokens, files, file_index, token, "nl_context_destroy") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_env_create") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_env_destroy") ||
-    token_is_word_at(source, tokens, files, file_index, token, "nl_register_file") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_register_files") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_test_selected_index") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_set_test_mode") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_print_int") ||
@@ -4489,6 +4730,35 @@ fn core_external_symbol(
     token_is_word_at(source, tokens, files, file_index, token, "memcmp") ||
     token_is_word_at(source, tokens, files, file_index, token, "bcmp")
 }
+// E3a1 end
+
+// E3a1 begin: core helpers carry the job context unless they create it or
+// are freestanding memory/startup primitives.
+fn core_function_has_context(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    function: FunctionRecord,
+) -> bool {
+    files[function.file].name != b"memory.nl" &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "nl_context_create") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "nl_core_start") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "auxiliary_value") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "count_entries") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "startup_write_all") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "startup_write_z") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "startup_write_digit") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "startup_write_number") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "write_context_startup_failure") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "find_environment_in") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "startup_string_length") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "context_header_bytes") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "core_state_bytes") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "stack_poison_record_bytes") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "stack_poison_record_capacity") &&
+        !token_is_word_at(source, tokens, files, function.file, function.name_token, "stack_default_bytes")
+}
+// E3a1 end
 
 fn ir_write_core_function_symbol(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -4512,6 +4782,7 @@ fn ir_write_core_function_symbol(
     ir_write_token_text(source, files, tokens, compiler, ir, function.file, function.name_token)
 }
 
+// E3a1 begin: shared compiler integration.
 fn emit_runtime_failure(
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tables: ParseTables,
@@ -4525,10 +4796,12 @@ fn emit_runtime_failure(
     ir_write_ascii(compiler, ir, "  br i1 %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %ov.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %ov.ok."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, "\nov.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
     if compiler.memory_closure { ir_write_ascii(compiler, ir, "  call void @llvm.trap()\n  unreachable\n") }
-    else { ir_write_ascii(compiler, ir, "  call void @nl_fail(i32 "); ir_write_number(compiler, ir, kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index + compiler.file_id_base); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\n") }
+    else { ir_write_ascii(compiler, ir, "  call void @nl_fail(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\n") }
     ir_write_ascii(compiler, ir, "ov.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_checked_division(
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tables: ParseTables,
@@ -4543,16 +4816,17 @@ fn emit_checked_division(
 ) {
     let position = position_for_offset(file_index, files[file_index].base + tables.nodes[node].anchor, compiler)
     let llvm_ty = llvm_type_name(ty)
-    ir_write_ascii(compiler, ir, "  %div.zero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", 0\n  br i1 %div.zero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.zero.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.nonzero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ndiv.zero.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(i32 9, i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ndiv.nonzero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+    ir_write_ascii(compiler, ir, "  %div.zero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", 0\n  br i1 %div.zero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.zero.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.nonzero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ndiv.zero.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 9, i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ndiv.nonzero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
     let minimum = if ty == TY_INT { "-2147483648" } else { "-9223372036854775808" }
     let overflow_kind = if ty == TY_INT { 12L } else { 13L }
     ir_write_ascii(compiler, ir, "  %div.min."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, left); ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, minimum); ir_write_ascii(compiler, ir, "\n  %div.minusone."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", -1\n  %div.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = and i1 %div.min."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %div.minusone."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
     if is_remainder {
         ir_write_ascii(compiler, ir, "  br i1 %div.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %rem.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %rem.compute."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nrem.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  store "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " 0, ptr %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n  br label %rem.join."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nrem.compute."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %rem.value."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = srem "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, left); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, "\n  store "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " %rem.value."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n  br label %rem.join."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nrem.join."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, ", ptr %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
     } else {
-        ir_write_ascii(compiler, ir, "  br i1 %div.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.overflow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.safe."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ndiv.overflow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(i32 "); ir_write_number(compiler, ir, overflow_kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ndiv.safe."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sdiv "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, left); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, "\n")
+        ir_write_ascii(compiler, ir, "  br i1 %div.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.overflow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.safe."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ndiv.overflow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, overflow_kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ndiv.safe."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sdiv "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, left); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, "\n")
     }
 }
+// E3a1 end
 
 fn emit_compound_assignment(
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -4600,9 +4874,97 @@ fn core_syscall_number(operation: long) -> long {
     else if operation == SYS_SIGACTION { 13L }
     else if operation == SYS_OPENAT { 257L }
     else if operation == SYS_CLOSE { 3L }
+    // E3a1 begin
+    else if operation == SYS_REMAP { 25L }
+    else if operation == SYS_UNMAP { 11L }
+    else if operation == SYS_CLOCK_GETTIME { 228L }
+    // E3a1 end
     else { -1L }
 }
 
+// E3a1 begin: these helpers read the one core declaration and never mirror
+// byte offsets in compiler source.
+fn context_struct_index(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: CompilerTables,
+) -> long {
+    for type_index in 0L..struct_type_count(compiler) {
+        let record = struct_record(compiler, type_index)
+        if token_is_word_at(source, tokens, files, record.file, record.name_token, "DataStackContext") {
+            return type_index
+        }
+    }
+    -1L
+}
+
+fn context_core_state_field_index(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: CompilerTables,
+) -> long {
+    let context_index = context_struct_index(source, tokens, files, compiler)
+    if context_index < 0L { return -1L }
+    let record = struct_record(compiler, context_index)
+    for field_offset in 0L..record.field_count {
+        let field_index = record.field_start + field_offset
+        if token_is_word_at(source, tokens, files, record.file, compiler.struct_fields[field_index].name_token, "core_state") {
+            return field_offset
+        }
+    }
+    -1L
+}
+
+fn context_base_field_index(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: CompilerTables,
+) -> long {
+    let context_index = context_struct_index(source, tokens, files, compiler)
+    if context_index < 0L { return -1L }
+    let record = struct_record(compiler, context_index)
+    for field_offset in 0L..record.field_count {
+        let field_index = record.field_start + field_offset
+        if token_is_word_at(source, tokens, files, record.file, compiler.struct_fields[field_index].name_token, "base") {
+            return field_offset
+        }
+    }
+    -1L
+}
+
+fn context_field_offset(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: CompilerTables,
+    field_index: long,
+) -> long {
+    let context_index = context_struct_index(source, tokens, files, compiler)
+    if context_index < 0L { return -1L }
+    let record = struct_record(compiler, context_index)
+    if field_index < 0L || field_index >= record.field_count { return -1L }
+    compiler.struct_fields[record.field_start + field_index].offset
+}
+
+fn is_stack_address_node(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    node: long,
+    file_index: long,
+) -> bool {
+    tables.nodes[node].kind == NodeKind.MethodCall &&
+        is_core_sys_receiver(source, tokens, files, tables, compiler, node, file_index) &&
+        core_sys_operation(source, tokens, files, file_index, tables.nodes[node].token) == SYS_STACK_ADDR
+}
+// E3a1 end
+
+// E3a1 begin: shared compiler integration.
 fn emit_sys_method(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -4621,8 +4983,67 @@ fn emit_sys_method(
         ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = inttoptr i64 0 to ptr\n")
         return
     }
+    // E3a1 subsection
+    if operation == SYS_IS_TEST_BUILD {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i1 0, ")
+        ir_write_ascii(compiler, ir, if compiler_test_build(compiler) { "true\n" } else { "false\n" })
+        return
+    }
+    if operation == SYS_CONTEXT {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %nl.ctx, i64 0\n")
+        return
+    }
+    if operation == SYS_CONTEXT_OFFSET {
+        let field_arg = first_arg
+        let context_index = context_struct_index(source, tokens, files, compiler)
+        if context_index < 0L { compiler.ir_overflow = true; return }
+        let context_record = struct_record(compiler, context_index)
+        if tables.nodes[field_arg].kind == NodeKind.Integer {
+            let field_index = compiler.facts[field_arg].literal
+            let byte_offset = context_field_offset(source, tokens, files, compiler, field_index)
+            if byte_offset < 0L { compiler.ir_overflow = true; return }
+            ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 0, "); ir_write_number(compiler, ir, byte_offset); ir_write_ascii(compiler, ir, "\n")
+        } else {
+            for field_index in 0L..context_record.field_count {
+                let byte_offset = context_field_offset(source, tokens, files, compiler, field_index)
+                ir_write_ascii(compiler, ir, "  %sys.context.offset.match."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = icmp eq i64 "); ir_write_value_ref(compiler, ir, field_arg); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, "\n  %sys.context.offset.value."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = select i1 %sys.context.offset.match."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, byte_offset); ir_write_ascii(compiler, ir, ", i64 ")
+                if field_index == 0L { ir_write_ascii(compiler, ir, "-1\n") }
+                else { ir_write_ascii(compiler, ir, "%sys.context.offset.value."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, field_index - 1L); ir_write_ascii(compiler, ir, "\n") }
+            }
+            let last = context_record.field_count - 1L
+            ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = select i1 true, i64 %sys.context.offset.value."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, last); ir_write_ascii(compiler, ir, ", i64 %sys.context.offset.value."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, last); ir_write_ascii(compiler, ir, "\n")
+        }
+        return
+    }
+    if operation == SYS_CONTEXT_SIZE {
+        let context_index = context_struct_index(source, tokens, files, compiler)
+        if context_index < 0L { compiler.ir_overflow = true; return }
+        let context_type = struct_type_id(compiler, context_index)
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 0, "); ir_write_number(compiler, ir, value_type_size(compiler, context_type)); ir_write_ascii(compiler, ir, "\n")
+        return
+    }
+    if operation == SYS_STACK_ADDR { return }
+    if operation == SYS_STACK_LOAD8 || operation == SYS_STACK_STORE8 {
+        let context_arg = first_arg
+        let offset_arg = compiler.child_next[context_arg]
+        let base_field = context_base_field_index(source, tokens, files, compiler)
+        let base_offset = context_field_offset(source, tokens, files, compiler, base_field)
+        if base_offset < 0L { compiler.ir_overflow = true; return }
+        ir_write_ascii(compiler, ir, "  %sys.stack.base.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); ir_write_value_ref(compiler, ir, context_arg); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %sys.stack.base."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load ptr, ptr %sys.stack.base.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 8\n  %sys.stack.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %sys.stack.base."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, offset_arg); ir_write_ascii(compiler, ir, "\n")
+        if operation == SYS_STACK_LOAD8 {
+            ir_write_ascii(compiler, ir, "  %sys.stack.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i8, ptr %sys.stack.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i8 %sys.stack.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i32\n")
+        } else {
+            let value_arg = compiler.child_next[offset_arg]
+            ir_write_ascii(compiler, ir, "  %sys.stack.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = trunc i32 "); ir_write_value_ref(compiler, ir, value_arg); ir_write_ascii(compiler, ir, " to i8\n  store i8 %sys.stack.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %sys.stack.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+        }
+        return
+    }
+    // E3a1 subsection end
     if operation == SYS_STATE {
-        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr inbounds ["); ir_write_number(compiler, ir, embedded_core_state_bytes()); ir_write_ascii(compiler, ir, " x i8], ptr @nl.core.state, i64 0, i64 0\n")
+        let field_index = context_core_state_field_index(source, tokens, files, compiler)
+        let byte_offset = context_field_offset(source, tokens, files, compiler, field_index)
+        if byte_offset < 0L { compiler.ir_overflow = true; return }
+        ir_write_ascii(compiler, ir, "  %sys.state.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %nl.ctx, i64 "); ir_write_number(compiler, ir, byte_offset); ir_write_ascii(compiler, ir, "\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load ptr, ptr %sys.state.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 8\n")
         return
     }
     if operation == SYS_LIT {
@@ -4704,7 +5125,8 @@ fn emit_sys_method(
     if operation == SYS_CALL_MAIN {
         let argv_arg = compiler.child_next[first_arg]
         let envp_arg = compiler.child_next[argv_arg]
-        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call i32 @main(i32 "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", ptr "); ir_write_value_ref(compiler, ir, argv_arg); ir_write_ascii(compiler, ir, ", ptr "); ir_write_value_ref(compiler, ir, envp_arg); ir_write_ascii(compiler, ir, ")\n")
+        let auxv_arg = compiler.child_next[envp_arg]
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call i32 @main(i32 "); ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ", ptr "); ir_write_value_ref(compiler, ir, argv_arg); ir_write_ascii(compiler, ir, ", ptr "); ir_write_value_ref(compiler, ir, envp_arg); ir_write_ascii(compiler, ir, ", ptr "); ir_write_value_ref(compiler, ir, auxv_arg); ir_write_ascii(compiler, ir, ")\n")
         return
     }
     let argument_count = core_sys_argument_count(operation)
@@ -4712,11 +5134,26 @@ fn emit_sys_method(
     for argument_index in 0L..argument_count {
         let argument = child_at(tables, compiler, node, argument_index + 1L)
         let ty = core_sys_argument_type(operation, argument_index)
-        ir_write_ascii(compiler, ir, "  %sys.arg."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, argument_index); ir_write_ascii(compiler, ir, " = ")
-        if ty == TY_ADDR { ir_write_ascii(compiler, ir, "ptrtoint ptr "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n") }
-        else if ty == TY_INT { ir_write_ascii(compiler, ir, "sext i32 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n") }
-        else if ty == TY_BOOL { ir_write_ascii(compiler, ir, "zext i1 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n") }
-        else { ir_write_ascii(compiler, ir, "add i64 0, "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, "\n") }
+        if !is_stack_address_node(source, tokens, files, tables, compiler, argument, file_index) {
+            ir_write_ascii(compiler, ir, "  %sys.arg."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, argument_index); ir_write_ascii(compiler, ir, " = ")
+            if ty == TY_ADDR { ir_write_ascii(compiler, ir, "ptrtoint ptr "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n") }
+            else if ty == TY_INT { ir_write_ascii(compiler, ir, "sext i32 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n") }
+            else if ty == TY_BOOL { ir_write_ascii(compiler, ir, "zext i1 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n") }
+            else { ir_write_ascii(compiler, ir, "add i64 0, "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, "\n") }
+        }
+    }
+    // Derive stack addresses only after all argument expressions have run.
+    // There is no call between these reloads and the raw syscall below.
+    for argument_index in 0L..argument_count {
+        let argument = child_at(tables, compiler, node, argument_index + 1L)
+        if !is_stack_address_node(source, tokens, files, tables, compiler, argument, file_index) { continue }
+        let receiver = compiler.child_first[argument]
+        let context_arg = compiler.child_next[receiver]
+        let offset_arg = compiler.child_next[context_arg]
+        let base_field = context_base_field_index(source, tokens, files, compiler)
+        let base_offset = context_field_offset(source, tokens, files, compiler, base_field)
+        if base_offset < 0L { compiler.ir_overflow = true; return }
+        ir_write_ascii(compiler, ir, "  %sys.stack.addr.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, argument_index); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); ir_write_value_ref(compiler, ir, context_arg); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %sys.stack.addr.base."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, argument_index); ir_write_ascii(compiler, ir, " = load ptr, ptr %sys.stack.addr.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, argument_index); ir_write_ascii(compiler, ir, ", align 8\n  %sys.stack.addr.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, argument_index); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %sys.stack.addr.base."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, argument_index); ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, offset_arg); ir_write_ascii(compiler, ir, "\n  %sys.arg."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, argument_index); ir_write_ascii(compiler, ir, " = ptrtoint ptr %sys.stack.addr.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, argument_index); ir_write_ascii(compiler, ir, " to i64\n")
     }
     if operation == SYS_EXIT_GROUP { ir_write_ascii(compiler, ir, "  ") }
     else { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = ") }
@@ -4727,7 +5164,9 @@ fn emit_sys_method(
     ir_write_ascii(compiler, ir, ")\n")
     if operation == SYS_EXIT_GROUP { ir_write_ascii(compiler, ir, "  unreachable\n") }
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_expr_linear(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -4820,6 +5259,9 @@ fn emit_expr_linear(
                 compiler.expr_work[frame_index] = frame
                 compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
             } else if kind == NodeKind.Block {
+                // E3a1 subsection
+                emit_region_scope_enter(files, tables, compiler, ir, current, file_index)
+                // E3a1 subsection end
                 frame.cursor = compiler.child_first[current]
                 frame.child0 = node_last_child(tables, compiler, current)
                 frame.phase = 10L
@@ -4838,6 +5280,9 @@ fn emit_expr_linear(
             } else if kind == NodeKind.LoopExit {
                 let is_break = (syntax.flags & FLAG_VALUE) != 0L
                 let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
+                // E3a1 subsection
+                emit_region_scope_exit(compiler, ir, loop.body)
+                // E3a1 subsection end
                 if is_break { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, 0L, loop.node, TY_UNIT, -1L) }
                 else { lower_scope_exit(compiler, ir, -1L, EXIT_CONTINUE, 0L, loop.node, TY_UNIT, -1L) }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
@@ -4874,7 +5319,10 @@ fn emit_expr_linear(
                             child = compiler.child_next[child]
                         }
                     }
-                    ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_FILL); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_location_argument(compiler, ir, native_location(0L, current, 0L)); ir_write_ascii(compiler, ir, ", ptr @.nl.given."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, count); ir_write_ascii(compiler, ir, ")\n")
+                    // E3a1 subsection
+                    emit_current_top_load(compiler, ir, current)
+                    ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_FILL); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 "); emit_current_top_reference(compiler, ir, current); ir_write_ascii(compiler, ir, ", "); emit_location_descriptor_argument(compiler, ir, compiler_location(compiler, 0L, current, 0L)); ir_write_ascii(compiler, ir, ", ptr @.nl.given."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, count); ir_write_ascii(compiler, ir, ")\n")
+                    // E3a1 subsection end
                 }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             }
@@ -4883,7 +5331,7 @@ fn emit_expr_linear(
             let value = frame.child1
             let field_index = compiler.facts[initializer].binding
             let field = compiler.struct_fields[field_index]
-            emit_layout_address(compiler, ir, initializer, native_location(0L, current, field.offset))
+            emit_layout_address(compiler, ir, initializer, compiler_location(compiler, 0L, current, field.offset))
             if is_aggregate_type(compiler, field.ty) {
                 var source_kind = 0L
                 var source_node = value
@@ -4893,7 +5341,7 @@ fn emit_expr_linear(
                     else { source_kind = 1L; source_node = binding }
                 } else if tables.nodes[value].kind == NodeKind.Field { source_kind = 3L }
                 else { () }
-                emit_aggregate_copy(compiler, ir, field.ty, aggregate_destination_location(3L, initializer), aggregate_source_location(source_kind, source_node))
+                emit_aggregate_copy(compiler, ir, field.ty, aggregate_destination_location(compiler, 3L, initializer), aggregate_source_location(compiler, source_kind, source_node))
             } else if field.ty != TY_UNIT {
                 emit_store_scalar(compiler, ir, initializer, field.ty, value)
             } else { () }
@@ -4918,7 +5366,7 @@ fn emit_expr_linear(
             } else if source_ty == TY_INT && target_ty == TY_LONG {
                 ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = sext i32 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i64\n")
             } else {
-                ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", -2147483648\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 2147483647\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler.file_id_base); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.anchor, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.anchor, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n")
+                ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", -2147483648\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 2147483647\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.anchor, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.anchor, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n")
             }
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.ToLong && frame.phase == 1L {
@@ -4928,7 +5376,7 @@ fn emit_expr_linear(
             if is_aggregate_type(compiler, return_ty) {
                 let source_kind = aggregate_source_kind(tables, compiler, frame.child0)
                 let source_node = aggregate_source_id(tables, compiler, frame.child0)
-                emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(2L, 0L), aggregate_source_location(source_kind, source_node))
+                emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(compiler, 2L, 0L), aggregate_source_location(compiler, source_kind, source_node))
                 lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L)
             } else if return_ty == TY_UNIT { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L) }
             else { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN_VALUE, 0L, 0L, return_ty, frame.child0) }
@@ -4951,7 +5399,7 @@ fn emit_expr_linear(
                 let ty = compiler.facts[frame.child0].ty
                 let source_kind = aggregate_source_kind(tables, compiler, frame.child0)
                 let source_node = aggregate_source_id(tables, compiler, frame.child0)
-                emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(0L, frame.child0), aggregate_source_location(source_kind, source_node))
+                emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, 0L, frame.child0), aggregate_source_location(compiler, source_kind, source_node))
             }
             frame.phase = 2L
             compiler.expr_work[frame_index] = frame
@@ -4964,11 +5412,13 @@ fn emit_expr_linear(
                 ir_write_ascii(compiler, ir, "  store i1 "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n  br label %logic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\nlogic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load i1, ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n")
             } else if (op == 8L || op == 9L) && is_aggregate_type(compiler, compiler.facts[left].ty) {
                 let ty = compiler.facts[left].ty
+                let left_location = if tables.nodes[left].kind == NodeKind.Name || tables.nodes[left].kind == NodeKind.Field { compiler_location(compiler, 0L, left, 0L) }
+                    else { aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, left), aggregate_source_id(tables, compiler, left)) }
+                let right_location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, right), aggregate_source_id(tables, compiler, right))
+                let left_pointer = emit_location_pointer_materialization(compiler, ir, left_location)
+                let right_pointer = emit_location_pointer_materialization(compiler, ir, right_location)
                 ir_write_ascii(compiler, ir, "  %eq.value."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = call i1 ")
-                let left_location = if tables.nodes[left].kind == NodeKind.Name || tables.nodes[left].kind == NodeKind.Field { native_location(0L, left, 0L) }
-                    else { aggregate_source_location(aggregate_source_kind(tables, compiler, left), aggregate_source_id(tables, compiler, left)) }
-                let right_location = aggregate_source_location(aggregate_source_kind(tables, compiler, right), aggregate_source_id(tables, compiler, right))
-                emit_type_helper_call_two(compiler, ir, ty, HELPER_EQUAL, left_location, right_location)
+                emit_type_helper_call_two(compiler, ir, ty, HELPER_EQUAL, left_location, right_location, left_pointer, right_pointer)
                 ir_push_byte(compiler, ir, 10)
                 if op == 8L {
                     ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = select i1 true, i1 %eq.value."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i1 false\n")
@@ -5009,7 +5459,7 @@ fn emit_expr_linear(
                     let ty = compiler.facts[argument].ty
                     let source_kind = aggregate_source_kind(tables, compiler, argument)
                     let source_node = aggregate_source_id(tables, compiler, argument)
-                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(0L, argument), aggregate_source_location(source_kind, source_node))
+                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, 0L, argument), aggregate_source_location(compiler, source_kind, source_node))
                 }
                 frame.phase = 1L
                 compiler.expr_work[frame_index] = frame
@@ -5026,12 +5476,14 @@ fn emit_expr_linear(
                 if is_print {
                     let arg_ty = compiler.facts[first_arg].ty
                     if is_aggregate_type(compiler, arg_ty) {
-                        ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, arg_ty, HELPER_PRINT, aggregate_source_location(aggregate_source_kind(tables, compiler, first_arg), aggregate_source_id(tables, compiler, first_arg))); ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline()\n")
+                        let location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, first_arg), aggregate_source_id(tables, compiler, first_arg))
+                        let pointer = emit_location_pointer_materialization(compiler, ir, location)
+                        ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, arg_ty, HELPER_PRINT, location, pointer); ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline(ptr %nl.ctx)\n")
                     } else {
                         ir_write_ascii(compiler, ir, "  call void @nl_print_")
-                        if arg_ty == TY_INT { ir_write_ascii(compiler, ir, "int(i32 ") }
-                        else if arg_ty == TY_LONG { ir_write_ascii(compiler, ir, "long(i64 ") }
-                        else { ir_write_ascii(compiler, ir, "bool(i1 zeroext ") }
+                        if arg_ty == TY_INT { ir_write_ascii(compiler, ir, "int(ptr %nl.ctx, i32 ") }
+                        else if arg_ty == TY_LONG { ir_write_ascii(compiler, ir, "long(ptr %nl.ctx, i64 ") }
+                        else { ir_write_ascii(compiler, ir, "bool(ptr %nl.ctx, i1 zeroext ") }
                         ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ")\n")
                     }
                 } else {
@@ -5039,21 +5491,32 @@ fn emit_expr_linear(
                     let function = compiler.functions[target]
                     let return_ty = function.result_ty
                     let aggregate_result = is_aggregate_type(compiler, return_ty)
+                    // E3a1 subsection
+                    if !compiler.core_mode { emit_current_top_load(compiler, ir, current) }
+                    // E3a1 subsection end
                     if return_ty != TY_UNIT && return_ty != TY_NEVER && !aggregate_result { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = ") } else { ir_write_ascii(compiler, ir, "  ") }
                     ir_write_ascii(compiler, ir, "call ")
                     if aggregate_result || return_ty == TY_UNIT || return_ty == TY_NEVER { ir_write_ascii(compiler, ir, "void") }
                     else { ir_write_ascii(compiler, ir, llvm_type_name(return_ty)) }
                     ir_push_byte(compiler, ir, 32)
+                    var wrote_argument = false
                     if compiler.core_mode {
                         ir_write_core_function_symbol(source, files, tokens, compiler, ir, function, target)
                         ir_push_byte(compiler, ir, 40)
+                        wrote_argument = false
+                        if core_function_has_context(source, tokens, files, function) {
+                            ir_write_ascii(compiler, ir, "ptr %nl.ctx")
+                            wrote_argument = true
+                        }
                     } else {
-                        ir_write_ascii(compiler, ir, "@nl_fn_"); ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top")
+                        // E3a1 subsection
+                        ir_write_ascii(compiler, ir, "@nl_fn_"); ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 "); emit_current_top_reference(compiler, ir, current)
+                        // E3a1 subsection end
                     }
-                    var wrote_argument = !compiler.core_mode
+                    if !compiler.core_mode { wrote_argument = true }
                     if aggregate_result {
                         if wrote_argument { ir_write_ascii(compiler, ir, ", ") }
-                        emit_hidden_destination_argument(compiler, ir, native_location(0L, current, 0L))
+                        emit_hidden_destination_argument(compiler, ir, compiler_location(compiler, 0L, current, 0L))
                         wrote_argument = true
                     }
                     var arg = first_arg
@@ -5062,7 +5525,7 @@ fn emit_expr_linear(
                         if param_ty != TY_UNIT {
                             if wrote_argument { ir_write_ascii(compiler, ir, ", ") }
                             if is_aggregate_type(compiler, param_ty) {
-                                emit_location_argument(compiler, ir, native_location(0L, arg, 0L))
+                                emit_location_descriptor_argument(compiler, ir, compiler_location(compiler, 0L, arg, 0L))
                             } else {
                                 ir_write_ascii(compiler, ir, llvm_type_name(param_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, arg)
                             }
@@ -5132,7 +5595,7 @@ fn emit_expr_linear(
             if any_falls && frame.auxiliary >= 0L {
                 if result_ty != TY_UNIT && result_ty != TY_NEVER {
                     if is_aggregate_type(compiler, result_ty) {
-                        emit_aggregate_copy(compiler, ir, result_ty, aggregate_destination_location(0L, frame.auxiliary), aggregate_source_location(0L, current))
+                        emit_aggregate_copy(compiler, ir, result_ty, aggregate_destination_location(compiler, 0L, frame.auxiliary), aggregate_source_location(compiler, 0L, current))
                     } else {
                         ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(result_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, current); ir_write_ascii(compiler, ir, ", ptr %if.slot."); ir_write_number(compiler, ir, frame.auxiliary); ir_write_ascii(compiler, ir, ", align 1\n")
                     }
@@ -5216,6 +5679,9 @@ fn emit_expr_linear(
                     }
                 } else if tables.nodes[statement].kind == NodeKind.BreakStatement || tables.nodes[statement].kind == NodeKind.ContinueStatement {
                     let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
+                    // E3a1 subsection
+                    emit_region_scope_exit(compiler, ir, loop.body)
+                    // E3a1 subsection end
                     if tables.nodes[statement].kind == NodeKind.BreakStatement { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, 0L, loop.node, TY_UNIT, -1L) }
                     else { lower_scope_exit(compiler, ir, -1L, EXIT_CONTINUE, 0L, loop.node, TY_UNIT, -1L) }
                     frame.reachable = false
@@ -5228,9 +5694,12 @@ fn emit_expr_linear(
                 compiler.expr_work[frame_index] = frame
                 compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
             } else {
+                // E3a1 subsection
+                emit_region_scope_exit(compiler, ir, current)
                 if frame.auxiliary >= 0L {
                     lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, frame.auxiliary, TY_UNIT, -1L)
                 }
+                // E3a1 subsection end
                 match compiler.expr_work.pop() { some(_) => (), none => () }
                 if compiler.expr_work.count() > 0L {
                     let parent_index = compiler.expr_work.count() - 1L
@@ -5250,12 +5719,17 @@ fn emit_expr_linear(
                 if is_aggregate_type(compiler, tail_ty) {
                     let source_kind = aggregate_source_kind(tables, compiler, frame.child1)
                     let source_node = aggregate_source_id(tables, compiler, frame.child1)
-                    emit_aggregate_copy(compiler, ir, tail_ty, aggregate_destination_location(0L, parent), aggregate_source_location(source_kind, source_node))
+                    emit_aggregate_copy(compiler, ir, tail_ty, aggregate_destination_location(compiler, 0L, parent), aggregate_source_location(compiler, source_kind, source_node))
                 } else {
                     ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(tail_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, frame.child1); ir_write_ascii(compiler, ir, ", ptr %if.slot."); ir_write_number(compiler, ir, parent); ir_write_ascii(compiler, ir, ", align 1\n")
                 }
-                lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, parent, TY_UNIT, -1L)
-            } else if frame.auxiliary >= 0L { lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, frame.auxiliary, TY_UNIT, -1L) } else { () }
+            } else { () }
+            // E3a1 subsection
+            emit_region_scope_exit(compiler, ir, current)
+            if frame.reachable && frame.auxiliary >= 0L {
+                lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, frame.auxiliary, TY_UNIT, -1L)
+            }
+            // E3a1 subsection end
             match compiler.expr_work.pop() { some(_) => (), none => () }
             if compiler.expr_work.count() > 0L {
                 let parent_index = compiler.expr_work.count() - 1L
@@ -5273,7 +5747,7 @@ fn emit_expr_linear(
             if is_aggregate_type(compiler, ty) {
                 let source_kind = aggregate_source_kind(tables, compiler, value)
                 let source_node = aggregate_source_id(tables, compiler, value)
-                emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(1L, binding), aggregate_source_location(source_kind, source_node))
+                emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, 1L, binding), aggregate_source_location(compiler, source_kind, source_node))
             } else if ty == TY_BOOL {
                 ir_write_ascii(compiler, ir, "  %block.bool."); ir_write_number(compiler, ir, statement); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %block.bool."); ir_write_number(compiler, ir, statement); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
             } else if ty != TY_UNIT {
@@ -5294,7 +5768,7 @@ fn emit_expr_linear(
                     let destination_node = if tables.nodes[target].kind == NodeKind.Field { target } else { binding }
                     let source_kind = aggregate_source_kind(tables, compiler, value)
                     let source_node = aggregate_source_id(tables, compiler, value)
-                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(destination_kind, destination_node), aggregate_source_location(source_kind, source_node))
+                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, destination_kind, destination_node), aggregate_source_location(compiler, source_kind, source_node))
                 } else if ty == TY_BOOL {
                     if tables.nodes[target].kind == NodeKind.Field { emit_store_scalar(compiler, ir, target, ty, value) }
                     else { ir_write_ascii(compiler, ir, "  %block.bool."); ir_write_number(compiler, ir, statement); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %block.bool."); ir_write_number(compiler, ir, statement); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
@@ -5320,7 +5794,7 @@ fn emit_expr_linear(
             if is_aggregate_type(compiler, return_ty) {
                 let source_kind = aggregate_source_kind(tables, compiler, frame.child2)
                 let source_node = aggregate_source_id(tables, compiler, frame.child2)
-                emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(2L, 0L), aggregate_source_location(source_kind, source_node))
+                emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(compiler, 2L, 0L), aggregate_source_location(compiler, source_kind, source_node))
                 lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L)
             } else if return_ty == TY_UNIT { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L) }
             else { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN_VALUE, 0L, 0L, return_ty, frame.child2) }
@@ -5333,7 +5807,9 @@ fn emit_expr_linear(
         }
     }
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_expect_after_expression(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -5363,9 +5839,13 @@ fn emit_expect_after_expression(
         let right_node = compiler.child_next[left_node]
         let operand_ty = compiler.facts[left_node].ty
         if is_aggregate_type(compiler, operand_ty) {
-            ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_header(i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.expect."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 0, i64 0))\n")
-            ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_left()\n  call void "); emit_type_helper_call_one(compiler, ir, operand_ty, HELPER_PRINT, native_location(0L, left_node, 0L))
-            ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline()\n  call void @nl_expect_fail_right()\n  call void "); emit_type_helper_call_one(compiler, ir, operand_ty, HELPER_PRINT, aggregate_source_location(aggregate_source_kind(tables, compiler, right_node), aggregate_source_id(tables, compiler, right_node))); ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline()\n")
+            let left_location = compiler_location(compiler, 0L, left_node, 0L)
+            let right_location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, right_node), aggregate_source_id(tables, compiler, right_node))
+            let left_pointer = emit_location_pointer_materialization(compiler, ir, left_location)
+            let right_pointer = emit_location_pointer_materialization(compiler, ir, right_location)
+            ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_header(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.expect."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 "); ir_write_number(compiler, ir, length - 1L); ir_write_ascii(compiler, ir, ")\n")
+            ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_left(ptr %nl.ctx)\n  call void "); emit_type_helper_call_one(compiler, ir, operand_ty, HELPER_PRINT, left_location, left_pointer)
+            ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline(ptr %nl.ctx)\n  call void @nl_expect_fail_right(ptr %nl.ctx)\n  call void "); emit_type_helper_call_one(compiler, ir, operand_ty, HELPER_PRINT, right_location, right_pointer); ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline(ptr %nl.ctx)\n")
         } else {
         if operand_ty == TY_INT || operand_ty == TY_BOOL {
             let extension = if operand_ty == TY_INT { "sext" } else { "zext" }
@@ -5387,7 +5867,7 @@ fn emit_expect_after_expression(
             ir_write_value_ref(compiler, ir, right_node)
             ir_write_ascii(compiler, ir, " to i64\n")
         }
-        ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_compare(i32 ")
+        ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_compare(ptr %nl.ctx, i32 ")
         ir_write_number(compiler, ir, file_index)
         ir_write_ascii(compiler, ir, ", i32 ")
         ir_write_number(compiler, ir, position.line)
@@ -5398,6 +5878,8 @@ fn emit_expect_after_expression(
         ir_write_ascii(compiler, ir, " x i8], ptr @.nl.expect.")
         ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 ")
+        ir_write_number(compiler, ir, length - 1L)
+        ir_write_ascii(compiler, ir, ", i64 ")
         if operand_ty == TY_LONG { ir_write_value_ref(compiler, ir, left_node) }
         else { ir_write_ascii(compiler, ir, "%expect.left."); ir_write_number(compiler, ir, node) }
         ir_write_ascii(compiler, ir, ", i64 ")
@@ -5408,7 +5890,7 @@ fn emit_expect_after_expression(
         ir_write_ascii(compiler, ir, ")\n")
         }
     } else {
-        ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_bool(i32 ")
+        ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_bool(ptr %nl.ctx, i32 ")
         ir_write_number(compiler, ir, file_index)
         ir_write_ascii(compiler, ir, ", i32 ")
         ir_write_number(compiler, ir, position.line)
@@ -5418,13 +5900,16 @@ fn emit_expect_after_expression(
         ir_write_number(compiler, ir, length)
         ir_write_ascii(compiler, ir, " x i8], ptr @.nl.expect.")
         ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, ", i64 0, i64 0))\n")
+        ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 ")
+        ir_write_number(compiler, ir, length - 1L)
+        ir_write_ascii(compiler, ir, ")\n")
     }
     lower_scope_exit(compiler, ir, -1L, EXIT_TEST_FAILURE, 0L, 0L, TY_UNIT, -1L)
     ir_write_ascii(compiler, ir, "expect.pass.")
     ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, ":\n")
 }
+// E3a1 end
 
 fn emit_expect_statement(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -5441,6 +5926,7 @@ fn emit_expect_statement(
     emit_expect_after_expression(source, files, tokens, tables, compiler, ir, node, file_index, expression)
 }
 
+// E3a1 begin: shared compiler integration.
 fn emit_function_body(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -5466,6 +5952,9 @@ fn emit_function_body(
             if frame.child2 == 1L { lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_END, frame.node, TY_UNIT, -1L) }
             if frame.child1 >= 0L {
                 ir_write_ascii(compiler, ir, "if.else."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n")
+                // E3a1 subsection
+                if tables.nodes[frame.child1].kind == NodeKind.Block { emit_region_scope_enter(files, tables, compiler, ir, frame.child1, file_index) }
+                // E3a1 subsection end
                 frame.phase = 101L
                 frame.auxiliary = 0L
                 compiler.work[frame_index] = frame
@@ -5516,6 +6005,11 @@ fn emit_function_body(
             compiler.work[frame_index] = frame
         }
         if frame.cursor < 0L {
+            // E3a1 subsection
+            if frame.node != body && frame.reachable {
+                emit_region_scope_exit(compiler, ir, frame.node)
+            }
+            // E3a1 subsection end
             if frame.node == body && frame.reachable {
                 lower_scope_exit(compiler, ir, -1L, EXIT_FALLTHROUGH, if is_test { 1L } else { 0L }, 0L, return_ty, -1L)
             }
@@ -5545,7 +6039,7 @@ fn emit_function_body(
                     else if is_aggregate_type(compiler, return_ty) {
                         let source_kind = aggregate_source_kind(tables, compiler, child)
                         let source_node = aggregate_source_id(tables, compiler, child)
-                        emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(2L, 0L), aggregate_source_location(source_kind, source_node))
+                        emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(compiler, 2L, 0L), aggregate_source_location(compiler, source_kind, source_node))
                         lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L)
                     }
                     else {
@@ -5572,7 +6066,7 @@ fn emit_function_body(
             if is_aggregate_type(compiler, ty) {
                 let source_kind = aggregate_source_kind(tables, compiler, value)
                 let source_node = aggregate_source_id(tables, compiler, value)
-                emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(1L, binding), aggregate_source_location(source_kind, source_node))
+                emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, 1L, binding), aggregate_source_location(compiler, source_kind, source_node))
             } else if ty == TY_BOOL {
                 ir_write_ascii(compiler, ir, "  %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
             } else if ty != TY_UNIT {
@@ -5592,7 +6086,7 @@ fn emit_function_body(
                     let source_node = aggregate_source_id(tables, compiler, value)
                     let destination_kind = if tables.nodes[target].kind == NodeKind.Field { 3L } else { 1L }
                     let destination_node = if tables.nodes[target].kind == NodeKind.Field { target } else { binding }
-                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(destination_kind, destination_node), aggregate_source_location(source_kind, source_node))
+                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, destination_kind, destination_node), aggregate_source_location(compiler, source_kind, source_node))
                 } else if ty == TY_BOOL {
                     if tables.nodes[target].kind == NodeKind.Field { emit_store_scalar(compiler, ir, target, ty, value) }
                     else { ir_write_ascii(compiler, ir, "  %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
@@ -5615,7 +6109,7 @@ fn emit_function_body(
                 if is_aggregate_type(compiler, return_ty) {
                     let source_kind = aggregate_source_kind(tables, compiler, value)
                     let source_node = aggregate_source_id(tables, compiler, value)
-                    emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(2L, 0L), aggregate_source_location(source_kind, source_node))
+                    emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(compiler, 2L, 0L), aggregate_source_location(compiler, source_kind, source_node))
                     lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L)
                 } else if return_ty == TY_UNIT { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L) }
                 else { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN_VALUE, 0L, 0L, return_ty, value) }
@@ -5624,6 +6118,9 @@ fn emit_function_body(
             frame.reachable = false
             compiler.work[frame_index] = frame
         } else if kind == NodeKind.Block {
+            // E3a1 subsection
+            emit_region_scope_enter(files, tables, compiler, ir, child, file_index)
+            // E3a1 subsection end
             compiler.work.push(CheckFrame { node: child, scope: -1L, expected: -1L, function_id, loop_depth: 0L, is_test, phase: 0L, cursor: compiler.child_first[child], child0: node_last_child(tables, compiler, child), child1: -1L, child2: -1L, result_ty: -1L, auxiliary: 0L, reachable: true }).unwrap()
         } else if kind == NodeKind.Expect {
             emit_expect_statement(source, files, tokens, tables, compiler, ir, child, file_index)
@@ -5637,6 +6134,9 @@ fn emit_function_body(
             if else_block >= 0L { ir_write_ascii(compiler, ir, "if.else."); ir_write_number(compiler, ir, if_node) }
             else { ir_write_ascii(compiler, ir, "if.end."); ir_write_number(compiler, ir, if_node) }
             ir_write_ascii(compiler, ir, "\nif.then."); ir_write_number(compiler, ir, if_node); ir_write_ascii(compiler, ir, ":\n")
+            // E3a1 subsection
+            if then_block >= 0L && tables.nodes[then_block].kind == NodeKind.Block { emit_region_scope_enter(files, tables, compiler, ir, then_block, file_index) }
+            // E3a1 subsection end
             compiler.work.push(CheckFrame { node: if_node, scope: -1L, expected: -1L, function_id, loop_depth: 0L, is_test, phase: 100L, cursor: -1L, child0: then_block, child1: else_block, child2: -1L, result_ty: -1L, auxiliary: 0L, reachable: true }).unwrap()
             compiler.work.push(CheckFrame { node: then_block, scope: -1L, expected: -1L, function_id, loop_depth: 0L, is_test, phase: 0L, cursor: compiler.child_first[then_block], child0: node_last_child(tables, compiler, then_block), child1: -1L, child2: -1L, result_ty: -1L, auxiliary: 0L, reachable: true }).unwrap()
         } else if kind == NodeKind.For {
@@ -5661,11 +6161,17 @@ fn emit_function_body(
             ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, start); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n  br label %for.cond."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, "\nfor.cond."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ":\n  %for.test."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n  %for.more."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = icmp s")
             if (tables.nodes[child].flags & FLAG_INCLUSIVE) != 0L { ir_write_ascii(compiler, ir, "le ") } else { ir_write_ascii(compiler, ir, "lt ") }
             ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " %for.test."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, finish); ir_write_ascii(compiler, ir, "\n  br i1 %for.more."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", label %for.body."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", label %for.end."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, "\nfor.body."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ":\n")
-            compiler.emit_loops.push(EmitLoop { node: child, binding }).unwrap()
+            // E3a1 subsection
+            compiler.emit_loops.push(EmitLoop { node: child, body: loop_body }).unwrap()
+            if loop_body >= 0L && tables.nodes[loop_body].kind == NodeKind.Block { emit_region_scope_enter(files, tables, compiler, ir, loop_body, file_index) }
+            // E3a1 subsection end
             compiler.work.push(CheckFrame { node: child, scope: -1L, expected: -1L, function_id, loop_depth: 0L, is_test, phase: 200L, cursor: -1L, child0: finish, child1: binding, child2: -1L, result_ty: ty, auxiliary: 1L, reachable: true }).unwrap()
             compiler.work.push(CheckFrame { node: loop_body, scope: -1L, expected: -1L, function_id, loop_depth: 0L, is_test, phase: 0L, cursor: compiler.child_first[loop_body], child0: node_last_child(tables, compiler, loop_body), child1: -1L, child2: -1L, result_ty: -1L, auxiliary: 0L, reachable: true }).unwrap()
         } else if kind == NodeKind.BreakStatement || kind == NodeKind.ContinueStatement {
             let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
+            // E3a1 subsection
+            emit_region_scope_exit(compiler, ir, loop.body)
+            // E3a1 subsection end
             if kind == NodeKind.BreakStatement { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, 0L, loop.node, TY_UNIT, -1L) }
             else { lower_scope_exit(compiler, ir, -1L, EXIT_CONTINUE, 0L, loop.node, TY_UNIT, -1L) }
             frame.reachable = false
@@ -5675,7 +6181,9 @@ fn emit_function_body(
         }
     }
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_function_definition(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -5686,6 +6194,7 @@ fn emit_function_definition(
     function_id: long,
 ) {
     let function = compiler.functions[function_id]
+    plan_function_regions(tables, compiler, function.body, function_id)
     if compiler.core_mode { ir_write_ascii(compiler, ir, "define internal ") }
     else { ir_write_ascii(compiler, ir, "define ") }
     if is_aggregate_type(compiler, function.result_ty) || function.result_ty == TY_UNIT || function.result_ty == TY_NEVER { ir_write_ascii(compiler, ir, "void") }
@@ -5698,10 +6207,16 @@ fn emit_function_definition(
         ir_write_ascii(compiler, ir, " @nl_fn_")
         ir_write_number(compiler, ir, function_id)
         ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top")
-        if is_aggregate_type(compiler, function.result_ty) { ir_write_ascii(compiler, ir, ", "); emit_hidden_destination_parameter(compiler, ir) }
+        if is_aggregate_type(compiler, function.result_ty) { ir_write_ascii(compiler, ir, ", "); emit_hidden_descriptor_parameter(compiler, ir) }
     }
     var wrote_parameter = !compiler.core_mode
-    if compiler.core_mode && is_aggregate_type(compiler, function.result_ty) { emit_hidden_destination_parameter(compiler, ir); wrote_parameter = true }
+    // E3a1 subsection: every context-taking core function receives its job context.
+    if compiler.core_mode && core_function_has_context(source, tokens, files, function) {
+        ir_write_ascii(compiler, ir, "ptr %nl.ctx")
+        wrote_parameter = true
+    }
+    // E3a1 subsection end
+    if compiler.core_mode && is_aggregate_type(compiler, function.result_ty) { emit_hidden_descriptor_parameter(compiler, ir); wrote_parameter = true }
     for parameter_index in 0L..function.param_count {
         let parameter = compiler.parameters[function.param_start + parameter_index]
         let binding = binding_for_node(compiler, parameter.node)
@@ -5722,6 +6237,13 @@ fn emit_function_definition(
         if files[function.file].name == b"memory.nl" { ir_write_ascii(compiler, ir, " \"no-builtins\"=\"true\"") }
     }
     ir_write_ascii(compiler, ir, " {\nentry:\n")
+    // E3a1 subsection: context-free startup helpers must not capture a process
+    // global. The null value only serves checked arithmetic's unreachable
+    // fail edges; startup failures themselves use direct syscalls.
+    if compiler.core_mode && !core_function_has_context(source, tokens, files, function) {
+        ir_write_ascii(compiler, ir, "  %nl.ctx = inttoptr i64 0 to ptr\n")
+    }
+    // E3a1 subsection end
     let body_first = function.body - tables.nodes[function.body].subtree + 1L
     for node in 0L..tables.nodes.count() {
         if node < body_first || node > function.body { continue }
@@ -5735,7 +6257,7 @@ fn emit_function_definition(
             let ty = if tables.nodes[node].kind == NodeKind.Binary { compiler.facts[node].ty } else { compiler.facts[compiler.child_first[node]].ty }
             ir_write_ascii(compiler, ir, "  %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", align 1\n")
         }
-        if is_aggregate_type(compiler, compiler.facts[node].ty) {
+        if is_aggregate_type(compiler, compiler.facts[node].ty) && !region_has_slot(compiler, 0L, node) {
             let type_info = type_record(compiler, compiler.facts[node].ty)
             let size = type_info.size
             let alignment = type_info.align
@@ -5744,7 +6266,7 @@ fn emit_function_definition(
     }
     for binding_id in 0L..compiler.bindings.count() {
         let binding = compiler.bindings[binding_id]
-        if compiler.scopes[binding.scope].function_id == function_id && binding.ty != TY_UNIT && !(binding.parameter && is_aggregate_type(compiler, binding.ty)) {
+        if compiler.scopes[binding.scope].function_id == function_id && binding.ty != TY_UNIT && !(binding.parameter && is_aggregate_type(compiler, binding.ty)) && !region_has_slot(compiler, 1L, binding_id) {
             ir_write_ascii(compiler, ir, "  %local.")
             ir_write_number(compiler, ir, binding_id)
             ir_write_ascii(compiler, ir, " = alloca ")
@@ -5768,12 +6290,19 @@ fn emit_function_definition(
             ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(parameter.ty)); ir_write_ascii(compiler, ir, " %arg."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
         }
     }
+    if !compiler.core_mode { emit_region_prologue(files, tables, compiler, ir, function.body, function.file) }
     compiler.memory_closure = compiler.core_mode && files[function.file].name == b"memory.nl"
     emit_function_body(source, files, tokens, tables, compiler, ir, function.body, function.file, function_id, function.result_ty, false)
     compiler.memory_closure = false
     ir_write_ascii(compiler, ir, "}\n\n")
+    // E3a1 subsection: synthetic helpers emitted next do not inherit this frame's
+    // region plan.
+    if !compiler.core_mode { clear_function_regions(compiler) }
+    // E3a1 subsection end
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_test_definition(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -5785,6 +6314,8 @@ fn emit_test_definition(
 ) {
     let test = compiler.tests[test_index]
     let function_id = compiler.functions.count() + test_index
+    let scope_function_id = -1L - test_index
+    plan_function_regions(tables, compiler, test.body, scope_function_id)
     ir_write_ascii(compiler, ir, "define i32 @nl_fn_")
     ir_write_number(compiler, ir, function_id)
     ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top) {\nentry:\n")
@@ -5801,17 +6332,16 @@ fn emit_test_definition(
             let ty = if tables.nodes[node].kind == NodeKind.Binary { compiler.facts[node].ty } else { compiler.facts[compiler.child_first[node]].ty }
             ir_write_ascii(compiler, ir, "  %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", align 1\n")
         }
-        if is_aggregate_type(compiler, compiler.facts[node].ty) {
+        if is_aggregate_type(compiler, compiler.facts[node].ty) && !region_has_slot(compiler, 0L, node) {
             let type_info = type_record(compiler, compiler.facts[node].ty)
             let size = type_info.size
             let alignment = type_info.align
             ir_write_ascii(compiler, ir, "  %agg."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca ["); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, " x i8], align "); ir_write_number(compiler, ir, alignment); ir_write_ascii(compiler, ir, "\n")
         }
     }
-    let scope_function_id = -1L - test_index
     for binding_id in 0L..compiler.bindings.count() {
         let binding = compiler.bindings[binding_id]
-        if compiler.scopes[binding.scope].function_id == scope_function_id && binding.ty != TY_UNIT && !binding.parameter {
+        if compiler.scopes[binding.scope].function_id == scope_function_id && binding.ty != TY_UNIT && !binding.parameter && !region_has_slot(compiler, 1L, binding_id) {
             ir_write_ascii(compiler, ir, "  %local.")
             ir_write_number(compiler, ir, binding_id)
             ir_write_ascii(compiler, ir, " = alloca ")
@@ -5824,9 +6354,14 @@ fn emit_test_definition(
             }
         }
     }
+    emit_region_prologue(files, tables, compiler, ir, test.body, test.file)
     emit_function_body(source, files, tokens, tables, compiler, ir, test.body, test.file, scope_function_id, TY_UNIT, true)
     ir_write_ascii(compiler, ir, "}\n\n")
+    // E3a1 subsection: keep test region offsets local to this emitted function.
+    clear_function_regions(compiler)
+    // E3a1 subsection end
 }
+// E3a1 end
 
 fn struct_has_defaults(compiler: CompilerTables, type_index: long) -> bool {
     let ty = struct_record(compiler, type_index)
@@ -5988,6 +6523,7 @@ fn mark_struct_helpers(
     }
 }
 
+// E3a1 begin: shared compiler integration.
 fn emit_struct_copy_helpers(
     tables: ParseTables,
     compiler: write CompilerTables,
@@ -5997,17 +6533,21 @@ fn emit_struct_copy_helpers(
         let ty = struct_record(compiler, type_index)
         let type_id = struct_type_id(compiler, type_index)
         if !has_type_helper(compiler, type_id, HELPER_COPY) { continue }
-        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY); ir_push_byte(compiler, ir, 40); emit_location_argument(compiler, ir, native_location(4L, 0L, 0L)); ir_write_ascii(compiler, ir, ", "); emit_location_argument(compiler, ir, native_location(5L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
+        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, "); emit_location_argument(compiler, ir, compiler_location(compiler, 4L, 0L, 0L)); ir_write_ascii(compiler, ir, ", "); emit_location_argument(compiler, ir, compiler_location(compiler, 5L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
         for offset in 0L..ty.field_count {
             let field_index = ty.field_start + offset
             let field = compiler.struct_fields[field_index]
             if field.ty == TY_UNIT { continue }
             let dest_address = MAX_TREE_NODES * 2L + field_index * 2L
             let source_address = dest_address + 1L
-            emit_layout_address(compiler, ir, dest_address, native_location(4L, 0L, field.offset))
-            emit_layout_address(compiler, ir, source_address, native_location(5L, 0L, field.offset))
+            emit_layout_address(compiler, ir, dest_address, compiler_location(compiler, 4L, 0L, field.offset))
+            emit_layout_address(compiler, ir, source_address, compiler_location(compiler, 5L, 0L, field.offset))
             if is_aggregate_type(compiler, field.ty) {
-                ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_two(compiler, ir, field.ty, HELPER_COPY, native_location(2L, dest_address, 0L), native_location(2L, source_address, 0L)); ir_push_byte(compiler, ir, 10)
+                let destination = compiler_location(compiler, 2L, dest_address, 0L)
+                let source = compiler_location(compiler, 2L, source_address, 0L)
+                let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
+                let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
+                ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_two(compiler, ir, field.ty, HELPER_COPY, destination, source, destination_pointer, source_pointer); ir_push_byte(compiler, ir, 10)
             } else {
                 let storage_type: Ascii max 8 = if field.ty == TY_BOOL { "i8" } else { llvm_type_name(field.ty) }
                 ir_write_ascii(compiler, ir, "  %copy.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, source_address); ir_write_ascii(compiler, ir, ", align 1\n  store "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, " %copy.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, dest_address); ir_write_ascii(compiler, ir, ", align 1\n")
@@ -6016,7 +6556,9 @@ fn emit_struct_copy_helpers(
         ir_write_ascii(compiler, ir, "  ret void\n}\n\n")
     }
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_struct_eq_helpers(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
@@ -6025,7 +6567,7 @@ fn emit_struct_eq_helpers(
         let ty = struct_record(compiler, type_index)
         let type_id = struct_type_id(compiler, type_index)
         if !has_type_helper(compiler, type_id, HELPER_EQUAL) { continue }
-        ir_write_ascii(compiler, ir, "define internal i1 "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_EQUAL); ir_push_byte(compiler, ir, 40); emit_location_argument(compiler, ir, native_location(6L, 0L, 0L)); ir_write_ascii(compiler, ir, ", "); emit_location_argument(compiler, ir, native_location(7L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
+        ir_write_ascii(compiler, ir, "define internal i1 "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_EQUAL); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, "); emit_location_argument(compiler, ir, compiler_location(compiler, 6L, 0L, 0L)); ir_write_ascii(compiler, ir, ", "); emit_location_argument(compiler, ir, compiler_location(compiler, 7L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
         var previous = -1L
         for offset in 0L..ty.field_count {
             let field_index = ty.field_start + offset
@@ -6033,10 +6575,14 @@ fn emit_struct_eq_helpers(
             if field.ty == TY_UNIT { continue }
             let left_address = MAX_TREE_NODES * 3L + field_index * 2L
             let right_address = left_address + 1L
-            emit_layout_address(compiler, ir, left_address, native_location(6L, 0L, field.offset))
-            emit_layout_address(compiler, ir, right_address, native_location(7L, 0L, field.offset))
+            emit_layout_address(compiler, ir, left_address, compiler_location(compiler, 6L, 0L, field.offset))
+            emit_layout_address(compiler, ir, right_address, compiler_location(compiler, 7L, 0L, field.offset))
             if is_aggregate_type(compiler, field.ty) {
-                ir_write_ascii(compiler, ir, "  %eq.raw."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = call i1 "); emit_type_helper_call_two(compiler, ir, field.ty, HELPER_EQUAL, native_location(2L, left_address, 0L), native_location(2L, right_address, 0L)); ir_push_byte(compiler, ir, 10)
+                let left_location = compiler_location(compiler, 2L, left_address, 0L)
+                let right_location = compiler_location(compiler, 2L, right_address, 0L)
+                let left_pointer = emit_location_pointer_materialization(compiler, ir, left_location)
+                let right_pointer = emit_location_pointer_materialization(compiler, ir, right_location)
+                ir_write_ascii(compiler, ir, "  %eq.raw."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = call i1 "); emit_type_helper_call_two(compiler, ir, field.ty, HELPER_EQUAL, left_location, right_location, left_pointer, right_pointer); ir_push_byte(compiler, ir, 10)
             } else {
                 let storage_type: Ascii max 8 = if field.ty == TY_BOOL { "i8" } else { llvm_type_name(field.ty) }
                 ir_write_ascii(compiler, ir, "  %eq.left."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, left_address); ir_write_ascii(compiler, ir, ", align 1\n  %eq.right."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, right_address); ir_write_ascii(compiler, ir, ", align 1\n  %eq.raw."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = icmp eq "); ir_write_ascii(compiler, ir, storage_type); ir_write_ascii(compiler, ir, " %eq.left."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", %eq.right."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, "\n")
@@ -6053,7 +6599,9 @@ fn emit_struct_eq_helpers(
         ir_write_ascii(compiler, ir, "}\n\n")
     }
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_struct_print_text_call(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
@@ -6061,9 +6609,11 @@ fn emit_struct_print_text_call(
     index: long,
     length: long,
 ) {
-    ir_write_ascii(compiler, ir, "  call void @nl_print_ascii(ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length + 1L); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.struct."); ir_write_ascii(compiler, ir, kind); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 "); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, ")\n")
+    ir_write_ascii(compiler, ir, "  call void @nl_print_ascii(ptr %nl.ctx, ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length + 1L); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.struct."); ir_write_ascii(compiler, ir, kind); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 "); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, ")\n")
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_struct_print_helpers(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -6075,7 +6625,7 @@ fn emit_struct_print_helpers(
         let ty = struct_record(compiler, type_index)
         let type_id = struct_type_id(compiler, type_index)
         if !has_type_helper(compiler, type_id, HELPER_PRINT) { continue }
-        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_PRINT); ir_push_byte(compiler, ir, 40); emit_location_argument(compiler, ir, native_location(8L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
+        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_PRINT); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, "); emit_location_argument(compiler, ir, compiler_location(compiler, 8L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
         emit_struct_print_text_call(compiler, ir, "type", type_index, tokens[ty.name_token].length)
         emit_struct_print_text_call(compiler, ir, "open", 0L, 3L)
         for offset in 0L..ty.field_count {
@@ -6085,25 +6635,29 @@ fn emit_struct_print_helpers(
             emit_struct_print_text_call(compiler, ir, "field", field_index, tokens[field.name_token].length)
             emit_struct_print_text_call(compiler, ir, "colon", 0L, 2L)
             let address = MAX_TREE_NODES * 5L + field_index
-            emit_layout_address(compiler, ir, address, native_location(8L, 0L, field.offset))
+            emit_layout_address(compiler, ir, address, compiler_location(compiler, 8L, 0L, field.offset))
             if is_aggregate_type(compiler, field.ty) {
-                ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, field.ty, HELPER_PRINT, native_location(2L, address, 0L)); ir_push_byte(compiler, ir, 10)
+                let location = compiler_location(compiler, 2L, address, 0L)
+                let pointer = emit_location_pointer_materialization(compiler, ir, location)
+                ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, field.ty, HELPER_PRINT, location, pointer); ir_push_byte(compiler, ir, 10)
             } else if field.ty == TY_BOOL {
-                ir_write_ascii(compiler, ir, "  %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = trunc i8 %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " to i1\n  call void @nl_print_bool_raw(i1 zeroext %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n")
+                ir_write_ascii(compiler, ir, "  %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = trunc i8 %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " to i1\n  call void @nl_print_bool_raw(ptr %nl.ctx, i1 zeroext %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n")
             } else {
                 let raw_name: Ascii max 16 = if field.ty == TY_INT { "int" } else { "long" }
-                ir_write_ascii(compiler, ir, "  %print.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  call void @nl_print_"); ir_write_ascii(compiler, ir, raw_name); ir_write_ascii(compiler, ir, "_raw("); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, " %print.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n")
+                ir_write_ascii(compiler, ir, "  %print.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  call void @nl_print_"); ir_write_ascii(compiler, ir, raw_name); ir_write_ascii(compiler, ir, "_raw(ptr %nl.ctx, "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, " %print.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n")
             }
         }
         emit_struct_print_text_call(compiler, ir, "close", 0L, 2L)
         ir_write_ascii(compiler, ir, "  ret void\n}\n\n")
     }
 }
+// E3a1 end
 
 fn emit_contains_index_helper(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
     ir_write_ascii(compiler, ir, "define internal i1 @nl.contains.index(ptr %items, i64 %count, i64 %wanted) {\nentry:\n  br label %loop\nloop:\n  %index = phi i64 [ 0, %entry ], [ %next, %advance ]\n  %finished = icmp uge i64 %index, %count\n  br i1 %finished, label %missing, label %check\ncheck:\n  %item.ptr = getelementptr i64, ptr %items, i64 %index\n  %item = load i64, ptr %item.ptr, align 1\n  %matches = icmp eq i64 %item, %wanted\n  br i1 %matches, label %found, label %advance\nadvance:\n  %next = add i64 %index, 1\n  br label %loop\nfound:\n  ret i1 true\nmissing:\n  ret i1 false\n}\n\n")
 }
 
+// E3a1 begin: shared compiler integration.
 fn emit_struct_fill_helpers(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
@@ -6118,20 +6672,21 @@ fn emit_struct_fill_helpers(
         let ty = struct_record(compiler, type_index)
         let type_id = struct_type_id(compiler, type_index)
         if !has_type_helper(compiler, type_id, HELPER_FILL) { continue }
-        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_FILL); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_hidden_destination_parameter(compiler, ir); ir_write_ascii(compiler, ir, ", ptr %nl.given, i64 %nl.given.count) {\nentry:\n")
+        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_FILL); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_hidden_descriptor_parameter(compiler, ir); ir_write_ascii(compiler, ir, ", ptr %nl.given, i64 %nl.given.count) {\nentry:\n  %nl.region.end = add i64 %nl.top, 0\n")
         for offset in 0L..ty.field_count {
             let field_index = ty.field_start + offset
             let field = compiler.struct_fields[field_index]
             if field.default_node < 0L { continue }
             let address = MAX_TREE_NODES * 4L + field_index
             ir_write_ascii(compiler, ir, "  %given."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = call i1 @nl.contains.index(ptr %nl.given, i64 %nl.given.count, i64 "); ir_write_number(compiler, ir, offset); ir_write_ascii(compiler, ir, ")\n  br i1 %given."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", label %skip."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", label %fill."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, "\nfill."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ":\n")
-            emit_layout_address(compiler, ir, address, native_location(4L, 0L, field.offset))
-            ir_write_ascii(compiler, ir, "  call void "); emit_default_field_helper_symbol(compiler, ir, type_id, field_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_location_argument(compiler, ir, native_location(2L, address, 0L)); ir_write_ascii(compiler, ir, ")\n  br label %skip."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, "\nskip."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ":\n")
+            ir_write_ascii(compiler, ir, "  %default.dest.offset."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = add i64 %nl.dest.offset, "); ir_write_number(compiler, ir, field.offset); ir_write_ascii(compiler, ir, "\n  call void "); emit_default_field_helper_symbol(compiler, ir, type_id, field_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.region.end, ptr %nl.dest.anchor, i64 %default.dest.offset."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n  br label %skip."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, "\nskip."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ":\n")
         }
         ir_write_ascii(compiler, ir, "  ret void\n}\n\n")
     }
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_struct_default_helpers(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -6146,7 +6701,7 @@ fn emit_struct_default_helpers(
         let function_id = -100000L - field_index
         let expression = field.default_node
         let default_file = struct_record(compiler, field.owner).file
-        ir_write_ascii(compiler, ir, "define internal void "); emit_default_field_helper_symbol(compiler, ir, struct_type_id(compiler, field.owner), field_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_hidden_destination_parameter(compiler, ir); ir_write_ascii(compiler, ir, ") {\nentry:\n")
+        ir_write_ascii(compiler, ir, "define internal void "); emit_default_field_helper_symbol(compiler, ir, struct_type_id(compiler, field.owner), field_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_hidden_descriptor_parameter(compiler, ir); ir_write_ascii(compiler, ir, ") {\nentry:\n  %nl.region.end = add i64 %nl.top, 0\n")
         let first = expression - tables.nodes[expression].subtree
         for node in first..expression + 1L {
             if tables.nodes[node].kind == NodeKind.If && compiler.facts[node].ty != TY_UNIT && compiler.facts[node].ty != TY_NEVER && !is_aggregate_type(compiler, compiler.facts[node].ty) {
@@ -6181,15 +6736,20 @@ fn emit_struct_default_helpers(
         if is_aggregate_type(compiler, field.ty) {
             let source_kind = aggregate_source_kind(tables, compiler, expression)
             let source_node = aggregate_source_id(tables, compiler, expression)
-            emit_aggregate_copy(compiler, ir, field.ty, aggregate_destination_location(2L, 0L), aggregate_source_location(source_kind, source_node))
+            emit_aggregate_copy(compiler, ir, field.ty, aggregate_destination_location(compiler, 2L, 0L), aggregate_source_location(compiler, source_kind, source_node))
         } else if field.ty == TY_BOOL {
-            ir_write_ascii(compiler, ir, "  %default.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, expression); ir_write_ascii(compiler, ir, " to i8\n  store i8 %default.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer(compiler, ir, native_location(4L, 0L, 0L)); ir_write_ascii(compiler, ir, ", align 1\n")
+            let destination = compiler_location(compiler, 9L, 0L, 0L)
+            let pointer = emit_location_pointer_materialization(compiler, ir, destination)
+            ir_write_ascii(compiler, ir, "  %default.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, expression); ir_write_ascii(compiler, ir, " to i8\n  store i8 %default.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, destination, pointer); ir_write_ascii(compiler, ir, ", align 1\n")
         } else {
-            ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, expression); ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer(compiler, ir, native_location(4L, 0L, 0L)); ir_write_ascii(compiler, ir, ", align 1\n")
+            let destination = compiler_location(compiler, 9L, 0L, 0L)
+            let pointer = emit_location_pointer_materialization(compiler, ir, destination)
+            ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, expression); ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, destination, pointer); ir_write_ascii(compiler, ir, ", align 1\n")
         }
         ir_write_ascii(compiler, ir, "  ret void\n}\n\n")
     }
 }
+// E3a1 end
 
 fn emit_type_helpers_for_kind(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -6252,6 +6812,7 @@ fn ir_write_struct_identifier_global(
     ir_write_ascii(compiler, ir, "\\00\", align 1\n")
 }
 
+// E3a1 begin: shared compiler integration.
 fn emit_file_globals(
     files: list<SourceFile, MAX_SOURCE_FILES>,
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -6269,6 +6830,8 @@ fn emit_file_globals(
         for index in 0L..files[file_index].name.count() { ir_write_escaped_byte(compiler, ir, files[file_index].name[index]) }
         ir_write_ascii(compiler, ir, "\\00\", align 1\n")
     }
+    let first_file_id = compiler_file_id_base(compiler)
+    emit_file_table_global(files, compiler, ir, first_file_id)
     let main_name: Bytes max 4096 = b"main"
     ir_write_global_string(compiler, ir, "@.nl.entry.main = private unnamed_addr constant [", main_name)
     for test_index in 0L..compiler.tests.count() {
@@ -6276,6 +6839,22 @@ fn emit_file_globals(
         let name = decode_string_token(source, tokens, files[test.file].base, test.name_token, false)
         ir_write_test_global(compiler, ir, test_index, name)
     }
+    ir_write_ascii(compiler, ir, "@.nl.entry.table = private constant [")
+    ir_write_number(compiler, ir, compiler.tests.count() + 1L)
+    ir_write_ascii(compiler, ir, " x { ptr, i64 }] [")
+    ir_write_ascii(compiler, ir, "{ ptr, i64 } { ptr getelementptr inbounds ([5 x i8], ptr @.nl.entry.main, i64 0, i64 0), i64 4 }")
+    for test_index in 0L..compiler.tests.count() {
+        let test = compiler.tests[test_index]
+        let name = decode_string_token(source, tokens, files[test.file].base, test.name_token, false)
+        ir_write_ascii(compiler, ir, ", { ptr, i64 } { ptr getelementptr inbounds ([")
+        ir_write_number(compiler, ir, name.count() + 8L)
+        ir_write_ascii(compiler, ir, " x i8], ptr @.nl.entry.test.")
+        ir_write_number(compiler, ir, test_index)
+        ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 ")
+        ir_write_number(compiler, ir, name.count() + 7L)
+        ir_write_ascii(compiler, ir, " }")
+    }
+    ir_write_ascii(compiler, ir, "], align 8\n")
     for node in 0L..tables.nodes.count() {
         if tables.nodes[node].kind == NodeKind.Expect { ir_write_expect_global(source, tables, compiler, ir, node) }
         if tables.nodes[node].kind == NodeKind.StructInit {
@@ -6331,7 +6910,9 @@ fn emit_file_globals(
     }
     ir_write_ascii(compiler, ir, "\n")
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn emit_main_function(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     compiler: write CompilerTables,
@@ -6340,12 +6921,14 @@ fn emit_main_function(
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     config: MemoryConfig,
     entry: long,
-    runtime_core: bool,
 ) {
-    if runtime_core { ir_write_ascii(compiler, ir, "define i32 @main(i32 %argc, ptr %argv, ptr %envp) {\nentry:\n  call void @nl_core_init(i32 %argc, ptr %argv, ptr %envp)\n") }
-    else { ir_write_ascii(compiler, ir, "define i32 @main(i32 %argc, ptr %argv) {\nentry:\n") }
+    // E3a1 subsection: create the stable context before any context-passing hook.
+    ir_write_ascii(compiler, ir, "define i32 @main(i32 %argc, ptr %argv, ptr %envp, ptr %auxv) {\nentry:\n  %nl.ctx = call ptr @nl_context_create(i64 4096, i64 ")
+    ir_write_number(compiler, ir, config.recursion_budget)
+    ir_write_ascii(compiler, ir, ", ptr @.nl.entry.table, i64 0, ptr %envp, ptr %auxv)\n  call void @nl_core_init(ptr %nl.ctx, i32 %argc, ptr %argv, ptr %envp, ptr %auxv)\n")
+    // E3a1 subsection end
     if compiler.tests.count() > 0L {
-        ir_write_ascii(compiler, ir, "  %nl.selected = call i32 @nl_test_selected_index()\n  switch i32 %nl.selected, label %nl.select.default [\n")
+        ir_write_ascii(compiler, ir, "  %nl.selected = call i32 @nl_test_selected_index(ptr %nl.ctx)\n  switch i32 %nl.selected, label %nl.select.default [\n")
         for test_index in 0L..compiler.tests.count() {
             ir_write_ascii(compiler, ir, "    i32 ")
             ir_write_number(compiler, ir, test_index)
@@ -6359,54 +6942,27 @@ fn emit_main_function(
             ir_write_number(compiler, ir, test_index)
             ir_write_ascii(compiler, ir, ":\n  br label %nl.select.ready\n")
         }
-        ir_write_ascii(compiler, ir, "nl.select.default:\n  br label %nl.select.ready\nnl.select.ready:\n  %nl.entry.name = phi ptr ")
+        ir_write_ascii(compiler, ir, "nl.select.default:\n  br label %nl.select.ready\nnl.select.ready:\n  %nl.entry.index = phi i64 ")
         for test_index in 0L..compiler.tests.count() {
             if test_index > 0L { ir_write_ascii(compiler, ir, ", ") }
-            ir_write_ascii(compiler, ir, "[ getelementptr inbounds ([")
-            let test = compiler.tests[test_index]
-            let name = decode_string_token(source, tokens, files[test.file].base, test.name_token, false)
-            ir_write_number(compiler, ir, name.count() + 8L)
-            ir_write_ascii(compiler, ir, " x i8], ptr @.nl.entry.test.")
-            ir_write_number(compiler, ir, test_index)
-            ir_write_ascii(compiler, ir, ", i64 0, i64 0), %nl.select.")
+            ir_write_ascii(compiler, ir, "[ ")
+            ir_write_number(compiler, ir, test_index + 1L)
+            ir_write_ascii(compiler, ir, ", %nl.select.")
             ir_write_number(compiler, ir, test_index)
             ir_write_ascii(compiler, ir, " ]")
         }
-        ir_write_ascii(compiler, ir, ", [ getelementptr inbounds ([")
-        if entry >= 0L { ir_write_ascii(compiler, ir, "5") }
-        else {
-            let first_test = compiler.tests[0L]
-            let name = decode_string_token(source, tokens, files[first_test.file].base, first_test.name_token, false)
-            ir_write_number(compiler, ir, name.count() + 8L)
-        }
-        ir_write_ascii(compiler, ir, " x i8], ptr @.nl.entry.")
-        if entry >= 0L { ir_write_ascii(compiler, ir, "main") }
-        else { ir_write_ascii(compiler, ir, "test.0") }
-        ir_write_ascii(compiler, ir, ", i64 0, i64 0), %nl.select.default ]\n")
-        ir_write_ascii(compiler, ir, "  %nl.ctx = call ptr @nl_context_create(i64 4096, i64 ")
-        ir_write_number(compiler, ir, config.recursion_budget)
-        ir_write_ascii(compiler, ir, ", ptr %nl.entry.name)\n")
-    } else {
-        let main_name: Bytes max 4096 = b"main"
-        ir_write_ascii(compiler, ir, "  %nl.ctx = call ptr @nl_context_create(i64 4096, i64 ")
-        ir_write_number(compiler, ir, config.recursion_budget)
-        ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds ([5 x i8], ptr @.nl.entry.main, i64 0, i64 0))\n")
-        let _ = main_name
+        ir_write_ascii(compiler, ir, ", [ ")
+        if entry >= 0L { ir_write_ascii(compiler, ir, "0") } else { ir_write_ascii(compiler, ir, "1") }
+        ir_write_ascii(compiler, ir, ", %nl.select.default ]\n")
+        ir_write_ascii(compiler, ir, "  call void @nl_context_set_entry_name(ptr %nl.ctx, ptr @.nl.entry.table, i64 %nl.entry.index)\n")
     }
-    ir_write_ascii(compiler, ir, "  %nl.top = call i64 @nl_context_base_offset(ptr %nl.ctx)\n")
-    ir_write_ascii(compiler, ir, "  %nl.env = call ptr @nl_env_create(i32 %argc, ptr %argv, i32 ")
+    ir_write_ascii(compiler, ir, "  %nl.top = call i64 @nl_context_base_offset(ptr %nl.ctx)\n  %nl.env = call ptr @nl_env_create(ptr %nl.ctx, i32 %argc, ptr %argv, i32 ")
     ir_write_number(compiler, ir, config.capability_mask)
     ir_write_ascii(compiler, ir, ")\n")
-    for file_index in 0L..files.count() {
-        ir_write_ascii(compiler, ir, "  call void @nl_register_file(i32 ")
-        ir_write_number(compiler, ir, file_index)
-        ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds ([")
-        ir_write_number(compiler, ir, files[file_index].name.count() + 1L)
-        ir_write_ascii(compiler, ir, " x i8], ptr @.nl.file.")
-        ir_write_number(compiler, ir, file_index)
-        ir_write_ascii(compiler, ir, ", i64 0, i64 0))\n")
-    }
-    if runtime_core { ir_write_ascii(compiler, ir, "  call void @nl_core_register_files()\n") }
+    ir_write_ascii(compiler, ir, "  call void @nl_register_files(ptr %nl.ctx, i32 0, ptr @.nl.file.table.0, i32 ")
+    ir_write_number(compiler, ir, files.count())
+    ir_write_ascii(compiler, ir, ")\n")
+    ir_write_ascii(compiler, ir, "  call void @nl_core_register_files(ptr %nl.ctx)\n")
     if compiler.tests.count() > 0L {
         ir_write_ascii(compiler, ir, "  switch i32 %nl.selected, label %nl.test.fallback [\n")
         for test_index in 0L..compiler.tests.count() {
@@ -6420,12 +6976,12 @@ fn emit_main_function(
         for test_index in 0L..compiler.tests.count() {
             ir_write_ascii(compiler, ir, "nl.test.run.")
             ir_write_number(compiler, ir, test_index)
-            ir_write_ascii(compiler, ir, ":\n  call void @nl_set_test_mode()\n  %nl.test.result.")
+            ir_write_ascii(compiler, ir, ":\n  call void @nl_set_test_mode(ptr %nl.ctx)\n  %nl.test.result.")
             ir_write_number(compiler, ir, test_index)
             ir_write_ascii(compiler, ir, " = call i32 @nl_fn_")
             let test_function_id = compiler.functions.count() + test_index
             ir_write_number(compiler, ir, test_function_id)
-            ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top)\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 %nl.test.result.")
+            ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top)\n  call void @nl_env_destroy(ptr %nl.ctx, ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 %nl.test.result.")
             ir_write_number(compiler, ir, test_index)
             ir_write_ascii(compiler, ir, "\n")
         }
@@ -6436,8 +6992,9 @@ fn emit_main_function(
         ir_write_number(compiler, ir, entry)
         ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top)\n")
     }
-    ir_write_ascii(compiler, ir, "  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 0\n}\n")
+    ir_write_ascii(compiler, ir, "  call void @nl_env_destroy(ptr %nl.ctx, ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 0\n}\n")
 }
+// E3a1 end
 
 fn core_position(file_data: Bytes max FILE_SOURCE_CAPACITY, offset: long) -> SourcePosition {
     var line = 1L
@@ -6517,6 +7074,7 @@ fn append_embedded_core_sources(
     }
 }
 
+// E3a1 begin: shared compiler integration.
 fn emit_core_file_globals(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -6526,7 +7084,7 @@ fn emit_core_file_globals(
     ir: grow Bytes max IR_BUFFER_CAPACITY,
 ) {
     for file_index in 0L..files.count() {
-        let global_file_id = compiler.file_id_base + file_index
+        let global_file_id = compiler_file_id_base(compiler) + file_index
         ir_write_ascii(compiler, ir, "@.nl.file.")
         ir_write_number(compiler, ir, global_file_id)
         ir_write_ascii(compiler, ir, " = private unnamed_addr constant [")
@@ -6535,6 +7093,8 @@ fn emit_core_file_globals(
         for index in 0L..files[file_index].name.count() { ir_write_escaped_byte(compiler, ir, files[file_index].name[index]) }
         ir_write_ascii(compiler, ir, "\\00\", align 1\n")
     }
+    let first_file_id = compiler_file_id_base(compiler)
+    emit_file_table_global(files, compiler, ir, first_file_id)
     for node in 0L..tables.nodes.count() {
         if tables.nodes[node].kind == NodeKind.BytesLiteral {
             let syntax = tables.nodes[node]
@@ -6550,6 +7110,7 @@ fn emit_core_file_globals(
         }
     }
 }
+// E3a1 end
 
 fn syscall_register(index: long) -> Ascii max 8 {
     if index == 0L { "rdi" }
@@ -6588,18 +7149,19 @@ fn emit_syscall_helpers(compiler: write CompilerTables, ir: grow Bytes max IR_BU
 }
 
 fn emit_core_registration(files: list<SourceFile, MAX_SOURCE_FILES>, compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
-    ir_write_ascii(compiler, ir, "define internal void @nl_core_register_files() nounwind {\nentry:\n")
-    for file_index in 0L..files.count() {
-        let global_file_id = compiler.file_id_base + file_index
-        ir_write_ascii(compiler, ir, "  call void @nl_register_file(i32 ")
-        ir_write_number(compiler, ir, global_file_id)
-        ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds ([")
-        ir_write_number(compiler, ir, files[file_index].name.count() + 1L)
-        ir_write_ascii(compiler, ir, " x i8], ptr @.nl.file.")
-        ir_write_number(compiler, ir, global_file_id)
-        ir_write_ascii(compiler, ir, ", i64 0, i64 0))\n")
-    }
+    // E3a1 begin
+    let first_file_id = compiler_file_id_base(compiler)
+    let file_count = files.count()
+    ir_write_ascii(compiler, ir, "define internal void @nl_core_register_files(ptr %nl.ctx) nounwind {\nentry:\n")
+    ir_write_ascii(compiler, ir, "  call void @nl_register_files(ptr %nl.ctx, i32 ")
+    ir_write_number(compiler, ir, first_file_id)
+    ir_write_ascii(compiler, ir, ", ptr @.nl.file.table.")
+    ir_write_number(compiler, ir, first_file_id)
+    ir_write_ascii(compiler, ir, ", i32 ")
+    ir_write_number(compiler, ir, file_count)
+    ir_write_ascii(compiler, ir, ")\n")
     ir_write_ascii(compiler, ir, "  ret void\n}\n\n")
+    // E3a1 end
 }
 
 fn emit_core_start_assembly(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
@@ -6607,11 +7169,13 @@ fn emit_core_start_assembly(compiler: write CompilerTables, ir: grow Bytes max I
     ir_write_ascii(compiler, ir, "@llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section \"llvm.metadata\"\n")
 }
 
+// E3a1 begin: shared compiler integration.
 fn compile_embedded_core(
     env: Env,
     config: MemoryConfig,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     file_id_base: long,
+    test_build: bool,
     tables: write ParseTables,
     compiler: write CompilerTables,
 ) -> bool {
@@ -6624,10 +7188,14 @@ fn compile_embedded_core(
     append_embedded_core_sources(env, source, files, tokens, delimiters, tables)
     reset_compiler_tables(compiler)
     compiler.core_mode = true
-    compiler.file_id_base = file_id_base
+    compiler.file_id_base = file_id_base + if test_build { COMPILER_TEST_BUILD_FLAG } else { 0L }
     add_compiler_links(tables, compiler)
     intern_package_names(env, source, files, tokens, tables, compiler)
     build_line_start_index(env, source, files, compiler)
+    // E3a1 subsection: core intrinsics obtain context offsets from this layout.
+    index_package_structs(source, files, tokens, tables, compiler)
+    size_package_structs(source, files, tokens, tables, compiler)
+    // E3a1 subsection end
     check_package_eligibility(env, source, files, tokens, tables, compiler)
     register_package_declarations(env, source, files, tokens, tables, config, compiler)
     let _entry = check_entry_signature(env, source, files, tokens, tables, compiler, false)
@@ -6638,16 +7206,15 @@ fn compile_embedded_core(
         emit_function_definition(source, files, tokens, tables, compiler, ir, function_id)
     }
     emit_core_file_globals(source, files, tokens, tables, compiler, ir)
-    ir_write_ascii(compiler, ir, "@nl.core.state = internal global [")
-    ir_write_number(compiler, ir, embedded_core_state_bytes())
-    ir_write_ascii(compiler, ir, " x i8] zeroinitializer, align 64\n\n")
     emit_core_registration(files, compiler, ir)
     emit_syscall_helpers(compiler, ir)
     ir_write_ascii(compiler, ir, "@llvm.compiler.used = appending global [5 x ptr] [ptr @memcpy, ptr @memmove, ptr @memset, ptr @memcmp, ptr @bcmp], section \"llvm.metadata\"\n")
     emit_core_start_assembly(compiler, ir)
     !compiler.ir_overflow
 }
+// E3a1 end
 
+// E3a1 begin: shared compiler integration.
 fn compile_selfhost_package(
     env: Env,
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -6658,7 +7225,6 @@ fn compile_selfhost_package(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     want_test_build: bool,
-    runtime_core: bool,
     core_hash: Ascii max 64,
 ) {
     check_struct_declarations(env, source, files, tokens, tables, compiler)
@@ -6674,7 +7240,7 @@ fn compile_selfhost_package(
     ir_write_ascii(compiler, ir, "; nlc-link-ir 2\n; nlc.build ")
     ir_write_ascii(compiler, ir, if want_test_build { "test" } else { "program" })
     ir_write_ascii(compiler, ir, "\n; nlc.stack offset\n; nlc.recursion none\n")
-    ir_write_ascii(compiler, ir, if runtime_core { "; nlc.runtime core\n" } else { "; nlc.runtime c\n" })
+    ir_write_ascii(compiler, ir, "; nlc.runtime core\n")
     ir_write_ascii(compiler, ir, "; nlc.core ")
     ir_write_ascii(compiler, ir, core_hash)
     ir_write_ascii(compiler, ir, "\n")
@@ -6691,9 +7257,6 @@ fn compile_selfhost_package(
         ir_write_ascii(compiler, ir, "\n")
     }
     ir_write_ascii(compiler, ir, "source_filename = \"next-lang\"\n\ndeclare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.smul.with.overflow.i32(i32, i32)\ndeclare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)\ndeclare void @llvm.trap()\n")
-    if !runtime_core {
-        ir_write_ascii(compiler, ir, "declare ptr @nl_context_create(i64, i64, ptr)\ndeclare i64 @nl_context_base_offset(ptr)\ndeclare void @nl_context_destroy(ptr)\ndeclare ptr @nl_env_create(i32, ptr, i32)\ndeclare void @nl_env_destroy(ptr)\ndeclare void @nl_register_file(i32, ptr)\ndeclare void @nl_print_int(i32)\ndeclare void @nl_print_long(i64)\ndeclare void @nl_print_bool(i1 zeroext)\ndeclare void @nl_print_int_raw(i32)\ndeclare void @nl_print_long_raw(i64)\ndeclare void @nl_print_bool_raw(i1 zeroext)\ndeclare void @nl_print_ascii(ptr, i64)\ndeclare void @nl_print_newline()\ndeclare void @nl_fail(i32, i32, i32, i32) noreturn cold nounwind\ndeclare void @nl_expect_fail_compare(i32, i32, i32, ptr, i64, i64, i32)\ndeclare void @nl_expect_fail_bool(i32, i32, i32, ptr)\ndeclare void @nl_expect_fail_header(i32, i32, i32, ptr)\ndeclare void @nl_expect_fail_left()\ndeclare void @nl_expect_fail_right()\ndeclare i32 @nl_test_selected_index()\ndeclare void @nl_set_test_mode()\n")
-    }
     ir_write_ascii(compiler, ir, "\n")
     for function_id in 0L..compiler.functions.count() {
         emit_function_definition(source, files, tokens, tables, compiler, ir, function_id)
@@ -6703,16 +7266,15 @@ fn compile_selfhost_package(
     }
     emit_registered_type_helpers(source, files, tokens, tables, compiler, ir)
     emit_file_globals(files, source, tokens, tables, compiler, ir)
-    emit_main_function(source, compiler, ir, files, tokens, config, entry, runtime_core)
-    if runtime_core {
-        let user_ir_overflow = compiler.ir_overflow
-        if !compile_embedded_core(env, config, ir, files.count(), tables, compiler) {
-            fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded")
-        }
-        compiler.ir_overflow = compiler.ir_overflow || user_ir_overflow
+    emit_main_function(source, compiler, ir, files, tokens, config, entry)
+    let user_ir_overflow = compiler.ir_overflow
+    if !compile_embedded_core(env, config, ir, files.count(), want_test_build, tables, compiler) {
+        fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded")
     }
+    compiler.ir_overflow = compiler.ir_overflow || user_ir_overflow
     ir_write_ascii(compiler, ir, "\n; nlc-link-ir end\n")
 }
+// E3a1 end
 
 // Checker order follows checker.rs. main first loads and parses every sorted
 // file, reads package.toml, builds child/sibling links and interns names, then

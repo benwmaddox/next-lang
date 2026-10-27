@@ -511,9 +511,6 @@ build	tests/e2/frame_budget_exact
 unsupported	tests/e2/frame_budget_over
 unsupported	tests/e2/frame_budget_chain
 build	tests/e2/test_frame_budget
-unsupported	tests/e2/size_over
-unsupported	tests/e2/size_padding
-unsupported	tests/e2/size_doubling_chain
 diagnose	tests/e2/size_direct_cycle
 diagnose	tests/e2/size_mutual_cycle
 diagnose	tests/e2/size_unknown_with_large_part
@@ -529,3 +526,13 @@ unsupported	tests/e2/e2i_global_hidden_write_snapshot
 unsupported	tests/e2/e2i_global_transitive_hidden_write_snapshot
 unsupported	tests/e2/e2i_global_equality_hidden_write_snapshot
 unsupported	tests/e2/e2i_global_read_only_no_snapshot
+# E3a begin
+build	tests/e3/a1_core_probes
+build	tests/e3/a1_large_region
+build	tests/e3/a1_loop_region
+build	tests/e3/a1_two_phase
+build	tests/e3/a1_nested_region
+build	tests/e2/size_doubling_chain
+build	tests/e2/size_over
+build	tests/e2/size_padding
+# E3a end

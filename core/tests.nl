@@ -28,9 +28,12 @@ fn nl_test_selected_index() -> int {
     (int)number
 }
 
+// E3a1 begin: test-only stack probes exercise pin refusal and relocation.
 fn nl_set_test_mode() {
     sys.store32(sys.state(), 131116L, 1)
+    nl_stack_test_bootstrap()
 }
+// E3a1 end
 
 fn nl_test_configure_write_fault(nth: long, kind: int, value: long) {
     let state = sys.state()
