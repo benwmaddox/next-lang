@@ -105,6 +105,17 @@ Each names the code and the fix; none changes a design decision.
 - **Stack hook reports a resident sample, not touched pages:** runtime/nl_runtime.c, the `NLC_TEST_BUILD` exit report read through `NLC_TEST_REPORT_STACK_TOUCHED`, counts `mincore`-resident pages and prints `touched=`. Rename the variable to `NLC_TEST_REPORT_STACK_RESIDENT` and the field to `resident=`, keep `peak_used` as the allocation high-water mark, and update compiler/tests/inline_text.rs and compiler/tests/stack_contracts.rs. It is a test hook, not the scheduler's demand measure.
 - **Reject stack settings that aren't implemented:** compiler/src/driver.rs, the `package.toml` key loop (the `continue` for keys other than `job_headroom`, `globals_budget` and `recursion_budget`), silently ignores unknown keys. Make `strict_stack`, `clear_stacks_between_jobs`, trimming settings and `stack_reserve` build errors saying they aren't implemented yet, each until its task lands (`stack_reserve` in O7).
 
+## Oracles (Ben, 2026-10-27)
+
+Advice taken from another language implementer: go oracle-hunting, using strong outside benchmarks and test data as a guide to correctness first and performance second. A timing counts only once its result is checked. Stage 0 is the oracle for behaviour until B1; these are the outside ones, each attached to the step that needs it:
+
+- **LangArena** (bench/langarena/, checksums) and **Are We Fast Yet** (Marr et al., 14 cross-language benchmarks, each checking its own result and limited to a core set of features), both as whole-program acceptance suites at the benchmark checkpoints.
+- **Floats (F1):** the float-parsing test data (`parse-number-fxx-test-data`, strings with exact bit patterns), round-trip and shortest-printing checks for formatting, and LangArena's `{:.7}` checksums.
+- **Text (E3c):** the Unicode consortium's UTF-8 decoder stress tests and case-mapping data.
+- **JSON (the `run.js` reader, then any standard JSON module):** JSONTestSuite's accept, reject and implementation-defined cases.
+- **Hashing and encoding:** NIST SHA-256 vectors, the CRC-32 check value, RFC 4648 Base64 vectors; **compression:** Silesia-corpus round trips.
+- **Arithmetic (P1):** a differential fuzzer comparing next-lang's checked arithmetic, casts and ranges with Rust's `checked_*` operations, so removing checks the compiler proves unnecessary never removes one that was needed.
+
 ## Rules for every task
 
 - Tests first-class: every feature lands with language tests (a program and its expected output, or a `test` block), and every error the compiler reports lands with a test that triggers it.
