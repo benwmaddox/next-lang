@@ -68,3 +68,6 @@ fn go_strconv_Itoa(value: long) -> Bytes max go_string_max {
     for k in 0L..digits.len() { out.push(digits[digits.len() - 1L - k]).unwrap() }
     out
 }
+
+// Go's any, for the values converted code stores in it.
+enum GoAny { Nil, Str(Bytes max go_string_max), Int(long), Bool(bool) }

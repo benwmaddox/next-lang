@@ -66,7 +66,13 @@ type conv struct {
 	recursive map[*types.Func]bool
 	// Read-only string-keyed map variables converted to lookup functions.
 	lookups map[types.Object]lookupTable
-	res     *Result
+	// Function values (funcvals.go).
+	families     map[string]*family
+	litMember    map[*ast.FuncLit]*member
+	fnMember     map[*types.Func]*member
+	lifted       map[*member]bool
+	usedFamilies map[*family]bool
+	res          *Result
 
 	// Per-declaration state.
 	decisions map[string]bool
@@ -83,11 +89,13 @@ const (
 func convert(p *Program, r *Reach, cfg *Config) *Result {
 	c := &conv{
 		p: p, r: r, cfg: cfg,
-		top:      newNamer(nil),
-		topNames: map[types.Object]string{},
-		res:      &Result{files: map[string]*strings.Builder{}, cfg: cfg, convertedObjs: map[types.Object]bool{}, reach: r},
-		tuples:   map[*types.Func]string{},
-		lookups:  map[types.Object]lookupTable{},
+		top:          newNamer(nil),
+		topNames:     map[types.Object]string{},
+		res:          &Result{files: map[string]*strings.Builder{}, cfg: cfg, convertedObjs: map[types.Object]bool{}, reach: r},
+		tuples:       map[*types.Func]string{},
+		lookups:      map[types.Object]lookupTable{},
+		lifted:       map[*member]bool{},
+		usedFamilies: map[*family]bool{},
 	}
 	// Reserve the shim's names so converted code never takes one.
 	for _, line := range strings.Split(gostdShim, "\n") {
@@ -101,10 +109,27 @@ func convert(p *Program, r *Reach, cfg *Config) *Result {
 			}
 		}
 	}
+	c.findFuncValues()
 	c.modes = c.computeModes()
 	c.recursive = c.findRecursive()
 	for _, obj := range r.Order {
 		c.convertDecl(obj)
+	}
+	if len(c.usedFamilies) > 0 {
+		func() {
+			defer func() {
+				if e := recover(); e != nil {
+					u, ok := e.(unsupported)
+					if !ok {
+						panic(e)
+					}
+					c.res.Problems = append(c.res.Problems, Problem{Symbol: "function-value dispatchers", Pos: u.pos, Category: u.category, Message: u.msg})
+				}
+			}()
+			b := &strings.Builder{}
+			b.WriteString(c.dispatchers())
+			c.res.files["go2nl_funcvalues.nl"] = b
+		}()
 	}
 	return c.res
 }
@@ -243,8 +268,11 @@ func (c *conv) nlType(t types.Type, where string) string {
 		c.decide(fmt.Sprintf("map becomes map<K, V, %d>; a new key past %d fails the program", n, n))
 		return fmt.Sprintf("map<%s, %s, %d>", c.mapKeyType(t.Key()), c.nlType(t.Elem(), where+"[]"), n)
 	case *types.Signature:
-		c.fail(nil, "func-value", "function type %s", t)
+		return c.familyOf(t).typeName
 	case *types.Interface:
+		if t.Empty() {
+			return "GoAny"
+		}
 		c.fail(nil, "interface-type", "interface type %s", t)
 	case *types.Struct:
 		c.fail(nil, "anonymous-struct", "anonymous struct type")
@@ -352,6 +380,13 @@ func (c *conv) zero(t types.Type, where string) string {
 		return "map {}"
 	case *types.Array:
 		return "fill(" + c.zero(u.Elem(), where+"[]") + ")"
+	case *types.Signature:
+		c.nlType(t, where)
+		return "0L"
+	case *types.Interface:
+		if u.Empty() {
+			return "GoAny.Nil"
+		}
 	}
 	c.fail(nil, "type", "no zero value for %s", t)
 	return ""
@@ -372,9 +407,6 @@ func (c *conv) typeDecl(tn *types.TypeName, spec *ast.TypeSpec) string {
 		fmt.Fprintf(&b, "struct %s {\n", name)
 		for i := 0; i < u.NumFields(); i++ {
 			f := u.Field(i)
-			if f.Embedded() {
-				c.fail(spec, "embedding", "embedded field %s", f.Name())
-			}
 			if hasPointer(f.Type()) {
 				c.fail(spec, "pointer-field", "field %s has pointer type %s (an object graph needs pools and ids)", f.Name(), f.Type())
 			}
@@ -438,7 +470,55 @@ func (c *conv) globalDecl(v *types.Var, spec *ast.ValueSpec) string {
 		}
 	}
 	fc := c.newFunc(nil)
+	if c.globalFunc(v) {
+		fc.ind = 1
+		body := fc.valueExpr(value, v.Type())
+		return fmt.Sprintf("fn %s() -> %s {\n%s    %s\n}\n", c.valueName(v), t, fc.b.String(), body)
+	}
 	return fmt.Sprintf("const %s: %s = %s\n", c.valueName(v), t, fc.expr(value))
+}
+
+// globalFunc: a read-only package variable whose value holds a string is
+// emitted as a zero-argument function that builds it, not as a const. Stage 0
+// leaves a const struct with a large Bytes field out of the data-stack bound
+// and fails at run time ("data stack exhausted") when one is passed on; a value
+// built locally is counted.
+func (c *conv) globalFunc(v *types.Var) bool {
+	if c.isLookupVar(v) {
+		return false
+	}
+	spec, ok := c.p.Decls[v].(*ast.ValueSpec)
+	if !ok || len(spec.Values) == 0 {
+		return false
+	}
+	if _, ok := v.Type().Underlying().(*types.Map); ok {
+		return false
+	}
+	if _, ok := v.Type().Underlying().(*types.Slice); ok {
+		return false
+	}
+	return holdsString(v.Type(), 0)
+}
+
+func holdsString(t types.Type, depth int) bool {
+	if depth > 8 {
+		return false
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		return u.Info()&types.IsString != 0
+	case *types.Pointer:
+		return holdsString(u.Elem(), depth+1)
+	case *types.Struct:
+		for i := 0; i < u.NumFields(); i++ {
+			if holdsString(u.Field(i).Type(), depth+1) {
+				return true
+			}
+		}
+	case *types.Array:
+		return holdsString(u.Elem(), depth+1)
+	}
+	return false
 }
 
 func (c *conv) writtenGlobals() map[types.Object]bool {

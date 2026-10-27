@@ -22,6 +22,8 @@ type fnConv struct {
 	tuple   string
 	results []*types.Var
 	named   []string
+	// variadicParams are the parameters that hold a variadic ...T as a list.
+	variadicParams map[types.Object]bool
 	// tailIf is the if statement that ends the block being converted.
 	tailIf *ast.IfStmt
 	noPre  bool
@@ -34,7 +36,7 @@ type target struct {
 }
 
 func (c *conv) newFunc(fn *types.Func) *fnConv {
-	return &fnConv{c: c, fn: fn, names: newNamer(c.top), locals: map[types.Object]string{}}
+	return &fnConv{c: c, fn: fn, names: newNamer(c.top), locals: map[types.Object]string{}, variadicParams: map[types.Object]bool{}}
 }
 
 func (f *fnConv) line(format string, args ...any) {
@@ -56,14 +58,24 @@ func (c *conv) funcDecl(fn *types.Func, d *ast.FuncDecl) string {
 	if sig.TypeParams().Len() > 0 || (sig.Recv() != nil && sig.RecvTypeParams().Len() > 0) {
 		c.fail(d, "generic", "generic function")
 	}
-	if sig.Variadic() {
-		c.fail(d, "variadic", "variadic function")
-	}
 	if d.Body == nil {
 		c.fail(d, "no-body", "function without a body (assembly or linkname)")
 	}
+	return c.emitFunc(c.valueName(fn), fn, d.Recv, d.Type, d.Body, sig)
+}
+
+// emitFunc writes one next-lang function: a declared Go function or method
+// (fn set), or a lifted function literal (fn nil).
+func (c *conv) emitFunc(name string, fn *types.Func, recv *ast.FieldList, ft *ast.FuncType, body *ast.BlockStmt, sig *types.Signature) string {
 	f := c.newFunc(fn)
-	pi := c.modes.funcs[fn]
+	var pi *paramInfo
+	if fn != nil {
+		pi = c.modes.funcs[fn]
+	}
+	nparams := sig.Params().Len()
+	if sig.Recv() != nil {
+		nparams++
+	}
 	var params []string
 	var copies []string
 	idx := 0
@@ -81,7 +93,15 @@ func (c *conv) funcDecl(fn *types.Func, d *ast.FuncDecl) string {
 				c.decide("slice or map parameter whose elements change becomes a write parameter")
 			}
 		}
-		nt := c.nlType(t, "")
+		nt := ""
+		if sig.Variadic() && idx == nparams-1 {
+			nt = c.variadicType(t.(*types.Slice).Elem())
+			if obj != nil {
+				f.variadicParams[obj] = true
+			}
+		} else {
+			nt = c.nlType(t, "")
+		}
 		if obj == nil || n.Name == "_" {
 			params = append(params, fmt.Sprintf("%s: %s%s", f.tmp("unused"), mode, nt))
 		} else if pi != nil && pi.copy[idx] && mode == "" {
@@ -97,8 +117,8 @@ func (c *conv) funcDecl(fn *types.Func, d *ast.FuncDecl) string {
 		}
 		idx++
 	}
-	if d.Recv != nil {
-		fl := d.Recv.List[0]
+	if recv != nil {
+		fl := recv.List[0]
 		var n *ast.Ident
 		if len(fl.Names) > 0 {
 			n = fl.Names[0]
@@ -106,7 +126,7 @@ func (c *conv) funcDecl(fn *types.Func, d *ast.FuncDecl) string {
 		addParam(n, sig.Recv().Type())
 		c.decide("method becomes a function taking the receiver first")
 	}
-	for _, fl := range d.Type.Params.List {
+	for _, fl := range ft.Params.List {
 		t := c.p.Info.TypeOf(fl.Type)
 		if len(fl.Names) == 0 {
 			addParam(nil, t)
@@ -123,10 +143,12 @@ func (c *conv) funcDecl(fn *types.Func, d *ast.FuncDecl) string {
 	if rs.Len() == 1 {
 		res = " -> " + c.nlType(rs.At(0).Type(), "")
 	} else if rs.Len() > 1 {
+		if fn == nil {
+			c.fail(ft, "multi-return", "function literal with several results")
+		}
 		f.tuple = c.tupleType(fn)
 		res = " -> " + f.tuple
 	}
-	name := c.valueName(fn)
 	f.ind = 1
 	for _, cp := range copies {
 		f.line("%s", cp)
@@ -140,17 +162,17 @@ func (c *conv) funcDecl(fn *types.Func, d *ast.FuncDecl) string {
 		}
 		c.decide("named results become locals")
 	}
-	for _, s := range d.Body.List {
+	for _, s := range body.List {
 		f.stmt(s)
 	}
-	if rs.Len() > 0 && !endsInReturn(d.Body) {
+	if rs.Len() > 0 && !endsInReturn(body) {
 		// Go proved the end unreachable (a terminating statement); next-lang
 		// needs a value there.
 		f.line("%s", f.zeroResult())
 		c.decide("unreachable function end gets a zero result")
 	}
 	kw := "fn"
-	if c.recursive[fn] {
+	if fn != nil && c.recursive[fn] {
 		kw = "recursive fn"
 		c.decide("function on a call cycle is marked recursive")
 	}
@@ -378,6 +400,9 @@ func (c *conv) returnsFresh(fn *types.Func) bool {
 		switch v := ast.Unparen(r.Results[0]).(type) {
 		case *ast.UnaryExpr:
 			if _, ok := ast.Unparen(v.X).(*ast.CompositeLit); ok && v.Op == token.AND {
+				return true
+			}
+			if id := addrOfLocal(c, v); id != nil && !addressTakenElsewhere(c, fd.Body, id) {
 				return true
 			}
 		case *ast.CallExpr:
@@ -620,6 +645,13 @@ func (f *fnConv) ret(s *ast.ReturnStmt) {
 		return
 	}
 	if f.tuple == "" {
+		if id := addrOfLocal(c, s.Results[0]); id != nil {
+			if name, ok := f.locals[c.p.Info.Uses[id]]; ok {
+				f.line("return %s", name)
+				c.decide("return &local becomes return local (the local is not used after)")
+				return
+			}
+		}
 		f.line("return %s", f.valueExpr(s.Results[0], f.results[0].Type()))
 		return
 	}
@@ -1105,4 +1137,41 @@ func (f *fnConv) pre(format string, args ...any) {
 		f.c.fail(nil, "condition-temp", "a condition in an else-if or case needs a temporary")
 	}
 	f.line(format, args...)
+}
+
+// addrOfLocal: e is &x for a local variable x (not a parameter or global).
+func addrOfLocal(c *conv, e ast.Expr) *ast.Ident {
+	u, ok := ast.Unparen(e).(*ast.UnaryExpr)
+	if !ok || u.Op != token.AND {
+		return nil
+	}
+	id, ok := ast.Unparen(u.X).(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	v, ok := c.p.Info.Uses[id].(*types.Var)
+	if !ok || isPackageLevel(v) {
+		return nil
+	}
+	return id
+}
+
+// addressTakenElsewhere: x's address is taken somewhere other than in a
+// return statement, so returning &x may share it.
+func addressTakenElsewhere(c *conv, body ast.Node, id *ast.Ident) bool {
+	obj := c.p.Info.Uses[id]
+	taken := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if r, ok := n.(*ast.ReturnStmt); ok {
+			_ = r
+			return false
+		}
+		if u, ok := n.(*ast.UnaryExpr); ok && u.Op == token.AND {
+			if x, ok := ast.Unparen(u.X).(*ast.Ident); ok && c.p.Info.Uses[x] == obj {
+				taken = true
+			}
+		}
+		return true
+	})
+	return taken
 }

@@ -12,6 +12,19 @@ import (
 // valueExpr converts e for a slot of Go type want: it drops the & of a fresh
 // &T{...} (pointers become values) and keeps everything else as expr does.
 func (f *fnConv) valueExpr(e ast.Expr, want types.Type) string {
+	if want != nil {
+		if _, ok := want.Underlying().(*types.Signature); ok {
+			if f.c.isNilIdent(e) {
+				return "0L"
+			}
+			if v := f.funcValue(e); v != "" {
+				return v
+			}
+		}
+		if isEmptyInterface(want) && !isEmptyInterface(f.c.p.Info.TypeOf(e)) {
+			return f.box(e)
+		}
+	}
 	if u, ok := ast.Unparen(e).(*ast.UnaryExpr); ok && u.Op == token.AND {
 		if _, ok := ast.Unparen(u.X).(*ast.CompositeLit); ok {
 			return f.expr(u.X)
@@ -93,10 +106,7 @@ func (f *fnConv) expr(e ast.Expr) string {
 		if sel := info.Selections[e]; sel != nil {
 			switch sel.Kind() {
 			case types.FieldVal:
-				if len(sel.Index()) > 1 {
-					c.fail(e, "embedding", "promoted field %s", e.Sel.Name)
-				}
-				return f.expr(e.X) + "." + fieldName(e.Sel.Name)
+				return f.expr(e.X) + c.embedPath(e, sel) + "." + fieldName(e.Sel.Name)
 			default:
 				c.fail(e, "func-value", "method value %s", c.exprString(e))
 			}
@@ -117,7 +127,7 @@ func (f *fnConv) expr(e ast.Expr) string {
 	case *ast.CompositeLit:
 		return f.composite(e)
 	case *ast.FuncLit:
-		c.fail(e, "closure", "function literal (closure)")
+		return f.funcValue(e)
 	case *ast.TypeAssertExpr:
 		c.fail(e, "type-switch", "type assertion")
 	}
@@ -136,6 +146,10 @@ func (f *fnConv) ident(id *ast.Ident) string {
 		if isPackageLevel(o) && c.p.inModule(o) && c.isLookupVar(o) {
 			c.fail(id, "lookup-map", "map %s (converted to a lookup function) used other than by key or len", id.Name)
 		}
+		if isPackageLevel(o) && c.p.inModule(o) && c.globalFunc(o) {
+			c.decide("a read-only global holding a string is built by a function call (stage 0 const workaround)")
+			return c.valueName(o) + "()"
+		}
 		if isPackageLevel(o) && c.p.inModule(o) {
 			return c.valueName(o)
 		}
@@ -146,6 +160,9 @@ func (f *fnConv) ident(id *ast.Ident) string {
 	case *types.Nil:
 		c.fail(id, "nil", "nil")
 	case *types.Func:
+		if v := f.funcValue(id); v != "" {
+			return v
+		}
 		c.fail(id, "func-value", "function %s used as a value", id.Name)
 	case *types.Const:
 		return c.literal(o.Val(), o.Type(), id)
@@ -174,10 +191,7 @@ func (f *fnConv) place(e ast.Expr) string {
 		}
 	case *ast.SelectorExpr:
 		if sel := c.p.Info.Selections[x]; sel != nil && sel.Kind() == types.FieldVal {
-			if len(sel.Index()) > 1 {
-				c.fail(x, "embedding", "promoted field %s", x.Sel.Name)
-			}
-			return f.place(x.X) + "." + fieldName(x.Sel.Name)
+			return f.place(x.X) + c.embedPath(x, sel) + "." + fieldName(x.Sel.Name)
 		}
 	case *ast.IndexExpr:
 		xt := c.p.Info.TypeOf(x.X).Underlying()
@@ -356,6 +370,13 @@ func (f *fnConv) binaryExpr(e *ast.BinaryExpr) string {
 	info := c.p.Info
 	lt, rt := info.TypeOf(e.X), info.TypeOf(e.Y)
 	if isNilType(lt) || isNilType(rt) {
+		other, ot := e.X, lt
+		if isNilType(lt) {
+			other, ot = e.Y, rt
+		}
+		if _, ok := ot.Underlying().(*types.Signature); ok && (e.Op == token.EQL || e.Op == token.NEQ) {
+			return "(" + f.expr(other) + " " + binOps[e.Op] + " 0L)"
+		}
 		c.fail(e, "nil", "comparison with nil")
 	}
 	// An untyped side takes the other side's type, as in Go.
@@ -480,45 +501,48 @@ func (f *fnConv) call(e *ast.CallExpr) string {
 	}
 	callee := calleeFunc(c, e)
 	if callee == nil {
-		c.fail(e, "func-value", "call of a function value %s", c.exprString(e.Fun))
-	}
-	if sig := callee.Signature(); sig.Results().Len() > 1 {
-		// Only the assignment forms handle several results; they call expr on
-		// the call itself and read r0, r1... from it.
+		// A call through a function value: the family's dispatcher.
+		sig, ok := info.TypeOf(e.Fun).Underlying().(*types.Signature)
+		if !ok {
+			c.fail(e, "func-value", "call of %s", c.exprString(e.Fun))
+		}
+		fam := c.familyOf(info.TypeOf(e.Fun))
+		pi := &paramInfo{write: make([]bool, sig.Params().Len())}
+		for i := range pi.write {
+			pi.write[i] = fam.writes(c, i)
+		}
+		args := append([]string{f.expr(e.Fun)}, f.callArgs(e, sig, pi, 0, c.writeRootsOf(e, pi, nil))...)
+		return fam.dispatch + "(" + strings.Join(args, ", ") + ")"
 	}
 	if !c.p.inModule(callee) {
 		return f.stdlibCall(stdlibName(callee), e)
 	}
 	callee = callee.Origin()
-	if callee.Signature().Variadic() {
-		c.fail(e, "variadic", "call of variadic %s", callee.Name())
-	}
 	var args []string
 	pi := c.modes.funcs[callee]
 	idx := 0
+	var recv ast.Expr
+	if sel, ok := fun.(*ast.SelectorExpr); ok {
+		if s := info.Selections[sel]; s != nil && s.Kind() == types.MethodVal {
+			recv = sel.X
+		}
+	}
 	if sel, ok := fun.(*ast.SelectorExpr); ok {
 		if s := info.Selections[sel]; s != nil && s.Kind() == types.MethodVal {
 			if types.IsInterface(s.Recv()) {
 				c.fail(e, "interface-call", "method call through an interface (%s)", sel.Sel.Name)
 			}
-			if len(s.Index()) > 1 {
-				c.fail(e, "embedding", "promoted method %s", sel.Sel.Name)
+			path := c.embedPath(sel, s)
+			if pi != nil && pi.write[0] {
+				args = append(args, f.place(sel.X)+path)
+			} else {
+				args = append(args, f.expr(sel.X)+path)
 			}
-			args = append(args, f.arg(sel.X, pi, 0, nil))
 			idx = 1
 		}
 	}
-	for i, a := range e.Args {
-		args = append(args, f.arg(a, pi, idx+i, callee.Signature().Params().At(i).Type()))
-	}
+	args = append(args, f.callArgs(e, callee.Signature(), pi, idx, c.writeRootsOf(e, pi, recv))...)
 	return c.valueName(callee) + "(" + strings.Join(args, ", ") + ")"
-}
-
-func (f *fnConv) arg(a ast.Expr, pi *paramInfo, i int, pt types.Type) string {
-	if pi != nil && i < len(pi.write) && pi.write[i] {
-		return f.place(a)
-	}
-	return f.valueExpr(a, pt)
 }
 
 func (f *fnConv) builtin(name string, e *ast.CallExpr) string {
@@ -706,4 +730,32 @@ func (f *fnConv) lookupOf(e ast.Expr) (lookupTable, bool) {
 		return f.c.lookups[v], true
 	}
 	return lookupTable{}, false
+}
+
+// embedPath spells out a promoted selection: Go's s.pos, where pos lives in
+// an embedded ScannerState, is next-lang's s.ScannerState.pos.
+func (c *conv) embedPath(e *ast.SelectorExpr, sel *types.Selection) string {
+	idx := sel.Index()
+	if len(idx) <= 1 {
+		return ""
+	}
+	t := sel.Recv()
+	path := ""
+	for _, i := range idx[:len(idx)-1] {
+		if p, ok := t.Underlying().(*types.Pointer); ok {
+			t = p.Elem()
+		}
+		st, ok := t.Underlying().(*types.Struct)
+		if !ok {
+			c.fail(e, "embedding", "promotion through %s", t)
+		}
+		fld := st.Field(i)
+		if _, ok := fld.Type().Underlying().(*types.Pointer); ok {
+			c.fail(e, "embedding", "promotion through embedded pointer %s", fld.Name())
+		}
+		path += "." + fieldName(fld.Name())
+		t = fld.Type()
+	}
+	c.decide("embedded struct becomes a named field; promoted fields and methods go through it")
+	return path
 }
