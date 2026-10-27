@@ -111,6 +111,8 @@ Each names the code and the fix; none changes a design decision.
 - No dependency on Burin; code may be copied from it (D:\code\burin, Apache 2.0) with a note in the file.
 - No new external Rust crates without saying why in the report.
 - Keep it simple: no optimisation passes of our own; LLVM does that.
+- **Full suites run at commit, not in every task** (Ben, 2026-10-27): the pre-commit hook (scripts/precommit-full.sh, installed by scripts/install-hooks.sh) runs both full `cargo test` suites on exactly the staged tree, release mode, limited to one hour; commits touching only docs or the hook scripts skip it. Implementers run the tests their change touches plus the default comparison (`scripts/compare-selfhost.sh --build`), not the full suites. Keeping both suites under the hour is a standing requirement: the next task moves the O3 pass of the forced-relocation test (compiler/tests/selfhost_relocation.rs, over 20 minutes alone) behind `NLC_LONG_TESTS=1`.
+- **Never edit or delete an existing test package** to make it fit the self-hosted compiler: classify it or add a new package.
 
 ## Self-hosting track (decided 2026-10-24)
 
