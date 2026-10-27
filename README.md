@@ -1,6 +1,6 @@
 # next-lang (working name)
 
-next-lang is an experiment in a compiled language for servers, games and tools that tries to be correct, easy to read and fast without a garbage collector or a borrow checker. The trick is that every value has a known maximum size (lists have capacities, text has a max length, numbers can have ranges), and a function can only change what it's explicitly given. That turns a lot of bugs into build errors, and it lets memory live on per-job stacks where allocating is a pointer bump and freeing a whole request's worth of data is resetting one pointer. Threads share nothing mutable: they talk through mailboxes, snapshots of shared state, frozen read-only data and parallel loops.
+next-lang is an experiment in a compiled language for servers, games and tools that tries to be correct, easy to read and fast without a garbage collector or a borrow checker. The trick is that every value has a known maximum size (lists have capacities, text has a max length, numbers can have ranges), and a function can only change what it's explicitly given. It's meant to be memory safe without pointers: values are stored inline, other elements are referred to by typed ids (an index plus a generation) and positions on a stack by offsets, so there are no dangling references, no use-after-free and no data races to worry about. That turns a lot of bugs into build errors, and it lets memory live on per-job stacks where allocating is a pointer bump and freeing a whole request's worth of data is resetting one pointer. Threads share nothing mutable: they talk through mailboxes, snapshots of shared state, frozen read-only data and parallel loops.
 
 ```
 fn describe(u: Unit) -> Ascii max 64 {
@@ -13,3 +13,5 @@ Right now it's early. The full design is written up in [docs/DESIGN.md](docs/DES
 Compared with the same programs written in Rust (both fully optimised): next-lang already wins on allocation-heavy work, about 2.6x faster at text formatting and 1.5x on nested lists than idiomatic Rust, and level with Rust that's hand-tuned to reuse buffers. Memory use is equal or lower, and binaries are a third the size. It loses on tight arithmetic loops, 1.1x to 5x slower (10x on binary search), mostly because overflow and bounds checks are always on and stop vectorisation; removing the ones the compiler can prove unnecessary is next. [Benchmark details](docs/bench/2026-10-26-rough-baseline.md).
 
 To try it (Linux or WSL, Rust and clang 18): `cargo build --release`, then `./target/release/nlc run <package-dir>`, where a package is a directory of `.nl` files.
+
+Licensed under Apache 2.0 (Maddox Labs LLC); see [LICENSE](LICENSE).
