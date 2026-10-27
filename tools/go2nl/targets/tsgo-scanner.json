@@ -1,0 +1,21 @@
+{
+  "upstream": {
+    "repo": "https://github.com/microsoft/typescript-go",
+    "commit": "89d5d5b2849a0db0957065889ca58536fa6d2e4a"
+  },
+  "dir": "$HOME/go2nl-upstream/tsgo",
+  "packages": ["./internal/scanner"],
+  "roots": [
+    "github.com/microsoft/typescript-go/internal/scanner.NewScanner",
+    "github.com/microsoft/typescript-go/internal/scanner.Scanner.*",
+    "github.com/microsoft/typescript-go/internal/scanner.GetIdentifierToken",
+    "github.com/microsoft/typescript-go/internal/scanner.IsValidIdentifier",
+    "github.com/microsoft/typescript-go/internal/scanner.IsIdentifierText",
+    "github.com/microsoft/typescript-go/internal/scanner.TokenToString",
+    "github.com/microsoft/typescript-go/internal/scanner.StringToToken",
+    "github.com/microsoft/typescript-go/internal/scanner.SkipTrivia",
+    "github.com/microsoft/typescript-go/internal/scanner.GetShebang",
+    "github.com/microsoft/typescript-go/internal/scanner.ComputeLineOfPosition"
+  ],
+  "out": "../out/tsgo-scanner"
+}
