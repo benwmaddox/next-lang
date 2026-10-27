@@ -1,0 +1,28 @@
+Wide(10000000000)
+8
+9
+Pair(true, 19)
+true
+Circle(7)
+Empty
+Nested(Small { value: 5 })
+EmptyPayload(EmptyValue {  })
+Circle(12)
+Empty
+7
+99
+6
+90
+1
+Wide(3)
+Wide(3)
+Unit(())
+11
+30
+40
+50
+12
+true
+true
+true
+true

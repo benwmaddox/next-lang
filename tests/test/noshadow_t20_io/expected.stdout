@@ -1,0 +1,11 @@
+ok   missing file is reported and clears the output list
+ok   file read effects pass through wrappers and bounded function values
+ok   write and list effects keep their bounds in function values
+ok   paths reject embedded zero and attempts to leave the root
+ok   exact capacity succeeds and the next byte is too large
+ok   directory entries are sorted and include their kind
+ok   directory listing over capacity is empty
+ok   directory listing exactly at capacity succeeds
+ok   read publishes only written bytes and clears the count on failure
+ok   join stays inside the root and checks its byte bound
+10 passed, 0 failed

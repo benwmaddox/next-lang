@@ -1,0 +1,10 @@
+ok   enum copies, tags, and nested payload equality
+ok   match bindings shadow outer names and arms can contain blocks
+ok   comparison operands are evaluated once
+4
+4
+FAIL failed enum expectation displays active payloads
+  main.nl:29:5: expect Shape.Rect(2, 3) == Shape.Rect(2, 4)
+    left:  Rect(2, 3)
+    right: Rect(2, 4)
+3 passed, 1 failed

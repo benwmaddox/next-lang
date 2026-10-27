@@ -1,0 +1,50 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 8 1 4 "reserved"
+LParen 11 1 1 12 "("
+RParen 12 1 1 13 ")"
+LBrace 14 1 1 15 "{"
+RBrace 15 1 1 16 "}"
+Newline 16 1 1 17 "\n"
+Ident 17 2 2 1 "fn"
+Ident 20 9 2 4 "use_value"
+LParen 29 1 2 13 "("
+Ident 30 6 2 14 "amount"
+Colon 36 1 2 20 ":"
+Ident 38 3 2 22 "int"
+RParen 41 1 2 25 ")"
+LBrace 43 1 2 27 "{"
+Ident 45 5 2 29 "print"
+LParen 50 1 2 34 "("
+Ident 51 6 2 35 "amount"
+RParen 57 1 2 41 ")"
+RBrace 59 1 2 43 "}"
+Newline 60 1 2 44 "\n"
+Ident 61 2 3 1 "fn"
+Ident 64 4 3 4 "main"
+LParen 68 1 3 8 "("
+RParen 69 1 3 9 ")"
+LBrace 71 1 3 11 "{"
+Ident 73 9 3 13 "use_value"
+LParen 82 1 3 22 "("
+Number 83 1 3 23 "3"
+RParen 84 1 3 24 ")"
+RBrace 86 1 3 26 "}"
+Newline 87 1 3 27 "\n"
+Eof 88 0 4 1 ""
+== tree ==
+file "main.nl"
+Program 0..88
+  Function 0..16 name="reserved" recursive=false generics=[]
+    Block 14..16
+  Function 17..60 name="use_value" recursive=false generics=[]
+    Parameter 30..41 name="amount" mode=read
+      ParameterType 38..41 name="int" range=none policy=checked
+    Block 43..60
+      Call 45..58 name="print"
+        Name 51..57 name="amount"
+  Function 61..87 name="main" recursive=false generics=[]
+    Block 71..87
+      Call 73..85 name="use_value"
+        Integer 83..84 magnitude=3 negative=false long_suffix=false

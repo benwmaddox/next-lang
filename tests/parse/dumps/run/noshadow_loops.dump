@@ -1,0 +1,633 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 11 1 4 "first_bound"
+LParen 14 1 1 15 "("
+RParen 15 1 1 16 ")"
+Arrow 17 2 1 18 "->"
+Ident 20 3 1 21 "int"
+LBrace 24 1 1 25 "{"
+Newline 25 1 1 26 "\n"
+Ident 30 5 2 5 "print"
+LParen 35 1 2 10 "("
+Number 36 1 2 11 "8"
+RParen 37 1 2 12 ")"
+Newline 38 1 2 13 "\n"
+Ident 43 6 3 5 "return"
+Number 50 1 3 12 "2"
+Newline 51 1 3 13 "\n"
+RBrace 52 1 4 1 "}"
+Newline 53 1 4 2 "\n"
+Ident 55 2 6 1 "fn"
+Ident 58 12 6 4 "second_bound"
+LParen 70 1 6 16 "("
+RParen 71 1 6 17 ")"
+Arrow 73 2 6 19 "->"
+Ident 76 3 6 22 "int"
+LBrace 80 1 6 26 "{"
+Newline 81 1 6 27 "\n"
+Ident 86 5 7 5 "print"
+LParen 91 1 7 10 "("
+Number 92 1 7 11 "9"
+RParen 93 1 7 12 ")"
+Newline 94 1 7 13 "\n"
+Ident 99 6 8 5 "return"
+Number 106 1 8 12 "2"
+Newline 107 1 8 13 "\n"
+RBrace 108 1 9 1 "}"
+Newline 109 1 9 2 "\n"
+Ident 111 2 11 1 "fn"
+Ident 114 9 11 4 "take_long"
+LParen 123 1 11 13 "("
+Ident 124 5 11 14 "value"
+Colon 129 1 11 19 ":"
+Ident 131 4 11 21 "long"
+RParen 135 1 11 25 ")"
+LBrace 137 1 11 27 "{"
+Newline 138 1 11 28 "\n"
+Ident 143 5 12 5 "print"
+LParen 148 1 12 10 "("
+Ident 149 5 12 11 "value"
+RParen 154 1 12 16 ")"
+Newline 155 1 12 17 "\n"
+RBrace 156 1 13 1 "}"
+Newline 157 1 13 2 "\n"
+Ident 159 2 15 1 "fn"
+Ident 162 24 15 4 "return_from_nested_loops"
+LParen 186 1 15 28 "("
+RParen 187 1 15 29 ")"
+Arrow 189 2 15 31 "->"
+Ident 192 3 15 34 "int"
+LBrace 196 1 15 38 "{"
+Newline 197 1 15 39 "\n"
+Ident 202 3 16 5 "for"
+Ident 206 1 16 9 "i"
+Ident 208 2 16 11 "in"
+Number 211 1 16 14 "0"
+Range 212 2 16 15 ".."
+Number 214 1 16 17 "2"
+LBrace 216 1 16 19 "{"
+Newline 217 1 16 20 "\n"
+Ident 226 3 17 9 "for"
+Ident 230 1 17 13 "j"
+Ident 232 2 17 15 "in"
+Number 235 1 17 18 "0"
+Range 236 2 17 19 ".."
+Number 238 1 17 21 "2"
+LBrace 240 1 17 23 "{"
+Newline 241 1 17 24 "\n"
+Ident 254 6 18 13 "return"
+Ident 261 1 18 20 "i"
+Star 263 1 18 22 "*"
+Number 265 2 18 24 "10"
+Plus 268 1 18 27 "+"
+Ident 270 1 18 29 "j"
+Newline 271 1 18 30 "\n"
+RBrace 280 1 19 9 "}"
+Newline 281 1 19 10 "\n"
+RBrace 286 1 20 5 "}"
+Newline 287 1 20 6 "\n"
+Ident 292 6 21 5 "return"
+Minus 299 1 21 12 "-"
+Number 300 1 21 13 "1"
+Newline 301 1 21 14 "\n"
+RBrace 302 1 22 1 "}"
+Newline 303 1 22 2 "\n"
+Ident 305 2 24 1 "fn"
+Ident 308 4 24 4 "main"
+LParen 312 1 24 8 "("
+RParen 313 1 24 9 ")"
+LBrace 315 1 24 11 "{"
+Newline 316 1 24 12 "\n"
+Ident 321 3 25 5 "for"
+Ident 325 1 25 9 "i"
+Ident 327 2 25 11 "in"
+Number 330 1 25 14 "0"
+Range 331 2 25 15 ".."
+Number 333 1 25 17 "3"
+LBrace 335 1 25 19 "{"
+Ident 337 5 25 21 "print"
+LParen 342 1 25 26 "("
+Ident 343 1 25 27 "i"
+RParen 344 1 25 28 ")"
+RBrace 346 1 25 30 "}"
+Newline 347 1 25 31 "\n"
+Ident 352 3 26 5 "for"
+Ident 356 1 26 9 "i"
+Ident 358 2 26 11 "in"
+Number 361 1 26 14 "2"
+RangeInclusive 362 3 26 15 "..="
+Number 365 1 26 18 "4"
+LBrace 367 1 26 20 "{"
+Ident 369 5 26 22 "print"
+LParen 374 1 26 27 "("
+Ident 375 1 26 28 "i"
+RParen 376 1 26 29 ")"
+RBrace 378 1 26 31 "}"
+Newline 379 1 26 32 "\n"
+Ident 384 3 27 5 "for"
+Ident 388 1 27 9 "i"
+Ident 390 2 27 11 "in"
+Number 393 1 27 14 "4"
+Range 394 2 27 15 ".."
+Number 396 1 27 17 "2"
+LBrace 398 1 27 19 "{"
+Ident 400 5 27 21 "print"
+LParen 405 1 27 26 "("
+Number 406 2 27 27 "99"
+RParen 408 1 27 29 ")"
+RBrace 410 1 27 31 "}"
+Newline 411 1 27 32 "\n"
+Ident 416 3 28 5 "for"
+Ident 420 1 28 9 "i"
+Ident 422 2 28 11 "in"
+Number 425 1 28 14 "1"
+RangeInclusive 426 3 28 15 "..="
+Number 429 1 28 18 "1"
+LBrace 431 1 28 20 "{"
+Ident 433 5 28 22 "print"
+LParen 438 1 28 27 "("
+Ident 439 1 28 28 "i"
+RParen 440 1 28 29 ")"
+RBrace 442 1 28 31 "}"
+Newline 443 1 28 32 "\n"
+Ident 448 3 29 5 "for"
+Ident 452 1 29 9 "i"
+Ident 454 2 29 11 "in"
+Minus 457 1 29 14 "-"
+Number 458 1 29 15 "2"
+RangeInclusive 459 3 29 16 "..="
+Number 462 1 29 19 "0"
+LBrace 464 1 29 21 "{"
+Ident 466 5 29 23 "print"
+LParen 471 1 29 28 "("
+Ident 472 1 29 29 "i"
+RParen 473 1 29 30 ")"
+RBrace 475 1 29 32 "}"
+Newline 476 1 29 33 "\n"
+Ident 482 3 31 5 "for"
+Ident 486 1 31 9 "i"
+Ident 488 2 31 11 "in"
+Number 491 10 31 14 "2147483647"
+RangeInclusive 501 3 31 24 "..="
+Number 504 10 31 27 "2147483647"
+LBrace 515 1 31 38 "{"
+Newline 516 1 31 39 "\n"
+Ident 525 5 32 9 "print"
+LParen 530 1 32 14 "("
+Ident 531 1 32 15 "i"
+RParen 532 1 32 16 ")"
+Newline 533 1 32 17 "\n"
+Ident 542 8 33 9 "continue"
+Newline 550 1 33 17 "\n"
+RBrace 555 1 34 5 "}"
+Newline 556 1 34 6 "\n"
+Ident 561 3 35 5 "for"
+Ident 565 1 35 9 "i"
+Ident 567 2 35 11 "in"
+Number 570 10 35 14 "2147483647"
+RangeInclusive 580 3 35 24 "..="
+Number 583 10 35 27 "2147483647"
+LBrace 594 1 35 38 "{"
+Ident 596 5 35 40 "print"
+LParen 601 1 35 45 "("
+Ident 602 1 35 46 "i"
+RParen 603 1 35 47 ")"
+RBrace 605 1 35 49 "}"
+Newline 606 1 35 50 "\n"
+Ident 611 3 36 5 "for"
+Ident 615 1 36 9 "i"
+Ident 617 2 36 11 "in"
+Number 620 20 36 14 "9223372036854775807L"
+RangeInclusive 640 3 36 34 "..="
+Number 643 20 36 37 "9223372036854775807L"
+LBrace 664 1 36 58 "{"
+Newline 665 1 36 59 "\n"
+Ident 674 5 37 9 "print"
+LParen 679 1 37 14 "("
+Ident 680 1 37 15 "i"
+RParen 681 1 37 16 ")"
+Newline 682 1 37 17 "\n"
+Ident 691 8 38 9 "continue"
+Newline 699 1 38 17 "\n"
+RBrace 704 1 39 5 "}"
+Newline 705 1 39 6 "\n"
+Ident 710 3 40 5 "for"
+Ident 714 1 40 9 "i"
+Ident 716 2 40 11 "in"
+Number 719 20 40 14 "9223372036854775807L"
+RangeInclusive 739 3 40 34 "..="
+Number 742 20 40 37 "9223372036854775807L"
+LBrace 763 1 40 58 "{"
+Ident 765 5 40 60 "print"
+LParen 770 1 40 65 "("
+Ident 771 1 40 66 "i"
+RParen 772 1 40 67 ")"
+RBrace 774 1 40 69 "}"
+Newline 775 1 40 70 "\n"
+Ident 781 3 42 5 "for"
+Ident 785 1 42 9 "i"
+Colon 786 1 42 10 ":"
+Ident 788 4 42 12 "long"
+Ident 793 2 42 17 "in"
+Number 796 1 42 20 "0"
+Range 797 2 42 21 ".."
+Number 799 1 42 23 "2"
+LBrace 801 1 42 25 "{"
+Ident 803 5 42 27 "print"
+LParen 808 1 42 32 "("
+Ident 809 1 42 33 "i"
+RParen 810 1 42 34 ")"
+RBrace 812 1 42 36 "}"
+Newline 813 1 42 37 "\n"
+Ident 818 3 43 5 "let"
+Ident 822 8 43 9 "end_long"
+Eq 831 1 43 18 "="
+Number 833 2 43 20 "2L"
+Newline 835 1 43 22 "\n"
+Ident 840 3 44 5 "for"
+Ident 844 1 44 9 "i"
+Ident 846 2 44 11 "in"
+Number 849 1 44 14 "0"
+Range 850 2 44 15 ".."
+Ident 852 8 44 17 "end_long"
+LBrace 861 1 44 26 "{"
+Ident 863 5 44 28 "print"
+LParen 868 1 44 33 "("
+Ident 869 1 44 34 "i"
+RParen 870 1 44 35 ")"
+RBrace 872 1 44 37 "}"
+Newline 873 1 44 38 "\n"
+Ident 878 3 45 5 "for"
+Ident 882 1 45 9 "i"
+Ident 884 2 45 11 "in"
+Number 887 1 45 14 "0"
+Range 888 2 45 15 ".."
+Number 890 1 45 17 "2"
+LBrace 892 1 45 19 "{"
+Ident 894 9 45 21 "take_long"
+LParen 903 1 45 30 "("
+Ident 904 1 45 31 "i"
+RParen 905 1 45 32 ")"
+RBrace 907 1 45 34 "}"
+Newline 908 1 45 35 "\n"
+Ident 914 3 47 5 "for"
+Ident 918 1 47 9 "i"
+Ident 920 2 47 11 "in"
+Ident 923 11 47 14 "first_bound"
+LParen 934 1 47 25 "("
+RParen 935 1 47 26 ")"
+Range 936 2 47 27 ".."
+Ident 938 12 47 29 "second_bound"
+LParen 950 1 47 41 "("
+RParen 951 1 47 42 ")"
+LBrace 953 1 47 44 "{"
+Ident 955 5 47 46 "print"
+LParen 960 1 47 51 "("
+Number 961 2 47 52 "99"
+RParen 963 1 47 54 ")"
+RBrace 965 1 47 56 "}"
+Newline 966 1 47 57 "\n"
+Ident 971 3 48 5 "var"
+Ident 975 3 48 9 "end"
+Eq 979 1 48 13 "="
+Number 981 1 48 15 "3"
+Newline 982 1 48 16 "\n"
+Ident 987 3 49 5 "for"
+Ident 991 1 49 9 "i"
+Ident 993 2 49 11 "in"
+Number 996 1 49 14 "0"
+Range 997 2 49 15 ".."
+Ident 999 3 49 17 "end"
+LBrace 1003 1 49 21 "{"
+Newline 1004 1 49 22 "\n"
+Ident 1013 5 50 9 "print"
+LParen 1018 1 50 14 "("
+Ident 1019 1 50 15 "i"
+RParen 1020 1 50 16 ")"
+Newline 1021 1 50 17 "\n"
+Ident 1030 3 51 9 "end"
+Eq 1034 1 51 13 "="
+Number 1036 1 51 15 "0"
+Newline 1037 1 51 16 "\n"
+RBrace 1042 1 52 5 "}"
+Newline 1043 1 52 6 "\n"
+Ident 1049 3 54 5 "for"
+Ident 1053 1 54 9 "i"
+Ident 1055 2 54 11 "in"
+Number 1058 1 54 14 "0"
+Range 1059 2 54 15 ".."
+Number 1061 1 54 17 "3"
+LBrace 1063 1 54 19 "{"
+Newline 1064 1 54 20 "\n"
+Ident 1073 2 55 9 "if"
+Ident 1076 1 55 12 "i"
+EqEq 1078 2 55 14 "=="
+Number 1081 1 55 17 "1"
+LBrace 1083 1 55 19 "{"
+Ident 1085 8 55 21 "continue"
+RBrace 1094 1 55 30 "}"
+Newline 1095 1 55 31 "\n"
+Ident 1104 3 56 9 "for"
+Ident 1108 1 56 13 "j"
+Ident 1110 2 56 15 "in"
+Number 1113 1 56 18 "0"
+Range 1114 2 56 19 ".."
+Number 1116 1 56 21 "3"
+LBrace 1118 1 56 23 "{"
+Newline 1119 1 56 24 "\n"
+Ident 1132 2 57 13 "if"
+Ident 1135 1 57 16 "j"
+EqEq 1137 2 57 18 "=="
+Number 1140 1 57 21 "1"
+LBrace 1142 1 57 23 "{"
+Ident 1144 8 57 25 "continue"
+RBrace 1153 1 57 34 "}"
+Newline 1154 1 57 35 "\n"
+Ident 1167 2 58 13 "if"
+Ident 1170 1 58 16 "j"
+EqEq 1172 2 58 18 "=="
+Number 1175 1 58 21 "2"
+LBrace 1177 1 58 23 "{"
+Ident 1179 5 58 25 "break"
+RBrace 1185 1 58 31 "}"
+Newline 1186 1 58 32 "\n"
+Ident 1199 5 59 13 "print"
+LParen 1204 1 59 18 "("
+Ident 1205 1 59 19 "i"
+Star 1207 1 59 21 "*"
+Number 1209 2 59 23 "10"
+Plus 1212 1 59 26 "+"
+Ident 1214 1 59 28 "j"
+RParen 1215 1 59 29 ")"
+Newline 1216 1 59 30 "\n"
+RBrace 1225 1 60 9 "}"
+Newline 1226 1 60 10 "\n"
+RBrace 1231 1 61 5 "}"
+Newline 1232 1 61 6 "\n"
+Ident 1238 3 63 5 "for"
+Ident 1242 1 63 9 "i"
+Ident 1244 2 63 11 "in"
+Number 1247 1 63 14 "0"
+Range 1248 2 63 15 ".."
+Number 1250 1 63 17 "3"
+LBrace 1252 1 63 19 "{"
+Newline 1253 1 63 20 "\n"
+Ident 1262 3 64 9 "var"
+Ident 1266 5 64 13 "fresh"
+Eq 1272 1 64 19 "="
+Number 1274 1 64 21 "0"
+Newline 1275 1 64 22 "\n"
+Ident 1284 5 65 9 "fresh"
+PlusEq 1290 2 65 15 "+="
+Number 1293 1 65 18 "1"
+Newline 1294 1 65 19 "\n"
+Ident 1303 5 66 9 "print"
+LParen 1308 1 66 14 "("
+Ident 1309 5 66 15 "fresh"
+RParen 1314 1 66 20 ")"
+Newline 1315 1 66 21 "\n"
+RBrace 1320 1 67 5 "}"
+Newline 1321 1 67 6 "\n"
+Ident 1326 3 68 5 "for"
+Ident 1330 1 68 9 "i"
+Ident 1332 2 68 11 "in"
+Number 1335 1 68 14 "0"
+Range 1336 2 68 15 ".."
+Number 1338 1 68 17 "2"
+LBrace 1340 1 68 19 "{"
+Newline 1341 1 68 20 "\n"
+Ident 1350 5 69 9 "print"
+LParen 1355 1 69 14 "("
+Ident 1356 1 69 15 "i"
+RParen 1357 1 69 16 ")"
+Newline 1358 1 69 17 "\n"
+Ident 1367 3 70 9 "for"
+Ident 1371 5 70 13 "inner"
+Ident 1377 2 70 19 "in"
+Number 1380 1 70 22 "1"
+RangeInclusive 1381 3 70 23 "..="
+Number 1384 1 70 26 "1"
+LBrace 1386 1 70 28 "{"
+Ident 1388 5 70 30 "print"
+LParen 1393 1 70 35 "("
+Ident 1394 5 70 36 "inner"
+RParen 1399 1 70 41 ")"
+RBrace 1401 1 70 43 "}"
+Newline 1402 1 70 44 "\n"
+RBrace 1407 1 71 5 "}"
+Newline 1408 1 71 6 "\n"
+Ident 1413 5 72 5 "print"
+LParen 1418 1 72 10 "("
+Ident 1419 24 72 11 "return_from_nested_loops"
+LParen 1443 1 72 35 "("
+RParen 1444 1 72 36 ")"
+RParen 1445 1 72 37 ")"
+Newline 1446 1 72 38 "\n"
+RBrace 1447 1 73 1 "}"
+Newline 1448 1 73 2 "\n"
+Eof 1449 0 74 1 ""
+== tree ==
+file "main.nl"
+Program 0..1449
+  Function 0..53 name="first_bound" recursive=false generics=[]
+    ResultType 20..23 name="int" range=none policy=checked
+    Block 24..53
+      ExpressionStatement 30..38
+        Call 30..38 name="print"
+          Integer 36..37 magnitude=8 negative=false long_suffix=false
+      ReturnStatement 43..51
+        Integer 50..51 magnitude=2 negative=false long_suffix=false
+  Function 55..109 name="second_bound" recursive=false generics=[]
+    ResultType 76..79 name="int" range=none policy=checked
+    Block 80..109
+      ExpressionStatement 86..94
+        Call 86..94 name="print"
+          Integer 92..93 magnitude=9 negative=false long_suffix=false
+      ReturnStatement 99..107
+        Integer 106..107 magnitude=2 negative=false long_suffix=false
+  Function 111..157 name="take_long" recursive=false generics=[]
+    Parameter 124..135 name="value" mode=read
+      ParameterType 131..135 name="long" range=none policy=checked
+    Block 137..157
+      Call 143..155 name="print"
+        Name 149..154 name="value"
+  Function 159..303 name="return_from_nested_loops" recursive=false generics=[]
+    ResultType 192..195 name="int" range=none policy=checked
+    Block 196..303
+      For 202..287 name="i" inclusive=false
+        Integer 211..212 magnitude=0 negative=false long_suffix=false
+        Integer 214..215 magnitude=2 negative=false long_suffix=false
+        Block 216..287
+          For 226..281 name="j" inclusive=false
+            Integer 235..236 magnitude=0 negative=false long_suffix=false
+            Integer 238..239 magnitude=2 negative=false long_suffix=false
+            Block 240..281
+              ReturnStatement 254..271
+                Binary 261..271 op=add
+                  Binary 261..267 op=mul
+                    Name 261..262 name="i"
+                    Integer 265..267 magnitude=10 negative=false long_suffix=false
+                  Name 270..271 name="j"
+      ReturnStatement 292..301
+        Integer 299..301 magnitude=1 negative=true long_suffix=false
+  Function 305..1448 name="main" recursive=false generics=[]
+    Block 315..1448
+      For 321..347 name="i" inclusive=false
+        Integer 330..331 magnitude=0 negative=false long_suffix=false
+        Integer 333..334 magnitude=3 negative=false long_suffix=false
+        Block 335..347
+          Call 337..345 name="print"
+            Name 343..344 name="i"
+      For 352..379 name="i" inclusive=true
+        Integer 361..362 magnitude=2 negative=false long_suffix=false
+        Integer 365..366 magnitude=4 negative=false long_suffix=false
+        Block 367..379
+          Call 369..377 name="print"
+            Name 375..376 name="i"
+      For 384..411 name="i" inclusive=false
+        Integer 393..394 magnitude=4 negative=false long_suffix=false
+        Integer 396..397 magnitude=2 negative=false long_suffix=false
+        Block 398..411
+          Call 400..409 name="print"
+            Integer 406..408 magnitude=99 negative=false long_suffix=false
+      For 416..443 name="i" inclusive=true
+        Integer 425..426 magnitude=1 negative=false long_suffix=false
+        Integer 429..430 magnitude=1 negative=false long_suffix=false
+        Block 431..443
+          Call 433..441 name="print"
+            Name 439..440 name="i"
+      For 448..476 name="i" inclusive=true
+        Integer 457..459 magnitude=2 negative=true long_suffix=false
+        Integer 462..463 magnitude=0 negative=false long_suffix=false
+        Block 464..476
+          Call 466..474 name="print"
+            Name 472..473 name="i"
+      For 482..556 name="i" inclusive=true
+        Integer 491..501 magnitude=2147483647 negative=false long_suffix=false
+        Integer 504..514 magnitude=2147483647 negative=false long_suffix=false
+        Block 515..556
+          ExpressionStatement 525..533
+            Call 525..533 name="print"
+              Name 531..532 name="i"
+          ContinueStatement 542..550
+      For 561..606 name="i" inclusive=true
+        Integer 570..580 magnitude=2147483647 negative=false long_suffix=false
+        Integer 583..593 magnitude=2147483647 negative=false long_suffix=false
+        Block 594..606
+          Call 596..604 name="print"
+            Name 602..603 name="i"
+      For 611..705 name="i" inclusive=true
+        Integer 620..640 magnitude=9223372036854775807 negative=false long_suffix=true
+        Integer 643..663 magnitude=9223372036854775807 negative=false long_suffix=true
+        Block 664..705
+          ExpressionStatement 674..682
+            Call 674..682 name="print"
+              Name 680..681 name="i"
+          ContinueStatement 691..699
+      For 710..775 name="i" inclusive=true
+        Integer 719..739 magnitude=9223372036854775807 negative=false long_suffix=true
+        Integer 742..762 magnitude=9223372036854775807 negative=false long_suffix=true
+        Block 763..775
+          Call 765..773 name="print"
+            Name 771..772 name="i"
+      For 781..813 name="i" inclusive=false
+        Annotation 788..792 name="long" range=none policy=checked
+        Integer 796..797 magnitude=0 negative=false long_suffix=false
+        Integer 799..800 magnitude=2 negative=false long_suffix=false
+        Block 801..813
+          Call 803..811 name="print"
+            Name 809..810 name="i"
+      Let 818..835 mutable=false name="end_long"
+        Integer 833..835 magnitude=2 negative=false long_suffix=true
+      For 840..873 name="i" inclusive=false
+        Integer 849..850 magnitude=0 negative=false long_suffix=false
+        Name 852..860 name="end_long"
+        Block 861..873
+          Call 863..871 name="print"
+            Name 869..870 name="i"
+      For 878..908 name="i" inclusive=false
+        Integer 887..888 magnitude=0 negative=false long_suffix=false
+        Integer 890..891 magnitude=2 negative=false long_suffix=false
+        Block 892..908
+          Call 894..906 name="take_long"
+            Name 904..905 name="i"
+      For 914..966 name="i" inclusive=false
+        Call 923..936 name="first_bound"
+        Call 938..952 name="second_bound"
+        Block 953..966
+          Call 955..964 name="print"
+            Integer 961..963 magnitude=99 negative=false long_suffix=false
+      Let 971..982 mutable=true name="end"
+        Integer 981..982 magnitude=3 negative=false long_suffix=false
+      For 987..1043 name="i" inclusive=false
+        Integer 996..997 magnitude=0 negative=false long_suffix=false
+        Name 999..1002 name="end"
+        Block 1003..1043
+          ExpressionStatement 1013..1021
+            Call 1013..1021 name="print"
+              Name 1019..1020 name="i"
+          Assign 1030..1037 op==
+            Name 1030..1033 name="end"
+            Integer 1036..1037 magnitude=0 negative=false long_suffix=false
+      For 1049..1232 name="i" inclusive=false
+        Integer 1058..1059 magnitude=0 negative=false long_suffix=false
+        Integer 1061..1062 magnitude=3 negative=false long_suffix=false
+        Block 1063..1232
+          ExpressionStatement 1073..1095
+            If 1073..1095
+              Binary 1076..1082 op=eq
+                Name 1076..1077 name="i"
+                Integer 1081..1082 magnitude=1 negative=false long_suffix=false
+              Block 1083..1095
+                ContinueStatement 1085..1093
+          For 1104..1226 name="j" inclusive=false
+            Integer 1113..1114 magnitude=0 negative=false long_suffix=false
+            Integer 1116..1117 magnitude=3 negative=false long_suffix=false
+            Block 1118..1226
+              ExpressionStatement 1132..1154
+                If 1132..1154
+                  Binary 1135..1141 op=eq
+                    Name 1135..1136 name="j"
+                    Integer 1140..1141 magnitude=1 negative=false long_suffix=false
+                  Block 1142..1154
+                    ContinueStatement 1144..1152
+              ExpressionStatement 1167..1186
+                If 1167..1186
+                  Binary 1170..1176 op=eq
+                    Name 1170..1171 name="j"
+                    Integer 1175..1176 magnitude=2 negative=false long_suffix=false
+                  Block 1177..1186
+                    BreakStatement 1179..1184
+              Call 1199..1216 name="print"
+                Binary 1205..1215 op=add
+                  Binary 1205..1211 op=mul
+                    Name 1205..1206 name="i"
+                    Integer 1209..1211 magnitude=10 negative=false long_suffix=false
+                  Name 1214..1215 name="j"
+      For 1238..1321 name="i" inclusive=false
+        Integer 1247..1248 magnitude=0 negative=false long_suffix=false
+        Integer 1250..1251 magnitude=3 negative=false long_suffix=false
+        Block 1252..1321
+          Let 1262..1275 mutable=true name="fresh"
+            Integer 1274..1275 magnitude=0 negative=false long_suffix=false
+          Assign 1284..1294 op=+=
+            Name 1284..1289 name="fresh"
+            Integer 1293..1294 magnitude=1 negative=false long_suffix=false
+          Call 1303..1315 name="print"
+            Name 1309..1314 name="fresh"
+      For 1326..1408 name="i" inclusive=false
+        Integer 1335..1336 magnitude=0 negative=false long_suffix=false
+        Integer 1338..1339 magnitude=2 negative=false long_suffix=false
+        Block 1340..1408
+          ExpressionStatement 1350..1358
+            Call 1350..1358 name="print"
+              Name 1356..1357 name="i"
+          For 1367..1402 name="inner" inclusive=true
+            Integer 1380..1381 magnitude=1 negative=false long_suffix=false
+            Integer 1384..1385 magnitude=1 negative=false long_suffix=false
+            Block 1386..1402
+              Call 1388..1400 name="print"
+                Name 1394..1399 name="inner"
+      Call 1413..1446 name="print"
+        Call 1419..1445 name="return_from_nested_loops"

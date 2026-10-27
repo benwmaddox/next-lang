@@ -1,0 +1,38 @@
+== tokens ==
+file "main.nl"
+Ident 0 5 1 1 "const"
+Ident 6 5 1 7 "LIMIT"
+Colon 11 1 1 12 ":"
+Ident 13 3 1 14 "int"
+Eq 17 1 1 18 "="
+Number 19 1 1 20 "3"
+Newline 20 1 1 21 "\n"
+Ident 21 2 2 1 "fn"
+Ident 24 4 2 4 "main"
+LParen 28 1 2 8 "("
+RParen 29 1 2 9 ")"
+LBrace 31 1 2 11 "{"
+Ident 33 3 2 13 "let"
+Ident 37 11 2 17 "limit_local"
+Eq 49 1 2 29 "="
+Number 51 1 2 31 "4"
+Semicolon 52 1 2 32 ";"
+Ident 54 5 2 34 "print"
+LParen 59 1 2 39 "("
+Ident 60 11 2 40 "limit_local"
+RParen 71 1 2 51 ")"
+RBrace 73 1 2 53 "}"
+Newline 74 1 2 54 "\n"
+Eof 75 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..75
+  Const 0..20 name="LIMIT"
+    DeclaredType 13..16 name="int" range=none policy=checked
+    Integer 19..20 magnitude=3 negative=false long_suffix=false
+  Function 21..74 name="main" recursive=false generics=[]
+    Block 31..74
+      Let 33..52 mutable=false name="limit_local"
+        Integer 51..52 magnitude=4 negative=false long_suffix=false
+      Call 54..72 name="print"
+        Name 60..71 name="limit_local"

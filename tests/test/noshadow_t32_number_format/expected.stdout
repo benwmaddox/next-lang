@@ -1,0 +1,3 @@
+ok   decimal formatting covers signs, extrema, and every digit boundary
+ok   decimal formatting writes correctly into Ascii Text and Bytes builders
+2 passed, 0 failed

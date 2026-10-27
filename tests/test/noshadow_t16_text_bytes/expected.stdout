@@ -1,0 +1,12 @@
+ok   text and bytes preserve their distinct length units
+ok   Text counts a four-byte character at its declared maximum
+ok   Text.empty and Bytes.empty use destination maxima
+ok   checked text conversions distinguish invalid UTF-8 and non-ASCII
+ok   bounded collection fields keep mixed size-class slots stable
+ok   same-class string replacement works at full capacity
+ok   removed text and byte slots are immediately reusable
+ok   a later failed text field leaves every earlier field unchanged
+ok   Ascii reads as Text through a descriptor without copying bytes
+ok   file and output capabilities accept Text and Bytes
+ok   invalid UTF-8 and over-capacity text reads leave empty values
+11 passed, 0 failed
