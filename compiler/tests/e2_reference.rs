@@ -4,6 +4,10 @@ use std::process::Command;
 
 #[test]
 fn e2_reference_fixes_match_their_fixtures() {
+    // This audit forces the Rust frontend for every fixture.
+    if std::env::var("NLC_FRONTEND").as_deref() == Ok("selfhost") {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler directory has a workspace root");

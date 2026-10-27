@@ -1,8 +1,16 @@
 use std::path::Path;
 use std::process::Command;
 
+fn run_frontend_independent_check() -> bool {
+    // The C ABI probe and core source checks do not use the suite frontend.
+    std::env::var("NLC_FRONTEND").as_deref() != Ok("selfhost")
+}
+
 #[test]
 fn core_context_prefix_matches_the_offset_runtime_layout() {
+    if !run_frontend_independent_check() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler directory has a workspace root");
@@ -85,6 +93,9 @@ fn core_context_prefix_matches_the_offset_runtime_layout() {
 
 #[test]
 fn legacy_c_hook_contracts_are_recorded_before_the_context_abi_switch() {
+    if !run_frontend_independent_check() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler directory has a workspace root");

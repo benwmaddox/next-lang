@@ -2,32 +2,38 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+// These checks select their frontends explicitly and therefore have identical
+// inputs and results in both full-suite invocations. Run them with the Rust
+// suite only; suite-specific behavior remains covered by language tests.
+fn run_frontend_independent_check() -> bool {
+    std::env::var("NLC_FRONTEND").as_deref() != Ok("selfhost")
+}
+
 #[test]
 fn selfhosted_lexer_and_parser_match_the_rust_reference() {
+    if !run_frontend_independent_check() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler crate has a workspace root");
     let nlc = env!("CARGO_BIN_EXE_nlc");
-    let temp = std::env::temp_dir().join(format!("next-lang-selfhost-{}", std::process::id()));
-    fs::create_dir_all(&temp).expect("create temporary selfhost executable directory");
-    let selfhost = temp.join(if cfg!(windows) {
-        "selfhost.exe"
-    } else {
-        "selfhost"
-    });
-
-    let build = Command::new(nlc)
-        .args(["build", "selfhost", "-o"])
-        .arg(&selfhost)
-        .arg("--frontend=rust")
+    let build = Command::new("python3")
+        .arg(root.join("scripts/build-selfhost-cached.py"))
+        .arg("--reference")
+        .arg(nlc)
         .current_dir(root)
         .output()
-        .expect("build the next-lang selfhost package once");
+        .expect("build or reuse the stage-zero selfhost compiler");
     assert!(
         build.status.success(),
         "selfhost build failed:\n{}",
         String::from_utf8_lossy(&build.stderr)
     );
+    let selfhost = String::from_utf8(build.stdout)
+        .expect("cached selfhost compiler path is UTF-8")
+        .trim()
+        .to_owned();
 
     for (mode, label) in [("--tokens", "lexer"), ("--parse", "parser")] {
         let comparison = Command::new(root.join("scripts/compare-selfhost.sh"))
@@ -62,11 +68,13 @@ fn selfhosted_lexer_and_parser_match_the_rust_reference() {
         String::from_utf8_lossy(&comparison.stdout),
         String::from_utf8_lossy(&comparison.stderr)
     );
-    let _ = fs::remove_dir_all(&temp);
 }
 
 #[test]
 fn concurrent_cold_cache_builds_publish_reusable_artifacts() {
+    if !run_frontend_independent_check() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler crate has a workspace root");
@@ -148,6 +156,9 @@ fn concurrent_cold_cache_builds_publish_reusable_artifacts() {
 #[cfg(unix)]
 #[test]
 fn rust_and_selfhost_use_the_same_rooted_source_symlink_policy() {
+    if !run_frontend_independent_check() {
+        return;
+    }
     use std::os::unix::fs::symlink;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -218,6 +229,9 @@ fn rust_and_selfhost_use_the_same_rooted_source_symlink_policy() {
 
 #[test]
 fn frontends_report_invalid_utf8_as_the_same_syntax_diagnostic() {
+    if !run_frontend_independent_check() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler crate has a workspace root");
@@ -261,6 +275,9 @@ fn frontends_report_invalid_utf8_as_the_same_syntax_diagnostic() {
 
 #[test]
 fn compile_frontends_reject_over_parse_source_limits() {
+    if !run_frontend_independent_check() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler crate has a workspace root");

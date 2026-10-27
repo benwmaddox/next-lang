@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
-"""Compare stage-zero selfhost builds against Rust nlc on the checked package table."""
+"""Compare stage-zero selfhost builds against Rust nlc on the checked package table.
+
+Use ``scripts/compare-selfhost.sh --build`` for the full table. ``--only GLOB``,
+``--class build``, and ``--changed [REV]`` (default REV: HEAD) select a focused
+package set. Workers default to half the logical CPUs; set ``NLC_TEST_JOBS``
+to override. The stage-zero compiler is shared through a source-hash cache in
+``CARGO_TARGET_DIR``.
+"""
 
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+import difflib
 import os
 from pathlib import Path
 import re
@@ -15,6 +24,8 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+
+from test_harness import add_filter_arguments, changed_paths, filter_label, select_packages, worker_count
 
 
 TIMEOUT_SECONDS = 90
@@ -35,6 +46,7 @@ def status_code(code: int | None) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--reference", required=True, type=Path)
+    add_filter_arguments(parser)
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     reference = args.reference.resolve()
@@ -46,6 +58,7 @@ def main() -> int:
     env.pop("NLC_TEST_INDEX", None)
     env["NLC_FRONTEND"] = "rust"
     env.setdefault("CARGO_TARGET_DIR", str(Path.home() / ".cache/next-lang/target"))
+    jobs = worker_count()
 
     # E3a1 begin: include its directed fixtures and retire the C comparison leg.
     long_tests = os.environ.get("NLC_LONG_TESTS") == "1"
@@ -64,23 +77,31 @@ def main() -> int:
         extra = sorted(set(classifications) - discovered)
         print(f"classification table does not match package directories; missing={missing}, extra={extra}", file=sys.stderr)
         return 1
+    changed = changed_paths(root, args.changed)
+    all_packages = list(classifications)
+    packages = select_packages(
+        all_packages, classifications, args.only, args.package_class, changed
+    )
     # E3a1 end
 
     work = Path(tempfile.mkdtemp(prefix=".selfhost-build-compare-", dir=root))
     try:
-        stage0 = work / "selfhost"
-        build_env = env.copy()
-        build_env["NLC_OPT_LEVEL"] = "1"
-        build = invoke(
-            [str(reference), "--frontend=rust", "build", "selfhost", "-o", str(stage0)],
+        cached_build = subprocess.run(
+            [sys.executable, str(root / "scripts/build-selfhost-cached.py"), "--reference", str(reference)],
             cwd=root,
-            env=build_env,
-            timeout=300,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
         )
-        if build.status != 0 or not stage0.is_file():
-            sys.stderr.buffer.write(build.stdout)
-            sys.stderr.buffer.write(build.stderr)
+        if cached_build.returncode != 0:
+            sys.stderr.write(cached_build.stderr)
             print("could not build the stage-zero selfhost compiler", file=sys.stderr)
+            return 1
+        stage0 = Path(cached_build.stdout.strip())
+        if not stage0.is_file():
+            print(f"cached stage-zero selfhost compiler is missing: {stage0}", file=sys.stderr)
             return 1
 
         ir_bound_sizes = check_struct_helper_ir_bound(stage0, root, env, work)
@@ -103,6 +124,19 @@ def main() -> int:
         }
         generated_count = int(os.environ.get("NLC_E1_GENERATED_COUNT", "8"))
         generated_cases = generate_seeded_cases(root, work, generated_count)
+        generated_classes = dict(generated_cases)
+        selected_generated = set(
+            select_packages(
+                [package for package, _ in generated_cases],
+                generated_classes,
+                args.only,
+                args.package_class,
+                changed,
+            )
+        )
+        generated_cases = [
+            (package, kind) for package, kind in generated_cases if package in selected_generated
+        ]
         generated_counts = {
             level: {kind: 0 for kind in ("build", "diagnose", "mismatches")}
             for level in levels
@@ -114,11 +148,11 @@ def main() -> int:
         reference_env["NLC_OPT_LEVEL"] = "1"
         reference_results: dict[str, Result | Exception] = {}
 
-        def reference_for(package: str) -> Result:
+        def reference_for(package: str, package_work: Path) -> Result:
             if package not in reference_results:
                 try:
                     reference_results[package] = run_reference(
-                        reference, root, package, reference_env, work, 1
+                        reference, root, package, reference_env, package_work, 1
                     )
                 except (Mismatch, subprocess.TimeoutExpired, OSError) as error:
                     reference_results[package] = error
@@ -130,12 +164,12 @@ def main() -> int:
         test_main_reference: Result | None = None
         test_main_reference_error: Exception | None = None
 
-        def reference_test_main() -> Result:
+        def reference_test_main(package_work: Path) -> Result:
             nonlocal test_main_reference, test_main_reference_error
             if test_main_reference is None and test_main_reference_error is None:
                 try:
                     test_main_reference = build_reference_main(
-                        reference, root, "tests/test/harness", reference_env, work
+                        reference, root, "tests/test/harness", reference_env, package_work
                     )
                 except (Mismatch, subprocess.TimeoutExpired, OSError) as error:
                     test_main_reference_error = error
@@ -144,152 +178,231 @@ def main() -> int:
             assert test_main_reference is not None
             return test_main_reference
 
+        def check_classified_package(
+            package: str, kind: str, run_env: dict[str, str], package_work: Path, level: int
+        ) -> None:
+            reference_result = reference_for(package, package_work)
+            expected = expected_result(root, package)
+            if normalize_result(reference_result, root, package) != expected:
+                raise Mismatch("Rust reference differs from checked-in expected.* files")
+
+            if kind == "build":
+                if reference_result.build_status != 0:
+                    raise Mismatch(
+                        f"misclassified build: Rust compile status {reference_result.build_status}",
+                        reference_result,
+                    )
+                for runtime in runtimes:
+                    self_result, wrote_ir = run_selfhost(
+                        stage0, reference, root, package, run_env, package_work, level, runtime
+                    )
+                    if not wrote_ir:
+                        raise Mismatch(
+                            f"selfhosted {runtime}-runtime comparison leg rejected a build package",
+                            reference_result,
+                            self_result,
+                        )
+                    if not same_result(self_result, reference_result):
+                        raise Mismatch(
+                            f"built program or {runtime}-runtime test runner differs from Rust nlc",
+                            reference_result,
+                            self_result,
+                        )
+            elif kind == "diagnose":
+                manifest_tool_failure = (
+                    reference_result.status == 3
+                    and expected[0] == 3
+                    and (root / package / "package.toml").is_file()
+                )
+                if reference_result.status != 2 and not manifest_tool_failure:
+                    raise Mismatch(
+                        f"misclassified diagnose: Rust status {reference_result.status}", reference_result
+                    )
+                self_result, wrote_ir = run_selfhost(
+                    stage0, reference, root, package, run_env, package_work, level
+                )
+                if wrote_ir:
+                    raise Mismatch(
+                        "selfhosted compiler wrote IR after a rejection", reference_result, self_result
+                    )
+                if not same_rejection(self_result, reference_result) and not (
+                    manifest_tool_failure and same_result(self_result, reference_result)
+                ):
+                    raise Mismatch(
+                        "selfhost did not reject with an error like Rust nlc", reference_result, self_result
+                    )
+                expected_selfhost = root / package / "expected.selfhost.stderr"
+                if expected_selfhost.is_file() and self_result.stderr != expected_selfhost.read_bytes():
+                    raise Mismatch(
+                        "selfhost diagnostic differs from its explicit oracle", reference_result, self_result
+                    )
+            elif kind == "rejects":
+                if reference_result.build_status != 0:
+                    raise Mismatch(
+                        f"misclassified rejects: Rust compile status {reference_result.build_status}",
+                        reference_result,
+                    )
+                self_result, wrote_ir = run_selfhost(
+                    stage0, reference, root, package, run_env, package_work, level
+                )
+                if wrote_ir:
+                    raise Mismatch(
+                        "selfhosted compiler wrote IR for a shadowing package", reference_result, self_result
+                    )
+                if not is_real_rejection(self_result):
+                    raise Mismatch(
+                        "selfhost did not reject the shadowing package with status 2 and real error text",
+                        reference_result,
+                        self_result,
+                    )
+            else:
+                self_result, wrote_ir = run_selfhost(
+                    stage0, reference, root, package, run_env, package_work, level
+                )
+                if wrote_ir:
+                    raise Mismatch("unsupported package produced an IR artifact", reference_result, self_result)
+                if not is_unsupported(self_result):
+                    raise Mismatch(
+                        "unsupported package did not get the exact unsupported diagnostic",
+                        reference_result,
+                        self_result,
+                    )
+                expected_selfhost = root / package / "expected.selfhost.stderr"
+                if expected_selfhost.is_file() and self_result.stderr != expected_selfhost.read_bytes():
+                    raise Mismatch(
+                        "selfhost unsupported diagnostic differs from its explicit oracle",
+                        reference_result,
+                        self_result,
+                    )
+
+            if package == "tests/test/harness" and kind == "build":
+                compare_test_package_main(
+                    stage0,
+                    reference,
+                    root,
+                    package,
+                    run_env,
+                    package_work,
+                    level,
+                    runtimes,
+                    reference_test_main(package_work),
+                )
+
+        def check_generated_package(
+            package: str, kind: str, run_env: dict[str, str], package_work: Path, level: int
+        ) -> None:
+            reference_result = reference_for(package, package_work)
+            if kind == "build":
+                if reference_result.build_status != 0:
+                    raise Mismatch("seeded build did not compile with Rust nlc", reference_result)
+                for runtime in runtimes:
+                    self_result, wrote_ir = run_selfhost(
+                        stage0, reference, root, package, run_env, package_work, level, runtime
+                    )
+                    if not wrote_ir:
+                        raise Mismatch(
+                            f"selfhost rejected a seeded valid package in its {runtime}-runtime leg",
+                            reference_result,
+                            self_result,
+                        )
+                    if not same_result(reference_result, self_result):
+                        raise Mismatch(
+                            f"seeded {runtime}-runtime build differs from Rust nlc",
+                            reference_result,
+                            self_result,
+                        )
+            else:
+                if reference_result.status not in (2, 3):
+                    raise Mismatch("seeded diagnostic did not diagnose with Rust nlc", reference_result)
+                self_result, wrote_ir = run_selfhost(
+                    stage0, reference, root, package, run_env, package_work, level
+                )
+                if wrote_ir:
+                    raise Mismatch("selfhost wrote IR for a seeded diagnostic", reference_result, self_result)
+                if not same_rejection(self_result, reference_result):
+                    raise Mismatch(
+                        "seeded diagnostic: selfhost did not reject with an error",
+                        reference_result,
+                        self_result,
+                    )
+
+        def check_in_workers(
+            tasks: list[tuple[str, str, bool]], run_env: dict[str, str], level: int
+        ) -> list[tuple[int, tuple[str, str, bool], Exception | None]]:
+            if not tasks:
+                return []
+            worker_total = min(jobs, len(tasks))
+            groups: list[list[tuple[int, tuple[str, str, bool]]]] = [
+                [] for _ in range(worker_total)
+            ]
+            for index, task in enumerate(tasks):
+                groups[index % worker_total].append((index, task))
+
+            def run_group(
+                worker_index: int, group: list[tuple[int, tuple[str, str, bool]]]
+            ) -> list[tuple[int, tuple[str, str, bool], Exception | None]]:
+                worker_work = work / f"worker-{worker_index}"
+                worker_work.mkdir(exist_ok=True)
+                results = []
+                for index, task in group:
+                    package, kind, generated = task
+                    try:
+                        check = check_generated_package if generated else check_classified_package
+                        check(package, kind, run_env, worker_work, level)
+                        error = None
+                    except (Mismatch, subprocess.TimeoutExpired, OSError) as caught:
+                        error = caught
+                    results.append((index, task, error))
+                return results
+
+            with ThreadPoolExecutor(max_workers=worker_total) as pool:
+                grouped_results = list(
+                    pool.map(lambda args: run_group(*args), enumerate(groups))
+                )
+            return sorted(
+                (result for group in grouped_results for result in group), key=lambda item: item[0]
+            )
+
+        first_diff_reported = False
         for level in levels:
             run_env = env.copy()
             run_env["NLC_OPT_LEVEL"] = str(level)
-            for package, kind in classifications.items():
-                try:
-                    reference_result = reference_for(package)
-                    expected = expected_result(root, package)
-                    if normalize_result(reference_result, root, package) != expected:
-                        raise Mismatch("Rust reference differs from checked-in expected.* files")
-
-                    if kind == "build":
-                        if reference_result.build_status != 0:
-                            raise Mismatch(
-                                f"misclassified build: Rust compile status {reference_result.build_status}",
-                                reference_result,
-                            )
-                        for runtime in runtimes:
-                            self_result, wrote_ir = run_selfhost(
-                                stage0, reference, root, package, run_env, work, level, runtime
-                            )
-                            if not wrote_ir:
-                                raise Mismatch(
-                                    f"selfhosted {runtime}-runtime comparison leg rejected a build package",
-                                    reference_result,
-                                    self_result,
-                                )
-                            if not same_result(self_result, reference_result):
-                                raise Mismatch(
-                                    f"built program or {runtime}-runtime test runner differs from Rust nlc",
-                                    reference_result,
-                                    self_result,
-                                )
-                        counts[level]["build"] += 1
-                    elif kind == "diagnose":
-                        manifest_tool_failure = (
-                            reference_result.status == 3
-                            and expected[0] == 3
-                            and (root / package / "package.toml").is_file()
-                        )
-                        if reference_result.status != 2 and not manifest_tool_failure:
-                            raise Mismatch(f"misclassified diagnose: Rust status {reference_result.status}", reference_result)
-                        self_result, wrote_ir = run_selfhost(
-                            stage0, reference, root, package, run_env, work, level
-                        )
-                        if wrote_ir:
-                            raise Mismatch("selfhosted compiler wrote IR after a rejection", reference_result, self_result)
-                        if not same_rejection(self_result, reference_result) and not (
-                            manifest_tool_failure and same_result(self_result, reference_result)
+            tasks = [(package, kind, False) for package, kind in classifications.items() if package in packages]
+            tasks.extend((package, kind, True) for package, kind in generated_cases)
+            results = check_in_workers(tasks, run_env, level)
+            for _, (package, kind, generated), error in results:
+                tally = generated_counts[level] if generated else counts[level]
+                if error is None:
+                    tally[kind] += 1
+                    continue
+                tally["mismatches"] += 1
+                label = "seeded " if generated else ""
+                print(f"[{label}{package} O{level}] {error}", file=sys.stderr)
+                if isinstance(error, Mismatch) and error.reference is not None:
+                    print("  Rust:", brief(error.reference), file=sys.stderr)
+                if isinstance(error, Mismatch) and error.selfhost is not None:
+                    print("  selfhost:", brief(error.selfhost), file=sys.stderr)
+                if not first_diff_reported and isinstance(error, Mismatch):
+                    if error.reference is not None and error.selfhost is not None:
+                        for label, left, right in (
+                            ("stdout", error.reference.stdout, error.selfhost.stdout),
+                            ("stderr", error.reference.stderr, error.selfhost.stderr),
                         ):
-                            raise Mismatch("selfhost did not reject with an error like Rust nlc", reference_result, self_result)
-                        expected_selfhost = root / package / "expected.selfhost.stderr"
-                        if expected_selfhost.is_file() and self_result.stderr != expected_selfhost.read_bytes():
-                            raise Mismatch("selfhost diagnostic differs from its explicit oracle", reference_result, self_result)
-                        counts[level]["diagnose"] += 1
-                    elif kind == "rejects":
-                        if reference_result.build_status != 0:
-                            raise Mismatch(
-                                f"misclassified rejects: Rust compile status {reference_result.build_status}",
-                                reference_result,
-                            )
-                        self_result, wrote_ir = run_selfhost(
-                            stage0, reference, root, package, run_env, work, level
-                        )
-                        if wrote_ir:
-                            raise Mismatch("selfhosted compiler wrote IR for a shadowing package", reference_result, self_result)
-                        if not is_real_rejection(self_result):
-                            raise Mismatch(
-                                "selfhost did not reject the shadowing package with status 2 and real error text",
-                                reference_result,
-                                self_result,
-                            )
-                        counts[level]["rejects"] += 1
-                    else:
-                        self_result, wrote_ir = run_selfhost(
-                            stage0, reference, root, package, run_env, work, level
-                        )
-                        if wrote_ir:
-                            raise Mismatch("unsupported package produced an IR artifact", reference_result, self_result)
-                        if not is_unsupported(self_result):
-                            raise Mismatch("unsupported package did not get the exact unsupported diagnostic", reference_result, self_result)
-                        expected_selfhost = root / package / "expected.selfhost.stderr"
-                        if expected_selfhost.is_file() and self_result.stderr != expected_selfhost.read_bytes():
-                            raise Mismatch("selfhost unsupported diagnostic differs from its explicit oracle", reference_result, self_result)
-                        counts[level]["unsupported"] += 1
-
-                    if package == "tests/test/harness" and kind == "build":
-                        compare_test_package_main(
-                            stage0,
-                            reference,
-                            root,
-                            package,
-                            run_env,
-                            work,
-                            level,
-                            runtimes,
-                            reference_test_main(),
-                        )
-                except (Mismatch, subprocess.TimeoutExpired, OSError) as error:
-                    counts[level]["mismatches"] += 1
-                    print(f"[{package} O{level}] {error}", file=sys.stderr)
-                    if isinstance(error, Mismatch) and error.reference is not None:
-                        print("  Rust:", brief(error.reference), file=sys.stderr)
-                    if isinstance(error, Mismatch) and error.selfhost is not None:
-                        print("  selfhost:", brief(error.selfhost), file=sys.stderr)
-            for package, kind in generated_cases:
-                try:
-                    reference_result = reference_for(package)
-                    if kind == "build":
-                        if reference_result.build_status != 0:
-                            raise Mismatch("seeded build did not compile with Rust nlc", reference_result)
-                    elif reference_result.status not in (2, 3):
-                        raise Mismatch("seeded diagnostic did not diagnose with Rust nlc", reference_result)
-                    if kind == "build":
-                        for runtime in runtimes:
-                            self_result, wrote_ir = run_selfhost(
-                                stage0, reference, root, package, run_env, work, level, runtime
-                            )
-                            if not wrote_ir:
-                                raise Mismatch(
-                                    f"selfhost rejected a seeded valid package in its {runtime}-runtime leg",
-                                    reference_result,
-                                    self_result,
+                            if left != right:
+                                print(f"  first mismatch diff ({label}):", file=sys.stderr)
+                                diff = difflib.unified_diff(
+                                    left.decode("utf-8", "replace").splitlines(keepends=True),
+                                    right.decode("utf-8", "replace").splitlines(keepends=True),
+                                    fromfile="Rust",
+                                    tofile="selfhost",
                                 )
-                            if not same_result(reference_result, self_result):
-                                raise Mismatch(
-                                    f"seeded {runtime}-runtime build differs from Rust nlc",
-                                    reference_result,
-                                    self_result,
-                                )
-                        generated_counts[level]["build"] += 1
-                    else:
-                        self_result, wrote_ir = run_selfhost(
-                            stage0, reference, root, package, run_env, work, level
-                        )
-                        if wrote_ir:
-                            raise Mismatch("selfhost wrote IR for a seeded diagnostic", reference_result, self_result)
-                        if not same_rejection(self_result, reference_result):
-                            raise Mismatch("seeded diagnostic: selfhost did not reject with an error", reference_result, self_result)
-                        generated_counts[level]["diagnose"] += 1
-                except (Mismatch, subprocess.TimeoutExpired, OSError) as error:
-                    generated_counts[level]["mismatches"] += 1
-                    print(f"[seeded {package} O{level}] {error}", file=sys.stderr)
-                    if isinstance(error, Mismatch) and error.reference is not None:
-                        print("  Rust:", brief(error.reference), file=sys.stderr)
-                    if isinstance(error, Mismatch) and error.selfhost is not None:
-                        print("  selfhost:", brief(error.selfhost), file=sys.stderr)
+                                for line_index, line in enumerate(diff):
+                                    if line_index >= 160:
+                                        print("  ... diff truncated ...", file=sys.stderr)
+                                        break
+                                    sys.stderr.write("  " + line)
+                                break
+                    first_diff_reported = True
 
             print(
                 f"O{level}: built and matching {counts[level]['build']}; "
@@ -303,6 +416,11 @@ def main() -> int:
             )
 
         mismatches = sum(counts[level]["mismatches"] + generated_counts[level]["mismatches"] for level in counts)
+        print(
+            f"selfhost build comparison: packages={len(packages)} seeded={len(generated_cases)} "
+            f"levels={len(levels)} workers={min(jobs, len(packages) + len(generated_cases))} "
+            f"mismatches={mismatches} ({filter_label(args.only, args.package_class, args.changed)})"
+        )
         return 1 if mismatches else 0
     finally:
         shutil.rmtree(work, ignore_errors=True)

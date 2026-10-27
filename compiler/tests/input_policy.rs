@@ -44,6 +44,12 @@ fn is_long_tests_mode() -> bool {
     std::env::var_os("NLC_LONG_TESTS").is_some_and(|v| v == "1")
 }
 
+// Each input-policy test explicitly drives both frontends, so one invocation
+// of this integration test covers the same cases in both full suites.
+fn run_input_policy_once() -> bool {
+    std::env::var("NLC_FRONTEND").as_deref() != Ok("selfhost")
+}
+
 fn get_default_commands() -> &'static [&'static str] {
     &["parse", "build"]
 }
@@ -186,6 +192,9 @@ fn token_boundary_source(function: &str, token_count: usize) -> Vec<u8> {
 
 #[test]
 fn input_policy_file_count() {
+    if !run_input_policy_once() {
+        return;
+    }
     let _lock = LARGE_INPUT_LOCK.lock().unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -227,6 +236,9 @@ fn input_policy_file_count() {
 
 #[test]
 fn input_policy_per_file_bytes() {
+    if !run_input_policy_once() {
+        return;
+    }
     let _lock = LARGE_INPUT_LOCK.lock().unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -265,6 +277,9 @@ fn input_policy_per_file_bytes() {
 
 #[test]
 fn input_policy_package_bytes() {
+    if !run_input_policy_once() {
+        return;
+    }
     let _lock = LARGE_INPUT_LOCK.lock().unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -307,6 +322,9 @@ fn input_policy_package_bytes() {
 
 #[test]
 fn input_policy_per_file_tokens() {
+    if !run_input_policy_once() {
+        return;
+    }
     let _lock = LARGE_INPUT_LOCK.lock().unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -343,6 +361,9 @@ fn input_policy_per_file_tokens() {
 
 #[test]
 fn input_policy_package_tokens() {
+    if !run_input_policy_once() {
+        return;
+    }
     let _lock = LARGE_INPUT_LOCK.lock().unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -381,6 +402,9 @@ fn input_policy_package_tokens() {
 
 #[test]
 fn input_policy_nodes() {
+    if !run_input_policy_once() {
+        return;
+    }
     let _lock = LARGE_INPUT_LOCK.lock().unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -415,6 +439,9 @@ fn input_policy_nodes() {
 
 #[test]
 fn input_policy_work() {
+    if !run_input_policy_once() {
+        return;
+    }
     let _lock = LARGE_INPUT_LOCK.lock().unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -494,6 +521,9 @@ fn input_policy_work() {
 
 #[test]
 fn input_policy_nesting() {
+    if !run_input_policy_once() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler crate has a workspace root");
@@ -531,6 +561,9 @@ fn input_policy_nesting() {
 
 #[test]
 fn input_policy_invalid_utf8() {
+    if !run_input_policy_once() {
+        return;
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler crate has a workspace root");
