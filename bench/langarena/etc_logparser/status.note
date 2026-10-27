@@ -1,0 +1,1 @@
+ready-scanner (13 patterns as hand-written scanners with leftmost, non-overlapping, alternatives-in-order semantics; no regex library yet)
