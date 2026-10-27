@@ -1,0 +1,101 @@
+--- increment_heavy.sh.ll
++++ increment_heavy.base-aa.ll
+@@ -151,7 +151,7 @@
+   store i64 %v30, ptr %local.1, align 1
+   %v33 = load i64, ptr %local.1, align 1
+   %addr.34 = getelementptr i8, ptr %agg.47, i64 16
+-  store i64 %v33, ptr %addr.34, align 1
++  store i64 %v33, ptr %addr.34, align 1, !tbaa !9003
+   %v35 = load i64, ptr %local.1, align 1
+   %v36 = add i64 0, 2
+   %ov.pair.37 = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %v35, i64 %v36)
+@@ -163,7 +163,7 @@
+   unreachable
+ ov.ok.37:
+   %addr.38 = getelementptr i8, ptr %agg.45, i64 8
+-  store i64 %v37, ptr %addr.38, align 1
++  store i64 %v37, ptr %addr.38, align 1, !tbaa !9003
+   %v39 = load i64, ptr %local.1, align 1
+   %v40 = add i64 0, 3
+   %ov.pair.41 = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %v39, i64 %v40)
+@@ -175,7 +175,7 @@
+   unreachable
+ ov.ok.41:
+   %addr.42 = getelementptr i8, ptr %agg.43, i64 0
+-  store i64 %v41, ptr %addr.42, align 1
++  store i64 %v41, ptr %addr.42, align 1, !tbaa !9003
+   %addr.44 = getelementptr i8, ptr %agg.45, i64 0
+   call void @nl.copy.6(ptr %nl.ctx, ptr %addr.44, ptr %agg.43)
+   %addr.46 = getelementptr i8, ptr %agg.47, i64 0
+@@ -195,21 +195,21 @@
+   %coll.dynamic.lane.dest.8872 = getelementptr i8, ptr %loc.pointer.8253, i64 %coll.dynamic.lane.offset.8872
+   %coll.dynamic.lane.src.8872 = getelementptr i8, ptr %agg.47, i64 0
+   %coll.dynamic.lane.value.8872 = load i64, ptr %coll.dynamic.lane.src.8872, align 1
+-  store i64 %coll.dynamic.lane.value.8872, ptr %coll.dynamic.lane.dest.8872, align 1
++  store i64 %coll.dynamic.lane.value.8872, ptr %coll.dynamic.lane.dest.8872, align 1, !tbaa !9003
+   %coll.dynamic.lane.bytes.9361 = mul i64 %coll.push.count.48, 8
+   %coll.dynamic.lane.offset.9361 = add i64 4104, %coll.dynamic.lane.bytes.9361
+   %coll.dynamic.lane.dest.9361 = getelementptr i8, ptr %loc.pointer.8253, i64 %coll.dynamic.lane.offset.9361
+   %coll.dynamic.lane.src.9361 = getelementptr i8, ptr %agg.47, i64 8
+   %coll.dynamic.lane.value.9361 = load i64, ptr %coll.dynamic.lane.src.9361, align 1
+-  store i64 %coll.dynamic.lane.value.9361, ptr %coll.dynamic.lane.dest.9361, align 1
++  store i64 %coll.dynamic.lane.value.9361, ptr %coll.dynamic.lane.dest.9361, align 1, !tbaa !9003
+   %coll.dynamic.lane.bytes.9853 = mul i64 %coll.push.count.48, 8
+   %coll.dynamic.lane.offset.9853 = add i64 8200, %coll.dynamic.lane.bytes.9853
+   %coll.dynamic.lane.dest.9853 = getelementptr i8, ptr %loc.pointer.8253, i64 %coll.dynamic.lane.offset.9853
+   %coll.dynamic.lane.src.9853 = getelementptr i8, ptr %agg.47, i64 16
+   %coll.dynamic.lane.value.9853 = load i64, ptr %coll.dynamic.lane.src.9853, align 1
+-  store i64 %coll.dynamic.lane.value.9853, ptr %coll.dynamic.lane.dest.9853, align 1
++  store i64 %coll.dynamic.lane.value.9853, ptr %coll.dynamic.lane.dest.9853, align 1, !tbaa !9003
+   %coll.push.next.48 = add i64 %coll.push.count.48, 1
+-  store i64 %coll.push.next.48, ptr %loc.pointer.8253, align 1
++  store i64 %coll.push.next.48, ptr %loc.pointer.8253, align 1, !tbaa !9003
+   br label %coll.push.done.48
+ coll.push.done.48:
+   %nl.scope.restore.50.10512 = load i64, ptr %nl.scope.top.50, align 8
+@@ -344,7 +344,7 @@
+   %coll.field.index.bytes.36950000065 = mul i64 %v61, 8
+   %coll.field.index.offset.36950000065 = add i64 8, %coll.field.index.bytes.36950000065
+   %addr.36950000065 = getelementptr i8, ptr %loc.pointer.17451, i64 %coll.field.index.offset.36950000065
+-  store i64 %asgn.value.67, ptr %addr.36950000065, align 1
++  store i64 %asgn.value.67, ptr %addr.36950000065, align 1, !tbaa !9003
+   %v69 = load i64, ptr %local.5, align 1
+   %loc.offset.18002 = add i64 %region.offset.17, 0
+   %loc.base.18002 = call ptr @nl_context_current_base(ptr %nl.ctx)
+@@ -406,7 +406,7 @@
+   %coll.field.index.bytes.44670000072 = mul i64 %v69, 8
+   %coll.field.index.offset.44670000072 = add i64 4104, %coll.field.index.bytes.44670000072
+   %addr.44670000072 = getelementptr i8, ptr %loc.pointer.21311, i64 %coll.field.index.offset.44670000072
+-  store i64 %asgn.value.74, ptr %addr.44670000072, align 1
++  store i64 %asgn.value.74, ptr %addr.44670000072, align 1, !tbaa !9003
+   %v76 = load i64, ptr %local.5, align 1
+   %loc.offset.21865 = add i64 %region.offset.17, 0
+   %loc.base.21865 = call ptr @nl_context_current_base(ptr %nl.ctx)
+@@ -464,7 +464,7 @@
+   %coll.field.index.bytes.51870000078 = mul i64 %v76, 8
+   %coll.field.index.offset.51870000078 = add i64 8200, %coll.field.index.bytes.51870000078
+   %addr.51870000078 = getelementptr i8, ptr %loc.pointer.24911, i64 %coll.field.index.offset.51870000078
+-  store i64 %asgn.value.80, ptr %addr.51870000078, align 1
++  store i64 %asgn.value.80, ptr %addr.51870000078, align 1, !tbaa !9003
+   %v83 = load i64, ptr %local.5, align 1
+   %loc.offset.25465 = add i64 %region.offset.17, 0
+   %loc.base.25465 = call ptr @nl_context_current_base(ptr %nl.ctx)
+@@ -2269,7 +2269,7 @@
+   %v991 = add i64 0, 7
+   %v992 = add i64 0, 56
+   %sys.ptr.993 = getelementptr i8, ptr %v989, i64 %v992
+-  %sys.load.993 = load ptr, ptr %sys.ptr.993, align 1
++  %sys.load.993 = load ptr, ptr %sys.ptr.993, align 1, !tbaa !9002
+   %v993 = select i1 true, ptr %sys.load.993, ptr %sys.load.993
+   ret ptr %v993
+ }
+@@ -12557,4 +12557,9 @@
+ module asm ".size _start, . - _start"
+ @llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section "llvm.metadata"
+ 
++!9000 = !{!"Sol context versus program storage"}
++!9001 = !{!"context base", !9000}
++!9002 = !{!9001, !9001, i64 0}
++!9004 = !{!"program storage", !9000}
++!9003 = !{!9004, !9004, i64 0}
+ ; nlc-link-ir end

@@ -1,0 +1,44 @@
+--- tight_list.sh.ll
++++ tight_list.weights.ll
+@@ -223,7 +223,7 @@
+   %coll.index.count.35 = load i64, ptr %coll.index.count.ptr.35, align 1
+   %coll.index.high.35 = icmp sge i64 %v34, %coll.index.count.35
+   %coll.index.invalid.35 = or i1 %coll.index.negative.35, %coll.index.high.35
+-  br i1 %coll.index.invalid.35, label %coll.index.fail.35, label %coll.index.ok.35
++  br i1 %coll.index.invalid.35, label %coll.index.fail.35, label %coll.index.ok.35, !prof !9010
+ coll.index.fail.35:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 13, i32 28)
+   unreachable
+@@ -236,7 +236,7 @@
+   %ov.pair.37 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v35, i64 %v36)
+   %v37 = extractvalue { i64, i1 } %ov.pair.37, 0
+   %ov.flag.37 = extractvalue { i64, i1 } %ov.pair.37, 1
+-  br i1 %ov.flag.37, label %ov.fail.37, label %ov.ok.37
++  br i1 %ov.flag.37, label %ov.fail.37, label %ov.ok.37, !prof !9010
+ ov.fail.37:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 13, i32 35)
+   unreachable
+@@ -274,7 +274,7 @@
+   %ov.pair.46 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v44, i64 %v45)
+   %asgn.value.46 = extractvalue { i64, i1 } %ov.pair.46, 0
+   %ov.flag.46 = extractvalue { i64, i1 } %ov.pair.46, 1
+-  br i1 %ov.flag.46, label %ov.fail.46, label %ov.ok.46
++  br i1 %ov.flag.46, label %ov.fail.46, label %ov.ok.46, !prof !9010
+ ov.fail.46:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 15, i32 26)
+   unreachable
+@@ -292,7 +292,7 @@
+   %ov.pair.50 = call { i64, i1 } @llvm.ssub.with.overflow.i64(i64 %v48, i64 %v49)
+   %asgn.value.50 = extractvalue { i64, i1 } %ov.pair.50, 0
+   %ov.flag.50 = extractvalue { i64, i1 } %ov.pair.50, 1
+-  br i1 %ov.flag.50, label %ov.fail.50, label %ov.ok.50
++  br i1 %ov.flag.50, label %ov.fail.50, label %ov.ok.50, !prof !9010
+ ov.fail.50:
+   call void @nl_fail(ptr %nl.ctx, i32 6, i32 0, i32 17, i32 26)
+   unreachable
+@@ -12219,4 +12219,5 @@
+ module asm ".size _start, . - _start"
+ @llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section "llvm.metadata"
+ 
++!9010 = !{!"branch_weights", i32 1, i32 2000}
+ ; nlc-link-ir end

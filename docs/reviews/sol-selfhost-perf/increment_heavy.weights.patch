@@ -1,0 +1,80 @@
+--- increment_heavy.sh.ll
++++ increment_heavy.weights.ll
+@@ -288,7 +288,7 @@
+   %coll.index.count.62 = load i64, ptr %coll.index.count.ptr.62, align 1
+   %coll.index.high.62 = icmp sge i64 %v61, %coll.index.count.62
+   %coll.index.invalid.62 = or i1 %coll.index.negative.62, %coll.index.high.62
+-  br i1 %coll.index.invalid.62, label %coll.index.fail.62, label %coll.index.ok.62
++  br i1 %coll.index.invalid.62, label %coll.index.fail.62, label %coll.index.ok.62, !prof !9010
+ coll.index.fail.62:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 33, i32 19)
+   unreachable
+@@ -333,7 +333,7 @@
+   %ov.pair.67 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v65, i64 %v66)
+   %asgn.value.67 = extractvalue { i64, i1 } %ov.pair.67, 0
+   %ov.flag.67 = extractvalue { i64, i1 } %ov.pair.67, 1
+-  br i1 %ov.flag.67, label %ov.fail.67, label %ov.ok.67
++  br i1 %ov.flag.67, label %ov.fail.67, label %ov.ok.67, !prof !9010
+ ov.fail.67:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 33, i32 45)
+   unreachable
+@@ -354,7 +354,7 @@
+   %coll.index.count.70 = load i64, ptr %coll.index.count.ptr.70, align 1
+   %coll.index.high.70 = icmp sge i64 %v69, %coll.index.count.70
+   %coll.index.invalid.70 = or i1 %coll.index.negative.70, %coll.index.high.70
+-  br i1 %coll.index.invalid.70, label %coll.index.fail.70, label %coll.index.ok.70
++  br i1 %coll.index.invalid.70, label %coll.index.fail.70, label %coll.index.ok.70, !prof !9010
+ coll.index.fail.70:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 34, i32 19)
+   unreachable
+@@ -395,7 +395,7 @@
+   %ov.pair.74 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v72, i64 %v73)
+   %asgn.value.74 = extractvalue { i64, i1 } %ov.pair.74, 0
+   %ov.flag.74 = extractvalue { i64, i1 } %ov.pair.74, 1
+-  br i1 %ov.flag.74, label %ov.fail.74, label %ov.ok.74
++  br i1 %ov.flag.74, label %ov.fail.74, label %ov.ok.74, !prof !9010
+ ov.fail.74:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 34, i32 39)
+   unreachable
+@@ -416,7 +416,7 @@
+   %coll.index.count.77 = load i64, ptr %coll.index.count.ptr.77, align 1
+   %coll.index.high.77 = icmp sge i64 %v76, %coll.index.count.77
+   %coll.index.invalid.77 = or i1 %coll.index.negative.77, %coll.index.high.77
+-  br i1 %coll.index.invalid.77, label %coll.index.fail.77, label %coll.index.ok.77
++  br i1 %coll.index.invalid.77, label %coll.index.fail.77, label %coll.index.ok.77, !prof !9010
+ coll.index.fail.77:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 35, i32 19)
+   unreachable
+@@ -453,7 +453,7 @@
+   %ov.pair.80 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v78, i64 %v79)
+   %asgn.value.80 = extractvalue { i64, i1 } %ov.pair.80, 0
+   %ov.flag.80 = extractvalue { i64, i1 } %ov.pair.80, 1
+-  br i1 %ov.flag.80, label %ov.fail.80, label %ov.ok.80
++  br i1 %ov.flag.80, label %ov.fail.80, label %ov.ok.80, !prof !9010
+ ov.fail.80:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 35, i32 29)
+   unreachable
+@@ -474,7 +474,7 @@
+   %coll.index.count.84 = load i64, ptr %coll.index.count.ptr.84, align 1
+   %coll.index.high.84 = icmp sge i64 %v83, %coll.index.count.84
+   %coll.index.invalid.84 = or i1 %coll.index.negative.84, %coll.index.high.84
+-  br i1 %coll.index.invalid.84, label %coll.index.fail.84, label %coll.index.ok.84
++  br i1 %coll.index.invalid.84, label %coll.index.fail.84, label %coll.index.ok.84, !prof !9010
+ coll.index.fail.84:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 36, i32 31)
+   unreachable
+@@ -519,7 +519,7 @@
+   %ov.pair.88 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v81, i64 %v87)
+   %asgn.value.88 = extractvalue { i64, i1 } %ov.pair.88, 0
+   %ov.flag.88 = extractvalue { i64, i1 } %ov.pair.88, 1
+-  br i1 %ov.flag.88, label %ov.fail.88, label %ov.ok.88
++  br i1 %ov.flag.88, label %ov.fail.88, label %ov.ok.88, !prof !9010
+ ov.fail.88:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 36, i32 22)
+   unreachable
+@@ -12557,4 +12557,5 @@
+ module asm ".size _start, . - _start"
+ @llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section "llvm.metadata"
+ 
++!9010 = !{!"branch_weights", i32 1, i32 2000}
+ ; nlc-link-ir end

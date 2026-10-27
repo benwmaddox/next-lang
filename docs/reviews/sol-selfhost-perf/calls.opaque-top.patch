@@ -1,0 +1,102 @@
+--- calls.sh.ll
++++ calls.opaque-top.ll
+@@ -43,7 +43,7 @@
+   %loc.pointer.1651 = select i1 %loc.is.stack.1651, ptr %loc.stack.pointer.1651, ptr %loc.native.pointer.1651
+   %addr.5350000002 = getelementptr i8, ptr %loc.pointer.1651, i64 0
+   store i64 %asgn.value.4, ptr %addr.5350000002, align 1
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.top)
++  call void @sol_opaque_set_top(ptr %nl.ctx, i64 %nl.top)
+   ret void
+ }
+ 
+@@ -70,7 +70,7 @@
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 6, i32 12)
+   unreachable
+ ov.ok.14:
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.top)
++  call void @sol_opaque_set_top(ptr %nl.ctx, i64 %nl.top)
+   ret i64 %v14
+ }
+ 
+@@ -130,13 +130,13 @@
+   %nl.scope.grow.158 = icmp ugt i64 %nl.scope.end.158, %nl.scope.reserved.158
+   br i1 %nl.scope.grow.158, label %nl.scope.slow.158, label %nl.scope.ready.158
+ nl.scope.slow.158:
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.end.158)
++  call void @sol_opaque_set_top(ptr %nl.ctx, i64 %nl.scope.end.158)
+   call void @nl_stack_grow(ptr %nl.ctx, i64 %nl.scope.end.158, i32 0, i32 16, i32 11)
+   br label %nl.scope.ready.158
+ nl.scope.ready.158:
+   %nl.scope.target.158 = select i1 %nl.scope.more.158, i64 %nl.scope.end.158, i64 %nl.scope.saved.158
+   store i64 %nl.scope.target.158, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.target.158)
++  call void @sol_opaque_set_top(ptr %nl.ctx, i64 %nl.scope.target.158)
+   call void @nl_context_note_peak(ptr %nl.ctx, i64 %nl.scope.target.158)
+   %region.offset.29 = add i64 %nl.scope.base.158, 32776
+   %region.offset.147 = add i64 %nl.scope.base.158, 65552
+@@ -387,7 +387,7 @@
+ coll.push.done.90:
+   %nl.scope.restore.92.17976 = load i64, ptr %nl.scope.top.92, align 8
+   store i64 %nl.scope.restore.92.17976, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.92.17976)
++  call void @sol_opaque_set_top(ptr %nl.ctx, i64 %nl.scope.restore.92.17976)
+   br label %for.increment.93
+ for.increment.93:
+   %for.current.93 = load i64, ptr %local.4, align 1
+@@ -440,13 +440,13 @@
+   %nl.scope.grow.140 = icmp ugt i64 %nl.scope.end.140, %nl.scope.reserved.140
+   br i1 %nl.scope.grow.140, label %nl.scope.slow.140, label %nl.scope.ready.140
+ nl.scope.slow.140:
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.end.140)
++  call void @sol_opaque_set_top(ptr %nl.ctx, i64 %nl.scope.end.140)
+   call void @nl_stack_grow(ptr %nl.ctx, i64 %nl.scope.end.140, i32 0, i32 34, i32 38)
+   br label %nl.scope.ready.140
+ nl.scope.ready.140:
+   %nl.scope.target.140 = select i1 %nl.scope.more.140, i64 %nl.scope.end.140, i64 %nl.scope.saved.140
+   store i64 %nl.scope.target.140, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.target.140)
++  call void @sol_opaque_set_top(ptr %nl.ctx, i64 %nl.scope.target.140)
+   call void @nl_context_note_peak(ptr %nl.ctx, i64 %nl.scope.target.140)
+   %region.offset.102 = add i64 %nl.scope.base.140, 0
+   %region.offset.108 = add i64 %nl.scope.base.140, 32776
+@@ -788,7 +788,7 @@
+   store i64 %asgn.value.139, ptr %local.9, align 1
+   %nl.scope.restore.140.43135 = load i64, ptr %nl.scope.top.140, align 8
+   store i64 %nl.scope.restore.140.43135, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.140.43135)
++  call void @sol_opaque_set_top(ptr %nl.ctx, i64 %nl.scope.restore.140.43135)
+   br label %for.increment.141
+ for.increment.141:
+   %for.current.141 = load i64, ptr %local.11, align 1
+@@ -798,7 +798,7 @@
+ for.end.141:
+   %nl.scope.restore.142.43605 = load i64, ptr %nl.scope.top.142, align 8
+   store i64 %nl.scope.restore.142.43605, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.142.43605)
++  call void @sol_opaque_set_top(ptr %nl.ctx, i64 %nl.scope.restore.142.43605)
+   br label %for.increment.143
+ for.increment.143:
+   %for.current.143 = load i64, ptr %local.10, align 1
+@@ -906,7 +906,7 @@
+   %addr.156 = getelementptr i8, ptr %loc.pointer.50071, i64 %coll.field.index.offset.156
+   %v156 = load i64, ptr %addr.156, align 1
+   call void @nl_print_long(ptr %nl.ctx, i64 %v156)
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.top)
++  call void @sol_opaque_set_top(ptr %nl.ctx, i64 %nl.top)
+   ret void
+ }
+ 
+@@ -12813,4 +12813,13 @@
+ module asm ".size _start, . - _start"
+ @llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section "llvm.metadata"
+ 
++declare void @sol_opaque_set_top(ptr, i64)
++module asm ".text"
++module asm ".globl sol_opaque_set_top"
++module asm "sol_opaque_set_top:"
++module asm "mov %rsi,80(%rdi)"
++module asm "mov 56(%rdi),%rax"
++module asm "add %rsi,%rax"
++module asm "mov %rax,64(%rdi)"
++module asm "ret"
+ ; nlc-link-ir end

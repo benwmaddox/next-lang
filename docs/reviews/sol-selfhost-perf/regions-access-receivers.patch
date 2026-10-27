@@ -1,0 +1,11 @@
+--- a/selfhost/regions.nl
++++ b/selfhost/regions.nl
+@@ -62,7 +62,7 @@
+     let kind = type_kind(compiler, compiler.facts[node].ty)
+     if kind != TYPE_KIND_ARRAY && kind != TYPE_KIND_LIST { return false }
+     for parent in 0L..tables.nodes.count() {
+-        if compiler.child_first[parent] == node && tables.nodes[parent].kind == NodeKind.MethodCall {
++        if compiler.child_first[parent] == node && (tables.nodes[parent].kind == NodeKind.MethodCall || tables.nodes[parent].kind == NodeKind.Index) {
+             return true
+         }
+     }

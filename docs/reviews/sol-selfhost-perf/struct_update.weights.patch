@@ -1,0 +1,98 @@
+--- struct_update.sh.ll
++++ struct_update.weights.ll
+@@ -463,7 +463,7 @@
+   %coll.index.count.95 = load i64, ptr %coll.index.count.ptr.95, align 1
+   %coll.index.high.95 = icmp sge i64 %v94, %coll.index.count.95
+   %coll.index.invalid.95 = or i1 %coll.index.negative.95, %coll.index.high.95
+-  br i1 %coll.index.invalid.95, label %coll.index.fail.95, label %coll.index.ok.95
++  br i1 %coll.index.invalid.95, label %coll.index.fail.95, label %coll.index.ok.95, !prof !9010
+ coll.index.fail.95:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 27, i32 23)
+   unreachable
+@@ -511,7 +511,7 @@
+   %coll.index.count.99 = load i64, ptr %coll.index.count.ptr.99, align 1
+   %coll.index.high.99 = icmp sge i64 %v98, %coll.index.count.99
+   %coll.index.invalid.99 = or i1 %coll.index.negative.99, %coll.index.high.99
+-  br i1 %coll.index.invalid.99, label %coll.index.fail.99, label %coll.index.ok.99
++  br i1 %coll.index.invalid.99, label %coll.index.fail.99, label %coll.index.ok.99, !prof !9010
+ coll.index.fail.99:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 27, i32 45)
+   unreachable
+@@ -553,7 +553,7 @@
+   %ov.pair.101 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v96, i64 %v100)
+   %asgn.value.101 = extractvalue { i64, i1 } %ov.pair.101, 0
+   %ov.flag.101 = extractvalue { i64, i1 } %ov.pair.101, 1
+-  br i1 %ov.flag.101, label %ov.fail.101, label %ov.ok.101
++  br i1 %ov.flag.101, label %ov.fail.101, label %ov.ok.101, !prof !9010
+ ov.fail.101:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 27, i32 32)
+   unreachable
+@@ -574,7 +574,7 @@
+   %coll.index.count.104 = load i64, ptr %coll.index.count.ptr.104, align 1
+   %coll.index.high.104 = icmp sge i64 %v103, %coll.index.count.104
+   %coll.index.invalid.104 = or i1 %coll.index.negative.104, %coll.index.high.104
+-  br i1 %coll.index.invalid.104, label %coll.index.fail.104, label %coll.index.ok.104
++  br i1 %coll.index.invalid.104, label %coll.index.fail.104, label %coll.index.ok.104, !prof !9010
+ coll.index.fail.104:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 28, i32 23)
+   unreachable
+@@ -622,7 +622,7 @@
+   %coll.index.count.108 = load i64, ptr %coll.index.count.ptr.108, align 1
+   %coll.index.high.108 = icmp sge i64 %v107, %coll.index.count.108
+   %coll.index.invalid.108 = or i1 %coll.index.negative.108, %coll.index.high.108
+-  br i1 %coll.index.invalid.108, label %coll.index.fail.108, label %coll.index.ok.108
++  br i1 %coll.index.invalid.108, label %coll.index.fail.108, label %coll.index.ok.108, !prof !9010
+ coll.index.fail.108:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 28, i32 45)
+   unreachable
+@@ -664,7 +664,7 @@
+   %ov.pair.110 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v105, i64 %v109)
+   %asgn.value.110 = extractvalue { i64, i1 } %ov.pair.110, 0
+   %ov.flag.110 = extractvalue { i64, i1 } %ov.pair.110, 1
+-  br i1 %ov.flag.110, label %ov.fail.110, label %ov.ok.110
++  br i1 %ov.flag.110, label %ov.fail.110, label %ov.ok.110, !prof !9010
+ ov.fail.110:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 28, i32 32)
+   unreachable
+@@ -685,7 +685,7 @@
+   %coll.index.count.114 = load i64, ptr %coll.index.count.ptr.114, align 1
+   %coll.index.high.114 = icmp sge i64 %v113, %coll.index.count.114
+   %coll.index.invalid.114 = or i1 %coll.index.negative.114, %coll.index.high.114
+-  br i1 %coll.index.invalid.114, label %coll.index.fail.114, label %coll.index.ok.114
++  br i1 %coll.index.invalid.114, label %coll.index.fail.114, label %coll.index.ok.114, !prof !9010
+ coll.index.fail.114:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 29, i32 35)
+   unreachable
+@@ -733,7 +733,7 @@
+   %coll.index.count.118 = load i64, ptr %coll.index.count.ptr.118, align 1
+   %coll.index.high.118 = icmp sge i64 %v117, %coll.index.count.118
+   %coll.index.invalid.118 = or i1 %coll.index.negative.118, %coll.index.high.118
+-  br i1 %coll.index.invalid.118, label %coll.index.fail.118, label %coll.index.ok.118
++  br i1 %coll.index.invalid.118, label %coll.index.fail.118, label %coll.index.ok.118, !prof !9010
+ coll.index.fail.118:
+   call void @nl_fail(ptr %nl.ctx, i32 16, i32 0, i32 29, i32 56)
+   unreachable
+@@ -775,7 +775,7 @@
+   %ov.pair.120 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v115, i64 %v119)
+   %v120 = extractvalue { i64, i1 } %ov.pair.120, 0
+   %ov.flag.120 = extractvalue { i64, i1 } %ov.pair.120, 1
+-  br i1 %ov.flag.120, label %ov.fail.120, label %ov.ok.120
++  br i1 %ov.flag.120, label %ov.fail.120, label %ov.ok.120, !prof !9010
+ ov.fail.120:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 29, i32 44)
+   unreachable
+@@ -784,7 +784,7 @@
+   %ov.pair.121 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %v111, i64 %v120)
+   %asgn.value.121 = extractvalue { i64, i1 } %ov.pair.121, 0
+   %ov.flag.121 = extractvalue { i64, i1 } %ov.pair.121, 1
+-  br i1 %ov.flag.121, label %ov.fail.121, label %ov.ok.121
++  br i1 %ov.flag.121, label %ov.fail.121, label %ov.ok.121, !prof !9010
+ ov.fail.121:
+   call void @nl_fail(ptr %nl.ctx, i32 5, i32 0, i32 29, i32 22)
+   unreachable
+@@ -12817,4 +12817,5 @@
+ module asm ".size _start, . - _start"
+ @llvm.used = appending global [1 x ptr] [ptr @nl_core_start], section "llvm.metadata"
+ 
++!9010 = !{!"branch_weights", i32 1, i32 2000}
+ ; nlc-link-ir end

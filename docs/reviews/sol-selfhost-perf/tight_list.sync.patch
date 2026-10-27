@@ -1,0 +1,39 @@
+--- tight_list.sh.ll
++++ tight_list.sync.ll
+@@ -152,7 +152,6 @@
+ coll.push.done.21:
+   %nl.scope.restore.23.7142 = load i64, ptr %nl.scope.top.23, align 8
+   store i64 %nl.scope.restore.23.7142, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.23.7142)
+   br label %for.increment.24
+ for.increment.24:
+   %for.current.24 = load i64, ptr %local.2, align 1
+@@ -282,7 +281,6 @@
+   store i64 %asgn.value.46, ptr %local.3, align 1
+   %nl.scope.restore.47.13245 = load i64, ptr %nl.scope.top.47, align 8
+   store i64 %nl.scope.restore.47.13245, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.47.13245)
+   br label %if.expr.end.52
+ if.expr.else.52:
+   %nl.scope.saved.51 = load i64, ptr %nl.top.current.slot, align 8
+@@ -300,12 +298,10 @@
+   store i64 %asgn.value.50, ptr %local.3, align 1
+   %nl.scope.restore.51.14123 = load i64, ptr %nl.scope.top.51, align 8
+   store i64 %nl.scope.restore.51.14123, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.51.14123)
+   br label %if.expr.end.52
+ if.expr.end.52:
+   %nl.scope.restore.53.14395 = load i64, ptr %nl.scope.top.53, align 8
+   store i64 %nl.scope.restore.53.14395, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.53.14395)
+   br label %for.increment.54
+ for.increment.54:
+   %for.current.54 = load i64, ptr %local.5, align 1
+@@ -315,7 +311,6 @@
+ for.end.54:
+   %nl.scope.restore.55.14851 = load i64, ptr %nl.scope.top.55, align 8
+   store i64 %nl.scope.restore.55.14851, ptr %nl.top.current.slot, align 8
+-  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.scope.restore.55.14851)
+   br label %for.increment.56
+ for.increment.56:
+   %for.current.56 = load i64, ptr %local.4, align 1
