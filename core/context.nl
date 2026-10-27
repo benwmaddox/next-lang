@@ -101,9 +101,11 @@ fn find_environment_in(envp: sys.Addr, key: sys.Addr, key_length: long) -> sys.A
     for index in 0L..1048576L {
         let entry = sys.load_addr(envp, index * 8L)
         if sys.is_null(entry) { return sys.null() }
+        // Stop at the first differing byte: the key has no NUL, so a shorter
+        // entry stops at its terminator and is never read past its end.
         var matches = true
         for byte_index in 0L..key_length {
-            if sys.load8(entry, byte_index) != sys.load8(key, byte_index) { matches = false }
+            if matches && sys.load8(entry, byte_index) != sys.load8(key, byte_index) { matches = false }
         }
         if matches && sys.load8(entry, key_length) == 61 {
             return sys.offset(entry, key_length + 1L)
