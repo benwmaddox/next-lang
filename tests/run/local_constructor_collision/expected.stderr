@@ -1,0 +1,1 @@
+main.nl:2:30: error: value 'C' has type int and cannot be called; use a function-typed value

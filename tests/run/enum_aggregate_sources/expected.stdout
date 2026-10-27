@@ -1,0 +1,8 @@
+Box { a: none, b: 1, inner: Inner { state: A, maybe: none } }
+Box { a: none, b: 2, inner: Inner { state: A, maybe: none } }
+Box { a: none, b: 3, inner: Inner { state: A, maybe: none } }
+Inner { state: A, maybe: none }
+Boxed(Box { a: none, b: 1, inner: Inner { state: A, maybe: none } })
+Choice(A)
+Choice(A)
+Maybe(none)

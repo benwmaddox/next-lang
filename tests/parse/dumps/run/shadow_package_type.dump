@@ -1,0 +1,39 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 8 1 8 "Reserved"
+LBrace 16 1 1 17 "{"
+Ident 18 5 1 19 "value"
+Colon 23 1 1 24 ":"
+Ident 25 3 1 26 "int"
+RBrace 29 1 1 30 "}"
+Newline 30 1 1 31 "\n"
+Ident 31 2 2 1 "fn"
+Ident 34 4 2 4 "main"
+LParen 38 1 2 8 "("
+RParen 39 1 2 9 ")"
+LBrace 41 1 2 11 "{"
+Ident 43 3 2 13 "let"
+Ident 47 8 2 17 "Reserved"
+Eq 56 1 2 26 "="
+Number 58 1 2 28 "1"
+Semicolon 59 1 2 29 ";"
+Ident 61 5 2 31 "print"
+LParen 66 1 2 36 "("
+Ident 67 8 2 37 "Reserved"
+RParen 75 1 2 45 ")"
+RBrace 77 1 2 47 "}"
+Newline 78 1 2 48 "\n"
+Eof 79 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..79
+  Struct 0..30 name="Reserved" generics=[]
+    StructField 18..28 name="value"
+      FieldType 25..28 name="int" range=none policy=checked
+  Function 31..78 name="main" recursive=false generics=[]
+    Block 41..78
+      Let 43..59 mutable=false name="Reserved"
+        Integer 58..59 magnitude=1 negative=false long_suffix=false
+      Call 61..76 name="print"
+        Name 67..75 name="Reserved"

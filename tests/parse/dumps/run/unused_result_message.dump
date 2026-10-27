@@ -1,0 +1,49 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "fail"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+Arrow 10 2 1 11 "->"
+Ident 13 6 1 14 "Result"
+Lt 19 1 1 20 "<"
+LParen 20 1 1 21 "("
+RParen 21 1 1 22 ")"
+Comma 22 1 1 23 ","
+Ident 24 3 1 25 "int"
+Gt 27 1 1 28 ">"
+LBrace 29 1 1 30 "{"
+Newline 30 1 1 31 "\n"
+Ident 35 3 2 5 "err"
+LParen 38 1 2 8 "("
+Number 39 1 2 9 "3"
+RParen 40 1 2 10 ")"
+Newline 41 1 2 11 "\n"
+RBrace 42 1 3 1 "}"
+Newline 43 1 3 2 "\n"
+Ident 45 2 5 1 "fn"
+Ident 48 4 5 4 "main"
+LParen 52 1 5 8 "("
+RParen 53 1 5 9 ")"
+LBrace 55 1 5 11 "{"
+Newline 56 1 5 12 "\n"
+Ident 61 4 6 5 "fail"
+LParen 65 1 6 9 "("
+RParen 66 1 6 10 ")"
+Newline 67 1 6 11 "\n"
+RBrace 68 1 7 1 "}"
+Newline 69 1 7 2 "\n"
+Eof 70 0 8 1 ""
+== tree ==
+file "main.nl"
+Program 0..70
+  Function 0..43 name="fail" recursive=false generics=[]
+    ResultType 13..28 name="Result" range=none policy=checked
+      TypeArgument 20..22 name="()" range=none policy=checked
+      TypeArgument 24..27 name="int" range=none policy=checked
+    Block 29..43
+      Call 35..41 name="err"
+        Integer 39..40 magnitude=3 negative=false long_suffix=false
+  Function 45..69 name="main" recursive=false generics=[]
+    Block 55..69
+      Call 61..67 name="fail"

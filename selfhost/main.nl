@@ -20,10 +20,10 @@ fn usage_build(env: Env) -> never {
 }
 
 fn main(env: Env) {
-    let args = env.args()
-    if args.count() < 2L { usage(env, false) }
+    let arguments = env.args()
+    if arguments.count() < 2L { usage(env, false) }
 
-    let command = match args.get(0L) {
+    let command = match arguments.get(0L) {
         some(value) => value,
         none => usage(env, false),
     }
@@ -31,9 +31,9 @@ fn main(env: Env) {
     let is_parse = argument_equals(command, "parse")
     let is_build = argument_equals(command, "build")
     if !is_lex && !is_parse && !is_build { usage(env, false) }
-    if is_build && (args.count() < 4L || args.count() > 6L) { usage_build(env) }
-    if !is_build && args.count() > 4L { usage(env, is_parse) }
-    let package = match args.get(1L) {
+    if is_build && (arguments.count() < 4L || arguments.count() > 6L) { usage_build(env) }
+    if !is_build && arguments.count() > 4L { usage(env, is_parse) }
+    let package = match arguments.get(1L) {
         some(value) => value,
         none => if is_build { usage_build(env) } else { usage(env, is_parse) },
     }
@@ -45,11 +45,11 @@ fn main(env: Env) {
     var runtime_core = true
     var runtime_seen = false
     if is_build {
-        let output_flag = match args.get(2L) { some(value) => value, none => usage_build(env) }
+        let output_flag = match arguments.get(2L) { some(value) => value, none => usage_build(env) }
         if !argument_equals(output_flag, "-o") { usage_build(env) }
-        let _output_path = match args.get(3L) { some(value) => value, none => usage_build(env) }
-        for flag_index in 4L..args.count() {
-            let flag = match args.get(flag_index) { some(value) => value, none => usage_build(env) }
+        let _output_path = match arguments.get(3L) { some(value) => value, none => usage_build(env) }
+        for flag_index in 4L..arguments.count() {
+            let flag = match arguments.get(flag_index) { some(value) => value, none => usage_build(env) }
             if argument_equals(flag, "--test") {
                 if want_test_build { usage_build(env) }
                 want_test_build = true
@@ -66,8 +66,8 @@ fn main(env: Env) {
             }
         }
     } else {
-        for flag_index in 2L..args.count() {
-            let flag = match args.get(flag_index) {
+        for flag_index in 2L..arguments.count() {
+            let flag = match arguments.get(flag_index) {
                 some(value) => value,
                 none => usage(env, is_parse),
             }
@@ -97,7 +97,7 @@ fn main(env: Env) {
     initialize_parse_tables(tables)
     load_and_parse(env, package, entries, source, files, tokens, delimiters, file_data, tables, is_lex)
     if is_build {
-        let output_path = match args.get(3L) { some(value) => value, none => usage_build(env) }
+        let output_path = match arguments.get(3L) { some(value) => value, none => usage_build(env) }
         let config = load_manifest(env, package)
         var compiler = empty_compiler_tables()
         seed_builtin_types(compiler.type_records)
@@ -108,6 +108,7 @@ fn main(env: Env) {
         index_package_structs(source, files, tokens, tables, compiler)
         intern_written_type_instances(source, tokens, files, tables, compiler)
         size_package_types(source, files, tokens, tables, compiler)
+        check_package_name_shadows(env, source, files, tokens, tables, compiler)
         check_package_eligibility(env, source, files, tokens, tables, compiler)
         var ir: Bytes max IR_BUFFER_CAPACITY = Bytes.empty()
         compile_selfhost_package(env, source, files, tokens, tables, config, compiler, ir, want_test_build, runtime_core, embedded_core_hash())

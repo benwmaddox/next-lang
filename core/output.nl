@@ -12,15 +12,15 @@ fn write_fault_second_nth() -> long { 140032L }
 fn write_fault_second_kind() -> long { 140040L }
 fn write_fault_second_value() -> long { 140048L }
 
-fn nl_core_sys_write(fd: int, bytes: sys.Addr, count: long) -> long {
+fn nl_core_sys_write(fd: int, data: sys.Addr, byte_count: long) -> long {
     let state = sys.state()
-    if sys.load32(state, state_test_mode()) == 0 { return sys.write(fd, bytes, count) }
+    if sys.load32(state, state_test_mode()) == 0 { return sys.write(fd, data, byte_count) }
     let nth = sys.load64(state, write_fault_nth())
-    if nth <= 0L { return sys.write(fd, bytes, count) }
+    if nth <= 0L { return sys.write(fd, data, byte_count) }
     let call_number = sys.load64(state, write_fault_calls()) + 1L
     sys.store64(state, write_fault_calls(), call_number)
     let second_nth = sys.load64(state, write_fault_second_nth())
-    if call_number != nth && call_number != second_nth { return sys.write(fd, bytes, count) }
+    if call_number != nth && call_number != second_nth { return sys.write(fd, data, byte_count) }
     var kind = sys.load32(state, write_fault_kind())
     var value = sys.load64(state, write_fault_value())
     if call_number == second_nth {
@@ -28,11 +28,11 @@ fn nl_core_sys_write(fd: int, bytes: sys.Addr, count: long) -> long {
         value = sys.load64(state, write_fault_second_value())
     }
     if kind == 1 {
-        let short_count = if value < count { value } else { count }
-        return sys.write(fd, bytes, short_count)
+        let short_count = if value < byte_count { value } else { byte_count }
+        return sys.write(fd, data, short_count)
     }
     if kind == 2 && value > 0L { return 0L - value }
-    sys.write(fd, bytes, count)
+    sys.write(fd, data, byte_count)
 }
 
 fn output_terminal(stream: int) -> bool {
@@ -84,14 +84,14 @@ fn output_flush_index(stream: int) -> bool {
             return true
         }
         match write(output_fd(stream), sys.offset(state, buffer + written), length - written) {
-            ok(count) => {
-                if count == 0L {
+            ok(written_count) => {
+                if written_count == 0L {
                     let remaining = length - written
                     let _moved = memmove(sys.offset(state, buffer), sys.offset(state, buffer + written), remaining)
                     sys.store64(state, length_slot, remaining)
                     return false
                 }
-                written += count
+                written += written_count
             }
             err(error) => {
                 if error.number != 4 {
@@ -125,8 +125,8 @@ fn nl_core_flush_all() -> bool {
     first_ok && second_ok
 }
 
-fn nl_core_output_write(fd: int, bytes: sys.Addr, count: long) -> bool {
-    if fd != 1 && fd != 2 { return write_all(fd, bytes, count) }
+fn nl_core_output_write(fd: int, data: sys.Addr, byte_count: long) -> bool {
+    if fd != 1 && fd != 2 { return write_all(fd, data, byte_count) }
     let stream = if fd == 1 { 0 } else { 1 }
     let other = if stream == 0 { 1 } else { 0 }
     let shared = output_shared_terminal()
@@ -140,7 +140,7 @@ fn nl_core_output_write(fd: int, bytes: sys.Addr, count: long) -> bool {
     let length_slot = output_length_slot(stream)
     var consumed = 0L
     for attempt in 0L..1000000L {
-        if consumed >= count { return true }
+        if consumed >= byte_count { return true }
         var length = sys.load64(state, length_slot)
         var available = capacity - length
         if available == 0L {
@@ -148,12 +148,12 @@ fn nl_core_output_write(fd: int, bytes: sys.Addr, count: long) -> bool {
             length = 0L
             available = capacity
         }
-        var amount = count - consumed
+        var amount = byte_count - consumed
         if amount > available { amount = available }
         var line_end = -1L
         if line_buffered {
             for index in 0L..amount {
-                if sys.load8(bytes, consumed + index) == 10 {
+                if sys.load8(data, consumed + index) == 10 {
                     line_end = index
                     break
                 }
@@ -165,7 +165,7 @@ fn nl_core_output_write(fd: int, bytes: sys.Addr, count: long) -> bool {
             flush_line = true
         }
         for index in 0L..amount {
-            sys.store8(state, buffer + length + index, sys.load8(bytes, consumed + index))
+            sys.store8(state, buffer + length + index, sys.load8(data, consumed + index))
         }
         length += amount
         consumed += amount
@@ -173,31 +173,31 @@ fn nl_core_output_write(fd: int, bytes: sys.Addr, count: long) -> bool {
         sys.store32(state, state_last_stream(), stream)
         if flush_line && !output_flush_index(stream) { return false }
     }
-    consumed >= count
+    consumed >= byte_count
 }
 
 fn nl_print_int(value: int) {
     let scratch = sys.offset(sys.state(), output_scratch() + 512L)
-    let count = decimal_bytes((long)value, scratch)
-    sys.store8(scratch, count, 10)
-    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), scratch, count + 1L) { nl_fail(20, -1, 0, 0) }
+    let byte_count = decimal_bytes((long)value, scratch)
+    sys.store8(scratch, byte_count, 10)
+    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), scratch, byte_count + 1L) { nl_fail(20, -1, 0, 0) }
 }
 
 fn nl_print_long(value: long) {
     let scratch = sys.offset(sys.state(), output_scratch() + 512L)
-    let count = decimal_bytes(value, scratch)
-    sys.store8(scratch, count, 10)
-    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), scratch, count + 1L) { nl_fail(20, -1, 0, 0) }
+    let byte_count = decimal_bytes(value, scratch)
+    sys.store8(scratch, byte_count, 10)
+    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), scratch, byte_count + 1L) { nl_fail(20, -1, 0, 0) }
 }
 
 fn nl_print_bool(value: bool) {
-    let bytes = if value { sys.lit(b"true\n") } else { sys.lit(b"false\n") }
-    let count = if value { 5L } else { 6L }
-    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), bytes, count) { nl_fail(20, -1, 0, 0) }
+    let data = if value { sys.lit(b"true\n") } else { sys.lit(b"false\n") }
+    let byte_count = if value { 5L } else { 6L }
+    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), data, byte_count) { nl_fail(20, -1, 0, 0) }
 }
 
-fn nl_print_ascii(bytes: sys.Addr, count: long) {
-    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), bytes, count) { nl_fail(20, -1, 0, 0) }
+fn nl_print_ascii(data: sys.Addr, byte_count: long) {
+    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), data, byte_count) { nl_fail(20, -1, 0, 0) }
 }
 
 fn nl_print_newline() {
@@ -206,18 +206,18 @@ fn nl_print_newline() {
 
 fn nl_print_int_raw(value: int) {
     let scratch = sys.offset(sys.state(), output_scratch() + 512L)
-    let count = decimal_bytes((long)value, scratch)
-    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), scratch, count) { nl_fail(20, -1, 0, 0) }
+    let byte_count = decimal_bytes((long)value, scratch)
+    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), scratch, byte_count) { nl_fail(20, -1, 0, 0) }
 }
 
 fn nl_print_long_raw(value: long) {
     let scratch = sys.offset(sys.state(), output_scratch() + 512L)
-    let count = decimal_bytes(value, scratch)
-    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), scratch, count) { nl_fail(20, -1, 0, 0) }
+    let byte_count = decimal_bytes(value, scratch)
+    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), scratch, byte_count) { nl_fail(20, -1, 0, 0) }
 }
 
 fn nl_print_bool_raw(value: bool) {
-    let bytes = if value { sys.lit(b"true") } else { sys.lit(b"false") }
-    let count = if value { 4L } else { 5L }
-    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), bytes, count) { nl_fail(20, -1, 0, 0) }
+    let data = if value { sys.lit(b"true") } else { sys.lit(b"false") }
+    let byte_count = if value { 4L } else { 5L }
+    if !nl_core_output_write((int)sys.load32(sys.state(), state_print_fd()), data, byte_count) { nl_fail(20, -1, 0, 0) }
 }

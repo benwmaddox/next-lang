@@ -24,11 +24,11 @@ fn decimal_bytes(value: long, output: sys.Addr) -> long {
     first + digits
 }
 
-fn write_all(fd: int, bytes: sys.Addr, count: long) -> bool {
+fn write_all(fd: int, data: sys.Addr, byte_count: long) -> bool {
     var written = 0L
     for attempt in 0L..1000000L {
-        if written >= count { return true }
-        match write(fd, sys.offset(bytes, written), count - written) {
+        if written >= byte_count { return true }
+        match write(fd, sys.offset(data, written), byte_count - written) {
             ok(amount) => {
                 if amount == 0L { return false }
                 written += amount
@@ -38,7 +38,7 @@ fn write_all(fd: int, bytes: sys.Addr, count: long) -> bool {
             }
         }
     }
-    written >= count
+    written >= byte_count
 }
 
 fn write_z(fd: int, value: sys.Addr) -> bool {
@@ -51,8 +51,8 @@ fn write_z(fd: int, value: sys.Addr) -> bool {
 
 fn write_number(fd: int, value: long) -> bool {
     let output = sys.offset(sys.state(), state_scratch())
-    let count = decimal_bytes(value, output)
-    write_all(fd, output, count)
+    let length = decimal_bytes(value, output)
+    write_all(fd, output, length)
 }
 
 fn write_bool(fd: int, value: bool) -> bool {

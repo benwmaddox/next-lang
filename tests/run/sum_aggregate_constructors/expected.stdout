@@ -1,0 +1,3 @@
+some(Record { value: 1 })
+ok(Record { value: 2 })
+err(Record { value: 3 })

@@ -1,0 +1,44 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "enum"
+Ident 5 1 1 6 "E"
+LBrace 7 1 1 8 "{"
+Ident 9 1 1 10 "C"
+LParen 10 1 1 11 "("
+Ident 11 3 1 12 "int"
+RParen 14 1 1 15 ")"
+RBrace 16 1 1 17 "}"
+Newline 17 1 1 18 "\n"
+Ident 18 2 2 1 "fn"
+Ident 21 4 2 4 "main"
+LParen 25 1 2 8 "("
+RParen 26 1 2 9 ")"
+LBrace 28 1 2 11 "{"
+Ident 30 3 2 13 "let"
+Ident 34 1 2 17 "C"
+Eq 36 1 2 19 "="
+Number 38 1 2 21 "1"
+Semicolon 39 1 2 22 ";"
+Ident 41 5 2 24 "print"
+LParen 46 1 2 29 "("
+Ident 47 1 2 30 "C"
+LParen 48 1 2 31 "("
+Number 49 1 2 32 "3"
+RParen 50 1 2 33 ")"
+RParen 51 1 2 34 ")"
+RBrace 53 1 2 36 "}"
+Newline 54 1 2 37 "\n"
+Eof 55 0 3 1 ""
+== tree ==
+file "main.nl"
+Program 0..55
+  Enum 0..17 name="E"
+    EnumCase 9..15 name="C"
+      PayloadType 11..14 name="int" range=none policy=checked
+  Function 18..54 name="main" recursive=false generics=[]
+    Block 28..54
+      Let 30..39 mutable=false name="C"
+        Integer 38..39 magnitude=1 negative=false long_suffix=false
+      Call 41..52 name="print"
+        Call 47..51 name="C"
+          Integer 49..50 magnitude=3 negative=false long_suffix=false

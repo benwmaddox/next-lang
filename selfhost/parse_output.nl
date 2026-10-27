@@ -298,11 +298,11 @@ fn dump_invalid_byte(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value
     ok(())
 }
 
-fn utf8_sequence_valid(value: Bytes max SOURCE_BUFFER_CAPACITY, start: long, width: long) -> bool {
-    if start + width > value.count() { return false }
+fn utf8_sequence_valid(value: Bytes max SOURCE_BUFFER_CAPACITY, start: long, unit_width: long) -> bool {
+    if start + unit_width > value.count() { return false }
     let first = value[start]
-    if width == 2L { return first >= 194 && first <= 223 && value[start + 1L] >= 128 && value[start + 1L] <= 191 }
-    if width == 3L {
+    if unit_width == 2L { return first >= 194 && first <= 223 && value[start + 1L] >= 128 && value[start + 1L] <= 191 }
+    if unit_width == 3L {
         let second = value[start + 1L]
         let third = value[start + 2L]
         return third >= 128 && third <= 191 && second >= 128 && second <= 191 && !(first == 224 && second < 160) && !(first == 237 && second > 159)
@@ -320,10 +320,10 @@ fn dump_json_bytes(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, value: 
             dump_json_byte(out, buffer, byte_value)?
             index += 1L
         } else {
-            let width = utf8_width(byte_value)
-            if byte_value >= 194 && byte_value <= 244 && utf8_sequence_valid(value, index, width) {
-                for inner in 0L..width { dump_push(out, buffer, value[index + inner])? }
-                index += width
+            let unit_width = utf8_width(byte_value)
+            if byte_value >= 194 && byte_value <= 244 && utf8_sequence_valid(value, index, unit_width) {
+                for inner in 0L..unit_width { dump_push(out, buffer, value[index + inner])? }
+                index += unit_width
             } else {
                 dump_invalid_byte(out, buffer, byte_value)?
                 index += 1L
@@ -579,10 +579,10 @@ fn dump_name_list(
     tables: ParseTables,
     base: long,
     first: long,
-    count: long,
+    item_count: long,
 ) -> Result<(), IoError> {
     dump_push(out, buffer, 91)?
-    for index in 0L..count {
+    for index in 0L..item_count {
         if index > 0L { dump_push(out, buffer, 44)? }
         dump_quoted_name(out, buffer, source, tokens, base, tables.extra[first + index])?
     }

@@ -9,9 +9,11 @@ from pathlib import Path
 import re
 import random
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 
 
@@ -83,12 +85,18 @@ def main() -> int:
             f"depth 40 = {ir_bound_sizes[40]} bytes; "
             "linear-growth check passed"
         )
+        enum_scaling = check_enum_constructor_scaling(stage0, root, env, work)
+        print(
+            "enum constructor scaling: "
+            + "; ".join(f"{size} enums = {seconds:.3f}s" for size, seconds in enum_scaling.items())
+            + "; sub-quadratic growth check passed"
+        )
 
         long_tests = os.environ.get("NLC_LONG_TESTS") == "1"
         levels = (1, 3) if long_tests else (1,)
         runtimes = ("core", "c") if long_tests else ("core",)
         counts = {
-            level: {kind: 0 for kind in ("build", "diagnose", "unsupported", "mismatches")}
+            level: {kind: 0 for kind in ("build", "diagnose", "rejects", "unsupported", "mismatches")}
             for level in levels
         }
         generated_count = int(os.environ.get("NLC_E1_GENERATED_COUNT", "8"))
@@ -184,7 +192,28 @@ def main() -> int:
                             manifest_tool_failure and same_result(self_result, reference_result)
                         ):
                             raise Mismatch("selfhost did not reject with an error like Rust nlc", reference_result, self_result)
+                        expected_selfhost = root / package / "expected.selfhost.stderr"
+                        if expected_selfhost.is_file() and self_result.stderr != expected_selfhost.read_bytes():
+                            raise Mismatch("selfhost diagnostic differs from its explicit oracle", reference_result, self_result)
                         counts[level]["diagnose"] += 1
+                    elif kind == "rejects":
+                        if reference_result.build_status != 0:
+                            raise Mismatch(
+                                f"misclassified rejects: Rust compile status {reference_result.build_status}",
+                                reference_result,
+                            )
+                        self_result, wrote_ir = run_selfhost(
+                            stage0, reference, root, package, run_env, work, level
+                        )
+                        if wrote_ir:
+                            raise Mismatch("selfhosted compiler wrote IR for a shadowing package", reference_result, self_result)
+                        if not is_real_rejection(self_result):
+                            raise Mismatch(
+                                "selfhost did not reject the shadowing package with status 2 and real error text",
+                                reference_result,
+                                self_result,
+                            )
+                        counts[level]["rejects"] += 1
                     else:
                         self_result, wrote_ir = run_selfhost(
                             stage0, reference, root, package, run_env, work, level
@@ -263,6 +292,7 @@ def main() -> int:
             print(
                 f"O{level}: built and matching {counts[level]['build']}; "
                 f"diagnosed and matching {counts[level]['diagnose']}; "
+                f"rejected by new name rule {counts[level]['rejects']}; "
                 f"unsupported {counts[level]['unsupported']}; "
                 f"mismatches {counts[level]['mismatches']}; "
                 f"seeded builds {generated_counts[level]['build']}; "
@@ -290,7 +320,7 @@ def read_classifications(path: Path, root: Path) -> dict[str, str]:
         if not line or line.startswith("#"):
             continue
         parts = line.split("\t")
-        if len(parts) != 2 or parts[0] not in ("build", "diagnose", "unsupported"):
+        if len(parts) != 2 or parts[0] not in ("build", "diagnose", "rejects", "unsupported"):
             raise ValueError(f"{path}:{number}: expected class<TAB>package")
         package = parts[1]
         if package in result:
@@ -403,6 +433,50 @@ def check_struct_helper_ir_bound(stage0: Path, root: Path, env: dict[str, str], 
             f"struct helper IR growth is not linear: depth20={sizes[20]}, depth40={sizes[40]}"
         )
     return sizes
+
+
+def check_enum_constructor_scaling(
+    stage0: Path, root: Path, env: dict[str, str], work: Path
+) -> dict[int, float]:
+    """Measure resolved constructor lookup over growing enum tables."""
+    scale_root = work / "enum-constructor-scaling"
+    scale_root.mkdir()
+    timings: dict[int, float] = {}
+    previous_per_enum = 0.0
+    for size in (1600, 3200, 6400):
+        package = scale_root / f"enums-{size}"
+        package.mkdir()
+        lines = [f"enum E{index} {{ Case{index}(int) }}" for index in range(size)]
+        lines.append("fn main() {")
+        lines.extend(f"    print(E{index}.Case{index}({index}))" for index in range(size))
+        lines.append("}")
+        (package / "main.nl").write_text("\n".join(lines) + "\n")
+        ir_path = scale_root / f"enums-{size}.ll"
+        samples: list[float] = []
+        for _ in range(3):
+            started = time.perf_counter()
+            result = invoke(
+                [str(stage0), "build", package.relative_to(root).as_posix(), "-o", ir_path.relative_to(root).as_posix()],
+                cwd=root,
+                env=env,
+                timeout=180,
+            )
+            samples.append(time.perf_counter() - started)
+            if result.status != 0 or not ir_path.is_file():
+                raise Mismatch(
+                    f"selfhost rejected the {size}-enum scaling package: "
+                    f"status={result.status}, stderr={result.stderr[:500]!r}"
+                )
+        elapsed = statistics.median(samples)
+        timings[size] = elapsed
+        per_enum = elapsed / size
+        if previous_per_enum and per_enum > previous_per_enum * 1.75:
+            raise Mismatch(
+                "enum constructor lookup exceeded the linear per-enum growth bound: "
+                f"{size} enums={elapsed:.3f}s, {per_enum:.6f}s/enum"
+            )
+        previous_per_enum = per_enum
+    return timings
 
 
 def invoke(command: list[str], cwd: Path, env: dict[str, str], timeout: int = TIMEOUT_SECONDS) -> Result:
@@ -583,6 +657,15 @@ def same_rejection(selfhost: Result, reference: Result) -> bool:
         and selfhost.stdout == b""
         and b"error" in selfhost.stderr
         and b"not supported by the self-hosted compiler yet" not in selfhost.stderr
+    )
+
+
+def is_real_rejection(result: Result) -> bool:
+    return (
+        result.status == 2
+        and result.stdout == b""
+        and b"error" in result.stderr
+        and b"not supported by the self-hosted compiler yet" not in result.stderr
     )
 
 

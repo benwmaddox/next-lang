@@ -266,11 +266,11 @@ fn selfhost_stack_bound_has_an_exact_attributed_path() {
     // alongside the parser's source, token and node buffers. E2b expands the
     // IR table allowance for sum helpers; pin the new total below 7 GB so the
     // selfhost compiler still fits the fixed 8 GB process budget.
-    assert_eq!(worst_case, 6_859_732_537, "{stdout}");
+    assert_eq!(worst_case, 6_943_732_617, "{stdout}");
     assert!(worst_case < 7_000_000_000, "{stdout}");
     assert_eq!(
         parse_bytes("  data stack reservation: "),
-        6_859_735_040,
+        6_943_735_808,
         "{stdout}"
     );
     assert!(

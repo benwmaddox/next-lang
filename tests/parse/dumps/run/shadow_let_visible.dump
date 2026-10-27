@@ -1,0 +1,52 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 3 2 5 "let"
+Ident 20 5 2 9 "value"
+Eq 26 1 2 15 "="
+Number 28 1 2 17 "1"
+Newline 29 1 2 18 "\n"
+Ident 34 2 3 5 "if"
+Ident 37 4 3 8 "true"
+LBrace 42 1 3 13 "{"
+Ident 44 3 3 15 "let"
+Ident 48 5 3 19 "value"
+Eq 54 1 3 25 "="
+Number 56 1 3 27 "2"
+Semicolon 57 1 3 28 ";"
+Ident 59 5 3 30 "print"
+LParen 64 1 3 35 "("
+Ident 65 5 3 36 "value"
+RParen 70 1 3 41 ")"
+RBrace 72 1 3 43 "}"
+Newline 73 1 3 44 "\n"
+Ident 78 5 4 5 "print"
+LParen 83 1 4 10 "("
+Ident 84 5 4 11 "value"
+RParen 89 1 4 16 ")"
+Newline 90 1 4 17 "\n"
+RBrace 91 1 5 1 "}"
+Newline 92 1 5 2 "\n"
+Eof 93 0 6 1 ""
+== tree ==
+file "main.nl"
+Program 0..93
+  Function 0..92 name="main" recursive=false generics=[]
+    Block 10..92
+      Let 16..29 mutable=false name="value"
+        Integer 28..29 magnitude=1 negative=false long_suffix=false
+      ExpressionStatement 34..73
+        If 34..73
+          Bool 37..41 value=true
+          Block 42..73
+            Let 44..57 mutable=false name="value"
+              Integer 56..57 magnitude=2 negative=false long_suffix=false
+            Call 59..71 name="print"
+              Name 65..70 name="value"
+      Call 78..90 name="print"
+        Name 84..89 name="value"

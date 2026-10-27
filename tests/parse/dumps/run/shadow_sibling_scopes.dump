@@ -1,0 +1,98 @@
+== tokens ==
+file "main.nl"
+Ident 0 2 1 1 "fn"
+Ident 3 4 1 4 "main"
+LParen 7 1 1 8 "("
+RParen 8 1 1 9 ")"
+LBrace 10 1 1 11 "{"
+Newline 11 1 1 12 "\n"
+Ident 16 2 2 5 "if"
+Ident 19 4 2 8 "true"
+LBrace 24 1 2 13 "{"
+Ident 26 3 2 15 "let"
+Ident 30 4 2 19 "item"
+Eq 35 1 2 24 "="
+Number 37 1 2 26 "1"
+Semicolon 38 1 2 27 ";"
+Ident 40 5 2 29 "print"
+LParen 45 1 2 34 "("
+Ident 46 4 2 35 "item"
+RParen 50 1 2 39 ")"
+RBrace 52 1 2 41 "}"
+Newline 53 1 2 42 "\n"
+Ident 58 2 3 5 "if"
+Ident 61 4 3 8 "true"
+LBrace 66 1 3 13 "{"
+Ident 68 3 3 15 "let"
+Ident 72 4 3 19 "item"
+Eq 77 1 3 24 "="
+Number 79 1 3 26 "2"
+Semicolon 80 1 3 27 ";"
+Ident 82 5 3 29 "print"
+LParen 87 1 3 34 "("
+Ident 88 4 3 35 "item"
+RParen 92 1 3 39 ")"
+RBrace 94 1 3 41 "}"
+Newline 95 1 3 42 "\n"
+Ident 100 3 4 5 "for"
+Ident 104 5 4 9 "index"
+Ident 110 2 4 15 "in"
+Number 113 1 4 18 "0"
+Range 114 2 4 19 ".."
+Number 116 1 4 21 "1"
+LBrace 118 1 4 23 "{"
+Ident 120 5 4 25 "print"
+LParen 125 1 4 30 "("
+Ident 126 5 4 31 "index"
+RParen 131 1 4 36 ")"
+RBrace 133 1 4 38 "}"
+Newline 134 1 4 39 "\n"
+Ident 139 3 5 5 "for"
+Ident 143 5 5 9 "index"
+Ident 149 2 5 15 "in"
+Number 152 1 5 18 "0"
+Range 153 2 5 19 ".."
+Number 155 1 5 21 "1"
+LBrace 157 1 5 23 "{"
+Ident 159 5 5 25 "print"
+LParen 164 1 5 30 "("
+Ident 165 5 5 31 "index"
+RParen 170 1 5 36 ")"
+RBrace 172 1 5 38 "}"
+Newline 173 1 5 39 "\n"
+RBrace 174 1 6 1 "}"
+Newline 175 1 6 2 "\n"
+Eof 176 0 7 1 ""
+== tree ==
+file "main.nl"
+Program 0..176
+  Function 0..175 name="main" recursive=false generics=[]
+    Block 10..175
+      ExpressionStatement 16..53
+        If 16..53
+          Bool 19..23 value=true
+          Block 24..53
+            Let 26..38 mutable=false name="item"
+              Integer 37..38 magnitude=1 negative=false long_suffix=false
+            Call 40..51 name="print"
+              Name 46..50 name="item"
+      ExpressionStatement 58..95
+        If 58..95
+          Bool 61..65 value=true
+          Block 66..95
+            Let 68..80 mutable=false name="item"
+              Integer 79..80 magnitude=2 negative=false long_suffix=false
+            Call 82..93 name="print"
+              Name 88..92 name="item"
+      For 100..134 name="index" inclusive=false
+        Integer 113..114 magnitude=0 negative=false long_suffix=false
+        Integer 116..117 magnitude=1 negative=false long_suffix=false
+        Block 118..134
+          Call 120..132 name="print"
+            Name 126..131 name="index"
+      For 139..173 name="index" inclusive=false
+        Integer 152..153 magnitude=0 negative=false long_suffix=false
+        Integer 155..156 magnitude=1 negative=false long_suffix=false
+        Block 157..173
+          Call 159..171 name="print"
+            Name 165..170 name="index"

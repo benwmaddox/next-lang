@@ -1,0 +1,83 @@
+== tokens ==
+file "main.nl"
+Ident 0 6 1 1 "struct"
+Ident 7 1 1 8 "S"
+LBrace 9 1 1 10 "{"
+Ident 11 1 1 12 "x"
+Colon 12 1 1 13 ":"
+Ident 14 3 1 15 "int"
+RBrace 18 1 1 19 "}"
+Newline 19 1 1 20 "\n"
+Ident 20 4 2 1 "enum"
+Ident 25 1 2 6 "E"
+LBrace 27 1 2 8 "{"
+Ident 29 5 2 10 "print"
+LParen 34 1 2 15 "("
+Ident 35 1 2 16 "S"
+RParen 36 1 2 17 ")"
+RBrace 38 1 2 19 "}"
+Newline 39 1 2 20 "\n"
+Ident 40 2 3 1 "fn"
+Ident 43 4 3 4 "make"
+LParen 47 1 3 8 "("
+RParen 48 1 3 9 ")"
+Arrow 50 2 3 11 "->"
+Ident 53 1 3 14 "E"
+LBrace 55 1 3 16 "{"
+Ident 57 5 3 18 "print"
+LParen 62 1 3 23 "("
+Ident 63 1 3 24 "S"
+LBrace 65 1 3 26 "{"
+Ident 66 1 3 27 "x"
+Colon 67 1 3 28 ":"
+Number 69 1 3 30 "9"
+RBrace 70 1 3 31 "}"
+RParen 71 1 3 32 ")"
+RBrace 73 1 3 34 "}"
+Newline 74 1 3 35 "\n"
+Ident 75 2 4 1 "fn"
+Ident 78 4 4 4 "main"
+LParen 82 1 4 8 "("
+RParen 83 1 4 9 ")"
+LBrace 85 1 4 11 "{"
+Ident 87 5 4 13 "match"
+Ident 93 4 4 19 "make"
+LParen 97 1 4 23 "("
+RParen 98 1 4 24 ")"
+LBrace 100 1 4 26 "{"
+Ident 102 5 4 28 "print"
+LParen 107 1 4 33 "("
+Ident 108 1 4 34 "_"
+RParen 109 1 4 35 ")"
+FatArrow 111 2 4 37 "=>"
+LParen 114 1 4 40 "("
+RParen 115 1 4 41 ")"
+RBrace 117 1 4 43 "}"
+RBrace 119 1 4 45 "}"
+Newline 120 1 4 46 "\n"
+Eof 121 0 5 1 ""
+== tree ==
+file "main.nl"
+Program 0..121
+  Struct 0..19 name="S" generics=[]
+    StructField 11..17 name="x"
+      FieldType 14..17 name="int" range=none policy=checked
+  Enum 20..39 name="E"
+    EnumCase 29..37 name="print"
+      PayloadType 35..36 name="S" range=none policy=checked
+  Function 40..74 name="make" recursive=false generics=[]
+    ResultType 53..54 name="E" range=none policy=checked
+    Block 55..74
+      Call 57..72 name="print"
+        StructInit 63..71 name="S"
+          InitializerField 66..70 name="x"
+            Integer 69..70 magnitude=9 negative=false long_suffix=false
+  Function 75..120 name="main" recursive=false generics=[]
+    Block 85..120
+      Match 87..118
+        Call 93..99 name="make"
+        MatchArm 102..116
+          CasePattern 102..110 name="print"
+            IgnoredPatternBinding 108..109
+          Block 114..116
+            Unit 114..116

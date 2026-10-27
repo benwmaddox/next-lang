@@ -6,8 +6,8 @@ fn result_errno(raw: long) -> Errno {
     Errno { number: (int)(0L - raw) }
 }
 
-fn write(fd: int, data: sys.Addr, count: long) -> Result<long, Errno> {
-    let raw = nl_core_sys_write(fd, data, count)
+fn write(fd: int, data: sys.Addr, byte_count: long) -> Result<long, Errno> {
+    let raw = nl_core_sys_write(fd, data, byte_count)
     if sys.is_error(raw) { return err(result_errno(raw)) }
     ok(raw)
 }

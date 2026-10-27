@@ -395,8 +395,8 @@ const NEST_EXPR: long = 0L
 const NEST_BLOCK: long = 1L
 const NEST_TYPE: long = 2L
 
-fn pack_type_counts(args: long, constants: long, arrays: long) -> long {
-    args | (constants << 21L) | (arrays << 42L)
+fn pack_type_counts(argument_count: long, constants: long, arrays: long) -> long {
+    argument_count | (constants << 21L) | (arrays << 42L)
 }
 
 fn empty_parse_tables() -> ParseTables {
@@ -572,13 +572,13 @@ fn cursor_skip_newlines(tables: write ParseTables, tokens: list<Token, TOKEN_STO
 }
 
 fn cursor_skip_separators(tables: write ParseTables, tokens: list<Token, TOKEN_STORAGE_CAPACITY>) -> long {
-    var count = 0L
+    var item_count = 0L
     for step in 0L..MAX_TOKENS_PER_FILE {
         if cursor_take(tables, tokens, TokenKind.Newline) || cursor_take(tables, tokens, TokenKind.Semicolon) {
-            count += 1L
+            item_count += 1L
         } else { break }
     }
-    count
+    item_count
 }
 
 fn cursor_expect_type_gt(tables: write ParseTables, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, problem: ParseProblemKind) -> Result<CursorToken, ParseError> {
@@ -701,22 +701,22 @@ fn node_first_direct_child(nodes: list<Node, NODE_STORAGE_CAPACITY>, node: long)
 fn node_child_count(nodes: list<Node, NODE_STORAGE_CAPACITY>, node: long) -> long {
     let first = node_first_child(nodes, node)
     var child = node - 1L
-    var count = 0L
+    var item_count = 0L
     for step in 0L..nodes[node].subtree {
         if child < first { break }
-        count += 1L
+        item_count += 1L
         child -= nodes[child].subtree
     }
-    count
+    item_count
 }
 
 fn node_child_at(nodes: list<Node, NODE_STORAGE_CAPACITY>, node: long, wanted: long) -> long {
     let first = node_first_child(nodes, node)
-    let count = node_child_count(nodes, node)
-    if wanted < 0L || wanted >= count { return -1L }
+    let item_count = node_child_count(nodes, node)
+    if wanted < 0L || wanted >= item_count { return -1L }
     var child = node - 1L
-    for step in 0L..count {
-        if count - step - 1L == wanted { return child }
+    for step in 0L..item_count {
+        if item_count - step - 1L == wanted { return child }
         child -= nodes[child].subtree
     }
     -1L
@@ -1070,7 +1070,7 @@ recursive fn parse_generic_params(
     tables.state.seen_generation += 1L
     if tables.state.seen_generation >= 2147483647L { tables.state.seen_generation = 1L }
     let generation = tables.state.seen_generation
-    var count = 0L
+    var item_count = 0L
     for step in 0L..MAX_TOKENS_PER_FILE {
         let name = cursor_expect(tables, tokens, TokenKind.Ident, ParseProblemKind.ExpectedGenericName)?
         var hash = 2166136261L
@@ -1093,12 +1093,12 @@ recursive fn parse_generic_params(
         }
         if found { return err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: name.start, token: name.token }) }
         append_extra(tables, name.token)?
-        count += 1L
+        item_count += 1L
         if !cursor_take(tables, tokens, TokenKind.Comma) { break }
     }
     cursor_expect_type_gt(tables, tokens, ParseProblemKind.ExpectedGenericClose)?
-    if count == 0L { return ok(0L) }
-    ok(count)
+    if item_count == 0L { return ok(0L) }
+    ok(item_count)
 }
 
 fn same_token_spelling(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, base: long, left: long, right: long) -> bool {
@@ -1212,12 +1212,12 @@ recursive fn parse_named_type(
         extra_names += 1L
     }
     let children_first = tables.nodes.count()
-    var args = 0L
+    var argument_count = 0L
     var constants = 0L
     var arrays = 0L
     if cursor_take(tables, tokens, TokenKind.Lt) {
         parse_type(source, tokens, tables, NodeKind.TypeArgument)?
-        args += 1L
+        argument_count += 1L
         if (type_name_is(source, tokens, tables, name.token, "list") || type_name_is(source, tokens, tables, name.token, "pool") || type_name_is(source, tokens, tables, name.token, "queue") || type_name_is(source, tokens, tables, name.token, "ring")) && cursor_take(tables, tokens, TokenKind.Comma) {
             cursor_skip_newlines(tables, tokens)
             parse_expression(source, tokens, tables, 8L)?
@@ -1225,7 +1225,7 @@ recursive fn parse_named_type(
             if type_name_is(source, tokens, tables, name.token, "pool") && cursor_take(tables, tokens, TokenKind.Comma) {
                 cursor_skip_newlines(tables, tokens)
                 parse_type(source, tokens, tables, NodeKind.TypeArgument)?
-                args += 1L
+                argument_count += 1L
             }
         } else if type_name_is(source, tokens, tables, name.token, "grid") {
             cursor_expect(tables, tokens, TokenKind.Comma, ParseProblemKind.ExpectedGridWidth)?
@@ -1240,7 +1240,7 @@ recursive fn parse_named_type(
             cursor_expect(tables, tokens, TokenKind.Comma, ParseProblemKind.ExpectedMapValue)?
             cursor_skip_newlines(tables, tokens)
             parse_type(source, tokens, tables, NodeKind.TypeArgument)?
-            args += 1L
+            argument_count += 1L
             cursor_expect(tables, tokens, TokenKind.Comma, ParseProblemKind.ExpectedMapCapacity)?
             cursor_skip_newlines(tables, tokens)
             parse_expression(source, tokens, tables, 8L)?
@@ -1255,7 +1255,7 @@ recursive fn parse_named_type(
                 if !cursor_take(tables, tokens, TokenKind.Comma) { break }
                 cursor_skip_newlines(tables, tokens)
                 parse_type(source, tokens, tables, NodeKind.TypeArgument)?
-                args += 1L
+                argument_count += 1L
             }
         }
         cursor_expect_type_gt(tables, tokens, ParseProblemKind.ExpectedTypeArgsClose)?
@@ -1323,7 +1323,7 @@ recursive fn parse_named_type(
     let end = tables.state.last_end
     let node = append_node(tables, label, children_first, name.token, start_token.start, end, range_extra, flags, extra_start, 0L)?
     tables.nodes[node].meta0 = extra_names
-    tables.nodes[node].meta1 = pack_type_counts(args, constants, arrays)
+    tables.nodes[node].meta1 = pack_type_counts(argument_count, constants, arrays)
     ok(node)
 }
 
@@ -2331,10 +2331,10 @@ recursive fn postfix_call(
         ok(ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start: expression.start, end })
     } else {
         let receiver = materialize_node(tables, expression)?
-        let first = node_first_child(tables.nodes, receiver)
+        let receiver_first = node_first_child(tables.nodes, receiver)
         // The callee is already in the node range; arguments follow it.
         let start = tables.nodes[receiver].start
-        let node = append_node(tables, NodeKind.IndirectCall, first, -1L, start, end, start, 0L, -1L, arg_count)?
+        let node = append_node(tables, NodeKind.IndirectCall, receiver_first, -1L, start, end, start, 0L, -1L, arg_count)?
         ok(ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start, end })
     }
 }
@@ -2346,11 +2346,11 @@ recursive fn parse_arguments(
 ) -> Result<long, ParseError> {
     cursor_expect(tables, tokens, TokenKind.LParen, ParseProblemKind.ExpectedCallOpen)?
     cursor_skip_newlines(tables, tokens)
-    var count = 0L
+    var item_count = 0L
     if cursor_peek(tables, tokens, 0L).kind != TokenKind.RParen {
         for step in 0L..MAX_TOKENS_PER_FILE {
             parse_expression(source, tokens, tables, 0L)?
-            count += 1L
+            item_count += 1L
             cursor_skip_newlines(tables, tokens)
             if !cursor_take(tables, tokens, TokenKind.Comma) { break }
             cursor_skip_newlines(tables, tokens)
@@ -2358,7 +2358,7 @@ recursive fn parse_arguments(
         }
     }
     cursor_expect(tables, tokens, TokenKind.RParen, ParseProblemKind.ExpectedCloseParen)?
-    ok(count)
+    ok(item_count)
 }
 
 fn can_start_struct(
@@ -2414,9 +2414,9 @@ recursive fn postfix_struct_literal(
         let node = append_node(tables, node_kind, first, name_token, start, close.start + close.length, start, 0L, -1L, 0L)?
         ok(ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start, end: close.start + close.length })
     } else {
-        let count = parse_struct_init_fields(source, tokens, tables)?
+        let item_count = parse_struct_init_fields(source, tokens, tables)?
         let end = tables.state.last_end
-        let node = append_node(tables, NodeKind.StructInit, first, name_token, start, end, start, 0L, -1L, count)?
+        let node = append_node(tables, NodeKind.StructInit, first, name_token, start, end, start, 0L, -1L, item_count)?
         ok(ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start, end })
     }
 }
@@ -2428,7 +2428,7 @@ recursive fn parse_struct_init_fields(
 ) -> Result<long, ParseError> {
     cursor_expect(tables, tokens, TokenKind.LBrace, ParseProblemKind.ExpectedStructLiteralOpen)?
     cursor_skip_separators(tables, tokens)
-    var count = 0L
+    var item_count = 0L
     for step in 0L..MAX_TOKENS_PER_FILE {
         let next = cursor_peek(tables, tokens, 0L)
         if next.kind == TokenKind.RBrace || next.kind == TokenKind.Eof { break }
@@ -2443,7 +2443,7 @@ recursive fn parse_struct_init_fields(
         let value = tables.nodes.count() - 1L
         let field_end = if tables.nodes[value].end > name.start + name.length { tables.nodes[value].end } else { name.start + name.length }
         append_node(tables, NodeKind.InitializerField, field_first, name.token, name.start, field_end, name.start, 0L, -1L, 0L)?
-        count += 1L
+        item_count += 1L
         let separated = cursor_skip_separators(tables, tokens) > 0L
         if cursor_take(tables, tokens, TokenKind.Comma) {
             cursor_skip_separators(tables, tokens)
@@ -2455,7 +2455,7 @@ recursive fn parse_struct_init_fields(
         }
     }
     cursor_expect(tables, tokens, TokenKind.RBrace, ParseProblemKind.ExpectedStructLiteralClose)?
-    ok(count)
+    ok(item_count)
 }
 
 recursive fn postfix_try(
@@ -2484,10 +2484,10 @@ recursive fn postfix_optional_call(
     cursor_expect(tables, tokens, TokenKind.LParen, ParseProblemKind.ExpectedOptionalOpen)?
     let first = node_first_child(tables.nodes, receiver)
     let args_start = tables.nodes.count()
-    let count = parse_arguments_after_open(source, tokens, tables)?
+    let item_count = parse_arguments_after_open(source, tokens, tables)?
     let start = tables.nodes[receiver].start
     let end = tables.state.last_end
-    let node = append_node(tables, NodeKind.OptionalCall, first, method.token, start, end, method.start, 0L, -1L, count + args_start * 0L)?
+    let node = append_node(tables, NodeKind.OptionalCall, first, method.token, start, end, method.start, 0L, -1L, item_count + args_start * 0L)?
     ok(ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start, end })
 }
 
@@ -2497,11 +2497,11 @@ recursive fn parse_arguments_after_open(
     tables: write ParseTables,
 ) -> Result<long, ParseError> {
     cursor_skip_newlines(tables, tokens)
-    var count = 0L
+    var item_count = 0L
     if cursor_peek(tables, tokens, 0L).kind != TokenKind.RParen {
         for step in 0L..MAX_TOKENS_PER_FILE {
             parse_expression(source, tokens, tables, 0L)?
-            count += 1L
+            item_count += 1L
             cursor_skip_newlines(tables, tokens)
             if !cursor_take(tables, tokens, TokenKind.Comma) { break }
             cursor_skip_newlines(tables, tokens)
@@ -2509,7 +2509,7 @@ recursive fn parse_arguments_after_open(
         }
     }
     cursor_expect(tables, tokens, TokenKind.RParen, ParseProblemKind.ExpectedCloseParen)?
-    ok(count)
+    ok(item_count)
 }
 
 recursive fn postfix_dot(
@@ -2542,12 +2542,12 @@ recursive fn postfix_dot(
                 tables.nodes.pop()
             }
             let first = tables.nodes.count()
-            let count = parse_arguments(source, tokens, tables)?
+            let item_count = parse_arguments(source, tokens, tables)?
             let extra = tables.extra.count()
             append_extra(tables, method.token)?
             let start = expression.start
             let end = tables.state.last_end
-            let node = append_node(tables, NodeKind.QualifiedCase, first, enum_token, start, end, method.start, 0L, extra, count)?
+            let node = append_node(tables, NodeKind.QualifiedCase, first, enum_token, start, end, method.start, 0L, extra, item_count)?
             return ok(ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start, end })
         }
         let receiver = materialize_node(tables, expression)?
@@ -3053,40 +3053,40 @@ fn collect_children2(tables: write ParseTables, node: long) -> long {
 
 fn push_expr_walk_children(tables: write ParseTables, node: long, child_depth: long, block_depth: long) -> Result<(), ParseError> {
     let kind = tables.nodes[node].kind
-    let count = collect_children(tables, node)
+    let item_count = collect_children(tables, node)
     if kind == NodeKind.Call || kind == NodeKind.QualifiedCase || kind == NodeKind.IndirectCall || kind == NodeKind.MethodCall || kind == NodeKind.OptionalCall || kind == NodeKind.Index || kind == NodeKind.GridIndex || kind == NodeKind.Field || kind == NodeKind.ArrayLiteral || kind == NodeKind.Binary || kind == NodeKind.Unary || kind == NodeKind.Try || kind == NodeKind.Take || kind == NodeKind.ToLong || kind == NodeKind.Return {
-        for index in 0L..count {
-            let child = tables.child_scratch[count - index - 1L]
+        for index in 0L..item_count {
+            let child = tables.child_scratch[item_count - index - 1L]
             push_nesting_task(tables, child, child_depth, if is_type_node(tables.nodes[child].kind) { NEST_TYPE } else { NEST_EXPR })?
         }
     } else if kind == NodeKind.StructInit {
-        for index in 0L..count {
-            let child = tables.child_scratch[count - index - 1L]
+        for index in 0L..item_count {
+            let child = tables.child_scratch[item_count - index - 1L]
             let value = node_first_direct_child(tables.nodes, child)
             push_nesting_task(tables, value, child_depth, NEST_EXPR)?
         }
     } else if kind == NodeKind.Fit || kind == NodeKind.Cast {
         var value = -1L
         var type = -1L
-        for index in 0L..count {
-            let child = tables.child_scratch[count - index - 1L]
+        for index in 0L..item_count {
+            let child = tables.child_scratch[item_count - index - 1L]
             if is_type_node(tables.nodes[child].kind) { type = child } else { value = child }
         }
         if value >= 0L { push_nesting_task(tables, value, child_depth, NEST_EXPR)? }
         if type >= 0L { push_nesting_task(tables, type, child_depth, NEST_TYPE)? }
     } else if kind == NodeKind.Match {
-        if count > 0L {
-            let scrutinee = tables.child_scratch[count - 1L]
+        if item_count > 0L {
+            let scrutinee = tables.child_scratch[item_count - 1L]
             push_nesting_task(tables, scrutinee, child_depth, NEST_EXPR)?
         }
-        for index in 1L..count {
-            let arm = tables.child_scratch[count - index - 1L]
+        for index in 1L..item_count {
+            let arm = tables.child_scratch[item_count - index - 1L]
             let body = arm - 1L
             push_nesting_task(tables, body, block_depth, NEST_BLOCK)?
         }
     } else if kind == NodeKind.If {
-        for index in 0L..count {
-            let child = tables.child_scratch[count - index - 1L]
+        for index in 0L..item_count {
+            let child = tables.child_scratch[item_count - index - 1L]
             if index == 0L { push_nesting_task(tables, child, child_depth, NEST_EXPR)? }
             else { push_nesting_task(tables, child, block_depth, NEST_BLOCK)? }
         }
@@ -3097,15 +3097,15 @@ fn push_expr_walk_children(tables: write ParseTables, node: long, child_depth: l
 }
 
 fn push_block_walk_children(tables: write ParseTables, node: long, child_depth: long) -> Result<(), ParseError> {
-    let count = collect_children(tables, node)
+    let item_count = collect_children(tables, node)
     let has_tail = (tables.nodes[node].flags & FLAG_HAS_TAIL) != 0L
-    if has_tail && count > 0L {
+    if has_tail && item_count > 0L {
         let tail = tables.child_scratch[0L]
         push_nesting_task(tables, tail, child_depth, NEST_EXPR)?
     }
-    let statement_count = count - if has_tail { 1L } else { 0L }
+    let statement_count = item_count - if has_tail { 1L } else { 0L }
     for index in 0L..statement_count {
-        let child = tables.child_scratch[count - index - 1L]
+        let child = tables.child_scratch[item_count - index - 1L]
         let kind = tables.nodes[child].kind
         if kind == NodeKind.Let {
             var annotation = -1L
@@ -3163,23 +3163,23 @@ fn push_block_walk_children(tables: write ParseTables, node: long, child_depth: 
 }
 
 fn push_type_walk_children(tables: write ParseTables, node: long, child_depth: long) -> Result<(), ParseError> {
-    let count = collect_children(tables, node)
+    let item_count = collect_children(tables, node)
     // Rust visits all AST type arguments before constant and array arguments.
-    for index in 0L..count {
-        let child = tables.child_scratch[count - index - 1L]
+    for index in 0L..item_count {
+        let child = tables.child_scratch[item_count - index - 1L]
         if tables.nodes[child].kind == NodeKind.TypeArgument {
             push_nesting_task(tables, child, child_depth, NEST_TYPE)?
         }
     }
-    for index in 0L..count {
-        let child = tables.child_scratch[count - index - 1L]
+    for index in 0L..item_count {
+        let child = tables.child_scratch[item_count - index - 1L]
         let kind = tables.nodes[child].kind
         if !is_type_node(kind) && kind != NodeKind.FunctionType && kind != NodeKind.FunctionTypeParameter && kind != NodeKind.Effect {
             push_nesting_task(tables, child, child_depth, NEST_EXPR)?
         }
     }
-    for index in 0L..count {
-        let child = tables.child_scratch[count - index - 1L]
+    for index in 0L..item_count {
+        let child = tables.child_scratch[item_count - index - 1L]
         if tables.nodes[child].kind == NodeKind.FunctionType {
             let param_count = collect_children2(tables, child)
             for param_index in 0L..param_count {

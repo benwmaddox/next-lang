@@ -315,6 +315,10 @@ struct CompilerTables {
     expected: list<long, TYPED_FACT_CAPACITY>
     token_name_ids: list<long, TOKEN_STORAGE_CAPACITY>
     intern_slots: list<NameSlot, INTERN_HASH_CAPACITY>
+    enum_type_by_name: list<long, TOKEN_STORAGE_CAPACITY>
+    enum_case_name_counts: list<long, TOKEN_STORAGE_CAPACITY>
+    enum_type_ids: list<long, TYPE_TABLE_CAPACITY>
+    reserved_names: list<bool, TOKEN_STORAGE_CAPACITY>
     functions: list<FunctionRecord, FUNCTION_TABLE_CAPACITY>
     parameters: list<ParameterRecord, BINDING_TABLE_CAPACITY>
     type_records: list<TypeRecord, TYPE_TABLE_CAPACITY>
@@ -381,6 +385,10 @@ fn empty_compiler_tables() -> CompilerTables {
         expected: list {},
         token_name_ids: list {},
         intern_slots: list {},
+        enum_type_by_name: list {},
+        enum_case_name_counts: list {},
+        enum_type_ids: list {},
+        reserved_names: list {},
         functions: list {},
         parameters: list {},
         type_records: list {},
@@ -423,6 +431,10 @@ fn reset_compiler_tables(compiler: write CompilerTables) {
     compiler.expected.clear()
     compiler.token_name_ids.clear()
     compiler.intern_slots.clear()
+    compiler.enum_type_by_name.clear()
+    compiler.enum_case_name_counts.clear()
+    compiler.enum_type_ids.clear()
+    compiler.reserved_names.clear()
     compiler.functions.clear()
     compiler.parameters.clear()
     compiler.type_records.clear()
@@ -679,6 +691,11 @@ fn intern_package_names(
             if !inserted { fail_parse_limit(env, files[file_index].name, "identifier interning limit exceeded") }
         }
     }
+    for name_id in 0L..next_name_id {
+        compiler.enum_type_by_name.push(-1L).unwrap()
+        compiler.enum_case_name_counts.push(0L).unwrap()
+        compiler.reserved_names.push(false).unwrap()
+    }
 }
 
 fn function_exists_by_name(
@@ -828,10 +845,13 @@ fn is_shadowed_function_value(
         let kind = tables.nodes[candidate].kind
         if node_file_index(tables.nodes, files, candidate) != file_index { continue }
         let declaration = tables.nodes[candidate]
-        if kind == NodeKind.Parameter && compiler.token_name_ids[declaration.token] == name_id {
+        if kind == NodeKind.Parameter && candidate != node && compiler.token_name_ids[declaration.token] == name_id {
             var belongs = false
             for owner in 0L..tables.nodes.count() {
-                if tables.nodes[owner].kind == NodeKind.Function && node_file_index(tables.nodes, files, owner) == file_index && tables.nodes[owner].start <= declaration.start && tables.nodes[owner].end >= reference.end { belongs = true }
+                let owner_kind = tables.nodes[owner].kind
+                if (owner_kind == NodeKind.Function || owner_kind == NodeKind.Test) && node_file_index(tables.nodes, files, owner) == file_index &&
+                    tables.nodes[owner].start <= declaration.start && tables.nodes[owner].end >= declaration.end &&
+                    tables.nodes[owner].start <= reference.start && tables.nodes[owner].end >= reference.end { belongs = true }
             }
             if belongs { return true }
         }
@@ -842,6 +862,13 @@ fn is_shadowed_function_value(
         if kind == NodeKind.For && compiler.token_name_ids[declaration.token] == name_id {
             let body = node_children_of_kind(tables, compiler, candidate, NodeKind.Block)
             if body >= 0L && tables.nodes[body].start <= reference.start && tables.nodes[body].end >= reference.end { return true }
+        }
+        if kind == NodeKind.PatternBinding && candidate != node && compiler.token_name_ids[declaration.token] == name_id && declaration.end < reference.start {
+            for arm in 0L..tables.nodes.count() {
+                if tables.nodes[arm].kind == NodeKind.MatchArm && node_file_index(tables.nodes, files, arm) == file_index &&
+                    tables.nodes[arm].start <= declaration.start && tables.nodes[arm].end >= declaration.end &&
+                    tables.nodes[arm].start <= reference.start && tables.nodes[arm].end >= reference.end { return true }
+            }
         }
     }
     false
@@ -1050,6 +1077,12 @@ fn sum_case_tag_for_name(
 fn append_type_record(compiler: write CompilerTables, record: TypeRecord) -> long {
     let type_id = compiler.type_records.count()
     compiler.type_records.push(record).unwrap()
+    if type_record_kind(record) == TYPE_KIND_ENUM {
+        compiler.enum_type_ids.push(type_id).unwrap()
+        if record.name_id >= 0L && record.name_id < compiler.enum_type_by_name.count() {
+            compiler.enum_type_by_name[record.name_id] = type_id
+        }
+    }
     type_id
 }
 
@@ -1081,34 +1114,16 @@ fn struct_record(compiler: CompilerTables, struct_index: long) -> TypeRecord {
 }
 
 fn struct_type_count(compiler: CompilerTables) -> long {
-    var count = 0L
+    var item_count = 0L
     for type_id in 0L..compiler.type_records.count() {
-        if type_record_kind(compiler.type_records[type_id]) == TYPE_KIND_STRUCT { count += 1L }
+        if type_record_kind(compiler.type_records[type_id]) == TYPE_KIND_STRUCT { item_count += 1L }
     }
-    count
+    item_count
 }
 
 fn enum_type_id(compiler: CompilerTables, enum_index: long) -> long {
-    if enum_index < 0L { return -1L }
-    var seen = 0L
-    for type_id in 0L..compiler.type_records.count() {
-        if type_record_kind(compiler.type_records[type_id]) == TYPE_KIND_ENUM {
-            if seen == enum_index { return type_id }
-            seen += 1L
-        }
-    }
-    -1L
-}
-
-fn enum_type_index(compiler: CompilerTables, type_id: long) -> long {
-    var seen = 0L
-    for index in 0L..compiler.type_records.count() {
-        if type_record_kind(compiler.type_records[index]) == TYPE_KIND_ENUM {
-            if index == type_id { return seen }
-            seen += 1L
-        }
-    }
-    -1L
+    if enum_index < 0L || enum_index >= compiler.enum_type_ids.count() { return -1L }
+    compiler.enum_type_ids[enum_index]
 }
 
 fn enum_record(compiler: CompilerTables, enum_index: long) -> TypeRecord {
@@ -1116,28 +1131,17 @@ fn enum_record(compiler: CompilerTables, enum_index: long) -> TypeRecord {
 }
 
 fn enum_type_count(compiler: CompilerTables) -> long {
-    var count = 0L
-    for type_id in 0L..compiler.type_records.count() {
-        if type_record_kind(compiler.type_records[type_id]) == TYPE_KIND_ENUM { count += 1L }
-    }
-    count
+    compiler.enum_type_ids.count()
 }
 
 fn enum_type_matches(compiler: CompilerTables, name_id: long) -> long {
-    var found = -1L
-    for enum_index in 0L..enum_type_count(compiler) {
-        let type_id = enum_type_id(compiler, enum_index)
-        if compiler.type_records[type_id].name_id == name_id {
-            if found >= 0L { return -1L }
-            found = enum_index
-        }
-    }
-    found
+    if name_id < 0L || name_id >= compiler.enum_type_by_name.count() { return -1L }
+    compiler.enum_type_by_name[name_id]
 }
 
-fn enum_case_matches(compiler: CompilerTables, enum_index: long, name_id: long) -> long {
-    if enum_index < 0L || enum_index >= enum_type_count(compiler) { return -1L }
-    let ty = enum_record(compiler, enum_index)
+fn enum_case_matches(compiler: CompilerTables, type_id: long, name_id: long) -> long {
+    if type_id < 0L || type_id >= compiler.type_records.count() || type_record_kind(compiler.type_records[type_id]) != TYPE_KIND_ENUM { return -1L }
+    let ty = type_record(compiler, type_id)
     for offset in 0L..ty.field_count {
         let case_index = ty.field_start + offset
         if compiler.enum_cases[case_index].name_id == name_id { return case_index }
@@ -1146,9 +1150,8 @@ fn enum_case_matches(compiler: CompilerTables, enum_index: long, name_id: long) 
 }
 
 fn enum_case_for_tag(compiler: CompilerTables, type_id: long, tag: long) -> long {
-    let enum_index = enum_type_index(compiler, type_id)
-    if enum_index < 0L { return -1L }
-    let ty = enum_record(compiler, enum_index)
+    if type_id < 0L || type_id >= compiler.type_records.count() || type_record_kind(compiler.type_records[type_id]) != TYPE_KIND_ENUM { return -1L }
+    let ty = type_record(compiler, type_id)
     for offset in 0L..ty.field_count {
         let case_index = ty.field_start + offset
         if compiler.enum_cases[case_index].tag == tag { return case_index }
@@ -1191,7 +1194,8 @@ fn value_type_for_node(compiler: CompilerTables, node: long) -> long {
 fn user_case_matches(compiler: CompilerTables, name_id: long) -> long {
     var found = -1L
     for enum_index in 0L..enum_type_count(compiler) {
-        let case_index = enum_case_matches(compiler, enum_index, name_id)
+        let type_id = enum_type_id(compiler, enum_index)
+        let case_index = enum_case_matches(compiler, type_id, name_id)
         if case_index >= 0L {
             if found >= 0L { return -2L }
             found = case_index
@@ -1400,8 +1404,8 @@ fn sum_type_syntax_shape(
 }
 
 fn sum_case_payload_type(compiler: CompilerTables, type_id: long, tag: long, part: long) -> long {
-    let count = sum_case_payload_count(compiler, type_id, tag)
-    if part < 0L || part >= count { return -1L }
+    let item_count = sum_case_payload_count(compiler, type_id, tag)
+    if part < 0L || part >= item_count { return -1L }
     sum_payload_record(compiler, type_id, tag, part).ty
 }
 
@@ -1473,6 +1477,74 @@ fn value_type_align(compiler: CompilerTables, ty: long) -> long {
     if ty < 0L || ty >= compiler.type_records.count() { return -1L }
     let record = type_record(compiler, ty)
     if type_record_state(record) == 2L { record.align } else { -1L }
+}
+
+fn mark_reserved_name(compiler: write CompilerTables, name_id: long) {
+    if name_id >= 0L && name_id < compiler.reserved_names.count() {
+        compiler.reserved_names[name_id] = true
+    }
+}
+
+fn check_package_name_shadows(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+) {
+    for file_index in 0L..files.count() {
+        let first = files[file_index].first_token
+        let last = first + files[file_index].token_count
+        for token in first..last {
+            if tokens[token].kind != TokenKind.Ident { continue }
+            let is_builtin = builtin_function_name(source, tokens, files, file_index, token) ||
+                token_is_word_at(source, tokens, files, file_index, token, "print") ||
+                builtin_case_name(source, tokens, files, file_index, token)
+            if is_builtin {
+                let name_id = compiler.token_name_ids[token]
+                mark_reserved_name(compiler, name_id)
+            }
+        }
+    }
+    for type_id in 0L..compiler.type_records.count() {
+        let ty = compiler.type_records[type_id]
+        if (type_record_kind(ty) == TYPE_KIND_ENUM || type_record_kind(ty) == TYPE_KIND_STRUCT) && ty.name_id >= 0L {
+            mark_reserved_name(compiler, ty.name_id)
+        }
+    }
+    for case_index in 0L..compiler.enum_cases.count() {
+        let name_id = compiler.enum_cases[case_index].name_id
+        if name_id >= 0L && name_id < compiler.enum_case_name_counts.count() {
+            compiler.enum_case_name_counts[name_id] += 1L
+        }
+    }
+    for case_index in 0L..compiler.enum_cases.count() {
+        let name_id = compiler.enum_cases[case_index].name_id
+        if name_id >= 0L && name_id < compiler.enum_case_name_counts.count() && compiler.enum_case_name_counts[name_id] == 1L {
+            mark_reserved_name(compiler, name_id)
+        }
+    }
+    for node in 0L..tables.nodes.count() {
+        let syntax = tables.nodes[node]
+        if (syntax.kind == NodeKind.Function && is_top_level_function(tables, compiler, node)) || syntax.kind == NodeKind.Const {
+            let name_id = compiler.token_name_ids[syntax.token]
+            mark_reserved_name(compiler, name_id)
+        }
+    }
+    for node in 0L..tables.nodes.count() {
+        let syntax = tables.nodes[node]
+        if syntax.kind != NodeKind.Let && syntax.kind != NodeKind.Parameter && syntax.kind != NodeKind.For && syntax.kind != NodeKind.PatternBinding { continue }
+        let name_id = compiler.token_name_ids[syntax.token]
+        if name_id >= 0L && name_id < compiler.reserved_names.count() && compiler.reserved_names[name_id] {
+            let file_index = node_file_index(tables.nodes, files, node)
+            fail_name_shadow_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, "package or built-in declaration", -1L)
+        }
+        if is_shadowed_function_value(files, tables, compiler, node, node_file_index(tables.nodes, files, node), name_id) {
+            let file_index = node_file_index(tables.nodes, files, node)
+            fail_name_shadow_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, "visible declaration", -1L)
+        }
+    }
 }
 
 fn index_package_enums(
@@ -2178,38 +2250,38 @@ fn ascii_space(value: byte) -> bool {
     value == 32 || value == 9 || value == 10 || value == 13
 }
 
-fn trim_start(bytes: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> long {
+fn trim_start(contents: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> long {
     var index = start
     for step in 0L..end - start {
-        if index >= end || !ascii_space(bytes[index]) { break }
+        if index >= end || !ascii_space(contents[index]) { break }
         index += 1L
     }
     index
 }
 
-fn trim_end(bytes: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> long {
+fn trim_end(contents: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> long {
     var index = end
     for step in 0L..end - start {
-        if index <= start || !ascii_space(bytes[index - 1L]) { break }
+        if index <= start || !ascii_space(contents[index - 1L]) { break }
         index -= 1L
     }
     index
 }
 
-fn manifest_equals(bytes: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long, expected: Ascii max 64) -> bool {
+fn manifest_equals(contents: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long, expected: Ascii max 64) -> bool {
     if end - start != expected.len() { return false }
     for index in 0L..expected.len() {
-        if bytes[start + index] != expected.bytes()[index] { return false }
+        if contents[start + index] != expected.bytes()[index] { return false }
     }
     true
 }
 
-fn manifest_number(bytes: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> long {
+fn manifest_number(contents: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> long {
     if start >= end { return -1L }
     var value = 0L
     var had_digit = false
     for index in start..end {
-        let digit = bytes[index]
+        let digit = contents[index]
         if digit == 95 { continue }
         if digit < 48 || digit > 57 { return -1L }
         had_digit = true
@@ -2220,45 +2292,45 @@ fn manifest_number(bytes: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long
     if !had_digit { -1L } else { value }
 }
 
-fn manifest_memory(bytes: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> long {
-    let unit_start = trim_start(bytes, start, end)
-    let trimmed_end = trim_end(bytes, unit_start, end)
+fn manifest_memory(contents: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> long {
+    let unit_start = trim_start(contents, start, end)
+    let trimmed_end = trim_end(contents, unit_start, end)
     var number_end = trimmed_end
     var multiplier = 1048576L
-    if trimmed_end - unit_start >= 3L && bytes[trimmed_end - 3L] == 71 && bytes[trimmed_end - 2L] == 105 && bytes[trimmed_end - 1L] == 66 {
+    if trimmed_end - unit_start >= 3L && contents[trimmed_end - 3L] == 71 && contents[trimmed_end - 2L] == 105 && contents[trimmed_end - 1L] == 66 {
         number_end = trimmed_end - 3L
         multiplier = 1073741824L
-    } else if trimmed_end - unit_start >= 3L && bytes[trimmed_end - 3L] == 77 && bytes[trimmed_end - 2L] == 105 && bytes[trimmed_end - 1L] == 66 {
+    } else if trimmed_end - unit_start >= 3L && contents[trimmed_end - 3L] == 77 && contents[trimmed_end - 2L] == 105 && contents[trimmed_end - 1L] == 66 {
         number_end = trimmed_end - 3L
         multiplier = 1048576L
-    } else if trimmed_end - unit_start >= 3L && bytes[trimmed_end - 3L] == 75 && bytes[trimmed_end - 2L] == 105 && bytes[trimmed_end - 1L] == 66 {
+    } else if trimmed_end - unit_start >= 3L && contents[trimmed_end - 3L] == 75 && contents[trimmed_end - 2L] == 105 && contents[trimmed_end - 1L] == 66 {
         number_end = trimmed_end - 3L
         multiplier = 1024L
-    } else if trimmed_end - unit_start >= 2L && bytes[trimmed_end - 2L] == 71 && bytes[trimmed_end - 1L] == 66 {
+    } else if trimmed_end - unit_start >= 2L && contents[trimmed_end - 2L] == 71 && contents[trimmed_end - 1L] == 66 {
         number_end = trimmed_end - 2L
         multiplier = 1000000000L
-    } else if trimmed_end - unit_start >= 2L && bytes[trimmed_end - 2L] == 77 && bytes[trimmed_end - 1L] == 66 {
+    } else if trimmed_end - unit_start >= 2L && contents[trimmed_end - 2L] == 77 && contents[trimmed_end - 1L] == 66 {
         number_end = trimmed_end - 2L
         multiplier = 1000000L
-    } else if trimmed_end - unit_start >= 2L && bytes[trimmed_end - 2L] == 75 && bytes[trimmed_end - 1L] == 66 {
+    } else if trimmed_end - unit_start >= 2L && contents[trimmed_end - 2L] == 75 && contents[trimmed_end - 1L] == 66 {
         number_end = trimmed_end - 2L
         multiplier = 1000L
-    } else if trimmed_end - unit_start >= 1L && bytes[trimmed_end - 1L] == 66 {
+    } else if trimmed_end - unit_start >= 1L && contents[trimmed_end - 1L] == 66 {
         number_end = trimmed_end - 1L
         multiplier = 1L
     } else {
         ()
     }
-    let trimmed_number_end = trim_end(bytes, unit_start, number_end)
-    let value = manifest_number(bytes, unit_start, trimmed_number_end)
+    let trimmed_number_end = trim_end(contents, unit_start, number_end)
+    let value = manifest_number(contents, unit_start, trimmed_number_end)
     if value < 0L || value > 9223372036854775807L / multiplier { return -1L }
     value * multiplier
 }
 
-fn write_manifest_range(out: Out, bytes: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> Result<(), IoError> {
+fn write_manifest_range(out: Out, contents: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> Result<(), IoError> {
     var value: Bytes max 4096 = Bytes.empty()
     for index in start..end {
-        match value.push(bytes[index]) {
+        match value.push(contents[index]) {
             ok(_) => (),
             err(Full) => return err(IoError.TooLarge),
         }
@@ -2655,14 +2727,14 @@ fn count_node_children_of_kind(
     parent: long,
     wanted: NodeKind,
 ) -> long {
-    var count = 0L
+    var item_count = 0L
     var child = compiler.child_first[parent]
     for step in 0L..tables.nodes[parent].subtree {
         if child < 0L { break }
-        if tables.nodes[child].kind == wanted { count += 1L }
+        if tables.nodes[child].kind == wanted { item_count += 1L }
         child = compiler.child_next[child]
     }
-    count
+    item_count
 }
 
 fn decoded_string_equal(left: Bytes max 16777217, right: Bytes max 16777217) -> bool {
@@ -2700,6 +2772,41 @@ fn fail_dynamic_checker_error(
     match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
 }
 
+fn fail_name_shadow_error(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: CompilerTables,
+    file_index: long,
+    offset: long,
+    token: long,
+    category: Ascii max 64,
+    previous_line: long,
+) -> never {
+    let file = files[file_index]
+    let position = position_for_offset(file_index, file.base + offset, compiler)
+    match env.err.write(file.name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: name '") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, file.base, token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"' conflicts with ") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(category.bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b" '") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, file.base, token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"'") { ok(_) => (), err(_) => env.exit(3) }
+    if previous_line > 0L {
+        match env.err.write(b" declared on line ") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(str(previous_line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    }
+    match env.err.write(b"; choose a different name") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
 fn fail_ambiguous_enum_case(
     env: Env,
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -2728,7 +2835,7 @@ fn fail_unknown_enum_case(
     let wanted_length = tokens[token].length
     var candidate = NameCandidate { token: -1L, file: -1L, distance: 3L, length: 0L }
     for enum_index in 0L..enum_type_count(compiler) {
-        if filter_enum >= 0L && enum_index != filter_enum { continue }
+        if filter_enum >= 0L && enum_type_id(compiler, enum_index) != filter_enum { continue }
         let ty = enum_record(compiler, enum_index)
         for case_offset in 0L..ty.field_count {
             let case = compiler.enum_cases[ty.field_start + case_offset]
@@ -2951,14 +3058,14 @@ fn match_has_prior_wildcard(tables: ParseTables, compiler: CompilerTables, match
 fn match_covered_count(tables: ParseTables, compiler: CompilerTables, match_node: long, pattern_kind: long) -> long {
     let scrutinee = compiler.child_first[match_node]
     var arm = if scrutinee >= 0L { compiler.child_next[scrutinee] } else { -1L }
-    var count = 0L
+    var item_count = 0L
     for step in 0L..tables.nodes[match_node].subtree {
         if arm < 0L { break }
         let pattern = compiler.child_first[arm]
-        if pattern >= 0L && compiler.facts[pattern].flags == pattern_kind { count += 1L }
+        if pattern >= 0L && compiler.facts[pattern].flags == pattern_kind { item_count += 1L }
         arm = compiler.child_next[arm]
     }
-    count
+    item_count
 }
 
 fn write_type_name(
@@ -3325,14 +3432,14 @@ fn child_at(
 }
 
 fn count_children(tables: ParseTables, compiler: CompilerTables, parent: long) -> long {
-    var count = 0L
+    var item_count = 0L
     var child = compiler.child_first[parent]
     for step in 0L..tables.nodes[parent].subtree {
         if child < 0L { break }
-        count += 1L
+        item_count += 1L
         child = compiler.child_next[child]
     }
-    count
+    item_count
 }
 
 fn push_check_frame(
@@ -3419,6 +3526,15 @@ fn add_local_binding(
             match env.err.write(b"); choose another name\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
         }
     }
+    let visible_binding = find_binding_in_scope(compiler, scope, name_id)
+    if visible_binding >= 0L {
+        let previous = compiler.bindings[visible_binding]
+        let previous_position = position_for_offset(previous.file, files[previous.file].base + tables.nodes[previous.node].start, compiler)
+        fail_name_shadow_error(env, source, files, tokens, compiler, file_index, tables.nodes[node].start, name_token, "visible declaration", previous_position.line)
+    }
+    if name_id >= 0L && name_id < compiler.reserved_names.count() && compiler.reserved_names[name_id] {
+        fail_name_shadow_error(env, source, files, tokens, compiler, file_index, tables.nodes[node].start, name_token, "package or built-in declaration", -1L)
+    }
     if compiler.bindings.count() >= BINDING_TABLE_CAPACITY {
         fail_parse_limit(env, files[file_index].name, "self-hosted binding table limit exceeded")
     }
@@ -3502,7 +3618,8 @@ fn natural_node_type(
             }
         },
         NodeKind.Call => {
-            if token_is_word_at(source, tokens, files, file_index, value.token, "print") { TY_UNIT }
+            if find_binding_in_scope(compiler, scope, compiler.token_name_ids[value.token]) >= 0L { -1L }
+            else if token_is_word_at(source, tokens, files, file_index, value.token, "print") { TY_UNIT }
             else {
                 let id = compiler.token_name_ids[value.token]
                 let function = find_function_by_name(compiler, id)
@@ -3514,16 +3631,15 @@ fn natural_node_type(
             }
         },
         NodeKind.QualifiedCase => {
-            let enum_index = enum_type_matches(compiler, compiler.token_name_ids[value.token])
-            if enum_index >= 0L { enum_type_id(compiler, enum_index) } else { -1L }
+            enum_type_matches(compiler, compiler.token_name_ids[value.token])
         },
         NodeKind.Field => {
             let receiver = compiler.child_first[node]
             if receiver >= 0L && tables.nodes[receiver].kind == NodeKind.Name && find_binding_in_scope(compiler, scope, compiler.token_name_ids[tables.nodes[receiver].token]) < 0L {
-                let enum_index = enum_type_matches(compiler, compiler.token_name_ids[tables.nodes[receiver].token])
-                if enum_index >= 0L {
-                    let case_index = enum_case_matches(compiler, enum_index, compiler.token_name_ids[value.token])
-                    if case_index >= 0L { enum_type_id(compiler, enum_index) } else { -1L }
+                let type_id = enum_type_matches(compiler, compiler.token_name_ids[tables.nodes[receiver].token])
+                if type_id >= 0L {
+                    let case_index = enum_case_matches(compiler, type_id, compiler.token_name_ids[value.token])
+                    if case_index >= 0L { type_id } else { -1L }
                 } else { -1L }
             } else { -1L }
         },
@@ -3997,6 +4113,16 @@ fn node_last_child(tables: ParseTables, compiler: CompilerTables, parent: long) 
     last
 }
 
+fn node_children_fall_through(tables: ParseTables, compiler: CompilerTables, parent: long) -> bool {
+    var child = compiler.child_first[parent]
+    for step in 0L..tables.nodes[parent].subtree {
+        if child < 0L { break }
+        if (compiler.facts[child].flags & FACT_FALLS_THROUGH) == 0L { return false }
+        child = compiler.child_next[child]
+    }
+    true
+}
+
 fn check_one_body(
     env: Env,
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -4081,11 +4207,11 @@ fn check_one_body(
                         fail_match_exhaustiveness(env, source, files, tokens, tables, compiler, file_index, node, matched_type)
                     }
                 }
-                let result_ty = if frame.result_ty < 0L { TY_NEVER } else { frame.result_ty }
-                if frame.expected >= 0L && result_ty != TY_NEVER && result_ty != frame.expected {
-                    require_type(env, files, compiler, file_index, node, frame.expected, result_ty, tables)
+                let match_result_ty = if frame.result_ty < 0L { TY_NEVER } else { frame.result_ty }
+                if frame.expected >= 0L && match_result_ty != TY_NEVER && match_result_ty != frame.expected {
+                    require_type(env, files, compiler, file_index, node, frame.expected, match_result_ty, tables)
                 }
-                compiler.facts[node] = NodeFact { ty: result_ty, flags: if result_ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: 0L }
+                compiler.facts[node] = NodeFact { ty: match_result_ty, flags: if match_result_ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: 0L }
                 match compiler.work.pop() { some(_) => (), none() => () }
                 continue
             }
@@ -4131,29 +4257,27 @@ fn check_one_body(
                 }
                 if has_wildcard { fail_at_message(env, files, compiler, file_index, tables.nodes[arm].start, "unreachable match arm after '_'") }
                 let generic_sum = type_kind(compiler, matched_type) == TYPE_KIND_OPTION || type_kind(compiler, matched_type) == TYPE_KIND_RESULT
-                let enum_index = enum_type_index(compiler, matched_type)
                 if (tables.nodes[pattern].flags & FLAG_HAS_ANNOTATION) != 0L {
                     let qualifier = tables.nodes[pattern].extra
                     if generic_sum {
                         let qualifier_matches = (type_kind(compiler, matched_type) == TYPE_KIND_OPTION && token_is_word_at(source, tokens, files, file_index, qualifier, "Option")) ||
                             (type_kind(compiler, matched_type) == TYPE_KIND_RESULT && token_is_word_at(source, tokens, files, file_index, qualifier, "Result"))
                         if !qualifier_matches { fail_at_message(env, files, compiler, file_index, tables.nodes[pattern].start, "qualified match case does not match the Option or Result scrutinee") } else { () }
-                    } else if enum_type_matches(compiler, compiler.token_name_ids[qualifier]) < 0L ||
-                        enum_type_id(compiler, enum_type_matches(compiler, compiler.token_name_ids[qualifier])) != matched_type {
+                    } else if enum_type_matches(compiler, compiler.token_name_ids[qualifier]) != matched_type {
                         fail_match_qualifier(env, source, files, tokens, tables, compiler, file_index, pattern, matched_type)
                     } else { () }
                 }
                 let tag = if generic_sum {
                     sum_case_tag_for_name(source, tokens, files, file_index, compiler, matched_type, tables.nodes[pattern].token)
                 } else {
-                    let found_case = enum_case_matches(compiler, enum_index, compiler.token_name_ids[tables.nodes[pattern].token])
+                    let found_case = enum_case_matches(compiler, matched_type, compiler.token_name_ids[tables.nodes[pattern].token])
                     if found_case >= 0L { compiler.enum_cases[found_case].tag } else { -1L }
                 }
                 if tag < 0L {
                     if generic_sum { fail_at_message(env, files, compiler, file_index, tables.nodes[pattern].start, "unknown Option or Result match case") }
                     else { fail_at_message(env, files, compiler, file_index, tables.nodes[pattern].start, "unknown enum match case") }
                 }
-                let case_index = if generic_sum { -1L } else { enum_case_matches(compiler, enum_index, compiler.token_name_ids[tables.nodes[pattern].token]) }
+                let case_index = if generic_sum { -1L } else { enum_case_matches(compiler, matched_type, compiler.token_name_ids[tables.nodes[pattern].token]) }
                 let payload_count = if generic_sum { sum_case_payload_count(compiler, matched_type, tag) } else { compiler.enum_cases[case_index].payload_count }
                 let binding_count = count_children(tables, compiler, pattern)
                 if binding_count != payload_count {
@@ -4263,13 +4387,13 @@ fn check_one_body(
                 let receiver = compiler.child_first[node]
                 if receiver >= 0L && tables.nodes[receiver].kind == NodeKind.Name &&
                     find_binding_in_scope(compiler, frame.scope, compiler.token_name_ids[tables.nodes[receiver].token]) < 0L {
-                    let enum_index = enum_type_matches(compiler, compiler.token_name_ids[tables.nodes[receiver].token])
-                    if enum_index >= 0L {
-                        let case_index = enum_case_matches(compiler, enum_index, compiler.token_name_ids[syntax.token])
+                    let type_id = enum_type_matches(compiler, compiler.token_name_ids[tables.nodes[receiver].token])
+                    if type_id >= 0L {
+                        let case_index = enum_case_matches(compiler, type_id, compiler.token_name_ids[syntax.token])
                         if case_index >= 0L {
                             let case = compiler.enum_cases[case_index]
-                            if case.payload_count > 0L { fail_enum_case_needs_payload(env, source, files, tokens, tables, compiler, file_index, node, enum_index, case_index) }
-                            let ty = enum_type_id(compiler, enum_index)
+                            if case.payload_count > 0L { fail_enum_case_needs_payload(env, source, files, tokens, tables, compiler, file_index, node, case.owner, case_index) }
+                            let ty = type_id
                             if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
                             compiler.facts[node] = NodeFact { ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: case.tag }
                             match compiler.work.pop() { some(_) => (), none() => () }
@@ -4324,6 +4448,10 @@ fn check_one_body(
                 continue
             }
             if kind == NodeKind.Call {
+                let local = find_binding_in_scope(compiler, frame.scope, compiler.token_name_ids[syntax.token])
+                if local >= 0L {
+                    fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "value '", syntax.token, "' is not callable; use a function-typed value")
+                }
                 let target = find_function_by_name(compiler, compiler.token_name_ids[syntax.token])
                 if target < 0L {
                     if builtin_sum_case_name(source, tokens, files, file_index, syntax.token) &&
@@ -4358,8 +4486,7 @@ fn check_one_body(
                     var case_index = -1L
                     var case_type = -1L
                     if type_kind(compiler, frame.expected) == TYPE_KIND_ENUM {
-                        let expected_enum_index = enum_type_index(compiler, frame.expected)
-                        let expected_case = enum_case_matches(compiler, expected_enum_index, compiler.token_name_ids[syntax.token])
+                        let expected_case = enum_case_matches(compiler, frame.expected, compiler.token_name_ids[syntax.token])
                         if expected_case >= 0L { case_index = expected_case; case_type = frame.expected }
                     }
                     if case_index < 0L {
@@ -4384,16 +4511,16 @@ fn check_one_body(
                 continue
             }
             if kind == NodeKind.QualifiedCase {
-                let enum_index = enum_type_matches(compiler, compiler.token_name_ids[syntax.token])
-                if enum_index < 0L {
+                let type_id = enum_type_matches(compiler, compiler.token_name_ids[syntax.token])
+                if type_id < 0L {
                     fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "unknown enum '", syntax.token, "'; declare it with enum")
                 }
                 let case_token = tables.extra[syntax.extra]
-                let case_index = enum_case_matches(compiler, enum_index, compiler.token_name_ids[case_token])
-                if case_index < 0L { fail_unknown_enum_case(env, source, files, tokens, tables, compiler, file_index, tokens[case_token].start, case_token, enum_index) }
+                let case_index = enum_case_matches(compiler, type_id, compiler.token_name_ids[case_token])
+                if case_index < 0L { fail_unknown_enum_case(env, source, files, tokens, tables, compiler, file_index, tokens[case_token].start, case_token, type_id) }
                 let actual = count_children(tables, compiler, node)
                 if actual != compiler.enum_cases[case_index].payload_count { fail_enum_constructor_arity(env, source, files, tokens, tables, compiler, file_index, node, case_index, actual) }
-                frame.result_ty = enum_type_id(compiler, enum_index)
+                frame.result_ty = type_id
                 frame.child2 = case_index
                 frame.cursor = compiler.child_first[node]
                 frame.phase = 1L
@@ -4499,8 +4626,8 @@ fn check_one_body(
                     loop_ty = parse_scalar_type(env, source, tokens, files, tables, compiler, file_index, annotation)
                     if !is_numeric_type(loop_ty) { fail_at_message(env, files, compiler, file_index, tables.nodes[annotation].start, "a loop counter must be int or long; use one of those types") }
                 }
-                for bound_index in 0L..2L {
-                    let bound = if bound_index == 0L { start } else { finish }
+                for bound_slot in 0L..2L {
+                    let bound = if bound_slot == 0L { start } else { finish }
                     let bound_ty = natural_loop_bound_type(source, tokens, files, tables, compiler, bound, frame.scope, file_index)
                     if bound_ty < 0L { continue }
                     if !is_numeric_type(bound_ty) { fail_loop_bound_type(env, files, compiler, file_index, tables.nodes[bound].start, bound_ty) }
@@ -4558,8 +4685,7 @@ fn check_one_body(
                         fail_at_message(env, files, compiler, file_index, syntax.start, "cannot infer the missing type parameter for 'none'; add an Option<T> expected type")
                     }
                     if type_kind(compiler, frame.expected) == TYPE_KIND_ENUM {
-                        let expected_enum_index = enum_type_index(compiler, frame.expected)
-                        let expected_case = enum_case_matches(compiler, expected_enum_index, compiler.token_name_ids[syntax.token])
+                    let expected_case = enum_case_matches(compiler, frame.expected, compiler.token_name_ids[syntax.token])
                         if expected_case >= 0L { case_index = expected_case; case_type = frame.expected }
                     } else if frame.expected < 0L {
                         case_index = user_case_matches(compiler, compiler.token_name_ids[syntax.token])
@@ -4608,7 +4734,7 @@ fn check_one_body(
                 if kind == NodeKind.Call || kind == NodeKind.QualifiedCase || kind == NodeKind.MethodCall {
                     var sibling = compiler.child_first[node]
                     var position = 0L
-                    for count in 0L..tables.nodes[node].subtree {
+                    for item_count in 0L..tables.nodes[node].subtree {
                         if sibling < 0L || sibling == child { break }
                         position += 1L
                         sibling = compiler.child_next[sibling]
@@ -4726,7 +4852,7 @@ fn check_one_body(
             let ty = if frame.child1 >= 0L { frame.child1 } else { value_fact.ty }
             require_type(env, files, compiler, file_index, value, ty, value_fact.ty, tables)
             let binding = add_local_binding(env, source, files, tokens, tables, compiler, file_index, node, syntax.token, frame.scope, ty, (syntax.flags & FLAG_MUTABLE) != 0L, false, false)
-            compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding, function: -1L, literal: 0L }
+            compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if (value_fact.flags & FACT_FALLS_THROUGH) != 0L { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding, function: -1L, literal: 0L }
         } else if kind == NodeKind.Field {
             let receiver = frame.child0
             let receiver_ty = compiler.facts[receiver].ty
@@ -4745,6 +4871,14 @@ fn check_one_body(
         } else if kind == NodeKind.StructInit {
             let type_index = struct_type_index(compiler, frame.result_ty)
             let ty = struct_record(compiler, type_index)
+            var values_fall_through = true
+            var supplied_value = compiler.child_first[node]
+            for value_step in 0L..syntax.subtree {
+                if supplied_value < 0L { break }
+                let field_value = compiler.child_first[supplied_value]
+                if field_value >= 0L && (compiler.facts[field_value].flags & FACT_FALLS_THROUGH) == 0L { values_fall_through = false }
+                supplied_value = compiler.child_next[supplied_value]
+            }
             for offset in 0L..ty.field_count {
                 let field_index = ty.field_start + offset
                 var supplied = false
@@ -4759,7 +4893,7 @@ fn check_one_body(
                 }
             }
             if frame.expected >= 0L && frame.expected != frame.result_ty { require_type(env, files, compiler, file_index, node, frame.expected, frame.result_ty, tables) }
-            compiler.facts[node] = NodeFact { ty: frame.result_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: type_index }
+            compiler.facts[node] = NodeFact { ty: frame.result_ty, flags: if values_fall_through { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: type_index }
         } else if kind == NodeKind.Assign {
             let target = frame.child0
             let value = frame.child1
@@ -4789,7 +4923,7 @@ fn check_one_body(
         } else if kind == NodeKind.ExpressionStatement {
             let ty = if frame.child0 >= 0L { compiler.facts[frame.child0].ty } else { TY_UNIT }
             if type_kind(compiler, ty) == TYPE_KIND_RESULT {
-                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "this Result value is unused; handle it with '?', 'match', or '?? where supported")
+                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "this Result value is unused; handle it with '?', 'match', or '??' where supported")
             }
             compiler.facts[node] = NodeFact { ty: if ty == TY_NEVER { TY_NEVER } else { TY_UNIT }, flags: if ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.Expect {
@@ -4804,18 +4938,18 @@ fn check_one_body(
                 let ty = frame.result_ty
                 if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
                 let case = compiler.enum_cases[frame.child2]
-                compiler.facts[node] = NodeFact { ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: case.tag }
+                compiler.facts[node] = NodeFact { ty, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: case.tag }
             } else if frame.auxiliary >= 21L && frame.auxiliary <= 24L {
                 let tag = if frame.auxiliary == 21L || frame.auxiliary == 23L { 0L } else { 1L }
-                let kind = if frame.auxiliary == 21L || frame.auxiliary == 22L { TYPE_KIND_OPTION } else { TYPE_KIND_RESULT }
+                let sum_kind = if frame.auxiliary == 21L || frame.auxiliary == 22L { TYPE_KIND_OPTION } else { TYPE_KIND_RESULT }
                 let payload = if frame.auxiliary == 22L { -1L } else { compiler.facts[compiler.child_first[node]].ty }
                 let ty = if frame.result_ty >= 0L { frame.result_ty }
-                    else { intern_sum_type(compiler, kind, payload, -1L, file_index, node, -1L, -1L) }
+                    else { intern_sum_type(compiler, sum_kind, payload, -1L, file_index, node, -1L, -1L) }
                 if ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "cannot infer the type of this Option or Result constructor") }
                 if type_state(compiler, ty) != 2L { let _ = layout_sum_instance(compiler, ty) }
                 if value_type_size(compiler, ty) > 4096L { fail_at_message(env, files, compiler, file_index, syntax.start, "inferred Option or Result value exceeds 4096 bytes") }
                 if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
-                compiler.facts[node] = NodeFact { ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: tag }
+                compiler.facts[node] = NodeFact { ty, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: tag }
             } else if token_is_word_at(source, tokens, files, file_index, syntax.token, "print") {
                 if (config.capability_mask & 2L) == 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "package manifest must grant capability 'out' in the 'capabilities' key") }
                 if arg_count != 1L { fail_at_message(env, files, compiler, file_index, syntax.start, "print takes one argument, but got an invalid number; call print(value)") }
@@ -4824,7 +4958,7 @@ fn check_one_body(
                 if !is_numeric_type(arg_ty) && arg_ty != TY_BOOL && !is_aggregate_type(compiler, arg_ty) {
                     fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values")
                 }
-                compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+                compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: 0L }
             } else {
                 let target = find_function_by_name(compiler, name_id)
                 if target < 0L { fail_name_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, frame.scope, true) }
@@ -4837,13 +4971,13 @@ fn check_one_body(
                     compiler.edge_first[function_id] = edge_id
                 }
                 let ty = function.result_ty
-                compiler.facts[node] = NodeFact { ty, flags: if ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: target, literal: 0L }
+                compiler.facts[node] = NodeFact { ty, flags: if ty == TY_NEVER || !node_children_fall_through(tables, compiler, node) { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: target, literal: 0L }
             }
         } else if kind == NodeKind.QualifiedCase {
             let ty = frame.result_ty
             if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
             let case = compiler.enum_cases[frame.child2]
-            compiler.facts[node] = NodeFact { ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: case.tag }
+            compiler.facts[node] = NodeFact { ty, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: case.tag }
         } else if kind == NodeKind.MethodCall {
             let operation = frame.auxiliary
             if operation < 0L {
@@ -4859,20 +4993,20 @@ fn check_one_body(
                 let method_is_err = token_is_word_at(source, tokens, files, file_index, syntax.token, "is_err")
                 let method_ok = token_is_word_at(source, tokens, files, file_index, syntax.token, "ok")
                 let method_unwrap = token_is_word_at(source, tokens, files, file_index, syntax.token, "unwrap")
-                var result_ty = -1L
-                if receiver_kind == TYPE_KIND_OPTION && (method_is_some || method_is_none) { result_ty = TY_BOOL }
-                else if receiver_kind == TYPE_KIND_OPTION && method_unwrap { result_ty = sum_case_payload_type(compiler, receiver_ty, 0L, 0L) }
-                else if receiver_kind == TYPE_KIND_RESULT && (method_is_ok || method_is_err) { result_ty = TY_BOOL }
-                else if receiver_kind == TYPE_KIND_RESULT && method_unwrap { result_ty = sum_case_payload_type(compiler, receiver_ty, 0L, 0L) }
+                var method_result_ty = -1L
+                if receiver_kind == TYPE_KIND_OPTION && (method_is_some || method_is_none) { method_result_ty = TY_BOOL }
+                else if receiver_kind == TYPE_KIND_OPTION && method_unwrap { method_result_ty = sum_case_payload_type(compiler, receiver_ty, 0L, 0L) }
+                else if receiver_kind == TYPE_KIND_RESULT && (method_is_ok || method_is_err) { method_result_ty = TY_BOOL }
+                else if receiver_kind == TYPE_KIND_RESULT && method_unwrap { method_result_ty = sum_case_payload_type(compiler, receiver_ty, 0L, 0L) }
                 else if receiver_kind == TYPE_KIND_RESULT && method_ok {
                     let value_ty = sum_case_payload_type(compiler, receiver_ty, 0L, 0L)
-                    result_ty = intern_sum_type(compiler, TYPE_KIND_OPTION, value_ty, -1L, file_index, node, -1L, -1L)
-                    if value_type_size(compiler, result_ty) > 4096L { fail_at_message(env, files, compiler, file_index, syntax.start, "inferred Option value from Result.ok() exceeds 4096 bytes") }
+                    method_result_ty = intern_sum_type(compiler, TYPE_KIND_OPTION, value_ty, -1L, file_index, node, -1L, -1L)
+                    if value_type_size(compiler, method_result_ty) > 4096L { fail_at_message(env, files, compiler, file_index, syntax.start, "inferred Option value from Result.ok() exceeds 4096 bytes") }
                 } else {
                     fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching Option or Result method is available on this value")
                 }
-                if frame.expected >= 0L && frame.expected != result_ty { require_type(env, files, compiler, file_index, node, frame.expected, result_ty, tables) }
-                compiler.facts[node] = NodeFact { ty: result_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+                if frame.expected >= 0L && frame.expected != method_result_ty { require_type(env, files, compiler, file_index, node, frame.expected, method_result_ty, tables) }
+                compiler.facts[node] = NodeFact { ty: method_result_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
             } else {
                 let expected_count = core_sys_argument_count(operation)
                 let actual_count = count_children(tables, compiler, node) - 1L
@@ -4891,11 +5025,11 @@ fn check_one_body(
                     }
                     argument = compiler.child_next[argument]
                 }
-                let result_ty = core_sys_result_type(operation)
-                if frame.expected >= 0L && frame.expected != result_ty && result_ty != TY_NEVER {
-                    require_type(env, files, compiler, file_index, node, frame.expected, result_ty, tables)
+                let syscall_result_ty = core_sys_result_type(operation)
+                if frame.expected >= 0L && frame.expected != syscall_result_ty && syscall_result_ty != TY_NEVER {
+                    require_type(env, files, compiler, file_index, node, frame.expected, syscall_result_ty, tables)
                 }
-                compiler.facts[node] = NodeFact { ty: result_ty, flags: if result_ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: operation }
+                compiler.facts[node] = NodeFact { ty: syscall_result_ty, flags: if syscall_result_ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: operation }
             }
         } else if kind == NodeKind.Cast {
             let source_ty = compiler.facts[frame.child0].ty
@@ -4997,7 +5131,7 @@ fn check_one_body(
             }
             if frame.expected == TY_UNIT && can_reach && has_tail && tail_ty != TY_UNIT && tail_ty != TY_NEVER {
                 if type_kind(compiler, tail_ty) == TYPE_KIND_RESULT {
-                    fail_at_message(env, files, compiler, file_index, tables.nodes[last].start, "this Result value is unused; handle it with '?', 'match', or '?? where supported")
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[last].start, "this Result value is unused; handle it with '?', 'match', or '??' where supported")
                 }
                 let message: Ascii max 160 = "block value must be discarded or returned as unit"
                 fail_at_message(env, files, compiler, file_index, tables.nodes[last].start, message)
@@ -5008,7 +5142,7 @@ fn check_one_body(
                 if (child != last || !has_tail) &&
                     (tables.nodes[child].kind == NodeKind.Block || tables.nodes[child].kind == NodeKind.If) &&
                     type_kind(compiler, compiler.facts[child].ty) == TYPE_KIND_RESULT {
-                    fail_at_message(env, files, compiler, file_index, tables.nodes[child].start, "this Result value is unused; handle it with '?', 'match', or '?? where supported")
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[child].start, "this Result value is unused; handle it with '?', 'match', or '??' where supported")
                 }
                 child = compiler.child_next[child]
             }
@@ -5044,7 +5178,7 @@ fn check_one_body(
                 fail_at_message(env, files, compiler, file_index, syntax.start, "'?' requires an Option or Result value")
             }
             if frame.expected >= 0L && frame.expected != success_ty { require_type(env, files, compiler, file_index, node, frame.expected, success_ty, tables) }
-            compiler.facts[node] = NodeFact { ty: success_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+            compiler.facts[node] = NodeFact { ty: success_ty, flags: if (compiler.facts[frame.child0].flags & FACT_FALLS_THROUGH) != 0L { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: 0L }
         } else {
             fail_at_message(env, files, compiler, file_index, syntax.start, "internal self-hosted checker finalization failure")
         }
@@ -6694,41 +6828,39 @@ fn emit_expr_linear(
                 let type_id = struct_type_id(compiler, type_index)
                 if struct_has_defaults(compiler, type_index) {
                     let ty = struct_record(compiler, type_index)
-                    var count = 0L
+                    var item_count = 0L
                     for field_offset in 0L..ty.field_count {
                         let field_index = ty.field_start + field_offset
                         var child = compiler.child_first[current]
                         for field_step in 0L..tables.nodes[current].subtree {
                             if child < 0L { break }
-                            if compiler.facts[child].binding == field_index { count += 1L }
+                            if compiler.facts[child].binding == field_index { item_count += 1L }
                             child = compiler.child_next[child]
                         }
                     }
-                    ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_FILL); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_location_argument(compiler, ir, native_location(0L, current, 0L)); ir_write_ascii(compiler, ir, ", ptr @.nl.given."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, count); ir_write_ascii(compiler, ir, ")\n")
+                    ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_FILL); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_location_argument(compiler, ir, native_location(0L, current, 0L)); ir_write_ascii(compiler, ir, ", ptr @.nl.given."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, item_count); ir_write_ascii(compiler, ir, ")\n")
                 }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             }
         } else if kind == NodeKind.StructInit && frame.phase == 51L {
             let initializer = frame.child0
             let value = frame.child1
-            let field_index = compiler.facts[initializer].binding
-            let field = compiler.struct_fields[field_index]
-            emit_layout_address(compiler, ir, initializer, native_location(0L, current, field.offset))
-            if is_aggregate_type(compiler, field.ty) {
-                var source_kind = 0L
-                var source_node = value
-                if tables.nodes[value].kind == NodeKind.Name {
-                    let binding = compiler.facts[value].binding
-                    if compiler.bindings[binding].parameter { source_kind = 2L; source_node = binding }
-                    else { source_kind = 1L; source_node = binding }
-                } else if tables.nodes[value].kind == NodeKind.Field { source_kind = 3L }
-                else { () }
-                emit_aggregate_copy(compiler, ir, field.ty, aggregate_destination_location(3L, initializer), aggregate_source_location(source_kind, source_node))
-            } else if field.ty != TY_UNIT {
-                emit_store_scalar(compiler, ir, initializer, field.ty, value)
-            } else { () }
-            frame.phase = 50L
-            compiler.expr_work[frame_index] = frame
+            if (compiler.facts[value].flags & FACT_FALLS_THROUGH) == 0L {
+                match compiler.expr_work.pop() { some(_) => (), none() => () }
+            } else {
+                let field_index = compiler.facts[initializer].binding
+                let field = compiler.struct_fields[field_index]
+                emit_layout_address(compiler, ir, initializer, native_location(0L, current, field.offset))
+                if is_aggregate_type(compiler, field.ty) {
+                    let source_kind = aggregate_source_kind(tables, compiler, value)
+                    let source_node = aggregate_source_id(tables, compiler, value)
+                    emit_aggregate_copy(compiler, ir, field.ty, aggregate_destination_location(3L, initializer), aggregate_source_location(source_kind, source_node))
+                } else if field.ty != TY_UNIT {
+                    emit_store_scalar(compiler, ir, initializer, field.ty, value)
+                } else { () }
+                frame.phase = 50L
+                compiler.expr_work[frame_index] = frame
+            }
         } else if kind == NodeKind.Unary {
             let ty = compiler.facts[current].ty
             if syntax.flags == 1L {
@@ -6767,9 +6899,9 @@ fn emit_expr_linear(
             let operand = frame.child0
             let operand_ty = compiler.facts[operand].ty
             let operand_kind = type_kind(compiler, operand_ty)
-            let source = aggregate_source_location(aggregate_source_kind(tables, compiler, operand), aggregate_source_id(tables, compiler, operand))
+            let operand_source = aggregate_source_location(aggregate_source_kind(tables, compiler, operand), aggregate_source_id(tables, compiler, operand))
             let tag_address = enum_temporary_address(current, MAX_TREE_NODES + 8L)
-            emit_layout_address(compiler, ir, tag_address, native_location(source.anchor_kind, source.anchor_node, 0L))
+            emit_layout_address(compiler, ir, tag_address, native_location(operand_source.anchor_kind, operand_source.anchor_node, 0L))
             ir_write_ascii(compiler, ir, "  %try.tag."); ir_write_number(compiler, ir, current)
             ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, tag_address)
             ir_write_ascii(compiler, ir, ", align 1\n  %try.is.success."); ir_write_number(compiler, ir, current)
@@ -6779,7 +6911,7 @@ fn emit_expr_linear(
             ir_write_ascii(compiler, ir, ", label %try.failure."); ir_write_number(compiler, ir, current)
             ir_write_ascii(compiler, ir, "\ntry.success."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n")
             let success = sum_payload_record(compiler, operand_ty, 0L, 0L)
-            emit_sum_payload_to_expression(compiler, ir, current, success.ty, source, success.offset, enum_temporary_address(current, MAX_TREE_NODES + 9L))
+            emit_sum_payload_to_expression(compiler, ir, current, success.ty, operand_source, success.offset, enum_temporary_address(current, MAX_TREE_NODES + 9L))
             ir_write_ascii(compiler, ir, "  br label %try.end."); ir_write_number(compiler, ir, current)
             ir_write_ascii(compiler, ir, "\ntry.failure."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n")
             let result_ty = return_ty
@@ -6792,7 +6924,7 @@ fn emit_expr_linear(
             if operand_kind == TYPE_KIND_RESULT && result_kind == TYPE_KIND_RESULT {
                 let error = sum_payload_record(compiler, operand_ty, 1L, 0L)
                 let destination_error = sum_payload_record(compiler, result_ty, 1L, 0L)
-                emit_sum_payload_transfer(compiler, ir, error.ty, source, error.offset, native_location(4L, 0L, 0L), destination_error.offset, enum_temporary_address(current, MAX_TREE_NODES + 11L))
+                emit_sum_payload_transfer(compiler, ir, error.ty, operand_source, error.offset, native_location(4L, 0L, 0L), destination_error.offset, enum_temporary_address(current, MAX_TREE_NODES + 11L))
             }
             lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, result_ty, -1L)
             ir_write_ascii(compiler, ir, "try.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n")
@@ -6800,9 +6932,9 @@ fn emit_expr_linear(
         } else if kind == NodeKind.Binary && frame.phase == 40L {
             let left = frame.child0
             let option_ty = compiler.facts[left].ty
-            let source = aggregate_source_location(aggregate_source_kind(tables, compiler, left), aggregate_source_id(tables, compiler, left))
+            let left_source = aggregate_source_location(aggregate_source_kind(tables, compiler, left), aggregate_source_id(tables, compiler, left))
             let tag_address = enum_temporary_address(current, MAX_TREE_NODES + 2L)
-            emit_layout_address(compiler, ir, tag_address, native_location(source.anchor_kind, source.anchor_node, 0L))
+            emit_layout_address(compiler, ir, tag_address, native_location(left_source.anchor_kind, left_source.anchor_node, 0L))
             ir_write_ascii(compiler, ir, "  %coalesce.tag."); ir_write_number(compiler, ir, current)
             ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, tag_address)
             ir_write_ascii(compiler, ir, ", align 1\n  %coalesce.is.some."); ir_write_number(compiler, ir, current)
@@ -6811,7 +6943,7 @@ fn emit_expr_linear(
             ir_write_ascii(compiler, ir, ", label %coalesce.none."); ir_write_number(compiler, ir, current)
             ir_write_ascii(compiler, ir, "\ncoalesce.some."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n")
             let payload = sum_payload_record(compiler, option_ty, 0L, 0L)
-            emit_sum_payload_to_coalesce(compiler, ir, current, payload.ty, source, payload.offset, enum_temporary_address(current, MAX_TREE_NODES + 3L))
+            emit_sum_payload_to_coalesce(compiler, ir, current, payload.ty, left_source, payload.offset, enum_temporary_address(current, MAX_TREE_NODES + 3L))
             ir_write_ascii(compiler, ir, "  br label %coalesce.end."); ir_write_number(compiler, ir, current)
             ir_write_ascii(compiler, ir, "\ncoalesce.none."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n")
             frame.phase = 41L
@@ -6910,11 +7042,15 @@ fn emit_expr_linear(
             let is_generic_sum = type_kind(compiler, compiler.facts[current].ty) == TYPE_KIND_OPTION || type_kind(compiler, compiler.facts[current].ty) == TYPE_KIND_RESULT
             let case_index = enum_case_for_tag(compiler, compiler.facts[current].ty, compiler.facts[current].literal)
             if frame.phase == 61L {
-                if is_generic_sum { emit_sum_constructor_payload(tables, compiler, ir, current, frame.child1, frame.child0) }
-                else { emit_enum_constructor_payload(tables, compiler, ir, current, case_index, frame.child1, frame.child0) }
-                frame.auxiliary += 1L
-                frame.phase = 60L
-                compiler.expr_work[frame_index] = frame
+                if (compiler.facts[frame.child0].flags & FACT_FALLS_THROUGH) == 0L {
+                    match compiler.expr_work.pop() { some(_) => (), none() => () }
+                } else {
+                    if is_generic_sum { emit_sum_constructor_payload(tables, compiler, ir, current, frame.child1, frame.child0) }
+                    else { emit_enum_constructor_payload(tables, compiler, ir, current, case_index, frame.child1, frame.child0) }
+                    frame.auxiliary += 1L
+                    frame.phase = 60L
+                    compiler.expr_work[frame_index] = frame
+                }
             } else if frame.cursor >= 0L {
                 let argument = frame.cursor
                 let payload_index = frame.auxiliary
@@ -6933,14 +7069,21 @@ fn emit_expr_linear(
         } else if kind == NodeKind.Call {
             if frame.phase == 2L {
                 let argument = frame.child0
-                if tables.nodes[argument].kind == NodeKind.Name || tables.nodes[argument].kind == NodeKind.Field {
+                if (compiler.facts[argument].flags & FACT_FALLS_THROUGH) == 0L {
+                    match compiler.expr_work.pop() { some(_) => (), none() => () }
+                } else {
+                    if tables.nodes[argument].kind == NodeKind.Name || tables.nodes[argument].kind == NodeKind.Field {
                     let ty = compiler.facts[argument].ty
                     let source_kind = aggregate_source_kind(tables, compiler, argument)
                     let source_node = aggregate_source_id(tables, compiler, argument)
                     emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(0L, argument), aggregate_source_location(source_kind, source_node))
+                    }
+                    frame.child0 = -1L
+                    frame.phase = 1L
+                    compiler.expr_work[frame_index] = frame
                 }
-                frame.phase = 1L
-                compiler.expr_work[frame_index] = frame
+            } else if frame.phase == 1L && frame.child0 >= 0L && (compiler.facts[frame.child0].flags & FACT_FALLS_THROUGH) == 0L {
+                match compiler.expr_work.pop() { some(_) => (), none() => () }
             } else if frame.cursor >= 0L {
                 let argument = frame.cursor
                 frame.cursor = compiler.child_next[argument]
@@ -6965,12 +7108,12 @@ fn emit_expr_linear(
                 } else {
                     let target = compiler.facts[current].function
                     let function = compiler.functions[target]
-                    let return_ty = function.result_ty
-                    let aggregate_result = is_aggregate_type(compiler, return_ty)
-                    if return_ty != TY_UNIT && return_ty != TY_NEVER && !aggregate_result { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = ") } else { ir_write_ascii(compiler, ir, "  ") }
+                    let call_result_ty = function.result_ty
+                    let aggregate_result = is_aggregate_type(compiler, call_result_ty)
+                    if call_result_ty != TY_UNIT && call_result_ty != TY_NEVER && !aggregate_result { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = ") } else { ir_write_ascii(compiler, ir, "  ") }
                     ir_write_ascii(compiler, ir, "call ")
-                    if aggregate_result || return_ty == TY_UNIT || return_ty == TY_NEVER { ir_write_ascii(compiler, ir, "void") }
-                    else { ir_write_ascii(compiler, ir, llvm_type_name(return_ty)) }
+                    if aggregate_result || call_result_ty == TY_UNIT || call_result_ty == TY_NEVER { ir_write_ascii(compiler, ir, "void") }
+                    else { ir_write_ascii(compiler, ir, llvm_type_name(call_result_ty)) }
                     ir_push_byte(compiler, ir, 32)
                     if compiler.core_mode {
                         ir_write_core_function_symbol(source, files, tokens, compiler, ir, function, target)
@@ -6999,7 +7142,7 @@ fn emit_expr_linear(
                         arg = compiler.child_next[arg]
                     }
                     ir_write_ascii(compiler, ir, ")\n")
-                    if return_ty == TY_NEVER { ir_write_ascii(compiler, ir, "  unreachable\n") }
+                    if call_result_ty == TY_NEVER { ir_write_ascii(compiler, ir, "  unreachable\n") }
                 }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             }
@@ -7570,7 +7713,7 @@ fn emit_function_body(
         if !is_statement {
             emit_expr_linear(source, files, tokens, tables, compiler, ir, child, file_index, return_ty, is_test)
             if frame.node == body {
-                if compiler.facts[child].ty != TY_NEVER {
+                if (compiler.facts[child].flags & FACT_FALLS_THROUGH) != 0L {
                     if is_test { lower_scope_exit(compiler, ir, -1L, EXIT_TEST_SUCCESS, 0L, 0L, TY_UNIT, -1L) }
                     else if return_ty == TY_UNIT { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L) }
                     else if is_aggregate_type(compiler, return_ty) {
@@ -7600,15 +7743,21 @@ fn emit_function_body(
             emit_expr_linear(source, files, tokens, tables, compiler, ir, value, file_index, return_ty, is_test)
             let binding = compiler.facts[child].binding
             let ty = compiler.bindings[binding].ty
-            if is_aggregate_type(compiler, ty) {
-                let source_kind = aggregate_source_kind(tables, compiler, value)
-                let source_node = aggregate_source_id(tables, compiler, value)
-                emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(1L, binding), aggregate_source_location(source_kind, source_node))
-            } else if ty == TY_BOOL {
-                ir_write_ascii(compiler, ir, "  %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
-            } else if ty != TY_UNIT {
-                ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
-            } else { () }
+            if (compiler.facts[value].flags & FACT_FALLS_THROUGH) == 0L {
+                frame.reachable = false
+                frame.cursor = -1L
+                compiler.work[frame_index] = frame
+            } else {
+                if is_aggregate_type(compiler, ty) {
+                    let source_kind = aggregate_source_kind(tables, compiler, value)
+                    let source_node = aggregate_source_id(tables, compiler, value)
+                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(1L, binding), aggregate_source_location(source_kind, source_node))
+                } else if ty == TY_BOOL {
+                    ir_write_ascii(compiler, ir, "  %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
+                } else if ty != TY_UNIT {
+                    ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
+                } else { () }
+            }
         } else if kind == NodeKind.Assign {
             let target = compiler.child_first[child]
             let value = compiler.child_next[target]
@@ -7638,12 +7787,23 @@ fn emit_function_body(
             }
         } else if kind == NodeKind.ExpressionStatement {
             let expression = compiler.child_first[child]
-            if expression >= 0L { emit_expr_linear(source, files, tokens, tables, compiler, ir, expression, file_index, return_ty, is_test) }
+            if expression >= 0L {
+                emit_expr_linear(source, files, tokens, tables, compiler, ir, expression, file_index, return_ty, is_test)
+                if (compiler.facts[expression].flags & FACT_FALLS_THROUGH) == 0L {
+                    frame.reachable = false
+                    frame.cursor = -1L
+                    compiler.work[frame_index] = frame
+                }
+            }
         } else if kind == NodeKind.ReturnStatement {
             let value = compiler.child_first[child]
             if value >= 0L {
                 emit_expr_linear(source, files, tokens, tables, compiler, ir, value, file_index, return_ty, is_test)
-                if is_aggregate_type(compiler, return_ty) {
+                if (compiler.facts[value].flags & FACT_FALLS_THROUGH) == 0L {
+                    frame.reachable = false
+                    frame.cursor = -1L
+                    compiler.work[frame_index] = frame
+                } else if is_aggregate_type(compiler, return_ty) {
                     let source_kind = aggregate_source_kind(tables, compiler, value)
                     let source_node = aggregate_source_id(tables, compiler, value)
                     emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(2L, 0L), aggregate_source_location(source_kind, source_node))
@@ -7978,11 +8138,12 @@ fn mark_struct_helpers(
             let binding_ty = compiler.facts[node].ty
             add_type_helper_flag(compiler, binding_ty, 1L)
         } else if syntax.kind == NodeKind.Call || syntax.kind == NodeKind.QualifiedCase {
+            let resolved_type = compiler.facts[node].ty
+            let is_constructor = syntax.kind == NodeKind.QualifiedCase ||
+                (compiler.facts[node].function < 0L && is_sum_type(compiler, resolved_type))
             let file_index = node_file_index(tables.nodes, files, node)
-            let is_print = syntax.kind == NodeKind.Call && token_is_word_at(source, tokens, files, file_index, syntax.token, "print")
-            let is_constructor = compiler.facts[node].function < 0L && is_sum_type(compiler, compiler.facts[node].ty) &&
-                (syntax.kind == NodeKind.QualifiedCase || builtin_sum_case_name(source, tokens, files, file_index, syntax.token) ||
-                    user_case_matches(compiler, compiler.token_name_ids[syntax.token]) != -1L)
+            let is_print = syntax.kind == NodeKind.Call && compiler.facts[node].function < 0L && !is_constructor &&
+                token_is_word_at(source, tokens, files, file_index, syntax.token, "print")
             var argument = compiler.child_first[node]
             for argument_step in 0L..tables.nodes[node].subtree {
                 if argument < 0L { break }
@@ -8766,18 +8927,18 @@ fn emit_file_globals(
         if tables.nodes[node].kind == NodeKind.StructInit {
             let type_index = compiler.facts[node].literal
             let ty = struct_record(compiler, type_index)
-            var count = 0L
+            var item_count = 0L
             for field_offset in 0L..ty.field_count {
                 let field_index = ty.field_start + field_offset
                 var child = compiler.child_first[node]
                 for field_step in 0L..tables.nodes[node].subtree {
                     if child < 0L { break }
-                    if compiler.facts[child].binding == field_index { count += 1L }
+                    if compiler.facts[child].binding == field_index { item_count += 1L }
                     child = compiler.child_next[child]
                 }
             }
-            ir_write_ascii(compiler, ir, "@.nl.given."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = private constant ["); ir_write_number(compiler, ir, count); ir_write_ascii(compiler, ir, " x i64] ")
-            if count == 0L { ir_write_ascii(compiler, ir, "zeroinitializer\n") }
+            ir_write_ascii(compiler, ir, "@.nl.given."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = private constant ["); ir_write_number(compiler, ir, item_count); ir_write_ascii(compiler, ir, " x i64] ")
+            if item_count == 0L { ir_write_ascii(compiler, ir, "zeroinitializer\n") }
             else {
                 ir_write_ascii(compiler, ir, "[")
                 var wrote = false
@@ -9070,23 +9231,23 @@ fn syscall_register(index: long) -> Ascii max 8 {
     else { "r9" }
 }
 
-fn emit_one_syscall_helper(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, count: long) {
+fn emit_one_syscall_helper(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, item_count: long) {
     ir_write_ascii(compiler, ir, "define internal i64 @nl.sys.call")
-    ir_write_number(compiler, ir, count)
+    ir_write_number(compiler, ir, item_count)
     ir_write_ascii(compiler, ir, "(i64 %n")
-    for index in 0L..count {
+    for index in 0L..item_count {
         ir_write_ascii(compiler, ir, ", i64 %a")
         ir_write_number(compiler, ir, index)
     }
     ir_write_ascii(compiler, ir, ") alwaysinline nounwind {\nentry:\n  %r = call i64 asm sideeffect \"syscall\", \"={rax},{rax}")
-    for index in 0L..count {
+    for index in 0L..item_count {
         ir_push_byte(compiler, ir, 44)
         ir_push_byte(compiler, ir, 123)
         ir_write_ascii(compiler, ir, syscall_register(index))
         ir_push_byte(compiler, ir, 125)
     }
     ir_write_ascii(compiler, ir, ",~{rcx},~{r11},~{memory},~{dirflag},~{fpsr},~{flags}\"(i64 %n")
-    for index in 0L..count {
+    for index in 0L..item_count {
         ir_write_ascii(compiler, ir, ", i64 %a")
         ir_write_number(compiler, ir, index)
     }
@@ -9094,7 +9255,7 @@ fn emit_one_syscall_helper(compiler: write CompilerTables, ir: grow Bytes max IR
 }
 
 fn emit_syscall_helpers(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
-    for count in 0L..7L { emit_one_syscall_helper(compiler, ir, count) }
+    for item_count in 0L..7L { emit_one_syscall_helper(compiler, ir, item_count) }
 }
 
 fn emit_core_registration(files: list<SourceFile, MAX_SOURCE_FILES>, compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
@@ -9142,6 +9303,7 @@ fn compile_embedded_core(
     index_package_structs(source, files, tokens, tables, compiler)
     intern_written_type_instances(source, tokens, files, tables, compiler)
     size_package_types(source, files, tokens, tables, compiler)
+    check_package_name_shadows(env, source, files, tokens, tables, compiler)
     check_package_eligibility(env, source, files, tokens, tables, compiler)
     check_struct_declarations(env, source, files, tokens, tables, compiler)
     register_package_declarations(env, source, files, tokens, tables, config, compiler)

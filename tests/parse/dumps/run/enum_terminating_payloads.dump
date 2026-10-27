@@ -1,0 +1,482 @@
+== tokens ==
+file "main.nl"
+Ident 0 4 1 1 "enum"
+Ident 5 1 1 6 "E"
+LBrace 7 1 1 8 "{"
+Ident 9 1 1 10 "C"
+LParen 10 1 1 11 "("
+Ident 11 3 1 12 "int"
+RParen 14 1 1 15 ")"
+Comma 15 1 1 16 ","
+Ident 17 1 1 18 "D"
+RBrace 19 1 1 20 "}"
+Newline 20 1 1 21 "\n"
+Ident 21 2 2 1 "fn"
+Ident 24 14 2 4 "return_payload"
+LParen 38 1 2 18 "("
+RParen 39 1 2 19 ")"
+Arrow 41 2 2 21 "->"
+Ident 44 3 2 24 "int"
+LBrace 48 1 2 28 "{"
+Ident 50 3 2 30 "let"
+Ident 54 5 2 34 "value"
+Eq 60 1 2 40 "="
+Ident 62 1 2 42 "E"
+Dot 63 1 2 43 "."
+Ident 64 1 2 44 "C"
+LParen 65 1 2 45 "("
+Ident 66 6 2 46 "return"
+Number 73 1 2 53 "6"
+RParen 74 1 2 54 ")"
+Semicolon 75 1 2 55 ";"
+Number 77 1 2 57 "9"
+RBrace 79 1 2 59 "}"
+Newline 80 1 2 60 "\n"
+Ident 81 2 3 1 "fn"
+Ident 84 11 3 4 "return_some"
+LParen 95 1 3 15 "("
+Ident 96 5 3 16 "value"
+Colon 101 1 3 21 ":"
+Ident 103 6 3 23 "Option"
+Lt 109 1 3 29 "<"
+Ident 110 3 3 30 "int"
+Gt 113 1 3 33 ">"
+RParen 114 1 3 34 ")"
+Arrow 116 2 3 36 "->"
+Ident 119 6 3 39 "Option"
+Lt 125 1 3 45 "<"
+Ident 126 3 3 46 "int"
+Gt 129 1 3 49 ">"
+LBrace 131 1 3 51 "{"
+Ident 133 4 3 53 "some"
+LParen 137 1 3 57 "("
+Ident 138 6 3 58 "return"
+Ident 145 5 3 65 "value"
+RParen 150 1 3 70 ")"
+Semicolon 151 1 3 71 ";"
+Ident 153 4 3 73 "some"
+LParen 157 1 3 77 "("
+Number 158 1 3 78 "0"
+RParen 159 1 3 79 ")"
+RBrace 161 1 3 81 "}"
+Newline 162 1 3 82 "\n"
+Ident 163 2 4 1 "fn"
+Ident 166 9 4 4 "return_ok"
+LParen 175 1 4 13 "("
+Ident 176 5 4 14 "value"
+Colon 181 1 4 19 ":"
+Ident 183 6 4 21 "Result"
+Lt 189 1 4 27 "<"
+Ident 190 3 4 28 "int"
+Comma 193 1 4 31 ","
+Ident 195 3 4 33 "int"
+Gt 198 1 4 36 ">"
+RParen 199 1 4 37 ")"
+Arrow 201 2 4 39 "->"
+Ident 204 6 4 42 "Result"
+Lt 210 1 4 48 "<"
+Ident 211 3 4 49 "int"
+Comma 214 1 4 52 ","
+Ident 216 3 4 54 "int"
+Gt 219 1 4 57 ">"
+LBrace 221 1 4 59 "{"
+Ident 223 3 4 61 "let"
+Ident 227 11 4 65 "unreachable"
+Colon 238 1 4 76 ":"
+Ident 240 6 4 78 "Result"
+Lt 246 1 4 84 "<"
+Ident 247 3 4 85 "int"
+Comma 250 1 4 88 ","
+Ident 252 3 4 90 "int"
+Gt 255 1 4 93 ">"
+Eq 257 1 4 95 "="
+Ident 259 2 4 97 "ok"
+LParen 261 1 4 99 "("
+Ident 262 6 4 100 "return"
+Ident 269 5 4 107 "value"
+RParen 274 1 4 112 ")"
+Semicolon 275 1 4 113 ";"
+Ident 277 2 4 115 "ok"
+LParen 279 1 4 117 "("
+Number 280 1 4 118 "0"
+RParen 281 1 4 119 ")"
+RBrace 283 1 4 121 "}"
+Newline 284 1 4 122 "\n"
+Ident 285 2 5 1 "fn"
+Ident 288 10 5 4 "return_err"
+LParen 298 1 5 14 "("
+Ident 299 5 5 15 "value"
+Colon 304 1 5 20 ":"
+Ident 306 6 5 22 "Result"
+Lt 312 1 5 28 "<"
+Ident 313 3 5 29 "int"
+Comma 316 1 5 32 ","
+Ident 318 3 5 34 "int"
+Gt 321 1 5 37 ">"
+RParen 322 1 5 38 ")"
+Arrow 324 2 5 40 "->"
+Ident 327 6 5 43 "Result"
+Lt 333 1 5 49 "<"
+Ident 334 3 5 50 "int"
+Comma 337 1 5 53 ","
+Ident 339 3 5 55 "int"
+Gt 342 1 5 58 ">"
+LBrace 344 1 5 60 "{"
+Ident 346 3 5 62 "let"
+Ident 350 11 5 66 "unreachable"
+Colon 361 1 5 77 ":"
+Ident 363 6 5 79 "Result"
+Lt 369 1 5 85 "<"
+Ident 370 3 5 86 "int"
+Comma 373 1 5 89 ","
+Ident 375 3 5 91 "int"
+Gt 378 1 5 94 ">"
+Eq 380 1 5 96 "="
+Ident 382 3 5 98 "err"
+LParen 385 1 5 101 "("
+Ident 386 6 5 102 "return"
+Ident 393 5 5 109 "value"
+RParen 398 1 5 114 ")"
+Semicolon 399 1 5 115 ";"
+Ident 401 3 5 117 "err"
+LParen 404 1 5 120 "("
+Number 405 1 5 121 "0"
+RParen 406 1 5 122 ")"
+RBrace 408 1 5 124 "}"
+Newline 409 1 5 125 "\n"
+Ident 410 2 6 1 "fn"
+Ident 413 11 6 4 "maybe_value"
+LParen 424 1 6 15 "("
+Ident 425 5 6 16 "value"
+Colon 430 1 6 21 ":"
+Ident 432 3 6 23 "int"
+RParen 435 1 6 26 ")"
+Arrow 437 2 6 28 "->"
+Ident 440 6 6 31 "Option"
+Lt 446 1 6 37 "<"
+Ident 447 3 6 38 "int"
+Gt 450 1 6 41 ">"
+LBrace 452 1 6 43 "{"
+Ident 454 2 6 45 "if"
+Ident 457 5 6 48 "value"
+Lt 463 1 6 54 "<"
+Number 465 1 6 56 "0"
+LBrace 467 1 6 58 "{"
+Ident 469 4 6 60 "none"
+RBrace 474 1 6 65 "}"
+Ident 476 4 6 67 "else"
+LBrace 481 1 6 72 "{"
+Ident 483 4 6 74 "some"
+LParen 487 1 6 78 "("
+Ident 488 5 6 79 "value"
+RParen 493 1 6 84 ")"
+RBrace 495 1 6 86 "}"
+RBrace 497 1 6 88 "}"
+Newline 498 1 6 89 "\n"
+Ident 499 2 7 1 "fn"
+Ident 502 11 7 4 "try_payload"
+LParen 513 1 7 15 "("
+Ident 514 5 7 16 "value"
+Colon 519 1 7 21 ":"
+Ident 521 3 7 23 "int"
+RParen 524 1 7 26 ")"
+Arrow 526 2 7 28 "->"
+Ident 529 6 7 31 "Option"
+Lt 535 1 7 37 "<"
+Ident 536 1 7 38 "E"
+Gt 537 1 7 39 ">"
+LBrace 539 1 7 41 "{"
+Ident 541 4 7 43 "some"
+LParen 545 1 7 47 "("
+Ident 546 1 7 48 "E"
+Dot 547 1 7 49 "."
+Ident 548 1 7 50 "C"
+LParen 549 1 7 51 "("
+Ident 550 11 7 52 "maybe_value"
+LParen 561 1 7 63 "("
+Ident 562 5 7 64 "value"
+RParen 567 1 7 69 ")"
+Question 568 1 7 70 "?"
+RParen 569 1 7 71 ")"
+RParen 570 1 7 72 ")"
+RBrace 572 1 7 74 "}"
+Newline 573 1 7 75 "\n"
+Ident 574 2 8 1 "fn"
+Ident 577 4 8 4 "main"
+LParen 581 1 8 8 "("
+RParen 582 1 8 9 ")"
+LBrace 584 1 8 11 "{"
+Newline 585 1 8 12 "\n"
+Ident 590 5 9 5 "print"
+LParen 595 1 9 10 "("
+Ident 596 14 9 11 "return_payload"
+LParen 610 1 9 25 "("
+RParen 611 1 9 26 ")"
+RParen 612 1 9 27 ")"
+Newline 613 1 9 28 "\n"
+Ident 618 5 10 5 "print"
+LParen 623 1 10 10 "("
+Ident 624 11 10 11 "return_some"
+LParen 635 1 10 22 "("
+Ident 636 4 10 23 "some"
+LParen 640 1 10 27 "("
+Number 641 1 10 28 "8"
+RParen 642 1 10 29 ")"
+RParen 643 1 10 30 ")"
+RParen 644 1 10 31 ")"
+Newline 645 1 10 32 "\n"
+Ident 650 5 11 5 "print"
+LParen 655 1 11 10 "("
+Ident 656 9 11 11 "return_ok"
+LParen 665 1 11 20 "("
+Ident 666 2 11 21 "ok"
+LParen 668 1 11 23 "("
+Number 669 1 11 24 "4"
+RParen 670 1 11 25 ")"
+RParen 671 1 11 26 ")"
+RParen 672 1 11 27 ")"
+Newline 673 1 11 28 "\n"
+Ident 678 5 12 5 "print"
+LParen 683 1 12 10 "("
+Ident 684 10 12 11 "return_err"
+LParen 694 1 12 21 "("
+Ident 695 3 12 22 "err"
+LParen 698 1 12 25 "("
+Number 699 1 12 26 "5"
+RParen 700 1 12 27 ")"
+RParen 701 1 12 28 ")"
+RParen 702 1 12 29 ")"
+Newline 703 1 12 30 "\n"
+Ident 708 3 13 5 "for"
+Ident 712 5 13 9 "index"
+Ident 718 2 13 15 "in"
+Number 721 1 13 18 "0"
+Range 722 2 13 19 ".."
+Number 724 1 13 21 "2"
+LBrace 726 1 13 23 "{"
+Ident 728 5 13 25 "print"
+LParen 733 1 13 30 "("
+Ident 734 5 13 31 "index"
+RParen 739 1 13 36 ")"
+Semicolon 740 1 13 37 ";"
+Ident 742 3 13 39 "let"
+Ident 746 4 13 43 "item"
+Eq 751 1 13 48 "="
+Ident 753 1 13 50 "E"
+Dot 754 1 13 51 "."
+Ident 755 1 13 52 "C"
+LParen 756 1 13 53 "("
+Ident 757 8 13 54 "continue"
+RParen 765 1 13 62 ")"
+Semicolon 766 1 13 63 ";"
+Ident 768 5 13 65 "print"
+LParen 773 1 13 70 "("
+Number 774 2 13 71 "99"
+RParen 776 1 13 73 ")"
+RBrace 778 1 13 75 "}"
+Newline 779 1 13 76 "\n"
+Ident 784 5 14 5 "print"
+LParen 789 1 14 10 "("
+Number 790 1 14 11 "7"
+RParen 791 1 14 12 ")"
+Newline 792 1 14 13 "\n"
+Ident 797 3 15 5 "for"
+Ident 801 5 15 9 "index"
+Ident 807 2 15 15 "in"
+Number 810 1 15 18 "0"
+Range 811 2 15 19 ".."
+Number 813 1 15 21 "3"
+LBrace 815 1 15 23 "{"
+Ident 817 5 15 25 "print"
+LParen 822 1 15 30 "("
+Ident 823 5 15 31 "index"
+RParen 828 1 15 36 ")"
+Semicolon 829 1 15 37 ";"
+Ident 831 3 15 39 "let"
+Ident 835 4 15 43 "item"
+Eq 840 1 15 48 "="
+Ident 842 1 15 50 "E"
+Dot 843 1 15 51 "."
+Ident 844 1 15 52 "C"
+LParen 845 1 15 53 "("
+Ident 846 5 15 54 "break"
+RParen 851 1 15 59 ")"
+Semicolon 852 1 15 60 ";"
+Ident 854 5 15 62 "print"
+LParen 859 1 15 67 "("
+Number 860 2 15 68 "88"
+RParen 862 1 15 70 ")"
+RBrace 864 1 15 72 "}"
+Newline 865 1 15 73 "\n"
+Ident 870 5 16 5 "print"
+LParen 875 1 16 10 "("
+Number 876 1 16 11 "9"
+RParen 877 1 16 12 ")"
+Newline 878 1 16 13 "\n"
+Ident 883 5 17 5 "print"
+LParen 888 1 17 10 "("
+Ident 889 11 17 11 "try_payload"
+LParen 900 1 17 22 "("
+Minus 901 1 17 23 "-"
+Number 902 1 17 24 "1"
+RParen 903 1 17 25 ")"
+RParen 904 1 17 26 ")"
+Newline 905 1 17 27 "\n"
+Ident 910 5 18 5 "print"
+LParen 915 1 18 10 "("
+Ident 916 11 18 11 "try_payload"
+LParen 927 1 18 22 "("
+Number 928 1 18 23 "3"
+RParen 929 1 18 24 ")"
+RParen 930 1 18 25 ")"
+Newline 931 1 18 26 "\n"
+RBrace 932 1 19 1 "}"
+Newline 933 1 19 2 "\n"
+Eof 934 0 20 1 ""
+== tree ==
+file "main.nl"
+Program 0..934
+  Enum 0..20 name="E"
+    EnumCase 9..15 name="C"
+      PayloadType 11..14 name="int" range=none policy=checked
+    EnumCase 17..18 name="D"
+  Function 21..80 name="return_payload" recursive=false generics=[]
+    ResultType 44..47 name="int" range=none policy=checked
+    Block 48..80
+      Let 50..75 mutable=false name="value"
+        QualifiedCase 62..75 enum="E" case="C"
+          Return 66..74
+            Integer 73..74 magnitude=6 negative=false long_suffix=false
+      Integer 77..78 magnitude=9 negative=false long_suffix=false
+  Function 81..162 name="return_some" recursive=false generics=[]
+    Parameter 96..114 name="value" mode=read
+      ParameterType 103..114 name="Option" range=none policy=checked
+        TypeArgument 110..113 name="int" range=none policy=checked
+    ResultType 119..130 name="Option" range=none policy=checked
+      TypeArgument 126..129 name="int" range=none policy=checked
+    Block 131..162
+      ExpressionStatement 133..151
+        Call 133..151 name="some"
+          Return 138..150
+            Name 145..150 name="value"
+      Call 153..160 name="some"
+        Integer 158..159 magnitude=0 negative=false long_suffix=false
+  Function 163..284 name="return_ok" recursive=false generics=[]
+    Parameter 176..199 name="value" mode=read
+      ParameterType 183..199 name="Result" range=none policy=checked
+        TypeArgument 190..193 name="int" range=none policy=checked
+        TypeArgument 195..198 name="int" range=none policy=checked
+    ResultType 204..220 name="Result" range=none policy=checked
+      TypeArgument 211..214 name="int" range=none policy=checked
+      TypeArgument 216..219 name="int" range=none policy=checked
+    Block 221..284
+      Let 223..275 mutable=false name="unreachable"
+        Annotation 240..256 name="Result" range=none policy=checked
+          TypeArgument 247..250 name="int" range=none policy=checked
+          TypeArgument 252..255 name="int" range=none policy=checked
+        Call 259..275 name="ok"
+          Return 262..274
+            Name 269..274 name="value"
+      Call 277..282 name="ok"
+        Integer 280..281 magnitude=0 negative=false long_suffix=false
+  Function 285..409 name="return_err" recursive=false generics=[]
+    Parameter 299..322 name="value" mode=read
+      ParameterType 306..322 name="Result" range=none policy=checked
+        TypeArgument 313..316 name="int" range=none policy=checked
+        TypeArgument 318..321 name="int" range=none policy=checked
+    ResultType 327..343 name="Result" range=none policy=checked
+      TypeArgument 334..337 name="int" range=none policy=checked
+      TypeArgument 339..342 name="int" range=none policy=checked
+    Block 344..409
+      Let 346..399 mutable=false name="unreachable"
+        Annotation 363..379 name="Result" range=none policy=checked
+          TypeArgument 370..373 name="int" range=none policy=checked
+          TypeArgument 375..378 name="int" range=none policy=checked
+        Call 382..399 name="err"
+          Return 386..398
+            Name 393..398 name="value"
+      Call 401..407 name="err"
+        Integer 405..406 magnitude=0 negative=false long_suffix=false
+  Function 410..498 name="maybe_value" recursive=false generics=[]
+    Parameter 425..435 name="value" mode=read
+      ParameterType 432..435 name="int" range=none policy=checked
+    ResultType 440..451 name="Option" range=none policy=checked
+      TypeArgument 447..450 name="int" range=none policy=checked
+    Block 452..498
+      If 454..496
+        Binary 457..466 op=lt
+          Name 457..462 name="value"
+          Integer 465..466 magnitude=0 negative=false long_suffix=false
+        Block 467..475
+          Name 469..473 name="none"
+        Block 481..496
+          Call 483..494 name="some"
+            Name 488..493 name="value"
+  Function 499..573 name="try_payload" recursive=false generics=[]
+    Parameter 514..524 name="value" mode=read
+      ParameterType 521..524 name="int" range=none policy=checked
+    ResultType 529..538 name="Option" range=none policy=checked
+      TypeArgument 536..537 name="E" range=none policy=checked
+    Block 539..573
+      Call 541..571 name="some"
+        QualifiedCase 546..570 enum="E" case="C"
+          Try 550..569
+            Call 550..568 name="maybe_value"
+              Name 562..567 name="value"
+  Function 574..933 name="main" recursive=false generics=[]
+    Block 584..933
+      ExpressionStatement 590..613
+        Call 590..613 name="print"
+          Call 596..612 name="return_payload"
+      ExpressionStatement 618..645
+        Call 618..645 name="print"
+          Call 624..644 name="return_some"
+            Call 636..643 name="some"
+              Integer 641..642 magnitude=8 negative=false long_suffix=false
+      ExpressionStatement 650..673
+        Call 650..673 name="print"
+          Call 656..672 name="return_ok"
+            Call 666..671 name="ok"
+              Integer 669..670 magnitude=4 negative=false long_suffix=false
+      ExpressionStatement 678..703
+        Call 678..703 name="print"
+          Call 684..702 name="return_err"
+            Call 695..701 name="err"
+              Integer 699..700 magnitude=5 negative=false long_suffix=false
+      For 708..779 name="index" inclusive=false
+        Integer 721..722 magnitude=0 negative=false long_suffix=false
+        Integer 724..725 magnitude=2 negative=false long_suffix=false
+        Block 726..779
+          ExpressionStatement 728..740
+            Call 728..740 name="print"
+              Name 734..739 name="index"
+          Let 742..766 mutable=false name="item"
+            QualifiedCase 753..766 enum="E" case="C"
+              LoopExit 757..765 kind=continue
+          Call 768..777 name="print"
+            Integer 774..776 magnitude=99 negative=false long_suffix=false
+      ExpressionStatement 784..792
+        Call 784..792 name="print"
+          Integer 790..791 magnitude=7 negative=false long_suffix=false
+      For 797..865 name="index" inclusive=false
+        Integer 810..811 magnitude=0 negative=false long_suffix=false
+        Integer 813..814 magnitude=3 negative=false long_suffix=false
+        Block 815..865
+          ExpressionStatement 817..829
+            Call 817..829 name="print"
+              Name 823..828 name="index"
+          Let 831..852 mutable=false name="item"
+            QualifiedCase 842..852 enum="E" case="C"
+              LoopExit 846..851 kind=break
+          Call 854..863 name="print"
+            Integer 860..862 magnitude=88 negative=false long_suffix=false
+      ExpressionStatement 870..878
+        Call 870..878 name="print"
+          Integer 876..877 magnitude=9 negative=false long_suffix=false
+      ExpressionStatement 883..905
+        Call 883..905 name="print"
+          Call 889..904 name="try_payload"
+            Integer 901..903 magnitude=1 negative=true long_suffix=false
+      Call 910..931 name="print"
+        Call 916..930 name="try_payload"
+          Integer 928..929 magnitude=3 negative=false long_suffix=false
