@@ -14,7 +14,7 @@ Not a checkpoint: an early look requested by Ben, taken while two compiler sessi
 | struct_update | 0.86 s | 0.54 s | 1.59x | 1,760 / 1,936 KiB | 96,752 / 307,968 B |
 | tight_list | 0.57 s | 0.27 s | 2.11x | 2,288 / 2,464 KiB | 96,752 / 307,968 B |
 
-Memory: equal or slightly lower than Rust. Binaries: about a third of Rust's (stripped, statically linked runtime against Rust's std). Speed: 1.3x to 10x slower.
+Memory: equal or slightly lower than Rust. Binaries: smaller here (stripped), but that is mostly the floor: these programs are tiny, and Rust links its standard library while next-lang links a small runtime (the self-hosted compiler's core library, no libc). It says little about how size grows with program size. Speed: 1.3x to 10x slower.
 
 ## Likely causes, to investigate at checkpoint 1 (not yet verified)
 
@@ -43,7 +43,7 @@ Added: the allocation pairs (Rust's standard heap approach, a fresh `Vec`/`Strin
 | tokenize | 0.85 s | | 0.92 s | 0.91 s | **0.92** | | 0.93 |
 | text_format | 0.96 s | | 2.47 s | 1.69 s | **0.39** | | 0.57 |
 
-Peak RSS was 1.6-3.3 MB for every program in both languages (next-lang equal or lower). Binaries: stage 0 about 97 KB, self-hosted 19 KB (core library, no libc), Rust about 308 KB, all stripped or static.
+Peak RSS was 1.6-3.3 MB for every program in both languages (next-lang equal or lower). Binaries: stage 0 about 97 KB, self-hosted 19 KB (core library, no libc), Rust about 308 KB, all stripped or static; for programs this small that's the difference in the fixed floor, not in code size per feature.
 
 - **Allocation-heavy work favours next-lang already, even through stage 0:** 2.6x faster than idiomatic Rust on text formatting, 1.5x on nested lists, 5-8% on per-request scratch and tokenising. Against Rust that reuses its buffers, next-lang is still faster on text (1.8x) and level elsewhere: the gain is the allocator plus in-place builders, and careful Rust can recover most of the allocator part by hand.
 - **Compute-heavy loops favour Rust** (1.1x to 10x): the overhead items now in PLAN as P1 (overflow and bounds checks, inlining, inline search and sort).
