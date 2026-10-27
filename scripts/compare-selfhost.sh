@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Compare the self-hosted lexer/parser to the Rust reference with
+# `scripts/compare-selfhost.sh (--tokens|--parse) --reference <nlc>
+# --selfhost <selfhost>`. Compare builds with `--build`. Package selection is
+# available through `--only 'tests/e3/*'`, `--class build`, and
+# `--changed [REV]` (default REV: HEAD). Package workers default to half the
+# logical CPUs; set NLC_TEST_JOBS to override.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -7,6 +13,11 @@ selfhost=""
 tokens_mode=0
 parse_mode=0
 build_mode=0
+only_patterns=()
+class_filter=""
+changed_enabled=0
+changed_revision=""
+filter_args=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tokens)
@@ -31,6 +42,29 @@ while [[ $# -gt 0 ]]; do
             selfhost="$2"
             shift 2
             ;;
+        --only)
+            [[ $# -ge 2 ]] || { echo "missing value for --only" >&2; exit 2; }
+            only_patterns+=("$2")
+            filter_args+=(--only "$2")
+            shift 2
+            ;;
+        --class)
+            [[ $# -ge 2 ]] || { echo "missing value for --class" >&2; exit 2; }
+            class_filter="$2"
+            filter_args+=(--class "$2")
+            shift 2
+            ;;
+        --changed)
+            changed_enabled=1
+            if [[ $# -ge 2 && "$2" != --* ]]; then
+                changed_revision="$2"
+                shift 2
+            else
+                changed_revision="HEAD"
+                shift
+            fi
+            filter_args+=(--changed "$changed_revision")
+            ;;
         *)
             echo "unknown harness option: $1" >&2
             exit 2
@@ -46,16 +80,77 @@ if [[ $build_mode == 1 ]]; then
         target_dir="${CARGO_TARGET_DIR:-$HOME/.cache/next-lang/target}"
         reference="$target_dir/debug/nlc"
     fi
-    exec python3 "$repo_root/scripts/compare-selfhost-build.py" --reference "$reference"
+    exec python3 "$repo_root/scripts/compare-selfhost-build.py" --reference "$reference" "${filter_args[@]}"
 fi
 if [[ $tokens_mode == $parse_mode || -z "$reference" || -z "$selfhost" ]]; then
-    echo "usage: scripts/compare-selfhost.sh (--tokens | --parse) --reference <nlc> --selfhost <selfhost>" >&2
+    echo "usage: scripts/compare-selfhost.sh (--tokens | --parse) --reference <nlc> --selfhost <selfhost> [--only GLOB] [--class CLASS] [--changed [REV]]" >&2
     exit 2
 fi
 if [[ ! -x "$reference" || ! -x "$selfhost" ]]; then
     echo "reference and self-hosted executables must both be executable" >&2
     exit 2
 fi
+
+jobs="${NLC_TEST_JOBS:-}"
+if [[ -z "$jobs" ]]; then
+    cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+    jobs=$((cpus / 2))
+    (( jobs > 0 )) || jobs=1
+fi
+if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
+    echo "NLC_TEST_JOBS must be a positive integer" >&2
+    exit 2
+fi
+case "$class_filter" in
+    ""|build|diagnose|rejects|unsupported) ;;
+    *) echo "unknown package class: $class_filter" >&2; exit 2 ;;
+esac
+
+declare -A package_classes=()
+while IFS=$'\t' read -r package_kind package_name; do
+    [[ -z "$package_kind" || "$package_kind" == \#* ]] && continue
+    package_classes["$package_name"]="$package_kind"
+done < "$repo_root/tests/e1/classification.tsv"
+changed_files=()
+if [[ $changed_enabled == 1 ]]; then
+    git -C "$repo_root" rev-parse --verify "$changed_revision^{commit}" >/dev/null 2>&1 || {
+        echo "unknown git revision for --changed: $changed_revision" >&2
+        exit 2
+    }
+    mapfile -t changed_files < <(
+        git -C "$repo_root" diff --name-only --diff-filter=ACMRDT "$changed_revision" --
+        git -C "$repo_root" ls-files --others --exclude-standard
+    )
+fi
+
+package_selected() {
+    local package="$1"
+    local pattern changed_file matched
+    if (( ${#only_patterns[@]} )); then
+        matched=0
+        for pattern in "${only_patterns[@]}"; do
+            if [[ "$package" == $pattern ]]; then
+                matched=1
+                break
+            fi
+        done
+        (( matched == 1 )) || return 1
+    fi
+    if [[ -n "$class_filter" && "${package_classes[$package]:-}" != "$class_filter" ]]; then
+        return 1
+    fi
+    if [[ $changed_enabled == 1 ]]; then
+        matched=0
+        for changed_file in "${changed_files[@]}"; do
+            if [[ "$changed_file" == "$package" || "$changed_file" == "$package/"* ]]; then
+                matched=1
+                break
+            fi
+        done
+        (( matched == 1 )) || return 1
+    fi
+    return 0
+}
 
 work="$(mktemp -d "$repo_root/.selfhost-compare.XXXXXX")"
 keep_work=0
@@ -73,16 +168,25 @@ PY
 trap cleanup EXIT
 
 mkdir -p "$work/generated"
-if [[ $parse_mode == 1 ]]; then
-    python3 "$repo_root/scripts/selfhost-adversarial-cases.py" "$repo_root" "$work/generated" --parse
-else
-    python3 "$repo_root/scripts/selfhost-adversarial-cases.py" "$repo_root" "$work/generated"
+filtered_run=0
+if (( ${#only_patterns[@]} )) || [[ -n "$class_filter" || $changed_enabled == 1 ]]; then
+    filtered_run=1
 fi
-bench_relative="${work#$repo_root/}/benchmark"
-if [[ $parse_mode == 1 ]]; then
-    "$repo_root/scripts/gen-bench-corpus.sh" "$bench_relative" --parse
+if [[ $filtered_run == 0 ]]; then
+    if [[ $parse_mode == 1 ]]; then
+        python3 "$repo_root/scripts/selfhost-adversarial-cases.py" "$repo_root" "$work/generated" --parse
+    else
+        python3 "$repo_root/scripts/selfhost-adversarial-cases.py" "$repo_root" "$work/generated"
+    fi
+    bench_relative="${work#$repo_root/}/benchmark"
+    if [[ $parse_mode == 1 ]]; then
+        "$repo_root/scripts/gen-bench-corpus.sh" "$bench_relative" --parse
+    else
+        "$repo_root/scripts/gen-bench-corpus.sh" "$bench_relative"
+    fi
 else
-    "$repo_root/scripts/gen-bench-corpus.sh" "$bench_relative"
+    mkdir -p "$work/generated/fuzz" "$work/generated/parser-fuzz"
+    bench_relative="${work#$repo_root/}/benchmark"
 fi
 
 reference_stdout="$work/reference.stdout"
@@ -138,9 +242,13 @@ fail_case() {
         echo "failing input: $current_case/main.nl" >&2
     fi
     if [[ -f "$reference_stdout" && -f "$selfhost_stdout" ]] && ! cmp -s "$reference_stdout" "$selfhost_stdout"; then
+        echo "first stdout mismatch diff:" >&2
+        diff -u --label reference --label selfhost "$reference_stdout" "$selfhost_stdout" | head -n 120 >&2 || true
         first_difference stdout "$reference_stdout" "$selfhost_stdout" >&2
     fi
     if [[ -f "$reference_stderr" && -f "$selfhost_stderr" ]] && ! cmp -s "$reference_stderr" "$selfhost_stderr"; then
+        echo "first stderr mismatch diff:" >&2
+        diff -u --label reference --label selfhost "$reference_stderr" "$selfhost_stderr" | head -n 120 >&2 || true
         first_difference stderr "$reference_stderr" "$selfhost_stderr" >&2
         echo "reference stderr:" >&2
         head -c 1000 "$reference_stderr" >&2
@@ -155,7 +263,13 @@ fail_case() {
 compare_package() {
     local package="$1"
     local category="$2"
-    current_case="$package"
+    local package_work="$3"
+    mkdir -p "$package_work"
+    local reference_stdout="$package_work/reference.stdout"
+    local reference_stderr="$package_work/reference.stderr"
+    local selfhost_stdout="$package_work/selfhost.stdout"
+    local selfhost_stderr="$package_work/selfhost.stderr"
+    local current_case="$package"
     local command="lex"
     local flag_sets=("")
     if [[ $parse_mode == 1 ]]; then
@@ -211,13 +325,11 @@ PY
             fi
         fi
     done
-    case "$category" in
-        corpus) corpus_count=$((corpus_count + 1)) ;;
-        fuzz) fuzz_count=$((fuzz_count + 1)) ;;
-        parser-mutation) parser_mutation_count=$((parser_mutation_count + 1)) ;;
-        benchmark) benchmark_count=$((benchmark_count + 1)) ;;
-        *) directed_count=$((directed_count + 1)) ;;
-    esac
+    if [[ "$package" == *"later_file_failure_has_no_stdout"* ]]; then
+        if [[ -s "$reference_stdout" || -s "$selfhost_stdout" ]]; then
+            fail_case "a later-file lexer failure produced partial stdout"
+        fi
+    fi
 }
 
 assert_selfhost_cli() {
@@ -243,12 +355,86 @@ assert_selfhost_cli() {
 }
 
 cd "$repo_root"
+batch_packages=()
+batch_categories=()
+
+run_batch() {
+    local count="${#batch_packages[@]}"
+    (( count == 0 )) && return 0
+    local worker_total="$jobs"
+    (( worker_total > count )) && worker_total="$count"
+    local worker_index package_index status batch_failed=0 package_category status_file
+    local -a worker_pids=()
+    mkdir -p "$work/workers"
+
+    worker_loop() {
+        local worker="$1"
+        local case_index case_dir worker_dir="$work/workers/$worker" worker_status
+        mkdir -p "$worker_dir"
+        for (( case_index=worker; case_index<count; case_index+=worker_total )); do
+            case_dir="$worker_dir/case-$case_index"
+            set +e
+            ( compare_package "${batch_packages[case_index]}" "${batch_categories[case_index]}" "$case_dir" ) \
+                >"$worker_dir/$case_index.log" 2>&1
+            worker_status=$?
+            set -e
+            printf '%s\n' "$worker_status" >"$worker_dir/$case_index.status"
+        done
+    }
+
+    for (( worker_index=0; worker_index<worker_total; worker_index++ )); do
+        worker_loop "$worker_index" &
+        worker_pids+=("$!")
+    done
+    set +e
+    for worker_index in "${worker_pids[@]}"; do
+        wait "$worker_index" || batch_failed=1
+    done
+    set -e
+
+    for (( package_index=0; package_index<count; package_index++ )); do
+        worker_index=$((package_index % worker_total))
+        status_file="$work/workers/$worker_index/$package_index.status"
+        if [[ ! -f "$status_file" ]]; then
+            batch_failed=1
+            continue
+        fi
+        status="$(cat "$status_file")"
+        if [[ "$status" != 0 ]]; then
+            keep_work=1
+            cat "$work/workers/$worker_index/$package_index.log" >&2
+            return 1
+        fi
+    done
+    if (( batch_failed )); then
+        keep_work=1
+        echo "one or more package workers did not finish" >&2
+        return 1
+    fi
+
+    for package_category in "${batch_categories[@]}"; do
+        case "$package_category" in
+            corpus) corpus_count=$((corpus_count + 1)) ;;
+            fuzz) fuzz_count=$((fuzz_count + 1)) ;;
+            parser-mutation) parser_mutation_count=$((parser_mutation_count + 1)) ;;
+            benchmark) benchmark_count=$((benchmark_count + 1)) ;;
+            *) directed_count=$((directed_count + 1)) ;;
+        esac
+    done
+    batch_packages=()
+    batch_categories=()
+}
+
 mapfile -t corpus_packages < <(
     find tests/run tests/test tests/parse/cases -type f -name '*.nl' -printf '%h\n' | sort -u
 )
 for package in "${corpus_packages[@]}"; do
-    compare_package "$package" corpus
+    if package_selected "$package"; then
+        batch_packages+=("$package")
+        batch_categories+=(corpus)
+    fi
 done
+run_batch
 
 mapfile -t generated_packages < <(
     find "${work#$repo_root/}/generated" \
@@ -256,29 +442,36 @@ mapfile -t generated_packages < <(
         -o -type f -name '*.nl' -printf '%h\n' | sort -u
 )
 for package in "${generated_packages[@]}"; do
-    compare_package "$package" directed
-    if [[ "$package" == *"later_file_failure_has_no_stdout"* ]]; then
-        if [[ -s "$reference_stdout" || -s "$selfhost_stdout" ]]; then
-            fail_case "a later-file lexer failure produced partial stdout"
-        fi
+    if package_selected "$package"; then
+        batch_packages+=("$package")
+        batch_categories+=(directed)
     fi
 done
+run_batch
 
 if [[ $parse_mode == 1 ]]; then
     mapfile -t parser_fuzz_packages < <(
         find "${work#$repo_root/}/generated/parser-fuzz" -type f -name '*.nl' -printf '%h\n' | sort -u
     )
     for package in "${parser_fuzz_packages[@]}"; do
-        compare_package "$package" parser-mutation
+        if package_selected "$package"; then
+            batch_packages+=("$package")
+            batch_categories+=(parser-mutation)
+        fi
     done
+    run_batch
 fi
 
 mapfile -t fuzz_packages < <(
     find "${work#$repo_root/}/generated/fuzz" -type f -name '*.nl' -printf '%h\n' | sort -u
 )
 for package in "${fuzz_packages[@]}"; do
-    compare_package "$package" fuzz
+    if package_selected "$package"; then
+        batch_packages+=("$package")
+        batch_categories+=(fuzz)
+    fi
 done
+run_batch
 
 if [[ $tokens_mode == 1 ]]; then
     assert_selfhost_cli 3 "nlc: tool failure: not implemented yet" lex tests/run/arithmetic --tree
@@ -290,42 +483,69 @@ else
     assert_selfhost_cli 3 "usage: nlc run selfhost -- parse <package> [--tokens] [--tree] [--binary]" parse tests/run/arithmetic --unknown
 fi
 
-compare_package "$bench_relative" benchmark
-if [[ $parse_mode == 1 ]]; then
-    "$reference" --frontend=rust parse "$bench_relative" --tokens >"$reference_stdout"
+benchmark_selected=0
+if [[ $filtered_run == 0 ]] && package_selected "$bench_relative"; then
+    benchmark_selected=1
+    batch_packages+=("$bench_relative")
+    batch_categories+=(benchmark)
+    run_batch
 fi
-benchmark_rows=$(($(wc -l < "$reference_stdout") - 13))
-benchmark_bytes=$(du -b "$work/benchmark"/*.nl | awk '{total += $1} END {print total + 0}')
-benchmark_source_bytes=$(du -b "$work/benchmark"/bench-00.nl | awk '{print $1 + 0}')
-benchmark_max_file_bytes=$(stat -c %s "$work/benchmark/bench-00.nl")
-token_live_bytes=$((benchmark_rows * 20))
-file_live_bytes=$((13 * 8159))
-directory_live_bytes=$((13 * 16396))
-data_live_estimate=$((benchmark_source_bytes * 14 + token_live_bytes + file_live_bytes + directory_live_bytes + 1048576))
+if [[ $benchmark_selected == 1 ]]; then
+    benchmark_work="$work/workers/0/case-0"
+    reference_stdout="$benchmark_work/reference.stdout"
+    if [[ $parse_mode == 1 ]]; then
+        "$reference" --frontend=rust parse "$bench_relative" --tokens >"$reference_stdout"
+    fi
+    benchmark_rows=$(($(wc -l < "$reference_stdout") - 13))
+    benchmark_bytes=$(du -b "$work/benchmark"/*.nl | awk '{total += $1} END {print total + 0}')
+    benchmark_source_bytes=$(du -b "$work/benchmark"/bench-00.nl | awk '{print $1 + 0}')
+    benchmark_max_file_bytes=$(stat -c %s "$work/benchmark/bench-00.nl")
+    token_live_bytes=$((benchmark_rows * 20))
+    file_live_bytes=$((13 * 8159))
+    directory_live_bytes=$((13 * 16396))
+    data_live_estimate=$((benchmark_source_bytes * 14 + token_live_bytes + file_live_bytes + directory_live_bytes + 1048576))
 
-reference_time="$work/reference.time"
-selfhost_time="$work/selfhost.time"
-if [[ $parse_mode == 1 ]]; then
-    /usr/bin/time -f 'elapsed_seconds=%e max_rss_kib=%M' -o "$reference_time" "$reference" --frontend=rust parse "$bench_relative" --tokens --tree >/dev/null
-    /usr/bin/time -f 'elapsed_seconds=%e max_rss_kib=%M' -o "$selfhost_time" "$selfhost" parse "$bench_relative" --tokens --tree >/dev/null
-    "$reference" inspect stacks selfhost >"$work/stack-report"
-    data_reservation=$(awk '/data stack reservation:/ {print $4; exit}' "$work/stack-report")
-    echo "selfhost parser comparison passed"
-else
-    /usr/bin/time -f 'elapsed_seconds=%e max_rss_kib=%M' -o "$reference_time" "$reference" lex "$bench_relative" >/dev/null
-    /usr/bin/time -f 'elapsed_seconds=%e max_rss_kib=%M' -o "$selfhost_time" "$selfhost" lex "$bench_relative" >/dev/null
-    echo "selfhost lexer comparison passed"
+    reference_time="$work/reference.time"
+    selfhost_time="$work/selfhost.time"
+    if [[ $parse_mode == 1 ]]; then
+        /usr/bin/time -f 'elapsed_seconds=%e max_rss_kib=%M' -o "$reference_time" "$reference" --frontend=rust parse "$bench_relative" --tokens --tree >/dev/null
+        /usr/bin/time -f 'elapsed_seconds=%e max_rss_kib=%M' -o "$selfhost_time" "$selfhost" parse "$bench_relative" --tokens --tree >/dev/null
+        "$reference" inspect stacks selfhost >"$work/stack-report"
+        data_reservation=$(awk '/data stack reservation:/ {print $4; exit}' "$work/stack-report")
+        echo "selfhost parser comparison passed"
+    else
+        /usr/bin/time -f 'elapsed_seconds=%e max_rss_kib=%M' -o "$reference_time" "$reference" lex "$bench_relative" >/dev/null
+        /usr/bin/time -f 'elapsed_seconds=%e max_rss_kib=%M' -o "$selfhost_time" "$selfhost" lex "$bench_relative" >/dev/null
+        echo "selfhost lexer comparison passed"
+    fi
 fi
 echo "corpus packages: $corpus_count"
 echo "directed and limit cases: $directed_count"
-echo "byte mutations: $fuzz_count (seed $(cat "$work/generated/fuzz-seed.txt"))"
-if [[ $parse_mode == 1 ]]; then
-    echo "parser tree mutations: $parser_mutation_count (seed $(cat "$work/generated/parser-fuzz-seed.txt"))"
+if [[ $filtered_run == 0 ]]; then
+    echo "byte mutations: $fuzz_count (seed $(cat "$work/generated/fuzz-seed.txt"))"
+    if [[ $parse_mode == 1 ]]; then
+        echo "parser tree mutations: $parser_mutation_count (seed $(cat "$work/generated/parser-fuzz-seed.txt"))"
+    fi
+else
+    echo "byte mutations: 0 (filtered run)"
+    if [[ $parse_mode == 1 ]]; then
+        echo "parser tree mutations: 0 (filtered run)"
+    fi
 fi
-echo "benchmark: 13 files, 54,145 lines, $benchmark_bytes bytes, $benchmark_rows tokens"
-echo "benchmark logical live-data high water estimate: $data_live_estimate bytes (source $benchmark_source_bytes package bytes plus $benchmark_max_file_bytes file staging, $token_live_bytes token bytes, file and directory entries, 1 MiB output buffer)"
-echo "benchmark process measurements: reference $(cat "$reference_time"); selfhost $(cat "$selfhost_time")"
-if [[ $parse_mode == 1 ]]; then
+if [[ $benchmark_selected == 1 ]]; then
+    echo "benchmark: 13 files, 54,145 lines, $benchmark_bytes bytes, $benchmark_rows tokens"
+    echo "benchmark logical live-data high water estimate: $data_live_estimate bytes (source $benchmark_source_bytes package bytes plus $benchmark_max_file_bytes file staging, $token_live_bytes token bytes, file and directory entries, 1 MiB output buffer)"
+    echo "benchmark process measurements: reference $(cat "$reference_time"); selfhost $(cat "$selfhost_time")"
+fi
+if [[ $parse_mode == 1 && $benchmark_selected == 1 ]]; then
     echo "selfhost data-stack reservation: $data_reservation bytes; process max RSS above is the runtime touched-memory measurement"
     echo "selfhost native-stack report: $(awk '/native stack worst case:/ {print $5; exit}' "$work/stack-report") bytes worst case"
 fi
+package_total=$((corpus_count + directed_count + fuzz_count + parser_mutation_count + benchmark_count))
+filter_parts=()
+if (( ${#only_patterns[@]} )); then filter_parts+=("only=${only_patterns[*]}"); fi
+if [[ -n "$class_filter" ]]; then filter_parts+=("class=$class_filter"); fi
+if [[ $changed_enabled == 1 ]]; then filter_parts+=("changed=$changed_revision"); fi
+filters="all packages"
+if (( ${#filter_parts[@]} )); then filters="${filter_parts[*]}"; fi
+echo "selfhost $([[ $parse_mode == 1 ]] && echo parser || echo lexer) comparison: packages=$package_total workers=$jobs mismatches=0 ($filters)"
