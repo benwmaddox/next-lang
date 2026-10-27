@@ -680,3 +680,19 @@ build	tests/run/noshadow_enums
 build	tests/run/t06_places_eval
 build	tests/e3/e3b_array_default
 # E3b end
+# Stage 0 soundness regressions fixed for the 2026-10-27 release.
+expected	tests/e3/s0fix5_count_loop
+expected	tests/e3/s0fix5_count_match
+expected	tests/e3/s0fix5_count_valid
+unsupported	tests/e3/s0fix5_grow_ascii_small
+unsupported	tests/e3/s0fix5_grow_ascii_large
+unsupported	tests/e3/s0fix5_grow_bytes_small
+unsupported	tests/e3/s0fix5_grow_text_codepoints
+unsupported	tests/e3/s0fix5_grow_text_bytes
+unsupported	tests/e3/s0fix5_grow_field
+unsupported	tests/e3/s0fix5_grow_indirect
+unsupported	tests/e3/s0fix5_grow_valid
+unsupported	tests/e3/s0fix5_byte_invalid
+unsupported	tests/e3/s0fix5_byte_valid
+unsupported	tests/e3/s0fix5_byte_negative
+expected	tests/e3/s0fix5_count_break

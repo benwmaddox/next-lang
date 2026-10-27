@@ -1,0 +1,3 @@
+[package]
+name = "s0fix5-count-match"
+capabilities = ["out"]

@@ -1,0 +1,3 @@
+[package]
+name = "s0fix5-grow-bytes-small"
+capabilities = ["out"]

@@ -1,0 +1,3 @@
+[package]
+name = "s0fix5-grow-text-bytes"
+capabilities = ["out"]
