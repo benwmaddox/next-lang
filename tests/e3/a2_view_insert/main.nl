@@ -1,0 +1,4 @@
+fn main() {
+    var values: list<int, 2> = [1]
+    for value in values { discard values.insert(0L, 2) }
+}

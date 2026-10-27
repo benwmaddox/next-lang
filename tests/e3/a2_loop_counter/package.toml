@@ -1,0 +1,3 @@
+[package]
+name = "a2_loop_counter"
+capabilities = ["out"]

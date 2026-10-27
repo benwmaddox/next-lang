@@ -1,0 +1,10 @@
+Cell { value: 2, active: false }
+Cell { value: 1, active: true }
+0
+Cell { value: 1, active: true }
+true
+1
+Cell { value: 2, active: false }
+true
+[Cell { value: 2, active: false }, Cell { value: 3, active: true }]
+[Cell { value: 9, active: true }, Cell { value: 10, active: false }]

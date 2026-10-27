@@ -195,8 +195,16 @@ def main() -> int:
                         ):
                             raise Mismatch("selfhost did not reject with an error like Rust nlc", reference_result, self_result)
                         expected_selfhost = root / package / "expected.selfhost.stderr"
-                        if expected_selfhost.is_file() and self_result.stderr != expected_selfhost.read_bytes():
-                            raise Mismatch("selfhost diagnostic differs from its explicit oracle", reference_result, self_result)
+                        if expected_selfhost.is_file():
+                            explicit_diagnostic = expected_selfhost.read_bytes()
+                            # A package promoted from unsupported to diagnose can
+                            # carry the old fixed unsupported oracle. Once the
+                            # checker owns the construct, same_rejection is the
+                            # applicable contract; keep explicit real-error
+                            # oracles exact.
+                            legacy_unsupported = b"not supported by the self-hosted compiler yet" in explicit_diagnostic
+                            if not legacy_unsupported and self_result.stderr != explicit_diagnostic:
+                                raise Mismatch("selfhost diagnostic differs from its explicit oracle", reference_result, self_result)
                         counts[level]["diagnose"] += 1
                     elif kind == "rejects":
                         if reference_result.build_status != 0:

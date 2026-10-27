@@ -1,0 +1,1 @@
+main.nl:3:34: error: cannot call 'list<int, 2>.clear' while a collection view is live; move the operation after the loop

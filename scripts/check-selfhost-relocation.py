@@ -264,7 +264,7 @@ def main() -> int:
                         package_relocated = True
                     run_count[level] += 1
 
-                if package.startswith(("tests/e3/a1_", "tests/e3/merge_")) and not package_relocated:
+                if package.startswith(("tests/e3/a1_", "tests/e3/merge_", "tests/e3/a2_relocation_")) and not package_relocated:
                     raise CheckError(f"directed relocation fixture {package} never relocated at O{level}")
                 if package_relocated:
                     relocated_packages[level].add(package)

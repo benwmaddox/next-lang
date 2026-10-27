@@ -1,0 +1,3 @@
+[package]
+name = "a2_view_remove"
+capabilities = ["out"]

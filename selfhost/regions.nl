@@ -52,6 +52,36 @@ fn region_node_has_binding(compiler: CompilerTables, node: long) -> bool {
     false
 }
 
+fn region_node_is_collection_method_receiver(
+    tables: ParseTables,
+    compiler: CompilerTables,
+    node: long,
+) -> bool {
+    let syntax_kind = tables.nodes[node].kind
+    if syntax_kind != NodeKind.Name && syntax_kind != NodeKind.Field && syntax_kind != NodeKind.Index { return false }
+    let kind = type_kind(compiler, compiler.facts[node].ty)
+    if kind != TYPE_KIND_ARRAY && kind != TYPE_KIND_LIST { return false }
+    for parent in 0L..tables.nodes.count() {
+        if compiler.child_first[parent] == node && tables.nodes[parent].kind == NodeKind.MethodCall {
+            return true
+        }
+    }
+    false
+}
+
+fn region_node_is_temporary(tables: ParseTables, compiler: CompilerTables, node: long) -> bool {
+    let syntax_kind = tables.nodes[node].kind
+    if syntax_kind == NodeKind.FunctionType || syntax_kind == NodeKind.FunctionTypeParameter ||
+        syntax_kind == NodeKind.ParameterType || syntax_kind == NodeKind.ResultType ||
+        syntax_kind == NodeKind.Annotation || syntax_kind == NodeKind.FieldType ||
+        syntax_kind == NodeKind.PayloadType || syntax_kind == NodeKind.AliasedType ||
+        syntax_kind == NodeKind.DeclaredType || syntax_kind == NodeKind.TypeArgument ||
+        syntax_kind == NodeKind.FitType || syntax_kind == NodeKind.CastType { return false }
+    !region_node_has_binding(compiler, node) &&
+        !region_node_is_pattern_binding(tables, node) &&
+        !region_node_is_collection_method_receiver(tables, compiler, node)
+}
+
 fn region_node_is_pattern_binding(tables: ParseTables, node: long) -> bool {
     tables.nodes[node].kind == NodeKind.PatternBinding || tables.nodes[node].kind == NodeKind.IgnoredPatternBinding
 }
@@ -77,12 +107,16 @@ fn region_scope_for_binding(compiler: CompilerTables, function_id: long, binding
     owner
 }
 
-fn region_function_for_block(compiler: CompilerTables, block: long) -> long {
+fn region_function_for_block(tables: ParseTables, compiler: CompilerTables, block: long) -> long {
     for function_id in 0L..compiler.functions.count() {
-        if compiler.functions[function_id].body == block { return function_id }
+        let body = compiler.functions[function_id].body
+        let first = body - tables.nodes[body].subtree + 1L
+        if block >= first && block <= body { return function_id }
     }
     for test_index in 0L..compiler.tests.count() {
-        if compiler.tests[test_index].body == block { return -1L - test_index }
+        let body = compiler.tests[test_index].body
+        let first = body - tables.nodes[body].subtree + 1L
+        if block >= first && block <= body { return -1L - test_index }
     }
     for scope_id in 0L..compiler.scopes.count() {
         if compiler.scopes[scope_id].block == block { return compiler.scopes[scope_id].function_id }
@@ -90,8 +124,8 @@ fn region_function_for_block(compiler: CompilerTables, block: long) -> long {
     -9223372036854775807L
 }
 
-fn region_body_for_block(compiler: CompilerTables, block: long) -> long {
-    let function_id = region_function_for_block(compiler, block)
+fn region_body_for_block(tables: ParseTables, compiler: CompilerTables, block: long) -> long {
+    let function_id = region_function_for_block(tables, compiler, block)
     if function_id >= 0L && function_id < compiler.functions.count() {
         return compiler.functions[function_id].body
     }
@@ -107,12 +141,16 @@ fn region_scope_for_temporary(
     body: long,
     node: long,
 ) -> long {
+    if tables.nodes[node].start < tables.nodes[body].start ||
+        tables.nodes[node].end > tables.nodes[body].end { return -1L }
     let first = body - tables.nodes[body].subtree + 1L
     var selected = -1L
     var selected_size = 9223372036854775807L
     for block_step in 0L..body - first + 1L {
         let block = body - block_step
-        if tables.nodes[block].kind != NodeKind.Block { continue }
+        if tables.nodes[block].kind != NodeKind.Block ||
+            tables.nodes[block].start < tables.nodes[body].start ||
+            tables.nodes[block].end > tables.nodes[body].end { continue }
         let block_first = block - tables.nodes[block].subtree + 1L
         if node >= block_first && node <= block && tables.nodes[block].subtree < selected_size {
             selected = block
@@ -161,7 +199,7 @@ fn region_consider_binding(
     threshold: long,
 ) {
     let binding = compiler.bindings[binding_id]
-    if binding.parameter || !is_aggregate_type(compiler, binding.ty) ||
+    if binding.parameter || binding_is_view(compiler, binding_id) || !is_aggregate_type(compiler, binding.ty) ||
         region_scope_for_binding(compiler, function_id, binding_id) != block ||
         region_has_slot(compiler, 1L, binding_id) {
         return
@@ -183,7 +221,7 @@ fn region_consider_temporary(
     threshold: long,
 ) {
     let ty = compiler.facts[node].ty
-    if !is_aggregate_type(compiler, ty) || region_node_has_binding(compiler, node) || region_node_is_pattern_binding(tables, node) || region_has_slot(compiler, 0L, node) { return }
+    if !is_aggregate_type(compiler, ty) || !region_node_is_temporary(tables, compiler, node) || region_has_slot(compiler, 0L, node) { return }
     let first = body - tables.nodes[body].subtree + 1L
     if node < first || node > body { return }
     if region_scope_for_temporary(tables, body, node) != block { return }
@@ -235,14 +273,14 @@ fn region_scope_end_offset(
     var end = -1L
     for binding_id in 0L..compiler.bindings.count() {
         let binding = compiler.bindings[binding_id]
-        if !is_aggregate_type(compiler, binding.ty) || region_scope_for_binding(compiler, function_id, binding_id) != block { continue }
+        if binding_is_view(compiler, binding_id) || !is_aggregate_type(compiler, binding.ty) || region_scope_for_binding(compiler, function_id, binding_id) != block { continue }
         let offset = region_slot_offset(compiler, 1L, binding_id)
         let size = type_record(compiler, binding.ty).size
         if offset >= 0L && offset <= 9223372036854775807L - size && offset + size > end { end = offset + size }
     }
     let first = body - tables.nodes[body].subtree + 1L
     for node in first..body + 1L {
-        if region_node_has_binding(compiler, node) || region_node_is_pattern_binding(tables, node) || region_scope_for_temporary(tables, body, node) != block || !is_aggregate_type(compiler, compiler.facts[node].ty) { continue }
+        if !region_node_is_temporary(tables, compiler, node) || region_scope_for_temporary(tables, body, node) != block || !is_aggregate_type(compiler, compiler.facts[node].ty) { continue }
         let offset = region_slot_offset(compiler, 0L, node)
         let size = type_record(compiler, compiler.facts[node].ty).size
         if offset >= 0L && offset <= 9223372036854775807L - size && offset + size > end { end = offset + size }
@@ -260,7 +298,7 @@ fn region_scope_alignment(
     var alignment = 1L
     for binding_id in 0L..compiler.bindings.count() {
         let binding = compiler.bindings[binding_id]
-        if !is_aggregate_type(compiler, binding.ty) || region_scope_for_binding(compiler, function_id, binding_id) != block { continue }
+        if binding_is_view(compiler, binding_id) || !is_aggregate_type(compiler, binding.ty) || region_scope_for_binding(compiler, function_id, binding_id) != block { continue }
         if region_slot_offset(compiler, 1L, binding_id) >= 0L && type_record(compiler, binding.ty).align > alignment {
             alignment = type_record(compiler, binding.ty).align
         }
@@ -284,8 +322,8 @@ fn emit_region_scope_enter(
     file_id: long,
 ) {
     if compiler.core_mode || compiler.expected[0L] <= 0L { return }
-    let function_id = region_function_for_block(compiler, block)
-    let body = region_body_for_block(compiler, block)
+    let function_id = region_function_for_block(tables, compiler, block)
+    let body = region_body_for_block(tables, compiler, block)
     if function_id == -9223372036854775807L || body < 0L { compiler.ir_overflow = true; return }
     ir_write_ascii(compiler, ir, "  %nl.scope.saved."); ir_write_number(compiler, ir, block)
     ir_write_ascii(compiler, ir, " = load i64, ptr %nl.top.current.slot, align 8\n  store i64 %nl.scope.saved.")
@@ -366,7 +404,7 @@ fn emit_region_scope_enter(
     }
     let first = body - tables.nodes[body].subtree + 1L
     for node in first..body + 1L {
-        if !is_aggregate_type(compiler, compiler.facts[node].ty) || region_node_has_binding(compiler, node) || region_node_is_pattern_binding(tables, node) || region_scope_for_temporary(tables, body, node) != block || !region_has_slot(compiler, 0L, node) { continue }
+        if !is_aggregate_type(compiler, compiler.facts[node].ty) || !region_node_is_temporary(tables, compiler, node) || region_scope_for_temporary(tables, body, node) != block || !region_has_slot(compiler, 0L, node) { continue }
         let offset = compiler.expected[node]
         ir_write_ascii(compiler, ir, "  %region.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %nl.scope.base."); ir_write_number(compiler, ir, block); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, offset); ir_push_byte(compiler, ir, 10)
     }
