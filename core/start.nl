@@ -60,8 +60,8 @@ fn nl_core_init(argc: int, argv: sys.Addr, envp: sys.Addr) {
     let action = sys.offset(state, state_sigaction())
     sys.fill_bulk(action, 0, 32L)
     sys.store64(action, 0L, 1L)
-    let ignored = sys.sigaction(13, action, sys.null(), 8L)
-    if sys.is_error(ignored) {
+    let ignored = sigaction(13, action, sys.null(), 8L)
+    if ignored.is_err() {
         write_z(2, sys.lit(b"nlc: data stack startup failure: could not ignore SIGPIPE\n"))
         sys.exit_group(1)
     }

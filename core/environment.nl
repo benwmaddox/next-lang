@@ -18,12 +18,12 @@ fn nl_env_create(argc: int, argv: sys.Addr, capabilities: int) -> sys.Addr {
             sys.exit_group(1)
         }
     }
-    let root = sys.openat(-100, sys.lit(b"."), 2625536, 0)
-    if sys.is_error(root) {
+    let root = openat(-100, sys.lit(b"."), 2625536, 0)
+    if root.is_err() {
         write_z(2, sys.lit(b"nlc: data stack startup failure: cannot open the file-system root\n"))
         sys.exit_group(1)
     }
-    sys.store32(sys.state(), state_root_fd(), (int)root)
+    sys.store32(sys.state(), state_root_fd(), (int)root.unwrap())
     let _ = capabilities
     sys.state()
 }
@@ -31,5 +31,5 @@ fn nl_env_create(argc: int, argv: sys.Addr, capabilities: int) -> sys.Addr {
 fn nl_env_destroy(environment: sys.Addr) {
     let _ = environment
     let fd = sys.load32(sys.state(), state_root_fd())
-    if fd >= 0 { let _closed = sys.close(fd) }
+    if fd >= 0 { let _closed = close(fd) }
 }

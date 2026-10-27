@@ -106,6 +106,7 @@ fn main(env: Env) {
         build_line_start_index(env, source, files, compiler)
         index_package_enums(source, files, tokens, tables, compiler)
         index_package_structs(source, files, tokens, tables, compiler)
+        intern_written_type_instances(source, tokens, files, tables, compiler)
         size_package_types(source, files, tokens, tables, compiler)
         check_package_eligibility(env, source, files, tokens, tables, compiler)
         var ir: Bytes max IR_BUFFER_CAPACITY = Bytes.empty()

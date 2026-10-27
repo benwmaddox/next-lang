@@ -28,13 +28,14 @@ fn write_all(fd: int, bytes: sys.Addr, count: long) -> bool {
     var written = 0L
     for attempt in 0L..1000000L {
         if written >= count { return true }
-        let result = nl_core_sys_write(fd, sys.offset(bytes, written), count - written)
-        if sys.is_error(result) {
-            if result != -4L { return false }
-        } else if result == 0L {
-            return false
-        } else {
-            written += result
+        match write(fd, sys.offset(bytes, written), count - written) {
+            ok(amount) => {
+                if amount == 0L { return false }
+                written += amount
+            }
+            err(error) => {
+                if error.number != 4 { return false }
+            }
         }
     }
     written >= count

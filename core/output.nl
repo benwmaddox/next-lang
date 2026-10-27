@@ -40,8 +40,8 @@ fn output_terminal(stream: int) -> bool {
     let offset = if stream == 0 { state_out_terminal() } else { state_err_terminal() }
     let cached = sys.load32(state, offset)
     if cached >= 0 { return cached != 0 }
-    let result = sys.ioctl(output_fd(stream), 21505L, sys.offset(state, output_scratch()))
-    let terminal = result == 0L
+    let result = ioctl(output_fd(stream), 21505L, sys.offset(state, output_scratch()))
+    let terminal = result.is_ok() && result.unwrap() == 0L
     sys.store32(state, offset, if terminal { 1 } else { 0 })
     terminal
 }
@@ -50,12 +50,24 @@ fn output_shared_terminal() -> bool {
     let state = sys.state()
     let cached = sys.load32(state, state_shared_terminal())
     if cached >= 0 { return cached != 0 }
-    let same = output_terminal(0) && output_terminal(1) &&
-        sys.statx(1, sys.lit(b""), 4096, 256, sys.offset(state, output_scratch())) == 0L &&
-        sys.statx(2, sys.lit(b""), 4096, 256, sys.offset(state, output_scratch() + 256L)) == 0L &&
-        sys.load64(state, output_scratch() + 32L) == sys.load64(state, output_scratch() + 256L + 32L) &&
-        sys.load32(state, output_scratch() + 136L) == sys.load32(state, output_scratch() + 256L + 136L) &&
-        sys.load32(state, output_scratch() + 140L) == sys.load32(state, output_scratch() + 256L + 140L)
+    var same = output_terminal(0) && output_terminal(1)
+    if same {
+        let out_stat = statx(1, sys.lit(b""), 4096, 256, sys.offset(state, output_scratch()))
+        if out_stat.is_err() { same = false }
+        else if out_stat.unwrap() != 0L { same = false }
+        else { () }
+    }
+    if same {
+        let err_stat = statx(2, sys.lit(b""), 4096, 256, sys.offset(state, output_scratch() + 256L))
+        if err_stat.is_err() { same = false }
+        else if err_stat.unwrap() != 0L { same = false }
+        else { () }
+    }
+    if same {
+        same = sys.load64(state, output_scratch() + 32L) == sys.load64(state, output_scratch() + 256L + 32L) &&
+            sys.load32(state, output_scratch() + 136L) == sys.load32(state, output_scratch() + 256L + 136L) &&
+            sys.load32(state, output_scratch() + 140L) == sys.load32(state, output_scratch() + 256L + 140L)
+    }
     sys.store32(state, state_shared_terminal(), if same { 1 } else { 0 })
     same
 }
@@ -71,21 +83,24 @@ fn output_flush_index(stream: int) -> bool {
             sys.store64(state, length_slot, 0L)
             return true
         }
-        let result = nl_core_sys_write(output_fd(stream), sys.offset(state, buffer + written), length - written)
-        if sys.is_error(result) {
-            if result != -4L {
-                let remaining = length - written
-                let _moved = memmove(sys.offset(state, buffer), sys.offset(state, buffer + written), remaining)
-                sys.store64(state, length_slot, remaining)
-                return false
+        match write(output_fd(stream), sys.offset(state, buffer + written), length - written) {
+            ok(count) => {
+                if count == 0L {
+                    let remaining = length - written
+                    let _moved = memmove(sys.offset(state, buffer), sys.offset(state, buffer + written), remaining)
+                    sys.store64(state, length_slot, remaining)
+                    return false
+                }
+                written += count
             }
-        } else if result == 0L {
-            let remaining = length - written
-            let _moved = memmove(sys.offset(state, buffer), sys.offset(state, buffer + written), remaining)
-            sys.store64(state, length_slot, remaining)
-            return false
-        } else {
-            written += result
+            err(error) => {
+                if error.number != 4 {
+                    let remaining = length - written
+                    let _moved = memmove(sys.offset(state, buffer), sys.offset(state, buffer + written), remaining)
+                    sys.store64(state, length_slot, remaining)
+                    return false
+                }
+            }
         }
     }
     let remaining = length - written

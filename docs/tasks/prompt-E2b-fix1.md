@@ -11,3 +11,7 @@ This is a fix round for E2b (enums, `match`; commit a5c0b3a) and E2c (`Option`/`
 Each finding gets a fixture (valid ones as build class with stage-0 output, the shadowing one as diagnose). Errors need not match stage 0's wording or order. Stage 0 is frozen. Always CARGO_TARGET_DIR=$HOME/.cache/next-lang/target; large builds under `ulimit -v 8000000` and `timeout`. Acceptance: both full suites, `cargo fmt --all -- --check`, the selfhost_interfaces test, the comparison in default and `NLC_LONG_TESTS=1` modes at zero mismatches, `git diff --check`. Delete scratch dirs you create.
 
 Rules: never commit, branch, stash or reset; never edit docs/DESIGN.md, docs/PLAN.md, docs/research/ or docs/reviews/. Write docs/tasks/E2b-fix1-report.md: each finding, the fix, its fixtures, and the scaling numbers before and after.
+
+Also, from Claude's review of E2c:
+- `struct Box { a: Option<long>, b: long }` with `let b1 = Box { a: none, b: 1L }; print(b1)` crashes the self-hosted compiler (`compiler.nl:6722:42: index out of range`); stage 0 prints `Box { a: none, b: 1 }`. This is finding 1 through `none`; pin it as a fixture.
+- The self-hosted unused-Result message reads `'?? where supported` (missing closing quote); fix the text.
