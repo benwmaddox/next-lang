@@ -28,12 +28,14 @@ type unsupported struct {
 
 // Result is what one conversion produced.
 type Result struct {
-	Converted, Failed int
-	Problems          []Problem
-	Decls             []DeclRecord
-	files             map[string]*strings.Builder
-	usedShim          bool
-	cfg               *Config
+	Converted, Failed, Excluded, Stubbed int
+	Problems                             []Problem
+	Decls                                []DeclRecord
+	files                                map[string]*strings.Builder
+	convertedObjs                        map[types.Object]bool
+	reach                                *Reach
+	usedShim                             bool
+	cfg                                  *Config
 }
 
 type Problem struct {
@@ -83,7 +85,7 @@ func convert(p *Program, r *Reach, cfg *Config) *Result {
 		p: p, r: r, cfg: cfg,
 		top:      newNamer(nil),
 		topNames: map[types.Object]string{},
-		res:      &Result{files: map[string]*strings.Builder{}, cfg: cfg},
+		res:      &Result{files: map[string]*strings.Builder{}, cfg: cfg, convertedObjs: map[types.Object]bool{}, reach: r},
 		tuples:   map[*types.Func]string{},
 		lookups:  map[types.Object]lookupTable{},
 	}
@@ -176,6 +178,7 @@ func (c *conv) convertDecl(obj types.Object) {
 		b = &strings.Builder{}
 		c.res.files[file] = b
 	}
+	c.res.convertedObjs[obj] = text != ""
 	if text == "" {
 		c.res.Failed++
 		fmt.Fprintf(b, "// go2nl: %s (%s) not converted: %s\n\n", sym, rec.Source, strings.TrimPrefix(rec.Status, "failed: "))
@@ -560,7 +563,11 @@ func (r *Result) report() string {
 	if r.cfg.Upstream.Repo != "" {
 		fmt.Fprintf(&b, "Upstream: %s at %s\n\n", r.cfg.Upstream.Repo, r.cfg.Upstream.Commit)
 	}
-	fmt.Fprintf(&b, "%d declarations converted, %d not converted.\n\n", r.Converted, r.Failed)
+	closed := r.closed(r.reach)
+	fmt.Fprintf(&b, "%d declarations converted, %d not converted, %d excluded by the config, %d replaced by stubs.\n\n", r.Converted, r.Failed, r.Excluded, r.Stubbed)
+	fmt.Fprintf(&b, "**%d of the %d converted declarations are dependency-closed**: they and everything they use converted, so only these can compile.\n\n", len(closed), r.Converted)
+	fa, fc, fcl := r.funcCounts(closed)
+	fmt.Fprintf(&b, "Functions and methods: %d reachable, %d converted, **%d dependency-closed**.\n\n", fa, fc, fcl)
 	byCat := map[string]int{}
 	for _, p := range r.Problems {
 		byCat[p.Category]++
@@ -661,3 +668,45 @@ func (c *conv) lookupLiteral(v *types.Var) *ast.CompositeLit {
 }
 
 func (c *conv) lookupCount(v *types.Var) int { return len(c.lookupLiteral(v).Elts) }
+
+// closedCount counts converted declarations whose every dependency (direct
+// or not) also converted: the ones that can actually compile.
+func (r *Result) closed(reach *Reach) map[types.Object]bool {
+	ok := map[types.Object]bool{}
+	for obj, conv := range r.convertedObjs {
+		if conv {
+			ok[obj] = true
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for obj := range ok {
+			for d := range reach.Deps[obj] {
+				if _, tracked := r.convertedObjs[d]; tracked && !ok[d] {
+					delete(ok, obj)
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	return ok
+}
+
+// funcCounts: (reachable functions, converted, dependency-closed).
+func (r *Result) funcCounts(closed map[types.Object]bool) (int, int, int) {
+	var all, conv, cl int
+	for obj, ok := range r.convertedObjs {
+		if _, isFn := obj.(*types.Func); !isFn {
+			continue
+		}
+		all++
+		if ok {
+			conv++
+		}
+		if closed[obj] {
+			cl++
+		}
+	}
+	return all, conv, cl
+}

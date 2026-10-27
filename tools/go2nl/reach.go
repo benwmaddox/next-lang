@@ -17,6 +17,8 @@ type Reach struct {
 	Order []types.Object // discovery order, made deterministic by sorting
 	// Stdlib counts uses of standard-library functions, methods and variables.
 	Stdlib map[string]int
+	// Deps lists the reachable declarations each declaration uses directly.
+	Deps map[types.Object]map[types.Object]bool
 }
 
 func (p *Program) resolveRoots(roots []string) ([]types.Object, error) {
@@ -101,7 +103,20 @@ func splitRoot(r string) (string, string) {
 }
 
 func (p *Program) reach(roots []types.Object) *Reach {
-	r := &Reach{Objs: map[types.Object]bool{}, Stdlib: map[string]int{}}
+	r := &Reach{Objs: map[types.Object]bool{}, Stdlib: map[string]int{}, Deps: map[types.Object]map[types.Object]bool{}}
+	var cur types.Object
+	dep := func(obj types.Object) {
+		if cur == nil || obj == nil {
+			return
+		}
+		if f, ok := obj.(*types.Func); ok {
+			obj = f.Origin()
+		}
+		if r.Deps[cur] == nil {
+			r.Deps[cur] = map[types.Object]bool{}
+		}
+		r.Deps[cur][obj] = true
+	}
 	var work []types.Object
 	add := func(obj types.Object) {
 		if obj == nil || r.Objs[obj] {
@@ -126,6 +141,7 @@ func (p *Program) reach(roots []types.Object) *Reach {
 		for len(work) > 0 {
 			obj := work[len(work)-1]
 			work = work[:len(work)-1]
+			cur = obj
 			decl := p.Decls[obj]
 			if decl == nil {
 				continue
@@ -135,6 +151,7 @@ func (p *Program) reach(roots []types.Object) *Reach {
 				if recv := f.Signature().Recv(); recv != nil {
 					if n := namedOf(recv.Type()); n != nil {
 						add(n.Obj())
+						dep(n.Obj())
 					}
 				}
 			}
@@ -150,6 +167,7 @@ func (p *Program) reach(roots []types.Object) *Reach {
 				if p.inModule(used) {
 					if isPackageLevel(used) || isMethod(used) {
 						add(used)
+						dep(used)
 					}
 					if v, ok := used.(*types.Var); ok && v.IsField() {
 						return true
