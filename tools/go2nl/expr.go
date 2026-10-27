@@ -13,6 +13,9 @@ import (
 // &T{...} (pointers become values) and keeps everything else as expr does.
 func (f *fnConv) valueExpr(e ast.Expr, want types.Type) string {
 	if want != nil {
+		if isErrorType(want) && f.c.isNilIdent(e) {
+			return "0L"
+		}
 		if _, ok := want.Underlying().(*types.Signature); ok {
 			if f.c.isNilIdent(e) {
 				return "0L"
@@ -154,6 +157,9 @@ func (f *fnConv) ident(id *ast.Ident) string {
 			return c.valueName(o)
 		}
 		if isPackageLevel(o) {
+			if v, ok := stdlibErrors[stdlibName(o)]; ok {
+				return v
+			}
 			c.fail(id, "stdlib-var", "standard-library variable %s", stdlibName(o))
 		}
 		c.fail(id, "closure", "variable %s from an enclosing function", id.Name)
@@ -374,7 +380,8 @@ func (f *fnConv) binaryExpr(e *ast.BinaryExpr) string {
 		if isNilType(lt) {
 			other, ot = e.Y, rt
 		}
-		if _, ok := ot.Underlying().(*types.Signature); ok && (e.Op == token.EQL || e.Op == token.NEQ) {
+		_, isFn := ot.Underlying().(*types.Signature)
+		if (isFn || isErrorType(ot)) && (e.Op == token.EQL || e.Op == token.NEQ) {
 			return "(" + f.expr(other) + " " + binOps[e.Op] + " 0L)"
 		}
 		c.fail(e, "nil", "comparison with nil")
@@ -489,6 +496,11 @@ func (f *fnConv) call(e *ast.CallExpr) string {
 		if types.Identical(to.Underlying(), from.Underlying()) {
 			return f.expr(e.Args[0])
 		}
+		if isGoString(to) && c.intBase(from) != "" {
+			// string(r): the UTF-8 encoding of rune r, U+FFFD if r is invalid.
+			c.decide("string(rune) encodes UTF-8 with the gostd shim")
+			return "go_string_from_rune(" + f.convertInt(f.expr(e.Args[0]), from, types.Typ[types.Int32]) + ")"
+		}
 		if isGoString(to) || isGoString(from) {
 			c.fail(e, "string-conv", "conversion %s", c.exprString(e))
 		}
@@ -574,6 +586,25 @@ func (f *fnConv) builtin(name string, e *ast.CallExpr) string {
 		return out
 	case "append":
 		c.fail(e, "append", "append used as a value")
+	case "make":
+		t := info.TypeOf(e)
+		switch t.Underlying().(type) {
+		case *types.Map:
+			c.nlType(t, "")
+			c.decide("make(map) becomes map {} (size hints are dropped)")
+			return "map {}"
+		case *types.Slice:
+			if len(e.Args) >= 2 {
+				if tv := info.Types[e.Args[1]]; tv.Value == nil || tv.Value.ExactString() != "0" {
+					c.fail(e, "builtin", "make of a slice with a length other than 0")
+				}
+			}
+			c.nlType(t, "")
+			c.decide("make([]T, 0, n) becomes list {} (capacity hints are dropped)")
+			return "list {}"
+		}
+	case "clear":
+		c.fail(e, "builtin", "clear used as a value")
 	}
 	c.fail(e, "builtin", "built-in %s", name)
 	return ""
@@ -671,39 +702,6 @@ func (f *fnConv) buildCollection(cl *ast.CompositeLit, t types.Type, where strin
 	}
 	f.line("%s", name)
 	return f.b.String()
-}
-
-// stdlibCall maps a standard-library call to the shim, or fails.
-func (f *fnConv) stdlibCall(name string, e *ast.CallExpr) string {
-	c := f.c
-	args := func() []string {
-		var out []string
-		for _, a := range e.Args {
-			out = append(out, f.valueExpr(a, nil))
-		}
-		return out
-	}
-	switch name {
-	case "fmt.Println":
-		if len(e.Args) != 1 {
-			c.fail(e, "stdlib-call", "fmt.Println with %d arguments", len(e.Args))
-		}
-		t := c.p.Info.TypeOf(e.Args[0])
-		switch u := t.Underlying().(type) {
-		case *types.Basic:
-			if u.Info()&(types.IsInteger|types.IsBoolean|types.IsString) != 0 {
-				c.decide("fmt.Println of one integer, bool or string becomes print")
-				return "print(" + f.valueExpr(e.Args[0], types.Default(t)) + ")"
-			}
-		}
-		c.fail(e, "stdlib-call", "fmt.Println of %s", t)
-	case "strings.HasPrefix", "strings.HasSuffix", "strings.IndexByte", "strings.Repeat", "strconv.Itoa":
-		pkg, fn, _ := strings.Cut(name, ".")
-		c.decide("standard-library call goes to the gostd shim")
-		return "go_" + pkg + "_" + fn + "(" + strings.Join(args(), ", ") + ")"
-	}
-	c.fail(e, "stdlib-call", "%s has no shim yet", name)
-	return ""
 }
 
 // lookupOf: e names a map variable converted to a lookup function.

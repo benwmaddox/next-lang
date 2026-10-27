@@ -237,11 +237,15 @@ func (c *conv) nlType(t types.Type, where string) string {
 		}
 		if t.Obj().Pkg() == nil {
 			if t.Obj().Name() == "error" {
-				c.fail(nil, "interface-type", "the error interface")
+				c.decide("error becomes GoError: 0 is nil, then one code per known error")
+				return errorType
 			}
 			c.fail(nil, "interface-type", "built-in type %s", t)
 		}
 		if !c.p.inModule(t.Obj()) {
+			if nt, _, ok := c.stdlibType(t); ok {
+				return nt
+			}
 			c.fail(nil, "stdlib-type", "standard-library type %s", t)
 		}
 		if types.IsInterface(t) {
@@ -348,6 +352,14 @@ func (c *conv) intBase(t types.Type) string {
 
 // zero is the next-lang zero value of a Go type.
 func (c *conv) zero(t types.Type, where string) string {
+	if isErrorType(t) {
+		return "0L"
+	}
+	if n, ok := t.(*types.Named); ok && n.Obj().Pkg() != nil && !c.p.inModule(n.Obj()) {
+		if _, z, ok := c.stdlibType(n); ok {
+			return z
+		}
+	}
 	switch u := t.Underlying().(type) {
 	case *types.Basic:
 		switch {

@@ -17,7 +17,8 @@ type fnConv struct {
 	b      strings.Builder
 	ind    int
 	// Enclosing loops and switches, innermost last, for break and continue.
-	targets []target
+	targets []*target
+	label   string // the label of the statement being converted
 	// Results: the tuple struct for multiple results, and named result locals.
 	tuple   string
 	results []*types.Var
@@ -27,12 +28,6 @@ type fnConv struct {
 	// tailIf is the if statement that ends the block being converted.
 	tailIf *ast.IfStmt
 	noPre  bool
-}
-
-type target struct {
-	isLoop  bool
-	post    []string // a 3-clause loop's post statement, run before continue
-	wrapped bool     // a switch wrapped in a one-pass loop so break leaves it
 }
 
 func (c *conv) newFunc(fn *types.Func) *fnConv {
@@ -306,7 +301,7 @@ func (f *fnConv) stmt(s ast.Stmt) {
 	case *ast.BranchStmt:
 		f.branch(s)
 	case *ast.LabeledStmt:
-		c.fail(s, "goto-label", "labeled statement %s", s.Label.Name)
+		f.labeled(s)
 	case *ast.DeferStmt:
 		c.fail(s, "defer", "defer")
 	case *ast.GoStmt, *ast.SelectStmt, *ast.SendStmt:
@@ -332,6 +327,14 @@ func (f *fnConv) exprStmt(e ast.Expr) {
 				case "panic":
 					f.line("go_panic()")
 					c.decide("panic stops the program with a failure (exit status 1, Go's is 2)")
+					return
+				case "clear":
+					if isMap(c.p.Info.TypeOf(call.Args[0])) {
+						f.line("%s = map {}", f.place(call.Args[0]))
+						c.decide("clear(m) becomes m = map {}")
+					} else {
+						c.fail(call, "builtin", "clear of a slice")
+					}
 					return
 				case "delete":
 					m := call.Args[0]
@@ -457,7 +460,7 @@ func (f *fnConv) assign(s *ast.AssignStmt) {
 		switch r := rhs.(type) {
 		case *ast.CallExpr:
 			callee := calleeFunc(c, r)
-			if callee == nil || !c.p.inModule(callee) {
+			if callee == nil || (!c.p.inModule(callee) && !stdlibTable[stdlibName(callee)].tuple) {
 				c.fail(s, "multi-return", "several results from %s", c.exprString(r))
 			}
 			t := f.tmp("results")
@@ -732,11 +735,12 @@ const loopForever = "0L..9223372036854775807L"
 func (f *fnConv) forStmt(s *ast.ForStmt) {
 	c := f.c
 	if i, lo, hi, incl, ok := f.countedLoop(s); ok {
+		t := &target{isLoop: true}
+		outer := f.enter(t)
 		f.line("for %s in %s..%s%s {", i, lo, map[bool]string{true: "=", false: ""}[incl], hi)
-		f.targets = append(f.targets, target{isLoop: true})
 		f.block(s.Body.List)
-		f.targets = f.targets[:len(f.targets)-1]
 		f.line("}")
+		f.leave(t, outer)
 		c.decide("counted for loop becomes for i in a..b")
 		return
 	}
@@ -755,21 +759,22 @@ func (f *fnConv) forStmt(s *ast.ForStmt) {
 		f.b = saved
 		f.ind = savedInd
 	}
+	t := &target{isLoop: true, post: post}
+	outer := f.enter(t)
 	f.line("for %s in %s {", f.tmp("step"), loopForever)
 	f.ind++
 	if s.Cond != nil {
 		f.line("if !(%s) { break }", f.expr(s.Cond))
 	}
 	f.ind--
-	f.targets = append(f.targets, target{isLoop: true, post: post})
 	f.block(s.Body.List)
-	f.targets = f.targets[:len(f.targets)-1]
 	f.ind++
 	for _, p := range post {
 		f.line("%s", p)
 	}
 	f.ind--
 	f.line("}")
+	f.leave(t, outer)
 	c.decide("for loop without a range becomes a for over 0..2^63-1 that breaks on the condition")
 }
 
@@ -921,11 +926,12 @@ func (f *fnConv) rangeStmt(s *ast.RangeStmt) {
 	}
 	xt := info.TypeOf(s.X)
 	enter := func(head string) {
+		t := &target{isLoop: true}
+		outer := f.enter(t)
 		f.line("%s {", head)
-		f.targets = append(f.targets, target{isLoop: true})
 		f.block(s.Body.List)
-		f.targets = f.targets[:len(f.targets)-1]
 		f.line("}")
+		f.leave(t, outer)
 	}
 	switch u := xt.Underlying().(type) {
 	case *types.Basic:
@@ -938,7 +944,11 @@ func (f *fnConv) rangeStmt(s *ast.RangeStmt) {
 			return
 		}
 		if u.Info()&types.IsString != 0 {
-			c.fail(s, "range-string", "range over a string (decodes UTF-8 runes)")
+			if key != nil && changedIn(c, s.Body, key) {
+				c.fail(s, "range", "range index changed in the body")
+			}
+			f.rangeString(s, key, val)
+			return
 		}
 	case *types.Slice, *types.Array:
 		if val != nil && changedIn(c, s.Body, val) {
@@ -971,162 +981,6 @@ func (f *fnConv) rangeStmt(s *ast.RangeStmt) {
 		c.fail(s, "range-func", "range over an iterator function")
 	}
 	c.fail(s, "range", "range over %s", xt)
-}
-
-func (f *fnConv) switchStmt(s *ast.SwitchStmt) {
-	c := f.c
-	if s.Init != nil {
-		f.stmt(s.Init)
-	}
-	tag := ""
-	var tagType types.Type
-	if s.Tag != nil {
-		tagType = c.p.Info.TypeOf(s.Tag)
-		tag = f.tmp("tag")
-		f.line("let %s: %s = %s", tag, c.nlType(tagType, ""), f.valueExpr(s.Tag, tagType))
-	}
-	breaks, continues := switchExits(s.Body)
-	wrapped := breaks
-	if wrapped {
-		if continues {
-			c.fail(s, "switch-break", "switch with both break and continue")
-		}
-		f.line("for %s in 0L..1L {", f.tmp("once"))
-		f.ind++
-		c.decide("switch containing break runs inside a one-pass loop, so break leaves it")
-	}
-	f.targets = append(f.targets, target{wrapped: wrapped})
-	var def *ast.CaseClause
-	first := true
-	for _, st := range s.Body.List {
-		cc := st.(*ast.CaseClause)
-		if cc.List == nil {
-			def = cc
-			continue
-		}
-		var conds []string
-		f.noPre = !first
-		for _, e := range cc.List {
-			if tag != "" {
-				conds = append(conds, tag+" == "+f.paren(f.valueExpr(e, tagType)))
-			} else {
-				conds = append(conds, f.paren(f.expr(e)))
-			}
-		}
-		f.noPre = false
-		head := "} else if"
-		if first {
-			head = "if"
-		}
-		first = false
-		f.line("%s %s {", head, condText(strings.Join(conds, " || ")))
-		f.caseBody(cc)
-	}
-	if def != nil {
-		if first {
-			f.line("{")
-		} else {
-			f.line("} else {")
-		}
-		f.caseBody(def)
-		f.line("}")
-	} else if !first {
-		f.line("} else {")
-		f.line("}")
-	}
-	f.targets = f.targets[:len(f.targets)-1]
-	if wrapped {
-		f.ind--
-		f.line("}")
-	}
-	c.decide("switch becomes an if / else if chain (default last, as Go picks it last)")
-}
-
-func (f *fnConv) caseBody(cc *ast.CaseClause) {
-	for _, st := range cc.Body {
-		if br, ok := st.(*ast.BranchStmt); ok && br.Tok == token.FALLTHROUGH {
-			f.c.fail(st, "goto-label", "fallthrough")
-		}
-	}
-	f.block(cc.Body)
-}
-
-func (f *fnConv) paren(s string) string {
-	if strings.ContainsAny(s, " ") && !(strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")")) {
-		return "(" + s + ")"
-	}
-	return s
-}
-
-// switchExits reports whether a switch body has an unlabeled break that
-// leaves the switch, or a continue (which leaves an enclosing loop).
-func switchExits(body *ast.BlockStmt) (breaks, continues bool) {
-	var walk func(n ast.Node, inLoop, inSwitch bool)
-	walk = func(n ast.Node, inLoop, inSwitch bool) {
-		ast.Inspect(n, func(m ast.Node) bool {
-			if m == n {
-				return true
-			}
-			switch m := m.(type) {
-			case *ast.ForStmt, *ast.RangeStmt:
-				walk(m, true, inSwitch)
-				return false
-			case *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt:
-				walk(m, inLoop, true)
-				return false
-			case *ast.FuncLit:
-				return false
-			case *ast.BranchStmt:
-				if m.Label != nil {
-					return true
-				}
-				if m.Tok == token.BREAK && !inLoop && !inSwitch {
-					breaks = true
-				}
-				if m.Tok == token.CONTINUE && !inLoop {
-					continues = true
-				}
-			}
-			return true
-		})
-	}
-	walk(body, false, false)
-	return
-}
-
-func (f *fnConv) branch(s *ast.BranchStmt) {
-	c := f.c
-	if s.Label != nil {
-		c.fail(s, "goto-label", "%s with a label", s.Tok)
-	}
-	switch s.Tok {
-	case token.BREAK:
-		f.line("break")
-	case token.CONTINUE:
-		for i := len(f.targets) - 1; i >= 0; i-- {
-			t := f.targets[i]
-			if t.wrapped {
-				c.fail(s, "switch-break", "continue inside a switch that also breaks")
-			}
-			if t.isLoop {
-				if len(t.post) > 0 {
-					f.line("{")
-					f.ind++
-					for _, p := range t.post {
-						f.line("%s", p)
-					}
-					f.line("continue")
-					f.ind--
-					f.line("}")
-					return
-				}
-				break
-			}
-		}
-		f.line("continue")
-	default:
-		c.fail(s, "goto-label", "%s", s.Tok)
-	}
 }
 
 // pre emits a statement that must run before the statement being converted

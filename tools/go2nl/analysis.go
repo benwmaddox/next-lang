@@ -154,6 +154,12 @@ func (m *modes) mutatedPlaces(n ast.Node) []mutation {
 		if callee == nil {
 			return out
 		}
+		if !m.c.p.inModule(callee) {
+			if stdlibTable[stdlibName(callee)].writeRecv && recvExpr != nil {
+				out = append(out, mutation{recvExpr, true})
+			}
+			return out
+		}
 		callee = callee.Origin()
 		pi := m.funcs[callee]
 		if pi == nil {
