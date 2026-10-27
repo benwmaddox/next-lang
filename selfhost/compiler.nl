@@ -8603,7 +8603,7 @@ fn emit_expr_linear(
                 let is_break = (syntax.flags & FLAG_VALUE) != 0L
                 let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
                 // E3a1 subsection
-                emit_region_scope_exit(tables, compiler, ir, loop.body)
+                emit_region_loop_exit(tables, compiler, ir, loop.body, current)
                 // E3a1 subsection end
                 let target_kind = if tables.nodes[loop.node].kind == NodeKind.While { 1L } else { 0L }
                 if is_break { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, target_kind, loop.node, TY_UNIT, -1L) }
@@ -9358,7 +9358,7 @@ fn emit_expr_linear(
                 } else if tables.nodes[statement].kind == NodeKind.BreakStatement || tables.nodes[statement].kind == NodeKind.ContinueStatement {
                     let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
                     // E3a1 subsection
-                    emit_region_scope_exit(tables, compiler, ir, loop.body)
+                    emit_region_loop_exit(tables, compiler, ir, loop.body, statement)
                     // E3a1 subsection end
                     let target_kind = if tables.nodes[loop.node].kind == NodeKind.While { 1L } else { 0L }
                     if tables.nodes[statement].kind == NodeKind.BreakStatement { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, target_kind, loop.node, TY_UNIT, -1L) }
@@ -9921,7 +9921,7 @@ fn emit_function_body(
         } else if kind == NodeKind.BreakStatement || kind == NodeKind.ContinueStatement {
             let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
             // E3a1 subsection
-            emit_region_scope_exit(tables, compiler, ir, loop.body)
+            emit_region_loop_exit(tables, compiler, ir, loop.body, child)
             // E3a1 subsection end
             let target_kind = if tables.nodes[loop.node].kind == NodeKind.While { 1L } else { 0L }
             if kind == NodeKind.BreakStatement { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, target_kind, loop.node, TY_UNIT, -1L) }

@@ -91,7 +91,7 @@ fn region_node_is_collection_method_receiver(
                     // Preserve its region snapshot if an argument can mutate
                     // the value before the method consumes it.
                     let mutator = compiler.child_next[node]
-                    if mutator >= 0L && region_subtree_has_effect(tables, mutator, parent) { return false }
+                    if mutator >= 0L && region_subtree_has_effect(tables, mutator, parent - 1L) { return false }
                 }
                 return true
             }
@@ -468,6 +468,35 @@ fn emit_region_scope_exit(tables: ParseTables, compiler: write CompilerTables, i
     let serial = next_location_serial(ir)
     ir_write_ascii(compiler, ir, "  %nl.scope.restore."); ir_write_number(compiler, ir, block); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = load i64, ptr %nl.scope.top."); ir_write_number(compiler, ir, block); ir_write_ascii(compiler, ir, ", align 8\n  store i64 %nl.scope.restore."); ir_write_number(compiler, ir, block); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %nl.top.current.slot, align 8\n")
 }
+
+// E3a3-fix subsection
+// A break or continue jumps past the exits of every block between the jump
+// and the loop body. Restore the top from the outermost block on that path
+// that holds slots. Blocks above it are slot-free and skip their own scope
+// bookkeeping, so its saved top equals the loop body's entry top. When no
+// block on the path holds slots, nothing was reserved and nothing is emitted.
+fn emit_region_loop_exit(
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    loop_body: long,
+    jump: long,
+) {
+    if compiler.core_mode || compiler.expected[0L] <= 0L { return }
+    let function_id = region_function_for_block(tables, compiler, loop_body)
+    let body = region_body_for_block(tables, compiler, loop_body)
+    if function_id == -9223372036854775807L || body < 0L { compiler.ir_overflow = true; return }
+    for step in 0L..loop_body - jump {
+        let block = loop_body - step
+        let kind = tables.nodes[block].kind
+        if kind != NodeKind.Block && kind != NodeKind.MatchArm { continue }
+        if block - tables.nodes[block].subtree + 1L > jump { continue }
+        if region_scope_end_offset(tables, compiler, body, function_id, block) < 0L { continue }
+        emit_region_scope_exit(tables, compiler, ir, block)
+        return
+    }
+}
+// E3a3-fix subsection end
 
 fn emit_current_top_load(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, node: long) {
     if !compiler.core_mode && compiler.expected[0L] > 0L {
