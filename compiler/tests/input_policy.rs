@@ -44,10 +44,10 @@ fn is_long_tests_mode() -> bool {
     std::env::var_os("NLC_LONG_TESTS").is_some_and(|v| v == "1")
 }
 
-// Each input-policy test explicitly drives both frontends, so one invocation
-// of this integration test covers the same cases in both full suites.
+// Each input-policy test explicitly drives both frontends; run it once in the
+// selfhost suite.
 fn run_input_policy_once() -> bool {
-    std::env::var("NLC_FRONTEND").as_deref() != Ok("selfhost")
+    std::env::var("NLC_FRONTEND").as_deref() == Ok("selfhost")
 }
 
 fn get_default_commands() -> &'static [&'static str] {

@@ -17,6 +17,7 @@ only_patterns=()
 class_filter=""
 changed_enabled=0
 changed_revision=""
+no_reference_cache=0
 filter_args=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -30,6 +31,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --build)
             build_mode=1
+            shift
+            ;;
+        --no-reference-cache)
+            no_reference_cache=1
             shift
             ;;
         --reference)
@@ -80,7 +85,15 @@ if [[ $build_mode == 1 ]]; then
         target_dir="${CARGO_TARGET_DIR:-$HOME/.cache/next-lang/target}"
         reference="$target_dir/debug/nlc"
     fi
-    exec python3 "$repo_root/scripts/compare-selfhost-build.py" --reference "$reference" "${filter_args[@]}"
+    build_args=(--reference "$reference" "${filter_args[@]}")
+    if [[ $no_reference_cache == 1 ]]; then
+        build_args+=(--no-reference-cache)
+    fi
+    exec python3 "$repo_root/scripts/compare-selfhost-build.py" "${build_args[@]}"
+fi
+if [[ $no_reference_cache == 1 ]]; then
+    echo "--no-reference-cache is available only with --build" >&2
+    exit 2
 fi
 if [[ $tokens_mode == $parse_mode || -z "$reference" || -z "$selfhost" ]]; then
     echo "usage: scripts/compare-selfhost.sh (--tokens | --parse) --reference <nlc> --selfhost <selfhost> [--only GLOB] [--class CLASS] [--changed [REV]]" >&2

@@ -2,8 +2,8 @@ const SELFHOST_COMPILER: &str = include_str!("../../selfhost/compiler.nl");
 
 #[test]
 fn type_table_access_and_struct_classification_stay_behind_the_interface() {
-    // This source audit reads the same selfhost/compiler.nl in both suites.
-    if std::env::var("NLC_FRONTEND").as_deref() == Ok("selfhost") {
+    // This source audit belongs to the selfhost suite.
+    if std::env::var("NLC_FRONTEND").as_deref() != Ok("selfhost") {
         return;
     }
     let mut in_type_module = false;
