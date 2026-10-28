@@ -8221,7 +8221,7 @@ recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTable
         let field_offset = if base.copies > 1L && base.index_node != -1L {
             collection_field_lane_offset(compiler, receiver_type, base.copies, field_index - type_record(compiler, receiver_type).field_start)
         } else { field.offset }
-        let stride = if base.index_node != -1L && !is_aggregate_type(compiler, field.ty) { value_type_size(compiler, field.ty) } else { 0L }
+        let stride = if base.index_node != -1L && (!is_aggregate_type(compiler, field.ty) || type_kind(compiler, field.ty) == TYPE_KIND_BYTES) { value_type_size(compiler, field.ty) } else { 0L }
         StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + field_offset, copies: base.copies, index: base.index, index_node: base.index_node, index_stride: stride }
     } else if kind == NodeKind.Index {
         let receiver = compiler.child_first[node]
@@ -8426,7 +8426,7 @@ recursive fn emit_collection_field_path_address(
     }
     let pointer = emit_location_pointer_materialization(compiler, ir, location)
     let field_type = compiler.facts[node].ty
-    let stride = if is_aggregate_type(compiler, field_type) { 0L } else { value_type_size(compiler, field_type) }
+    let stride = if is_aggregate_type(compiler, field_type) && type_kind(compiler, field_type) != TYPE_KIND_BYTES { 0L } else { value_type_size(compiler, field_type) }
     if stride > 0L {
         ir_write_ascii(compiler, ir, "  %coll.field.index.bytes."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, index_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.field.index.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, byte_offset); ir_write_ascii(compiler, ir, ", %coll.field.index.bytes."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
@@ -8559,7 +8559,7 @@ fn emit_parameter_field_path_address(
         let base = collection_value_location(tables, compiler, collection)
         let pointer_location = compiler_location(compiler, base.anchor_kind, base.anchor_node, base.byte_offset)
         let pointer = emit_location_pointer_materialization(compiler, ir, pointer_location)
-        if !is_aggregate_type(compiler, field_type) && field_type != TY_UNIT {
+        if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES) && field_type != TY_UNIT {
             let stride = value_type_size(compiler, field_type)
             ir_write_ascii(compiler, ir, "  %coll.view.index.bytes."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 %for.each.current."); ir_write_number(compiler, ir, loop_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
             ir_write_ascii(compiler, ir, "  %coll.view.index.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, byte_offset); ir_write_ascii(compiler, ir, ", %coll.view.index.bytes."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
@@ -8567,7 +8567,7 @@ fn emit_parameter_field_path_address(
         ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
         emit_location_pointer_reference(compiler, ir, pointer_location, pointer)
         ir_write_ascii(compiler, ir, ", i64 ")
-        if !is_aggregate_type(compiler, field_type) && field_type != TY_UNIT { ir_write_ascii(compiler, ir, "%coll.view.index.offset."); ir_write_number(compiler, ir, address_id) }
+        if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES) && field_type != TY_UNIT { ir_write_ascii(compiler, ir, "%coll.view.index.offset."); ir_write_number(compiler, ir, address_id) }
         else { ir_write_number(compiler, ir, byte_offset) }
         ir_push_byte(compiler, ir, 10)
         compiler.type_walk.clear()
@@ -8593,7 +8593,7 @@ fn emit_parameter_field_path_address(
         total_serial = sum
         field_type = compiler.facts[field_node].ty
     }
-    if !is_aggregate_type(compiler, field_type) && field_type != TY_UNIT {
+    if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES) && field_type != TY_UNIT {
         let stride = value_type_size(compiler, field_type)
         let index_serial = next_location_serial(ir)
         ir_write_ascii(compiler, ir, "  %coll.desc.element.index."); ir_write_number(compiler, ir, index_serial); ir_write_ascii(compiler, ir, " = mul i64 %arg.index."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
@@ -12116,6 +12116,20 @@ fn mark_struct_helpers(
                 }
             } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || type_kind(compiler, type_id) == TYPE_KIND_LIST {
                 let child_ty = collection_element_type(compiler, type_id)
+                if type_kind(compiler, child_ty) == TYPE_KIND_STRUCT {
+                    let element = type_record(compiler, child_ty)
+                    for field_offset in 0L..element.field_count {
+                        let field_ty = compiler.struct_fields[element.field_start + field_offset].ty
+                        if type_kind(compiler, field_ty) == TYPE_KIND_BYTES {
+                            // Collection operations can copy, compare, or
+                            // print a direct Bytes leaf even when no whole-
+                            // collection helper is otherwise requested.
+                            register_type_helper(compiler, field_ty, HELPER_COPY)
+                            register_type_helper(compiler, field_ty, HELPER_EQUAL)
+                            register_type_helper(compiler, field_ty, HELPER_PRINT)
+                        }
+                    }
+                }
                 if is_aggregate_type(compiler, child_ty) {
                     if has_type_helper(compiler, type_id, HELPER_COPY) { register_type_helper(compiler, child_ty, HELPER_COPY) }
                     if has_type_helper(compiler, type_id, HELPER_EQUAL) { register_type_helper(compiler, child_ty, HELPER_EQUAL) }
@@ -12258,10 +12272,10 @@ fn emit_struct_copy_helpers(
         if !has_type_helper(compiler, type_id, HELPER_COPY) { continue }
         ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, "); emit_location_argument(compiler, ir, compiler_location(compiler, 4L, 0L, 0L)); ir_write_ascii(compiler, ir, ", "); emit_location_argument(compiler, ir, compiler_location(compiler, 5L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
         // E3a2: beyond the 64-byte inline tier, use the core's tuned generic
-        // copy for plain structs. A struct containing a collection must keep
-        // dispatching through its field helpers so only live collection items
-        // are read.
-        let plain_large_copy = ty.size > 64L && !type_contains_collection(compiler, type_id, 0L)
+        // copy for plain structs. Collections and Bytes fields must keep
+        // dispatching through their field helpers so only live values are read.
+        let plain_large_copy = ty.size > 64L && !type_contains_collection(compiler, type_id, 0L) &&
+            !type_contains_bytes(compiler, type_id, 0L)
         if plain_large_copy {
             let destination = compiler_location(compiler, 4L, 0L, 0L)
             let source = compiler_location(compiler, 5L, 0L, 0L)

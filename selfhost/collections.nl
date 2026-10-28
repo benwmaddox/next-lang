@@ -612,6 +612,36 @@ fn collection_has_nested_elements(compiler: CompilerTables, type_id: long) -> bo
     type_contains_collection(compiler, collection_element_type(compiler, type_id), 0L)
 }
 
+recursive fn type_contains_bytes(compiler: CompilerTables, type_id: long, depth: long) -> bool {
+    if depth > 256L { return true }
+    if type_id < 0L || type_id >= type_count(compiler) { return false }
+    let kind = type_kind(compiler, type_id)
+    if kind == TYPE_KIND_BYTES { return true }
+    if kind == TYPE_KIND_STRUCT {
+        let record = type_record(compiler, type_id)
+        for field_offset in 0L..record.field_count {
+            if type_contains_bytes(compiler, compiler.struct_fields[record.field_start + field_offset].ty, depth + 1L) { return true }
+        }
+    } else if kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST {
+        return type_contains_bytes(compiler, collection_element_type(compiler, type_id), depth + 1L)
+    } else if kind == TYPE_KIND_ENUM {
+        let record = type_record(compiler, type_id)
+        for case_offset in 0L..record.field_count {
+            let case = compiler.enum_cases[record.field_start + case_offset]
+            for part in 0L..case.payload_count {
+                if type_contains_bytes(compiler, compiler.enum_payloads[case.payload_start + part].ty, depth + 1L) { return true }
+            }
+        }
+    } else if kind == TYPE_KIND_OPTION || kind == TYPE_KIND_RESULT {
+        for tag in 0L..sum_case_count(compiler, type_id) {
+            for part in 0L..sum_case_payload_count(compiler, type_id, tag) {
+                if type_contains_bytes(compiler, sum_case_payload_type(compiler, type_id, tag, part), depth + 1L) { return true }
+            }
+        }
+    } else { () }
+    false
+}
+
 fn syntax_has_nested_collection_elements(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -717,6 +747,40 @@ fn collection_storage_type(ty: long) -> Ascii max 8 {
     if ty == TY_BOOL { "i8" } else { llvm_type_name(ty) }
 }
 
+fn emit_collection_text_helper_call(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    type_id: long,
+    operation: long,
+    result_name: Ascii max 32,
+    result_serial: long,
+    left_name: Ascii max 32,
+    left_serial: long,
+    right_name: Ascii max 32,
+    right_serial: long,
+) {
+    if type_kind(compiler, type_id) != TYPE_KIND_BYTES || !has_type_helper(compiler, type_id, operation) {
+        compiler.ir_overflow = true
+        return
+    }
+    ir_write_ascii(compiler, ir, "  ")
+    if operation == HELPER_EQUAL {
+        ir_push_byte(compiler, ir, 37); ir_write_ascii(compiler, ir, result_name); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, result_serial); ir_write_ascii(compiler, ir, " = ")
+    }
+    ir_write_ascii(compiler, ir, "call ")
+    if operation == HELPER_COPY { ir_write_ascii(compiler, ir, "void ") }
+    else if operation == HELPER_EQUAL { ir_write_ascii(compiler, ir, "i1 ") }
+    else { compiler.ir_overflow = true; return }
+    emit_type_helper_symbol(compiler, ir, type_id, operation)
+    ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr %"); ir_write_ascii(compiler, ir, left_name); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, left_serial)
+    if operation == HELPER_COPY {
+        ir_write_ascii(compiler, ir, ", ptr %"); ir_write_ascii(compiler, ir, right_name); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, right_serial)
+    } else if operation == HELPER_EQUAL {
+        ir_write_ascii(compiler, ir, ", ptr %"); ir_write_ascii(compiler, ir, right_name); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, right_serial)
+    } else { () }
+    ir_write_ascii(compiler, ir, ")\n")
+}
+
 fn emit_collection_lane_address(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
@@ -781,7 +845,9 @@ recursive fn emit_collection_copy_element_fields(
         if size < 0L { compiler.ir_overflow = true; return }
         let source = emit_collection_dynamic_address(compiler, ir, "source", "nl.source", collection_type, path_offset, size)
         let destination = emit_collection_dynamic_address(compiler, ir, "destination", "nl.dest", collection_type, path_offset, size)
-        if is_sum_type(compiler, type_id) {
+        if type_kind(compiler, type_id) == TYPE_KIND_BYTES {
+            emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.ptr", destination, "coll.ptr", source)
+        } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.copy.sum."); ir_write_number(compiler, ir, source)
             ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.ptr."); ir_write_number(compiler, ir, destination)
             ir_write_ascii(compiler, ir, ", ptr %coll.ptr."); ir_write_number(compiler, ir, source)
@@ -822,7 +888,11 @@ recursive fn emit_collection_equal_element_fields(
         let left = emit_collection_dynamic_address(compiler, ir, "left", "nl.left", collection_type, path_offset, size)
         let right = emit_collection_dynamic_address(compiler, ir, "right", "nl.right", collection_type, path_offset, size)
         let serial = next_location_serial(ir)
-        if is_sum_type(compiler, type_id) {
+        if type_kind(compiler, type_id) == TYPE_KIND_BYTES {
+            emit_collection_text_helper_call(compiler, ir, type_id, HELPER_EQUAL, "coll.eq.text", serial, "coll.ptr", left, "coll.ptr", right)
+            ir_write_ascii(compiler, ir, "  br i1 %coll.eq.text."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", label %coll.eq.field.ok."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", label %coll.eq.false."); ir_write_number(compiler, ir, collection_type); ir_push_byte(compiler, ir, 10)
+            ir_write_ascii(compiler, ir, "coll.eq.field.ok."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ":\n")
+        } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.eq.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call i1 "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_EQUAL)
             ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr %coll.ptr."); ir_write_number(compiler, ir, left); ir_write_ascii(compiler, ir, ", ptr %coll.ptr."); ir_write_number(compiler, ir, right); ir_write_ascii(compiler, ir, ")\n  br i1 %coll.eq.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", label %coll.eq.field.ok."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", label %coll.eq.false."); ir_write_number(compiler, ir, collection_type); ir_write_ascii(compiler, ir, "\ncoll.eq.field.ok."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ":\n")
         } else {
@@ -858,7 +928,9 @@ recursive fn emit_collection_gather_element_fields(
         let source = emit_collection_dynamic_address(compiler, ir, "value", "nl.value", collection_type, path_offset, size)
         let serial = next_location_serial(ir)
         ir_write_ascii(compiler, ir, "  %coll.row.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %coll.print.element."); ir_write_number(compiler, ir, collection_type); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, row_offset); ir_push_byte(compiler, ir, 10)
-        if is_sum_type(compiler, type_id) {
+        if type_kind(compiler, type_id) == TYPE_KIND_BYTES {
+            emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.row.ptr", serial, "coll.ptr", source)
+        } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.row.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.row.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.ptr."); ir_write_number(compiler, ir, source); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
         } else {
             ir_write_ascii(compiler, ir, "  %coll.row.value."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, ", ptr %coll.ptr."); ir_write_number(compiler, ir, source); ir_write_ascii(compiler, ir, ", align 1\n  store "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, " %coll.row.value."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.row.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", align 1\n")
@@ -880,7 +952,8 @@ fn emit_collection_copy_helpers(compiler: write CompilerTables, ir: grow Bytes m
         let base_offset = collection_element_base_offset(compiler, type_id)
         let size = value_type_size(compiler, type_id)
         if capacity < 0L || base_offset < 0L || size < 0L { compiler.ir_overflow = true; continue }
-        let bulk_copy = size > 64L && !collection_has_nested_elements(compiler, type_id)
+        let bulk_copy = size > 64L && !collection_has_nested_elements(compiler, type_id) &&
+            !type_contains_bytes(compiler, element, 0L)
         ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY)
         ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr %nl.dest, ptr %nl.source) {\nentry:\n")
         if collection_kind == TYPE_KIND_ARRAY && bulk_copy {
@@ -1162,7 +1235,9 @@ recursive fn emit_collection_store_element_fields(
         ir_write_ascii(compiler, ir, "  %coll.literal.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
         emit_location_pointer_reference(compiler, ir, source_location, source_pointer)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, source_offset); ir_push_byte(compiler, ir, 10)
-        if is_sum_type(compiler, type_id) {
+        if type_kind(compiler, type_id) == TYPE_KIND_BYTES {
+            emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.literal.dest", serial, "coll.literal.src", serial)
+        } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.literal.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.literal.dest."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.literal.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
         } else {
             ir_write_ascii(compiler, ir, "  %coll.literal.value."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, ", ptr %coll.literal.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", align 1\n  store "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, " %coll.literal.value."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.literal.dest."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
@@ -1222,7 +1297,9 @@ recursive fn emit_collection_store_dynamic_fields(
         ir_write_ascii(compiler, ir, "  %coll.dynamic.lane.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, path_offset); ir_write_ascii(compiler, ir, ", %coll.dynamic.lane.bytes."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.dynamic.lane.dest."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination_location, destination_pointer); ir_write_ascii(compiler, ir, ", i64 %coll.dynamic.lane.offset."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.dynamic.lane.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, source_location, source_pointer); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, row_offset); ir_push_byte(compiler, ir, 10)
-        if is_sum_type(compiler, type_id) {
+        if type_kind(compiler, type_id) == TYPE_KIND_BYTES {
+            emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.dynamic.lane.dest", serial, "coll.dynamic.lane.src", serial)
+        } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.dynamic.lane.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.dynamic.lane.dest."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.dynamic.lane.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
         } else {
             ir_write_ascii(compiler, ir, "  %coll.dynamic.lane.value."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, ", ptr %coll.dynamic.lane.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", align 1\n  store "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, " %coll.dynamic.lane.value."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.dynamic.lane.dest."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
@@ -1265,7 +1342,9 @@ recursive fn emit_collection_move_dynamic_fields(
         ir_write_ascii(compiler, ir, "  %coll.move.dst.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, path_offset); ir_write_ascii(compiler, ir, ", %coll.move.dst.bytes."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.move.src.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.move.src.offset."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.move.dst.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.move.dst.offset."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
-        if is_sum_type(compiler, type_id) {
+        if type_kind(compiler, type_id) == TYPE_KIND_BYTES {
+            emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.move.dst.ptr", serial, "coll.move.src.ptr", serial)
+        } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.move.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.move.dst.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.move.src.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
         } else {
             ir_write_ascii(compiler, ir, "  %coll.move.value."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, ", ptr %coll.move.src.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", align 1\n  store "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, " %coll.move.value."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.move.dst.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
@@ -1308,7 +1387,9 @@ recursive fn emit_collection_gather_dynamic_fields(
         ir_write_ascii(compiler, ir, "  %coll.gather.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, path_offset); ir_write_ascii(compiler, ir, ", %coll.gather.bytes."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.gather.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, source_location, source_pointer); ir_write_ascii(compiler, ir, ", i64 %coll.gather.offset."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.gather.dst."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination_location, destination_pointer); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, row_offset); ir_push_byte(compiler, ir, 10)
-        if is_sum_type(compiler, type_id) {
+        if type_kind(compiler, type_id) == TYPE_KIND_BYTES {
+            emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.gather.dst", serial, "coll.gather.src", serial)
+        } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.gather.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.gather.dst."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.gather.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
         } else {
             ir_write_ascii(compiler, ir, "  %coll.gather.value."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, ", ptr %coll.gather.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", align 1\n  store "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, " %coll.gather.value."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.gather.dst."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)

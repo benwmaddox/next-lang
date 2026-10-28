@@ -27,10 +27,26 @@ recursive fn deferred_text_type_contains_collection(
     }
     var unresolved = false
     if kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST {
-        let found = deferred_text_type_contains_collection(
-            compiler, collection_element_type(compiler, type_id), true, depth + 1L, states)
-        if found > 0L { states[state_index] = 3; return 1L }
-        if found < 0L { unresolved = true }
+        let element_type = collection_element_type(compiler, type_id)
+        if !under_collection && type_kind(compiler, element_type) == TYPE_KIND_STRUCT {
+            // A collection of records may carry bounded Bytes in its direct
+            // fields. Keep every other text-bearing path gated, including
+            // nested records, collections, and sum payloads.
+            let element = type_record(compiler, element_type)
+            for field_offset in 0L..element.field_count {
+                let field_type = compiler.struct_fields[element.field_start + field_offset].ty
+                if type_kind(compiler, field_type) == TYPE_KIND_BYTES { continue }
+                let found = deferred_text_type_contains_collection(
+                    compiler, field_type, true, depth + 1L, states)
+                if found > 0L { states[state_index] = 3; return 1L }
+                if found < 0L { unresolved = true }
+            }
+        } else {
+            let found = deferred_text_type_contains_collection(
+                compiler, element_type, true, depth + 1L, states)
+            if found > 0L { states[state_index] = 3; return 1L }
+            if found < 0L { unresolved = true }
+        }
     } else if kind == TYPE_KIND_STRUCT {
         let record = type_record(compiler, type_id)
         for field_offset in 0L..record.field_count {
