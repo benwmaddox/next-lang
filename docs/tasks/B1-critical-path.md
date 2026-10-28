@@ -79,11 +79,13 @@ and 76 recursive declarations.
    independent live bytes, indexed stride, gather, and relocation. Broad nesting,
    Ascii/Text lanes, sum elements, and reachability optimization stay deferred.
 3. **Source-used recursion and native-stack checks.** This is now the actual
-   first gate. Follow [B1-recursion.md](B1-recursion.md): concrete direct-call
-   cycles, region liveness, measured optimized native frames, and reliable
-   budget failure. The frozen reference linker rejects recursion metadata, so
-   the measured-frame external link path and core runtime check are explicit
-   prerequisites. Keep generic/indirect functions gated.
+   first gate, but Ben deferred its implementation on 2026-10-28 pending further
+   language design. See [B1-recursion.md](B1-recursion.md) for unresolved budget,
+   default-policy, and size-dependent region rules. The unmerged prototype was
+   removed; existing gates remain. Favor simple StasisLang-like syntax and
+   rules, and defend any Rust-derived approach. Do not resume this task merely
+   because it remains first in source order. Work on independent builder and
+   capability/I/O prerequisites while the recursion design is unsettled.
 4. **E3d1 builder prerequisites.** `ir_push_byte` writes through `grow Bytes`,
    and the compiler uses checked appends. Implement grow descriptors, byte pushes,
    append transactions, width checks, and the required proof/rollback rules.
