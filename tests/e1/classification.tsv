@@ -5,7 +5,7 @@ build	tests/e1/division
 build	tests/e1/divoverflow
 build	tests/e1/divzero
 diagnose	tests/e1/duplicate_parameter
-rejects	tests/e1/functionshadow
+build	tests/e1/functionshadow
 unsupported	tests/e1/functionvalue
 build	tests/e1/ifexpr
 diagnose	tests/e1/literal_long_context
@@ -134,11 +134,11 @@ diagnose	tests/e2/reference_default_phase_body
 diagnose	tests/e2/reference_default_phase_entry
 diagnose	tests/e2/reference_default_return
 diagnose	tests/e2/reference_default_scope
-rejects	tests/e2/reference_default_shadow
+build	tests/e2/reference_default_shadow
 diagnose	tests/e2/reference_default_try
 diagnose	tests/e2/reference_default_two_cycle
 diagnose	tests/e2/reference_default_unused
-rejects	tests/e2/reference_unit_erasure
+build	tests/e2/reference_unit_erasure
 diagnose	tests/e2/reference_unit_field
 diagnose	tests/e2/result_coalesce_int
 diagnose	tests/e2/size_direct_cycle
@@ -163,7 +163,7 @@ diagnose	tests/run/break_outside_loop
 diagnose	tests/run/call_cycle
 diagnose	tests/run/coalesce_exit_outside
 diagnose	tests/run/continue_outside_loop
-rejects	tests/run/div_min_div_neg_one
+build	tests/run/div_min_div_neg_one
 build	tests/run/divide_zero
 diagnose	tests/run/duplicate_name
 build	tests/run/enum_aggregate_sources
@@ -191,7 +191,7 @@ diagnose	tests/run/match_unreachable
 build	tests/run/minimum_literal
 diagnose	tests/run/missing_result
 diagnose	tests/run/mixed_int_long
-rejects	tests/run/mod_min_div_neg_one
+build	tests/run/mod_min_div_neg_one
 diagnose	tests/run/none_inference
 unsupported	tests/run/o1_offset_slice
 diagnose	tests/run/option_question_wrong_return
@@ -213,22 +213,22 @@ rejects	tests/run/shadow_builtin_err
 rejects	tests/run/shadow_builtin_none
 rejects	tests/run/shadow_builtin_not_found
 rejects	tests/run/shadow_builtin_ok
-rejects	tests/run/shadow_builtin_print
+build	tests/run/shadow_builtin_print
 rejects	tests/run/shadow_builtin_some
 rejects	tests/run/shadow_enum_case
 rejects	tests/run/shadow_let_visible
 rejects	tests/run/shadow_loop_visible
 rejects	tests/run/shadow_match_binding_visible
-rejects	tests/run/shadow_package_const
-rejects	tests/run/shadow_package_function
-rejects	tests/run/shadow_package_type
-rejects	tests/run/shadow_parameter_package_function
+unsupported	tests/run/shadow_package_const
+build	tests/run/shadow_package_function
+build	tests/run/shadow_package_type
+build	tests/run/shadow_parameter_package_function
 build	tests/run/shadow_sibling_scopes
 rejects	tests/run/shadow_var_visible
 build	tests/run/short_circuit
 unsupported	tests/run/t04_bad_refined_default
 unsupported	tests/run/t04_clamp_overflow
-rejects	tests/run/t04_core
+unsupported	tests/run/t04_core
 diagnose	tests/run/t04_duplicate_field
 unsupported	tests/run/t04_equality_interior_unproven
 unsupported	tests/run/t04_equality_narrowing
@@ -265,7 +265,7 @@ unsupported	tests/run/t05_const_write
 unsupported	tests/run/t05_constants
 unsupported	tests/run/t06_bad_default
 rejects	tests/run/t06_core
-rejects	tests/run/t06_discard_capacity
+unsupported	tests/run/t06_discard_capacity
 unsupported	tests/run/t06_layout
 unsupported	tests/run/t06_oversized_nested
 unsupported	tests/run/t07_assign_pool
@@ -294,7 +294,7 @@ unsupported	tests/run/t07_struct_pool_copy
 unsupported	tests/run/t07_struct_pool_reset
 unsupported	tests/run/t07_unhandled_add
 unsupported	tests/run/t07_write_pool_reset
-rejects	tests/run/t07_zero_capacity
+unsupported	tests/run/t07_zero_capacity
 unsupported	tests/run/t08_const_global_read
 unsupported	tests/run/t08_global_disjoint
 unsupported	tests/run/t08_global_overlap
@@ -376,7 +376,7 @@ unsupported	tests/run/t16_collections
 build	tests/run/t16_mixed_maxima
 diagnose	tests/run/t16_text_byte_limit
 unsupported	tests/run/t16_text_bytes
-rejects	tests/run/t16_text_output
+unsupported	tests/run/t16_text_output
 build	tests/run/t16_text_slice_bounds
 diagnose	tests/run/t16_text_write_ascii
 diagnose	tests/run/t16_text_write_byte_limit
@@ -384,7 +384,7 @@ unsupported	tests/run/t16_view_field_write
 unsupported	tests/run/t16_view_indirect_write
 unsupported	tests/run/t16_view_remove
 unsupported	tests/run/t16_view_shift
-rejects	tests/run/t17_worked_reservation
+unsupported	tests/run/t17_worked_reservation
 unsupported	tests/run/t18_abs_min
 diagnose	tests/run/t18_bad_radix
 unsupported	tests/run/t18_clamp_bounds
@@ -412,8 +412,8 @@ unsupported	tests/run/t19_region_indirect
 unsupported	tests/run/t19_region_mutual
 unsupported	tests/run/t19_region_result
 unsupported	tests/run/t19_region_temporary
-rejects	tests/run/t20_args
-diagnose	tests/run/t20_args_without_grant
+unsupported	tests/run/t20_args
+unsupported	tests/run/t20_args_without_grant
 unsupported	tests/run/t20_capability_collection
 unsupported	tests/run/t20_capability_global
 rejects	tests/run/t20_channels
@@ -427,7 +427,7 @@ rejects	tests/run/t20_probe
 unsupported	tests/run/t20_result_main_error
 diagnose	tests/run/t20_unhandled_result
 diagnose	tests/run/t20_unhandled_result_block
-rejects	tests/run/t23_live_elements
+unsupported	tests/run/t23_live_elements
 unsupported	tests/run/t23_queue_ring_copy
 build	tests/run/t23_rss_empty
 unsupported	tests/run/t23_rss_map
@@ -451,7 +451,7 @@ unsupported	tests/run/t26_never_function_value
 diagnose	tests/run/t26_never_return
 diagnose	tests/run/t26_never_return_expression
 unsupported	tests/run/t26_never_values
-rejects	tests/run/t29_inline_text_fields
+unsupported	tests/run/t29_inline_text_fields
 unsupported	tests/run/t30_copy_down
 build	tests/run/t30_locality
 build	tests/run/t32_decimal_print
@@ -469,22 +469,22 @@ build	tests/test/harness
 build	tests/test/no_main
 build	tests/test/t04_struct_expect
 unsupported	tests/test/t06_collections
-rejects	tests/test/t12_sorting
+unsupported	tests/test/t12_sorting
 build	tests/test/t14_ascii_expect
 rejects	tests/test/t16_text_bytes
 unsupported	tests/test/t17_stack_peak_fail
 unsupported	tests/test/t17_stack_peak_pass
-rejects	tests/test/t18_number_text
+unsupported	tests/test/t18_number_text
 unsupported	tests/test/t19_recursion_budget
 rejects	tests/test/t20_io
-rejects	tests/test/t20_result_error
-rejects	tests/test/t24_byte_escape
+unsupported	tests/test/t20_result_error
+unsupported	tests/test/t24_byte_escape
 unsupported	tests/test/t24_exit_in_test
-rejects	tests/test/t25_bytes
+unsupported	tests/test/t25_bytes
 unsupported	tests/test/t29_dirty_inline_copy
 unsupported	tests/test/t31_collection_text_lanes
 unsupported	tests/test/t31_large_classes_build
-rejects	tests/test/t32_number_format
+unsupported	tests/test/t32_number_format
 # noshadow begin
 build	tests/e1/noshadow_functionshadow
 build	tests/e2/noshadow_enum_match_runtime
@@ -758,3 +758,12 @@ unsupported	tests/e3/e3c_deferred_option_text
 diagnose	tests/e3/e3c_deferred_result_type
 build	tests/e3/e3c_receiver_order
 # E3c end
+
+# B1 name scopes begin
+build	tests/e3/b1_names_shared
+expected	tests/e3/b1_names_call_resolution
+rejects	tests/e3/b1_names_duplicate_case_shadow
+build	tests/e3/b1_names_duplicate_case_pattern
+unsupported	tests/e3/b1_names_builtin_call_deferred
+build	tests/e3/b1_names_nested_arm_scope
+# B1 name scopes end

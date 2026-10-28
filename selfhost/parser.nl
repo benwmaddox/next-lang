@@ -605,7 +605,7 @@ fn append_extra(tables: write ParseTables, value: long) -> Result<long, ParseErr
     let index = tables.extra.count()
     match tables.extra.push(value) {
         ok(_) => ok(index),
-        err(Full) => err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: tables.state.last_end, token: tables.state.pos }),
+        err(_) => err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: tables.state.last_end, token: tables.state.pos }),
     }
 }
 
@@ -613,7 +613,7 @@ fn append_literal(tables: write ParseTables, value: Literal128) -> Result<long, 
     let index = tables.literals.count()
     match tables.literals.push(value) {
         ok(_) => ok(index),
-        err(Full) => err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: tables.state.last_end, token: tables.state.pos }),
+        err(_) => err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: tables.state.last_end, token: tables.state.pos }),
     }
 }
 
@@ -665,7 +665,7 @@ fn append_node(
     }
     match tables.nodes.push(node) {
         ok(_) => ok(index),
-        err(Full) => err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: start, token }),
+        err(_) => err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: start, token }),
     }
 }
 
@@ -1791,7 +1791,7 @@ recursive fn parse_for_statement(
         if cursor_word_is(source, tables, tokens, "for") {
             match tables.for_frames.push(current) {
                 ok(_) => (),
-                err(Full) => return err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: tables.state.last_end, token: tables.state.pos }),
+                err(_) => return err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: tables.state.last_end, token: tables.state.pos }),
             }
             current = parse_for_header(source, tokens, tables)?
         } else {
@@ -2762,7 +2762,7 @@ recursive fn parse_match_after_scrutinee(
     let frame = MatchFrame { match_token: start.token, match_start: start.start, scrutinee, first: node_first_child(tables.nodes, scrutinee), arm_count: 0L, waiting_pattern: -1L, waiting_arm_start: -1L }
     match tables.match_frames.push(frame) {
         ok(_) => (),
-        err(Full) => return err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: start.start, token: start.token }),
+        err(_) => return err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: start.start, token: start.token }),
     }
     cursor_skip_separators(tables, tokens)
     for step in 0L..MAX_TOKENS_PER_FILE {
@@ -2824,7 +2824,7 @@ recursive fn parse_match_after_scrutinee(
             let nested = MatchFrame { match_token: nested_start.token, match_start: nested_start.start, scrutinee: nested_scrutinee, first: node_first_child(tables.nodes, nested_scrutinee), arm_count: 0L, waiting_pattern: -1L, waiting_arm_start: -1L }
             match tables.match_frames.push(nested) {
                 ok(_) => (),
-                err(Full) => return err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: nested_start.start, token: nested_start.token }),
+                err(_) => return err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: nested_start.start, token: nested_start.token }),
             }
             cursor_skip_separators(tables, tokens)
             continue
@@ -2966,7 +2966,7 @@ recursive fn parse_if_after_condition(
                 let frame = IfFrame { condition, then_block, token: current_if.token, start: current_if.start, end: tables.nodes[then_block].end }
                 match tables.if_frames.push(frame) {
                     ok(_) => (),
-                    err(Full) => return err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: next_if.start, token: next_if.token }),
+                    err(_) => return err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: next_if.start, token: next_if.token }),
                 }
                 clause_count += 1L
                 current_if = cursor_next(tables, tokens)
@@ -3038,7 +3038,7 @@ fn push_nesting_task(tables: write ParseTables, node: long, depth: long, role: l
     let task = NestTask { node, depth, role }
     match tables.nesting.push(task) {
         ok(_) => ok(()),
-        err(Full) => err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: tables.state.last_end, token: tables.state.pos }),
+        err(_) => err(ParseError { kind: ParseProblemKind.InternalCapacity, offset: tables.state.last_end, token: tables.state.pos }),
     }
 }
 
