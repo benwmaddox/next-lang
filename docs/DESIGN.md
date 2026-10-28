@@ -156,6 +156,25 @@ The baseline has two storage lifetimes: optional fixed-layout state owned by a r
 
 **Memory baseline (2026-10-28):** Keep fixed-layout job state optional and Stasis-style. Most work uses a simple bump-and-reset arena for each run; the data arena may move and grow up to its cap. Scope marks do not create another ownership or lifetime kind. Persistent fields cannot retain references into a run's arena; arena references are offsets valid only for that run. A job's fixed-layout state is not automatically shared mutable global state; cross-job sharing remains explicit.
 
+**Hard constraint (2026-10-28):** This memory design must not require garbage
+collection (GC), a borrow checker, or loan/move/inferred-ownership/lifetime
+analysis to legalize ordinary code. Lexical scope planning, arena marks/resets,
+and bounds checks remain ordinary compiler work. If a feature appears to need a
+collector or checker, simplify it, restrict it, or defer it. Direct structural
+rules remain acceptable: static fields cannot store arena views; parameter/scope
+references cannot escape; cross-job messages copy bounded payloads; indices are
+bounds-checked; and each instance runs one job at a time. These local rules do
+not require a checker; no global mutable references are introduced. Offset-based
+arena relocation is not GC: it does no reachability tracing or individual-object
+reclamation. Older overlap, move, and owner proposals below are provisional and
+must be reviewed against this constraint, not kept as conditional exceptions.
+
+**Pointer review (2026-10-28):** Caller-backed view parameters are confirmed
+and allowed. Stored indices and raw addresses are distinct cases. Raw-address
+policy remains under feature-by-feature review; this adds no blanket ban and
+changes no current compiler support. The no-GC/no-borrow-checker constraint
+stands.
+
 No per-object heap, ownership headers, reference counts, or general allocator are part of the default. More elaborate mechanisms below are extensions that need a concrete need and a safety or measured-performance defense.
 
 At startup, `main` defines jobs, counts/triggers, and HTTP/mailboxes. The host gives `main` an allowed CPU/core/available-RAM grant, possibly a subset of the host's resources; `main` chooses job counts and settings only within that grant. Per-job resource subdivision and CPU affinity are optional policy, not required by this baseline. A full bounded-mailbox send returns a full status for the caller to handle; it does not wait, drop, or retry implicitly.

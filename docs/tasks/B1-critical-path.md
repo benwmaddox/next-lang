@@ -16,6 +16,12 @@ mailbox-full is an explicit send status. See the
 [Revision 1 discussion draft](../design/memory-revision-1.md).
 Extra ownership, allocation, or lifetime machinery needs a concrete requirement
 and a defense; the older task proposals are not a reason to introduce it.
+Hard constraint (Ben, 2026-10-28): no GC, borrow checker, or loan/move/inferred-
+ownership/lifetime analysis to legalize ordinary code; simplify, restrict, or
+defer a prerequisite that seems to need one. Scope planning and arena reset are
+ordinary compiler work, not checker exceptions. Review each feature through an
+ordinary example, the simplest alternative, and its needed guarantee/cost, then
+get user review before adding language rules. See [DESIGN.md](../DESIGN.md).
 
 ## Completed prerequisite: remove the name-check blocker
 
