@@ -1,0 +1,1 @@
+main.nl:4:11: error: value 'max' has type int and cannot be called; use a function-typed value

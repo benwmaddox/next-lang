@@ -110,7 +110,7 @@ fn emit_token(
             file_token_count += 1L
             ok(())
         },
-        err(Full) => err(token_error(LexProblemKind.TokenLimit, start, line, col, 0)),
+        err(_) => err(token_error(LexProblemKind.TokenLimit, start, line, col, 0)),
     }
 }
 
@@ -453,7 +453,7 @@ fn lex_file(
             let delimiter = if kind == TokenKind.LParen { DelimiterKind.Parenthesis } else { DelimiterKind.Bracket }
             match delimiters.push(delimiter) {
                 ok(_) => (),
-                err(Full) => return err(token_error(LexProblemKind.DelimiterNesting, start, start_line, start_col, 0)),
+                err(_) => return err(token_error(LexProblemKind.DelimiterNesting, start, start_line, start_col, 0)),
             }
         } else if kind == TokenKind.RParen || kind == TokenKind.RBracket {
             let wanted = if kind == TokenKind.RParen { DelimiterKind.Parenthesis } else { DelimiterKind.Bracket }

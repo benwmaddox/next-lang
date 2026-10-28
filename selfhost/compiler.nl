@@ -939,75 +939,80 @@ fn closest_name_candidate(
     best
 }
 
-fn block_for_node(
-    tables: ParseTables,
-    files: list<SourceFile, MAX_SOURCE_FILES>,
-    node: long,
-    file_index: long,
-) -> long {
-    var found = -1L
-    var smallest = 9223372036854775807L
-    let value = tables.nodes[node]
-    for candidate in 0L..tables.nodes.count() {
-        if tables.nodes[candidate].kind != NodeKind.Block || node_file_index(tables.nodes, files, candidate) != file_index { continue }
-        let block = tables.nodes[candidate]
-        if block.start <= value.start && block.end >= value.end && block.end - block.start < smallest {
-            found = candidate
-            smallest = block.end - block.start
+fn block_for_node(tables: ParseTables, node: long) -> long {
+    if node < 0L || node >= tables.nodes.count() { return -1L }
+    for candidate in node..tables.nodes.count() {
+        let syntax = tables.nodes[candidate]
+        if syntax.kind == NodeKind.Program { break }
+        let subtree_start = candidate - syntax.subtree + 1L
+        if syntax.kind == NodeKind.Block && subtree_start <= node { return candidate }
+        if (syntax.kind == NodeKind.Function || syntax.kind == NodeKind.Test) && subtree_start <= node { break }
+    }
+    -1L
+}
+
+fn enclosing_owner(tables: ParseTables, node: long) -> long {
+    if node < 0L || node >= tables.nodes.count() { return -1L }
+    for candidate in node + 1L..tables.nodes.count() {
+        let syntax = tables.nodes[candidate]
+        if syntax.kind == NodeKind.Program { break }
+        if (syntax.kind == NodeKind.Function || syntax.kind == NodeKind.Test) && candidate - syntax.subtree + 1L <= node {
+            return candidate
         }
     }
-    found
+    -1L
 }
 
 fn is_shadowed_function_value(
-    files: list<SourceFile, MAX_SOURCE_FILES>,
     tables: ParseTables,
     compiler: CompilerTables,
     node: long,
-    file_index: long,
     name_id: long,
 ) -> bool {
+    let owner = enclosing_owner(tables, node)
+    if owner < 0L { return false }
     let reference = tables.nodes[node]
-    var unused = 0L
-    for candidate in 0L..tables.nodes.count() {
-        let kind = tables.nodes[candidate].kind
-        if kind != NodeKind.Function && kind != NodeKind.Test { continue }
-        if node_file_index(tables.nodes, files, candidate) != file_index { continue }
-        let owner = tables.nodes[candidate]
-        if owner.start <= reference.start && owner.end >= reference.end {
-            unused += 1L
-            break
-        }
-    }
-    if unused == 0L { return false }
-    let reference_block = block_for_node(tables, files, node, file_index)
-    for candidate in 0L..tables.nodes.count() {
-        let kind = tables.nodes[candidate].kind
-        if node_file_index(tables.nodes, files, candidate) != file_index { continue }
+    let reference_block = block_for_node(tables, node)
+    let first = owner - tables.nodes[owner].subtree + 1L
+    for candidate in first..owner + 1L {
+        if candidate == node { continue }
         let declaration = tables.nodes[candidate]
-        if kind == NodeKind.Parameter && candidate != node && compiler.token_name_ids[declaration.token] == name_id {
-            var belongs = false
-            for owner in 0L..tables.nodes.count() {
-                let owner_kind = tables.nodes[owner].kind
-                if (owner_kind == NodeKind.Function || owner_kind == NodeKind.Test) && node_file_index(tables.nodes, files, owner) == file_index &&
-                    tables.nodes[owner].start <= declaration.start && tables.nodes[owner].end >= declaration.end &&
-                    tables.nodes[owner].start <= reference.start && tables.nodes[owner].end >= reference.end { belongs = true }
+        let kind = declaration.kind
+        if kind != NodeKind.Parameter && kind != NodeKind.Let && kind != NodeKind.For && kind != NodeKind.ForEach && kind != NodeKind.PatternBinding { continue }
+        if kind == NodeKind.ForEach {
+            let body = node_children_of_kind(tables, compiler, candidate, NodeKind.Block)
+            let visible = body >= 0L && tables.nodes[body].start <= reference.start && tables.nodes[body].end >= reference.end
+            if visible && compiler.token_name_ids[declaration.token] == name_id { return true }
+            for index_offset in 0L..declaration.aux {
+                let index_token = tables.extra[declaration.extra + index_offset]
+                if visible && compiler.token_name_ids[index_token] == name_id { return true }
             }
-            if belongs { return true }
+            continue
         }
-        if kind == NodeKind.Let && compiler.token_name_ids[declaration.token] == name_id && declaration.end < reference.start {
-            let declaration_block = block_for_node(tables, files, candidate, file_index)
-            if declaration_block >= 0L && reference_block >= 0L && tables.nodes[declaration_block].start <= tables.nodes[reference_block].start && tables.nodes[declaration_block].end >= tables.nodes[reference_block].end { return true }
+        if declaration.token < 0L || compiler.token_name_ids[declaration.token] != name_id { continue }
+        if kind == NodeKind.Parameter { return true }
+        if kind == NodeKind.Let && declaration.end < reference.start {
+            let declaration_block = block_for_node(tables, candidate)
+            if declaration_block >= 0L && reference_block >= 0L &&
+                tables.nodes[declaration_block].start <= tables.nodes[reference_block].start &&
+                tables.nodes[declaration_block].end >= tables.nodes[reference_block].end { return true }
         }
-        if kind == NodeKind.For && compiler.token_name_ids[declaration.token] == name_id {
+        if kind == NodeKind.For {
             let body = node_children_of_kind(tables, compiler, candidate, NodeKind.Block)
             if body >= 0L && tables.nodes[body].start <= reference.start && tables.nodes[body].end >= reference.end { return true }
         }
-        if kind == NodeKind.PatternBinding && candidate != node && compiler.token_name_ids[declaration.token] == name_id && declaration.end < reference.start {
-            for arm in 0L..tables.nodes.count() {
-                if tables.nodes[arm].kind == NodeKind.MatchArm && node_file_index(tables.nodes, files, arm) == file_index &&
-                    tables.nodes[arm].start <= declaration.start && tables.nodes[arm].end >= declaration.end &&
-                    tables.nodes[arm].start <= reference.start && tables.nodes[arm].end >= reference.end { return true }
+        if kind == NodeKind.PatternBinding && declaration.end < reference.start {
+            var declaration_arm = -1L
+            for arm in candidate + 1L..owner {
+                let arm_syntax = tables.nodes[arm]
+                if arm_syntax.kind == NodeKind.MatchArm && arm - arm_syntax.subtree + 1L <= candidate {
+                    declaration_arm = arm
+                    break
+                }
+            }
+            if declaration_arm >= 0L {
+                let arm_syntax = tables.nodes[declaration_arm]
+                if arm_syntax.start <= reference.start && arm_syntax.end >= reference.end { return true }
             }
         }
     }
@@ -1024,7 +1029,7 @@ fn is_function_value_name(
     let token = tables.nodes[node].token
     if token < 0L { return false }
     let name_id = compiler.token_name_ids[token]
-    function_exists_by_name(tables, files, compiler, name_id) && !is_shadowed_function_value(files, tables, compiler, node, file_index, name_id)
+    function_exists_by_name(tables, files, compiler, name_id) && !is_shadowed_function_value(tables, compiler, node, name_id)
 }
 
 fn builtin_function_name(
@@ -1677,20 +1682,10 @@ fn check_package_name_shadows(
         let first = files[file_index].first_token
         let last = first + files[file_index].token_count
         for token in first..last {
-            if tokens[token].kind != TokenKind.Ident { continue }
-            let is_builtin = builtin_function_name(source, tokens, files, file_index, token) ||
-                token_is_word_at(source, tokens, files, file_index, token, "print") ||
-                builtin_case_name(source, tokens, files, file_index, token)
-            if is_builtin {
+            if tokens[token].kind == TokenKind.Ident && builtin_case_name(source, tokens, files, file_index, token) {
                 let name_id = compiler.token_name_ids[token]
                 mark_reserved_name(compiler, name_id)
             }
-        }
-    }
-    for type_id in 0L..compiler.type_records.count() {
-        let ty = compiler.type_records[type_id]
-        if (type_record_kind(ty) == TYPE_KIND_ENUM || type_record_kind(ty) == TYPE_KIND_STRUCT) && ty.name_id >= 0L {
-            mark_reserved_name(compiler, ty.name_id)
         }
     }
     for case_index in 0L..compiler.enum_cases.count() {
@@ -1701,14 +1696,7 @@ fn check_package_name_shadows(
     }
     for case_index in 0L..compiler.enum_cases.count() {
         let name_id = compiler.enum_cases[case_index].name_id
-        if name_id >= 0L && name_id < compiler.enum_case_name_counts.count() && compiler.enum_case_name_counts[name_id] == 1L {
-            mark_reserved_name(compiler, name_id)
-        }
-    }
-    for node in 0L..tables.nodes.count() {
-        let syntax = tables.nodes[node]
-        if (syntax.kind == NodeKind.Function && is_top_level_function(tables, compiler, node)) || syntax.kind == NodeKind.Const {
-            let name_id = compiler.token_name_ids[syntax.token]
+        if name_id >= 0L && name_id < compiler.enum_case_name_counts.count() {
             mark_reserved_name(compiler, name_id)
         }
     }
@@ -1718,9 +1706,9 @@ fn check_package_name_shadows(
         let name_id = compiler.token_name_ids[syntax.token]
         if name_id >= 0L && name_id < compiler.reserved_names.count() && compiler.reserved_names[name_id] {
             let file_index = node_file_index(tables.nodes, files, node)
-            fail_name_shadow_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, "package or built-in declaration", -1L)
+            fail_name_shadow_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, "bare enum case", -1L)
         }
-        if is_shadowed_function_value(files, tables, compiler, node, node_file_index(tables.nodes, files, node), name_id) {
+        if is_shadowed_function_value(tables, compiler, node, name_id) {
             let file_index = node_file_index(tables.nodes, files, node)
             fail_name_shadow_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, "visible declaration", -1L)
         }
@@ -2527,7 +2515,7 @@ fn unsupported_category_for_node(
                 user_case_matches(compiler, compiler.token_name_ids[value.token]) == -1L &&
                 !(token_is_word_at(source, tokens, files, file_index, value.token, "none") &&
                     find_function_by_name(compiler, compiler.token_name_ids[value.token]) < 0L) &&
-                !is_shadowed_function_value(files, tables, compiler, node, file_index, compiler.token_name_ids[value.token]) { UNSUPPORTED_CASE }
+                !is_shadowed_function_value(tables, compiler, node, compiler.token_name_ids[value.token]) { UNSUPPORTED_CASE }
             else { 0L }
         },
         NodeKind.Return => 0L,
@@ -2931,7 +2919,7 @@ fn write_manifest_range(out: Out, contents: Bytes max FILE_SOURCE_CAPACITY, star
     for index in start..end {
         match value.push(contents[index]) {
             ok(_) => (),
-            err(Full) => return err(IoError.TooLarge),
+            err(_) => return err(IoError.TooLarge),
         }
     }
     out.write(value)
@@ -4153,7 +4141,7 @@ fn add_local_binding(
         fail_name_shadow_error(env, source, files, tokens, compiler, file_index, tables.nodes[node].start, name_token, "visible declaration", previous_position.line)
     }
     if name_id >= 0L && name_id < compiler.reserved_names.count() && compiler.reserved_names[name_id] {
-        fail_name_shadow_error(env, source, files, tokens, compiler, file_index, tables.nodes[node].start, name_token, "package or built-in declaration", -1L)
+        fail_name_shadow_error(env, source, files, tokens, compiler, file_index, tables.nodes[node].start, name_token, "bare enum case", -1L)
     }
     if compiler.bindings.count() >= BINDING_TABLE_CAPACITY {
         fail_parse_limit(env, files[file_index].name, "self-hosted binding table limit exceeded")
@@ -4540,16 +4528,14 @@ recursive fn natural_node_type(
             }
         },
         NodeKind.Call => {
-            if find_binding_in_scope(compiler, scope, compiler.token_name_ids[value.token]) >= 0L { -1L }
+            let id = compiler.token_name_ids[value.token]
+            let function = find_function_by_name(compiler, id)
+            if function >= 0L { compiler.functions[function].result_ty }
             else if token_is_word_at(source, tokens, files, file_index, value.token, "print") { TY_UNIT }
+            else if find_binding_in_scope(compiler, scope, id) >= 0L { -1L }
             else {
-                let id = compiler.token_name_ids[value.token]
-                let function = find_function_by_name(compiler, id)
-                if function >= 0L { compiler.functions[function].result_ty }
-                else {
-                    let candidate = user_case_matches(compiler, id)
-                    if candidate >= 0L { enum_case_owner_type_id(compiler, candidate) } else { -1L }
-                }
+                let candidate = user_case_matches(compiler, id)
+                if candidate >= 0L { enum_case_owner_type_id(compiler, candidate) } else { -1L }
             }
         },
         NodeKind.QualifiedCase => {
@@ -5757,10 +5743,6 @@ fn check_one_body(
                 continue
             }
             if kind == NodeKind.Call {
-                let local = find_binding_in_scope(compiler, frame.scope, compiler.token_name_ids[syntax.token])
-                if local >= 0L {
-                    fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "value '", syntax.token, "' is not callable; use a function-typed value")
-                }
                 let target = find_function_by_name(compiler, compiler.token_name_ids[syntax.token])
                 if target < 0L {
                     if builtin_sum_case_name(source, tokens, files, file_index, syntax.token) &&
@@ -6520,7 +6502,13 @@ fn check_one_body(
                 compiler.facts[node] = NodeFact { ty, flags: flags | FACT_FORMAT_TEXT, binding: -1L, function: -1L, literal: format_kind }
             } else {
                 let target = find_function_by_name(compiler, name_id)
-                if target < 0L { fail_name_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, frame.scope, true) }
+                if target < 0L {
+                    let local = find_binding_in_scope(compiler, frame.scope, name_id)
+                    if local >= 0L {
+                        fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "value '", syntax.token, "' is not callable; use a function-typed value")
+                    }
+                    fail_name_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, frame.scope, true)
+                }
                 let function = compiler.functions[target]
                 check_call_count(env, source, files, tokens, tables, compiler, function, node, file_index)
                 check_call_write_modes(env, source, files, tables, compiler, function, node, file_index, frame.scope)
@@ -6557,12 +6545,12 @@ fn check_one_body(
             let inner_ty = sum_case_payload_type(compiler, receiver_ty, 0L, 0L)
             let argument_count = count_children(tables, compiler, node) - 1L
             let method_is_to_long = token_is_word_at(source, tokens, files, file_index, syntax.token, "to_long")
-            var result_ty = -1L
+            var optional_result_ty = -1L
             if method_is_to_long {
                 if argument_count != 0L || inner_ty != TY_INT {
                     fail_at_message(env, files, compiler, file_index, syntax.anchor, "optional method 'to_long()' takes no arguments and requires Option<int>")
                 }
-                result_ty = intern_sum_type(compiler, TYPE_KIND_OPTION, TY_LONG, -1L, file_index, node, -1L, -1L)
+                optional_result_ty = intern_sum_type(compiler, TYPE_KIND_OPTION, TY_LONG, -1L, file_index, node, -1L, -1L)
             } else {
                 let target = find_function_by_name(compiler, compiler.token_name_ids[syntax.token])
                 if target < 0L { fail_name_error(env, source, files, tokens, compiler, file_index, syntax.anchor, syntax.token, frame.scope, true) }
@@ -6595,7 +6583,7 @@ fn check_one_body(
                     }
                     argument = compiler.child_next[argument]
                 }
-                result_ty = if type_kind(compiler, function.result_ty) == TYPE_KIND_OPTION { function.result_ty }
+                optional_result_ty = if type_kind(compiler, function.result_ty) == TYPE_KIND_OPTION { function.result_ty }
                     else { intern_sum_type(compiler, TYPE_KIND_OPTION, function.result_ty, -1L, file_index, node, -1L, -1L) }
                 if frame.function_id >= 0L {
                     let edge_id = compiler.call_edges.count()
@@ -6603,11 +6591,11 @@ fn check_one_body(
                     compiler.call_edges.push(CallEdge { from: frame.function_id, to: target, node, next: next_edge }).unwrap()
                     compiler.edge_first[frame.function_id] = edge_id
                 }
-                compiler.facts[node] = NodeFact { ty: result_ty, flags: if (compiler.facts[receiver].flags & FACT_FALLS_THROUGH) != 0L { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: target, literal: 0L }
+                compiler.facts[node] = NodeFact { ty: optional_result_ty, flags: if (compiler.facts[receiver].flags & FACT_FALLS_THROUGH) != 0L { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: target, literal: 0L }
             }
-            if frame.expected >= 0L && frame.expected != result_ty { require_type(env, files, compiler, file_index, node, frame.expected, result_ty, tables) }
-            if method_is_to_long || result_ty >= 0L {
-                compiler.facts[node] = NodeFact { ty: result_ty, flags: if (compiler.facts[receiver].flags & FACT_FALLS_THROUGH) != 0L { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: if method_is_to_long { -1L } else { compiler.facts[node].function }, literal: if method_is_to_long { -2L } else { 0L } }
+            if frame.expected >= 0L && frame.expected != optional_result_ty { require_type(env, files, compiler, file_index, node, frame.expected, optional_result_ty, tables) }
+            if method_is_to_long || optional_result_ty >= 0L {
+                compiler.facts[node] = NodeFact { ty: optional_result_ty, flags: if (compiler.facts[receiver].flags & FACT_FALLS_THROUGH) != 0L { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: if method_is_to_long { -1L } else { compiler.facts[node].function }, literal: if method_is_to_long { -2L } else { 0L } }
             }
         } else if kind == NodeKind.QualifiedCase {
             let ty = frame.result_ty
@@ -6625,11 +6613,11 @@ fn check_one_body(
                 if count_children(tables, compiler, node) != 1L {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "empty takes no arguments")
                 }
-                let result_ty = frame.result_ty
-                if frame.expected >= 0L && frame.expected != result_ty {
-                    require_type(env, files, compiler, file_index, node, frame.expected, result_ty, tables)
+                let method_result_ty = frame.result_ty
+                if frame.expected >= 0L && frame.expected != method_result_ty {
+                    require_type(env, files, compiler, file_index, node, frame.expected, method_result_ty, tables)
                 }
-                compiler.facts[node] = NodeFact { ty: result_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: TEXT_METHOD_EMPTY }
+                compiler.facts[node] = NodeFact { ty: method_result_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: TEXT_METHOD_EMPTY }
             } else if receiver_kind == TYPE_KIND_ARRAY || receiver_kind == TYPE_KIND_LIST {
                 let method = collection_method_kind(source, tokens, files, file_index, syntax.token, receiver_kind)
                 if method == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching array or list method is available on this value") }
@@ -6882,12 +6870,12 @@ fn check_one_body(
                     }
                     left_points + right_points
                 } else { 0L }
-                var result_ty = intern_text_type(compiler, result_kind, result_bytes, result_points, file_index, node, -1L, -1L)
+                var concat_result_ty = intern_text_type(compiler, result_kind, result_bytes, result_points, file_index, node, -1L, -1L)
                 if frame.expected >= 0L {
-                    if text_width_fits(compiler, result_ty, frame.expected) { result_ty = frame.expected }
-                    else { fail_type_mismatch(env, files, compiler, file_index, syntax.anchor, frame.expected, result_ty) }
+                    if text_width_fits(compiler, concat_result_ty, frame.expected) { concat_result_ty = frame.expected }
+                    else { fail_type_mismatch(env, files, compiler, file_index, syntax.anchor, frame.expected, concat_result_ty) }
                 }
-                ty = result_ty
+                ty = concat_result_ty
             } else if op >= 8L && op <= 13L {
                 let text_pair = is_text_comparable(compiler, left.ty, right.ty)
                 if left.ty != right.ty && !text_pair { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, left.ty, right.ty) }
@@ -7528,7 +7516,7 @@ fn ir_push_byte(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAP
     if compiler.ir_overflow { return }
     match ir.push(value) {
         ok(_) => (),
-        err(Full) => { compiler.ir_overflow = true },
+        err(_) => { compiler.ir_overflow = true },
     }
 }
 
@@ -9496,8 +9484,8 @@ fn emit_optional_call_start(
             let target = compiler.functions[target_id]
             let receiver_parameter = compiler.parameters[target.param_start]
             if receiver_parameter.ty != TY_UNIT {
-                let receiver_source = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, receiver), aggregate_source_id(tables, compiler, receiver))
-                let source_payload = optional_payload_location(receiver_source, receiver_payload.offset)
+                let payload_receiver_source = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, receiver), aggregate_source_id(tables, compiler, receiver))
+                let source_payload = optional_payload_location(payload_receiver_source, receiver_payload.offset)
                 if is_aggregate_type(compiler, receiver_parameter.ty) {
                     let receiver_storage_ty = if parameter_uses_text_read_view(compiler, receiver_parameter) { receiver_payload.ty }
                         else { receiver_parameter.ty }
@@ -12727,7 +12715,7 @@ fn append_embedded_core_sources(
         let core_file = SourceFile { name: file_name, base, length: file_length, first_token, token_count: summary.token_count, end_line: summary.end_line, end_col: summary.end_col, tree_root: root }
         match files.push(core_file) {
             ok(_) => (),
-            err(Full) => fail_core_internal(env, b"core", SourcePosition { line: 1L, col: 1L }, "embedded file count exceeded its fixed limit"),
+            err(_) => fail_core_internal(env, b"core", SourcePosition { line: 1L, col: 1L }, "embedded file count exceeded its fixed limit"),
         }
     }
 }

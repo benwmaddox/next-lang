@@ -51,7 +51,7 @@ fn display_name(path: Path) -> Bytes max 4096 {
     for index in 0L..path.count() {
         match value.push(path[index]) {
             ok(_) => (),
-            err(Full) => return b"<source>",
+            err(_) => return b"<source>",
         }
     }
     match value.validate_utf8() {
@@ -288,7 +288,7 @@ fn load_and_parse(
             let base = source.count()
             match source.try_append(file_data) {
                 ok(_) => (),
-                err(Full) => fail_tool(env, "package source buffer overflow"),
+                err(_) => fail_tool(env, "package source buffer overflow"),
             }
             let first_token = tokens.count()
             let summary = match lex_file(source, base, file_length, tokens, delimiters) {
@@ -341,7 +341,7 @@ fn load_and_parse(
             let source_file = SourceFile { name: file_name, base, length: file_length, first_token, token_count: summary.token_count, end_line: summary.end_line, end_col: summary.end_col, tree_root: root }
             match files.push(source_file) {
                 ok(_) => (),
-                err(Full) => fail_diagnostic(env, write_file_count_limit(env.err)),
+                err(_) => fail_diagnostic(env, write_file_count_limit(env.err)),
             }
         }
     }
