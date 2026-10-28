@@ -24,6 +24,7 @@ struct DataStackContext {
     entry_name_length: long
     clock_seconds: long
     clock_nanoseconds: long
+    step_budget: long
 }
 
 fn core_state_bytes() -> long { 151552L }
@@ -202,6 +203,16 @@ fn nl_context_create(
     sys.store64(context, sys.context_offset(19L), entry_name_length)
     let _budget = requested_recursion_budget
     context
+}
+
+// Each job owns one allowance shared by every unproven while loop it runs.
+fn nl_context_step_budget_take() -> bool {
+    let context = sys.context()
+    let offset = sys.context_offset(22L)
+    let steps = sys.load64(context, offset)
+    if steps >= 10000000L { return false }
+    sys.store64(context, offset, steps + 1L)
+    true
 }
 
 fn nl_context_base_offset() -> long { 0L }

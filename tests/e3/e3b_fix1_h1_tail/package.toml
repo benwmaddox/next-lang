@@ -1,0 +1,3 @@
+[package]
+name = "e3b-fix1-h1-tail"
+capabilities = ["out"]

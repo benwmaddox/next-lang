@@ -263,14 +263,14 @@ fn selfhost_stack_bound_has_an_exact_attributed_path() {
     let attributed = parse_bytes("  data stack critical path sum: ");
     assert_eq!(attributed, worst_case, "{stdout}");
     // E2's layout, defaults, helper and aggregate-frame tables live in main
-    // alongside the parser's source, token and node buffers. E3b adds bounded
-    // per-binding collection facts and loop-push proofs; keep the attributed
-    // total pinned below the fixed 8 GB process budget.
-    assert_eq!(worst_case, 7_007_732_625, "{stdout}");
+    // alongside the parser's source, token and node buffers. E3b tracks
+    // per-binding collection facts, loop proofs and bounded branch and loop
+    // count snapshots; keep the attributed total below the fixed 8 GB budget.
+    assert_eq!(worst_case, 7_248_095_393, "{stdout}");
     assert!(worst_case < 8_000_000_000, "{stdout}");
     assert_eq!(
         parse_bytes("  data stack reservation: "),
-        7_007_735_808,
+        7_248_097_280,
         "{stdout}"
     );
     assert!(

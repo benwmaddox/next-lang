@@ -679,4 +679,24 @@ build	tests/run/noshadow_enums
 # E3b restores aggregate array defaults alongside the collection work.
 build	tests/run/t06_places_eval
 build	tests/e3/e3b_array_default
+# E3b fix 1: joined collection counts, loop invalidation, block emission, and literal typing.
+build	tests/e3/e3b_fix1_c1_if
+expected	tests/e3/e3b_fix1_c1_match
+build	tests/e3/e3b_fix1_c1_loop
+build	tests/e3/e3b_fix1_c2_insert
+build	tests/e3/e3b_fix1_c2_write
+build	tests/e3/e3b_fix1_c2_assign
+build	tests/e3/e3b_fix1_c2_pop
+diagnose	tests/e3/e3b_fix1_c2_pop_unhandled
+build	tests/e3/e3b_fix1_h1_tail
+build	tests/e3/e3b_fix1_h2_blocks
+expected	tests/e3/e3b_fix1_h2_while
+diagnose	tests/e3/e3b_fix1_h3_array_list
+build	tests/e3/e3b_fix1_h3_array_list_move
+build	tests/e3/e3b_fix1_m1_shift
+build	tests/e3/e3b_fix1_m2_compare
+expected	tests/e3/e3b_fix1_l1_sequential
+expected	tests/e3/e3b_fix1_l1_runaway
+expected	tests/e3/e3b_fix1_l1_cross_call
+build	tests/e3/e3b_fix1_l2_receiver
 # E3b end

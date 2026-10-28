@@ -84,6 +84,7 @@ fn emit_location_descriptor_argument(
         if location.anchor_kind == 0L { ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, location.anchor_node) }
         else if location.anchor_kind == 1L { ir_write_ascii(compiler, ir, "%local."); ir_write_number(compiler, ir, location.anchor_node) }
         else if location.anchor_kind == 2L { ir_write_ascii(compiler, ir, "%addr."); ir_write_number(compiler, ir, location.anchor_node) }
+        else if location.anchor_kind == 10L { ir_write_ascii(compiler, ir, "%optional.call.receiver.snapshot."); ir_write_number(compiler, ir, location.anchor_node) }
         else { compiler.ir_overflow = true; return }
         ir_write_ascii(compiler, ir, ", i64 ")
         if location.index_node != -1L && !include_geometry { ir_write_ascii(compiler, ir, "%write.offset."); ir_write_number(compiler, ir, descriptor_node) }

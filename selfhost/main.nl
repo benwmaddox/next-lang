@@ -114,6 +114,19 @@ fn main(env: Env) {
         check_package_eligibility(env, source, files, tokens, tables, compiler)
         var ir: Bytes max IR_BUFFER_CAPACITY = Bytes.empty() // E3a1 begin
         compile_selfhost_package(env, source, files, tokens, tables, config, compiler, ir, want_test_build, embedded_core_hash()) // E3a1 end
+        if compiler.internal_emit_error_kind >= 0L {
+            let file_index = compiler.internal_emit_error_file
+            let node = compiler.internal_emit_error_node
+            let position = position_for_offset(file_index, files[file_index].base + tables.nodes[node].start, compiler)
+            match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+            match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+            match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+            match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+            match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+            match env.err.write(b": internal compiler error: unhandled statement kind ") { ok(_) => (), err(_) => env.exit(3) }
+            match env.err.write(dump_node_kind(tables.nodes[node].kind).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+            match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+        }
         if compiler.ir_overflow {
             fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded")
         }

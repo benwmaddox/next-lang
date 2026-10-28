@@ -1,0 +1,3 @@
+[package]
+name = "e3b-fix1-l2-receiver"
+capabilities = ["out"]

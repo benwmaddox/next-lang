@@ -336,11 +336,44 @@ struct LoopPushProof {
     loop_node: long
     binding: long
     final_count: long
+    loop_depth: long
 }
 
 struct LoopPushCount {
     count: long
     valid: bool
+}
+
+struct CollectionCountChange {
+    binding: long
+    previous: long
+    value: long
+}
+
+struct CollectionCountBranchValue {
+    join_index: long
+    branch: long
+    binding: long
+    value: long
+}
+
+struct CollectionCountJoin {
+    node: long
+    kind: long
+    outer_log_base: long
+    binding_limit: long
+    log_base: long
+    values_base: long
+    started: bool
+    branch0_falls: bool
+    branch1_falls: bool
+    fallthrough_count: long
+}
+
+struct LoopCountSnapshot {
+    loop_node: long
+    binding_limit: long
+    log_base: long
 }
 
 struct FileLineRange {
@@ -397,6 +430,10 @@ struct CompilerTables {
     expr_work: list<EmitExprFrame, CHECK_FRAME_CAPACITY>
     bindings: list<BindingRecord, BINDING_TABLE_CAPACITY>
     loop_push_proofs: list<LoopPushProof, MAX_TREE_NODES>
+    collection_count_changes: list<CollectionCountChange, NODE_STORAGE_CAPACITY>
+    collection_count_branch_values: list<CollectionCountBranchValue, NODE_STORAGE_CAPACITY>
+    collection_count_joins: list<CollectionCountJoin, CHECK_FRAME_CAPACITY>
+    loop_count_snapshots: list<LoopCountSnapshot, CHECK_FRAME_CAPACITY>
     scopes: list<ScopeRecord, SCOPE_TABLE_CAPACITY>
     work: list<CheckFrame, CHECK_FRAME_CAPACITY>
     line_starts: list<long, SOURCE_LINE_START_CAPACITY>
@@ -404,6 +441,9 @@ struct CompilerTables {
     default_context: Bytes max 4096
     table_failed: bool
     ir_overflow: bool
+    internal_emit_error_kind: long
+    internal_emit_error_node: long
+    internal_emit_error_file: long
     ir_terminated: bool
     core_mode: bool
     file_id_base: long
@@ -472,6 +512,10 @@ fn empty_compiler_tables() -> CompilerTables {
         expr_work: list {},
         bindings: list {},
         loop_push_proofs: list {},
+        collection_count_changes: list {},
+        collection_count_branch_values: list {},
+        collection_count_joins: list {},
+        loop_count_snapshots: list {},
         scopes: list {},
         work: list {},
         line_starts: list {},
@@ -479,6 +523,9 @@ fn empty_compiler_tables() -> CompilerTables {
         default_context: Bytes.empty(),
         table_failed: false,
         ir_overflow: false,
+        internal_emit_error_kind: -1L,
+        internal_emit_error_node: -1L,
+        internal_emit_error_file: -1L,
         ir_terminated: false,
         core_mode: false,
         file_id_base: 0L,
@@ -520,6 +567,10 @@ fn reset_compiler_tables(compiler: write CompilerTables) {
     compiler.expr_work.clear()
     compiler.bindings.clear()
     compiler.loop_push_proofs.clear()
+    compiler.collection_count_changes.clear()
+    compiler.collection_count_branch_values.clear()
+    compiler.collection_count_joins.clear()
+    compiler.loop_count_snapshots.clear()
     compiler.scopes.clear()
     compiler.work.clear()
     compiler.line_starts.clear()
@@ -527,6 +578,9 @@ fn reset_compiler_tables(compiler: write CompilerTables) {
     compiler.default_context = Bytes.empty()
     compiler.table_failed = false
     compiler.ir_overflow = false
+    compiler.internal_emit_error_kind = -1L
+    compiler.internal_emit_error_node = -1L
+    compiler.internal_emit_error_file = -1L
     compiler.ir_terminated = false
     compiler.core_mode = false
     compiler.file_id_base = 0L
@@ -1100,7 +1154,7 @@ fn sum_case_payload_count(compiler: CompilerTables, type_id: long, tag: long) ->
         if tag == 0L { 1L } else if tag == 1L { 0L } else { -1L }
     } else if kind == TYPE_KIND_RESULT {
         if tag == 0L || tag == 1L { 1L } else { -1L }
-    } else { -1L }
+    } else { 0L }
 }
 
 fn sum_payload_record(compiler: CompilerTables, type_id: long, tag: long, part: long) -> EnumPayloadRecord {
@@ -3798,6 +3852,282 @@ fn collection_push_is_proven(compiler: CompilerTables, receiver: long, loop_dept
     loop_push_is_proven(compiler, binding, loop_depth)
 }
 
+fn set_binding_collection_count(compiler: write CompilerTables, binding: long, value: long) {
+    if binding < 0L || binding >= compiler.bindings.count() { return }
+    let previous = compiler.bindings[binding].collection_count
+    if previous == value { return }
+    if compiler.collection_count_joins.count() > 0L || compiler.loop_count_snapshots.count() > 0L {
+        compiler.collection_count_changes.push(CollectionCountChange { binding, previous, value }).unwrap()
+    }
+    compiler.bindings[binding].collection_count = value
+}
+
+fn rollback_collection_count_changes(compiler: write CompilerTables, length: long) {
+    for pop_step in 0L..NODE_STORAGE_CAPACITY {
+        if compiler.collection_count_changes.count() <= length { break }
+        let change = match compiler.collection_count_changes.pop() {
+            some(value) => value,
+            none() => break,
+        }
+        if change.binding >= 0L && change.binding < compiler.bindings.count() {
+            compiler.bindings[change.binding].collection_count = change.previous
+        }
+    }
+}
+
+fn truncate_collection_count_changes(compiler: write CompilerTables, length: long) {
+    for pop_step in 0L..NODE_STORAGE_CAPACITY {
+        if compiler.collection_count_changes.count() <= length { break }
+        match compiler.collection_count_changes.pop() { some(_) => (), none() => break }
+    }
+}
+
+fn begin_collection_count_join(compiler: write CompilerTables, node: long, kind: long) -> long {
+    let index = compiler.collection_count_joins.count()
+    compiler.collection_count_joins.push(CollectionCountJoin {
+        node,
+        kind,
+        outer_log_base: compiler.collection_count_changes.count(),
+        binding_limit: -1L,
+        log_base: -1L,
+        values_base: compiler.collection_count_branch_values.count(),
+        started: false,
+        branch0_falls: false,
+        branch1_falls: false,
+        fallthrough_count: 0L,
+    }).unwrap()
+    index
+}
+
+fn start_collection_count_join(compiler: write CompilerTables, join_index: long) {
+    if join_index < 0L || join_index >= compiler.collection_count_joins.count() { return }
+    var join = compiler.collection_count_joins[join_index]
+    join.binding_limit = compiler.bindings.count()
+    join.log_base = compiler.collection_count_changes.count()
+    join.values_base = compiler.collection_count_branch_values.count()
+    join.started = true
+    compiler.collection_count_joins[join_index] = join
+}
+
+fn record_collection_count_branch(
+    compiler: write CompilerTables,
+    join_index: long,
+    branch: long,
+    falls_through: bool,
+) {
+    if join_index < 0L || join_index >= compiler.collection_count_joins.count() { return }
+    let join = compiler.collection_count_joins[join_index]
+    if !join.started { return }
+    if falls_through {
+        if join.kind == 1L {
+            compiler.collection_count_joins[join_index].fallthrough_count += 1L
+        }
+        for change_index in join.log_base..compiler.collection_count_changes.count() {
+            let change = compiler.collection_count_changes[change_index]
+            if change.binding < 0L || change.binding >= join.binding_limit { continue }
+            var found = -1L
+            for value_index in join.values_base..compiler.collection_count_branch_values.count() {
+                let existing = compiler.collection_count_branch_values[value_index]
+                if existing.join_index == join_index && existing.branch == branch && existing.binding == change.binding {
+                    found = value_index
+                    break
+                }
+            }
+            if found >= 0L {
+                compiler.collection_count_branch_values[found].value = change.value
+            } else {
+                compiler.collection_count_branch_values.push(CollectionCountBranchValue {
+                    join_index,
+                    branch,
+                    binding: change.binding,
+                    value: change.value,
+                }).unwrap()
+            }
+        }
+    }
+    rollback_collection_count_changes(compiler, join.log_base)
+}
+
+fn collection_count_branch_value(
+    compiler: CompilerTables,
+    join_index: long,
+    branch: long,
+    binding: long,
+) -> long {
+    let join = compiler.collection_count_joins[join_index]
+    for value_index in join.values_base..compiler.collection_count_branch_values.count() {
+        let value = compiler.collection_count_branch_values[value_index]
+        if value.join_index == join_index && value.branch == branch && value.binding == binding { return value.value }
+    }
+    -2L
+}
+
+fn finish_if_collection_count_join(compiler: write CompilerTables, join_index: long) {
+    if join_index < 0L || join_index >= compiler.collection_count_joins.count() { return }
+    let join = compiler.collection_count_joins[join_index]
+    if join.started && (join.branch0_falls || join.branch1_falls) {
+        for value_index in join.values_base..compiler.collection_count_branch_values.count() {
+            let candidate = compiler.collection_count_branch_values[value_index]
+            if candidate.join_index != join_index { continue }
+            var already_joined = false
+            for previous_index in join.values_base..value_index {
+                let previous = compiler.collection_count_branch_values[previous_index]
+                if previous.join_index == join_index && previous.binding == candidate.binding {
+                    already_joined = true
+                    break
+                }
+            }
+            if already_joined { continue }
+            let baseline = if candidate.binding < compiler.bindings.count() {
+                compiler.bindings[candidate.binding].collection_count
+            } else { -1L }
+            let left = if join.branch0_falls {
+                let found = collection_count_branch_value(compiler, join_index, 0L, candidate.binding)
+                if found == -2L { baseline } else { found }
+            } else { -2L }
+            let right = if join.branch1_falls {
+                let found = collection_count_branch_value(compiler, join_index, 1L, candidate.binding)
+                if found == -2L { baseline } else { found }
+            } else { -2L }
+            let merged = if !join.branch0_falls { right }
+                else if !join.branch1_falls { left }
+                else if left < 0L || right < 0L || left != right { -1L }
+                else { left }
+            set_binding_collection_count(compiler, candidate.binding, merged)
+        }
+    }
+    for pop_step in 0L..NODE_STORAGE_CAPACITY {
+        if compiler.collection_count_branch_values.count() <= join.values_base { break }
+        match compiler.collection_count_branch_values.pop() { some(_) => (), none() => break }
+    }
+    match compiler.collection_count_joins.pop() { some(_) => (), none() => () }
+    if compiler.collection_count_joins.count() == 0L && compiler.loop_count_snapshots.count() == 0L {
+        truncate_collection_count_changes(compiler, join.outer_log_base)
+    }
+}
+
+fn finish_match_collection_count_join(compiler: write CompilerTables, join_index: long) {
+    if join_index < 0L || join_index >= compiler.collection_count_joins.count() { return }
+    let join = compiler.collection_count_joins[join_index]
+    if join.started && join.fallthrough_count > 0L {
+        for value_index in join.values_base..compiler.collection_count_branch_values.count() {
+            let candidate = compiler.collection_count_branch_values[value_index]
+            if candidate.join_index != join_index || candidate.binding < 0L { continue }
+            var already_joined = false
+            for previous_index in join.values_base..value_index {
+                let previous = compiler.collection_count_branch_values[previous_index]
+                if previous.join_index == join_index && previous.binding == candidate.binding {
+                    already_joined = true
+                    break
+                }
+            }
+            if already_joined { continue }
+            let baseline = if candidate.binding < compiler.bindings.count() {
+                compiler.bindings[candidate.binding].collection_count
+            } else { -1L }
+            var merged = -2L
+            var branch_value_count = 0L
+            if baseline >= 0L {
+                for branch_value_index in join.values_base..compiler.collection_count_branch_values.count() {
+                    let branch_value = compiler.collection_count_branch_values[branch_value_index]
+                    if branch_value.join_index != join_index || branch_value.binding != candidate.binding { continue }
+                    branch_value_count += 1L
+                    if branch_value.value < 0L { merged = -1L; break }
+                    if merged == -2L { merged = branch_value.value }
+                    else if merged != branch_value.value { merged = -1L; break }
+                    else { () }
+                }
+            } else { merged = -1L }
+            if merged >= 0L && branch_value_count < join.fallthrough_count {
+                if baseline < 0L || merged != baseline { merged = -1L }
+            }
+            if merged == -2L { merged = baseline }
+            set_binding_collection_count(compiler, candidate.binding, merged)
+        }
+    }
+    for pop_step in 0L..NODE_STORAGE_CAPACITY {
+        if compiler.collection_count_branch_values.count() <= join.values_base { break }
+        match compiler.collection_count_branch_values.pop() { some(_) => (), none() => break }
+    }
+    match compiler.collection_count_joins.pop() { some(_) => (), none() => () }
+    if compiler.collection_count_joins.count() == 0L && compiler.loop_count_snapshots.count() == 0L {
+        truncate_collection_count_changes(compiler, join.outer_log_base)
+    }
+}
+
+fn begin_loop_count_snapshot(compiler: write CompilerTables, loop_node: long) {
+    compiler.loop_count_snapshots.push(LoopCountSnapshot {
+        loop_node,
+        binding_limit: compiler.bindings.count(),
+        log_base: compiler.collection_count_changes.count(),
+    }).unwrap()
+}
+
+fn finish_loop_count_snapshot(compiler: write CompilerTables, loop_node: long) {
+    var snapshot_index = -1L
+    for index in 0L..compiler.loop_count_snapshots.count() {
+        if compiler.loop_count_snapshots[index].loop_node == loop_node { snapshot_index = index }
+    }
+    if snapshot_index < 0L { return }
+    let snapshot = compiler.loop_count_snapshots[snapshot_index]
+    let values_base = compiler.collection_count_branch_values.count()
+    for change_index in snapshot.log_base..compiler.collection_count_changes.count() {
+        let change = compiler.collection_count_changes[change_index]
+        if change.binding < 0L || change.binding >= snapshot.binding_limit { continue }
+        var found = -1L
+        for value_index in values_base..compiler.collection_count_branch_values.count() {
+            if compiler.collection_count_branch_values[value_index].binding == change.binding { found = value_index; break }
+        }
+        if found >= 0L { compiler.collection_count_branch_values[found].value = change.value }
+        else {
+            compiler.collection_count_branch_values.push(CollectionCountBranchValue {
+                join_index: -1L,
+                branch: loop_node,
+                binding: change.binding,
+                value: change.value,
+            }).unwrap()
+        }
+    }
+    rollback_collection_count_changes(compiler, snapshot.log_base)
+    for value_index in values_base..compiler.collection_count_branch_values.count() {
+        let after = compiler.collection_count_branch_values[value_index]
+        let before = compiler.bindings[after.binding].collection_count
+        var proof_index = -1L
+        for candidate in 0L..compiler.loop_push_proofs.count() {
+            if compiler.loop_push_proofs[candidate].loop_node == loop_node && compiler.loop_push_proofs[candidate].binding == after.binding {
+                proof_index = candidate
+                break
+            }
+        }
+        var merged = -1L
+        if proof_index >= 0L {
+            if after.value >= 0L { merged = compiler.loop_push_proofs[proof_index].final_count }
+        } else if before >= 0L && after.value >= 0L && before == after.value {
+            merged = before
+        } else { () }
+        set_binding_collection_count(compiler, after.binding, merged)
+    }
+    for pop_step in 0L..NODE_STORAGE_CAPACITY {
+        if compiler.collection_count_branch_values.count() <= values_base { break }
+        match compiler.collection_count_branch_values.pop() { some(_) => (), none() => break }
+    }
+    var found_snapshot = false
+    for reverse_index in 0L..compiler.loop_count_snapshots.count() {
+        let index = compiler.loop_count_snapshots.count() - reverse_index - 1L
+        if compiler.loop_count_snapshots[index].loop_node == loop_node {
+            for shift in index..compiler.loop_count_snapshots.count() - 1L {
+                compiler.loop_count_snapshots[shift] = compiler.loop_count_snapshots[shift + 1L]
+            }
+            match compiler.loop_count_snapshots.pop() { some(_) => (), none() => () }
+            found_snapshot = true
+            break
+        }
+    }
+    if found_snapshot && compiler.collection_count_joins.count() == 0L && compiler.loop_count_snapshots.count() == 0L {
+        truncate_collection_count_changes(compiler, snapshot.log_base)
+    }
+}
+
 fn type_name_or_fallback(ty: long) -> Ascii max 16 {
     scalar_type_name(ty)
 }
@@ -4517,13 +4847,16 @@ fn body_child_expected(
         else if op >= 8L && op <= 13L {
             let other = if child == frame.child0 { frame.child1 } else { frame.child0 }
             let known = natural_node_type(source, tokens, files, tables, compiler, other, frame.scope, file_index)
-            if known >= 0L { known }
+            if is_unsuffixed_integer(tables, other) && !is_unsuffixed_integer(tables, child) { -1L }
+            else if known >= 0L { known }
             else if is_unsuffixed_integer(tables, child) { -1L }
             else { -1L }
         } else if op >= 16L && op <= 20L {
             let other = if child == frame.child0 { frame.child1 } else { frame.child0 }
             let known = natural_node_type(source, tokens, files, tables, compiler, other, frame.scope, file_index)
-            if is_numeric_type(known) && is_unsuffixed_integer(tables, child) { known }
+            let both_unsuffixed = is_unsuffixed_integer(tables, frame.child0) && is_unsuffixed_integer(tables, frame.child1)
+            if both_unsuffixed && frame.expected >= TY_INT && frame.expected <= TY_LONG { frame.expected }
+            else if is_numeric_type(known) && is_unsuffixed_integer(tables, child) && !is_unsuffixed_integer(tables, other) { known }
             else if frame.expected >= TY_INT && frame.expected <= TY_LONG { frame.expected }
             else { -1L }
         } else if frame.expected >= TY_INT && frame.expected <= TY_LONG { frame.expected }
@@ -4593,6 +4926,10 @@ fn check_one_body(
 ) {
     compiler.work.clear()
     compiler.loop_push_proofs.clear()
+    compiler.collection_count_changes.clear()
+    compiler.collection_count_branch_values.clear()
+    compiler.collection_count_joins.clear()
+    compiler.loop_count_snapshots.clear()
     push_check_frame(env, files, compiler, CheckFrame {
         node: body,
         scope: root_scope,
@@ -4619,6 +4956,7 @@ fn check_one_body(
         if kind == NodeKind.Match && frame.phase == 0L {
             frame.child0 = compiler.child_first[node]
             frame.cursor = if frame.child0 >= 0L { compiler.child_next[frame.child0] } else { -1L }
+            frame.auxiliary = begin_collection_count_join(compiler, node, 1L)
             frame.phase = 70L
             compiler.work[frame_index] = frame
             if frame.child0 >= 0L {
@@ -4643,6 +4981,9 @@ fn check_one_body(
         }
         if kind == NodeKind.Match && frame.phase == 70L {
             let matched_type = compiler.facts[frame.child0].ty
+            if !compiler.collection_count_joins[frame.auxiliary].started {
+                start_collection_count_join(compiler, frame.auxiliary)
+            }
             if !is_sum_type(compiler, matched_type) && !is_numeric_type(matched_type) && matched_type != TY_BOOL {
                 fail_match_requires_supported_type(env, source, files, tokens, tables, compiler, file_index, node, matched_type)
             }
@@ -4665,6 +5006,7 @@ fn check_one_body(
                 if frame.expected >= 0L && match_result_ty != TY_NEVER && match_result_ty != frame.expected {
                     require_type(env, files, compiler, file_index, node, frame.expected, match_result_ty, tables)
                 }
+                finish_match_collection_count_join(compiler, frame.auxiliary)
                 compiler.facts[node] = NodeFact { ty: match_result_ty, flags: if match_result_ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: 0L }
                 match compiler.work.pop() { some(_) => (), none() => () }
                 continue
@@ -4808,6 +5150,12 @@ fn check_one_body(
         }
         if kind == NodeKind.Match && frame.phase == 71L {
             let arm_type = compiler.facts[frame.child2].ty
+            record_collection_count_branch(
+                compiler,
+                frame.auxiliary,
+                frame.child1,
+                (compiler.facts[frame.child2].flags & FACT_FALLS_THROUGH) != 0L,
+            )
             if arm_type != TY_NEVER {
                 if frame.result_ty >= 0L && frame.result_ty != arm_type {
                     fail_match_arm_type(env, source, files, tokens, tables, compiler, file_index, frame.child1, frame.result_ty, arm_type)
@@ -4818,6 +5166,97 @@ fn check_one_body(
             frame.child1 = -1L
             frame.child2 = -1L
             frame.phase = 70L
+            compiler.work[frame_index] = frame
+            continue
+        }
+        if kind == NodeKind.If && frame.phase == 0L {
+            frame.child0 = compiler.child_first[node]
+            frame.child1 = if frame.child0 >= 0L { compiler.child_next[frame.child0] } else { -1L }
+            frame.child2 = if frame.child1 >= 0L { compiler.child_next[frame.child1] } else { -1L }
+            frame.auxiliary = begin_collection_count_join(compiler, node, 0L)
+            frame.phase = 200L
+            compiler.work[frame_index] = frame
+            push_check_frame(env, files, compiler, CheckFrame {
+                node: frame.child0,
+                scope: frame.scope,
+                expected: TY_BOOL,
+                function_id,
+                loop_depth: frame.loop_depth,
+                is_test,
+                phase: 0L,
+                cursor: -1L,
+                child0: -1L,
+                child1: -1L,
+                child2: -1L,
+                result_ty: -1L,
+                auxiliary: 0L,
+                reachable: true,
+            })
+            continue
+        }
+        if kind == NodeKind.If && frame.phase == 200L {
+            start_collection_count_join(compiler, frame.auxiliary)
+            frame.phase = 201L
+            compiler.work[frame_index] = frame
+            let expected = body_child_expected(source, tokens, files, tables, compiler, node, frame.child1, frame, 1L, file_index, config)
+            push_check_frame(env, files, compiler, CheckFrame {
+                node: frame.child1,
+                scope: frame.scope,
+                expected,
+                function_id,
+                loop_depth: frame.loop_depth,
+                is_test,
+                phase: 0L,
+                cursor: -1L,
+                child0: -1L,
+                child1: -1L,
+                child2: -1L,
+                result_ty: -1L,
+                auxiliary: 0L,
+                reachable: true,
+            })
+            continue
+        }
+        if kind == NodeKind.If && frame.phase == 201L {
+            let condition_falls = (compiler.facts[frame.child0].flags & FACT_FALLS_THROUGH) != 0L
+            let then_falls = condition_falls && (compiler.facts[frame.child1].flags & FACT_FALLS_THROUGH) != 0L
+            compiler.collection_count_joins[frame.auxiliary].branch0_falls = then_falls
+            record_collection_count_branch(compiler, frame.auxiliary, 0L, then_falls)
+            if frame.child2 >= 0L {
+                frame.phase = 202L
+                compiler.work[frame_index] = frame
+                let expected = body_child_expected(source, tokens, files, tables, compiler, node, frame.child2, frame, 2L, file_index, config)
+                push_check_frame(env, files, compiler, CheckFrame {
+                    node: frame.child2,
+                    scope: frame.scope,
+                    expected,
+                    function_id,
+                    loop_depth: frame.loop_depth,
+                    is_test,
+                    phase: 0L,
+                    cursor: -1L,
+                    child0: -1L,
+                    child1: -1L,
+                    child2: -1L,
+                    result_ty: -1L,
+                    auxiliary: 0L,
+                    reachable: true,
+                })
+            } else {
+                compiler.collection_count_joins[frame.auxiliary].branch1_falls = condition_falls
+                finish_if_collection_count_join(compiler, frame.auxiliary)
+                frame.phase = 2L
+                compiler.work[frame_index] = frame
+            }
+            continue
+        }
+        if kind == NodeKind.If && frame.phase == 202L {
+            let condition_falls = (compiler.facts[frame.child0].flags & FACT_FALLS_THROUGH) != 0L
+            let else_falls = condition_falls && (compiler.facts[frame.child2].flags & FACT_FALLS_THROUGH) != 0L
+            compiler.collection_count_joins[frame.auxiliary].branch1_falls = else_falls
+            record_collection_count_branch(compiler, frame.auxiliary, 1L, else_falls)
+            finish_if_collection_count_join(compiler, frame.auxiliary)
+            frame.phase = 2L
             compiler.work[frame_index] = frame
             continue
         }
@@ -5169,6 +5608,7 @@ fn check_one_body(
                 frame.child1 = if frame.child0 >= 0L { compiler.child_next[frame.child0] } else { -1L }
                 frame.cursor = 0L
                 frame.phase = 1L
+                begin_loop_count_snapshot(compiler, node)
                 compiler.work[frame_index] = frame
                 continue
             }
@@ -5294,7 +5734,7 @@ fn check_one_body(
             let iterations = if collection_kind == TYPE_KIND_LIST && collection_binding >= 0L && compiler.bindings[collection_binding].collection_count >= 0L {
                 compiler.bindings[collection_binding].collection_count
             } else { collection_capacity(compiler, collection_type) }
-            prepare_loop_push_proofs(source, tokens, files, tables, compiler, node, frame.child2, frame.scope, iterations, file_index)
+            prepare_loop_push_proofs(source, tokens, files, tables, compiler, node, frame.child2, frame.scope, iterations, file_index, frame.loop_depth + 1L)
             compiler.work[frame_index] = frame
             push_check_frame(env, files, compiler, CheckFrame {
                 node: frame.child2,
@@ -5416,7 +5856,7 @@ fn check_one_body(
                         child_loop_depth += 1L
                         let inclusive = (tables.nodes[node].flags & FLAG_INCLUSIVE) != 0L
                         let iterations = loop_iteration_count(tables, compiler, frame.child0, frame.child1, inclusive)
-                        prepare_loop_push_proofs(source, tokens, files, tables, compiler, node, child, frame.scope, iterations, file_index)
+                        prepare_loop_push_proofs(source, tokens, files, tables, compiler, node, child, frame.scope, iterations, file_index, frame.loop_depth + 1L)
                     }
                     child_index = frame.cursor
                     frame.cursor += 1L
@@ -5467,9 +5907,7 @@ fn check_one_body(
             let binding = add_local_binding(env, source, files, tokens, tables, compiler, file_index, node, syntax.token, frame.scope, ty, (syntax.flags & FLAG_MUTABLE) != 0L, false, false)
             if type_kind(compiler, ty) == TYPE_KIND_LIST {
                 if tables.nodes[value].kind == NodeKind.ListLiteral || (tables.nodes[value].kind == NodeKind.Call && (tables.nodes[value].flags & FLAG_SYNTHETIC) != 0L) {
-                    compiler.bindings[binding].collection_count = 0L
-                } else if tables.nodes[value].kind == NodeKind.ArrayLiteral {
-                    compiler.bindings[binding].collection_count = count_children(tables, compiler, value)
+                    set_binding_collection_count(compiler, binding, 0L)
                 } else { () }
             }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if (value_fact.flags & FACT_FALLS_THROUGH) != 0L { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding, function: -1L, literal: 0L }
@@ -5554,7 +5992,7 @@ fn check_one_body(
                 require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables)
             }
             if type_kind(compiler, target_fact.ty) == TYPE_KIND_LIST && binding < compiler.bindings.count() {
-                compiler.bindings[binding].collection_count = -1L
+                set_binding_collection_count(compiler, binding, -1L)
             }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding, function: -1L, literal: 0L }
         } else if kind == NodeKind.Return || kind == NodeKind.ReturnStatement {
@@ -5762,11 +6200,11 @@ fn check_one_body(
                 let proven = method == COLLECTION_METHOD_PUSH && collection_push_is_proven(compiler, receiver, frame.loop_depth)
                 if tracks_root {
                     if method == COLLECTION_METHOD_PUSH {
-                        if proven { compiler.bindings[receiver_binding].collection_count += 1L }
-                        else { compiler.bindings[receiver_binding].collection_count = collection_capacity(compiler, receiver_ty) }
-                    } else if method == COLLECTION_METHOD_CLEAR { compiler.bindings[receiver_binding].collection_count = 0L }
+                        if proven { set_binding_collection_count(compiler, receiver_binding, compiler.bindings[receiver_binding].collection_count + 1L) }
+                        else { set_binding_collection_count(compiler, receiver_binding, collection_capacity(compiler, receiver_ty)) }
+                    } else if method == COLLECTION_METHOD_CLEAR { set_binding_collection_count(compiler, receiver_binding, 0L) }
                     else if method == COLLECTION_METHOD_INSERT || method == COLLECTION_METHOD_POP || method == COLLECTION_METHOD_REMOVE {
-                        compiler.bindings[receiver_binding].collection_count = -1L
+                        set_binding_collection_count(compiler, receiver_binding, -1L)
                     } else { () }
                 }
                 let fact_flags = (if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }) |
@@ -5917,6 +6355,7 @@ fn check_one_body(
         } else if kind == NodeKind.While {
             let condition = compiler.facts[frame.child0]
             require_type(env, files, compiler, file_index, frame.child0, TY_BOOL, condition.ty, tables)
+            finish_loop_push_proofs(compiler, node)
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.Block {
             let has_tail = (syntax.flags & FLAG_HAS_TAIL) != 0L
@@ -6774,6 +7213,21 @@ fn emit_location_pointer_materialization(
         }
         ir_write_ascii(compiler, ir, "  %loc.is.stack."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = icmp eq ptr %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", null\n  %loc.native.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n  %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @nl_context_current_base(ptr %nl.ctx)\n  %loc.stack.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n  %loc.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = select i1 %loc.is.stack."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %loc.stack.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %loc.native.pointer."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         return serial
+    } else if location.byte_offset != 0L {
+        let base_location = StorageLocation {
+            origin: location.origin,
+            anchor_kind: location.anchor_kind,
+            anchor_node: location.anchor_node,
+            byte_offset: 0L,
+            copies: 1L,
+            index: 0L,
+            index_node: -1L,
+            index_stride: 0L,
+        }
+        ir_write_ascii(compiler, ir, "  %loc.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
+        emit_location_pointer_reference(compiler, ir, base_location, -1L)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, location.byte_offset); ir_push_byte(compiler, ir, 10)
+        serial
     } else { -1L }
 }
 // E3a1 end
@@ -6784,6 +7238,7 @@ fn emit_location_pointer_reference(compiler: write CompilerTables, ir: grow Byte
     else if location.anchor_kind == 0L { ir_write_ascii(compiler, ir, "%agg."); ir_write_number(compiler, ir, location.anchor_node) }
     else if location.anchor_kind == 1L { ir_write_ascii(compiler, ir, "%local."); ir_write_number(compiler, ir, location.anchor_node) }
     else if location.anchor_kind == 2L { ir_write_ascii(compiler, ir, "%addr."); ir_write_number(compiler, ir, location.anchor_node) }
+    else if location.anchor_kind == 10L { ir_write_ascii(compiler, ir, "%optional.call.receiver.snapshot."); ir_write_number(compiler, ir, location.anchor_node) }
     else if location.anchor_kind == 4L { ir_write_ascii(compiler, ir, "%nl.dest") }
     else if location.anchor_kind == 5L { ir_write_ascii(compiler, ir, "%nl.source") }
     else if location.anchor_kind == 6L { ir_write_ascii(compiler, ir, "%nl.left") }
@@ -8296,8 +8751,12 @@ fn emit_optional_call_invoke(
     let receiver_source_kind = aggregate_source_kind(tables, compiler, receiver)
     let receiver_source_node = aggregate_source_id(tables, compiler, receiver)
     let receiver_source = aggregate_source_location(compiler, receiver_source_kind, receiver_source_node)
-    let receiver_value = optional_payload_location(receiver_source, receiver_payload.offset)
     let receiver_parameter = compiler.parameters[target.param_start]
+    let receiver_value = if is_aggregate_type(compiler, receiver_parameter.ty) {
+        native_location(10L, node, 0L)
+    } else {
+        optional_payload_location(receiver_source, receiver_payload.offset)
+    }
     let result_type = target.result_ty
     let wraps_result = type_kind(compiler, result_type) != TYPE_KIND_OPTION
     let aggregate_result = is_aggregate_type(compiler, result_type)
@@ -8311,14 +8770,6 @@ fn emit_optional_call_invoke(
     if aggregate_result { emit_prepare_location_descriptor(compiler, ir, destination, true, node) }
     if receiver_parameter.ty != TY_UNIT && is_aggregate_type(compiler, receiver_parameter.ty) {
         emit_prepare_location_descriptor(compiler, ir, receiver_value, true, receiver_descriptor)
-    } else if receiver_parameter.ty != TY_UNIT {
-        let address = enum_temporary_address(node, MAX_TREE_NODES * 80L + 1L)
-        emit_layout_address(compiler, ir, address, receiver_value)
-        if receiver_parameter.ty == TY_BOOL {
-            ir_write_ascii(compiler, ir, "  %optional.call.receiver.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  %optional.call.receiver."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = trunc i8 %optional.call.receiver.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i1\n")
-        } else {
-            ir_write_ascii(compiler, ir, "  %optional.call.receiver."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(receiver_parameter.ty)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n")
-        }
     } else { () }
     var argument = compiler.child_next[receiver]
     for argument_index in 1L..target.param_count {
@@ -8411,13 +8862,35 @@ fn emit_optional_call_start(
         emit_sum_tag_store(compiler, ir, node, 0L)
         ir_write_ascii(compiler, ir, "  br label %optional.call.end."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\noptional.call.end."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
         true
-    } else { false }
+    } else {
+        let target_id = compiler.facts[node].function
+        if target_id >= 0L {
+            let target = compiler.functions[target_id]
+            let receiver_parameter = compiler.parameters[target.param_start]
+            if receiver_parameter.ty != TY_UNIT {
+                let receiver_source = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, receiver), aggregate_source_id(tables, compiler, receiver))
+                let source_payload = optional_payload_location(receiver_source, receiver_payload.offset)
+                if is_aggregate_type(compiler, receiver_parameter.ty) {
+                    emit_aggregate_copy(compiler, ir, receiver_parameter.ty, native_location(10L, node, 0L), source_payload)
+                } else {
+                    let source_address = enum_temporary_address(node, MAX_TREE_NODES * 80L + 6L)
+                    emit_layout_address(compiler, ir, source_address, source_payload)
+                    if receiver_parameter.ty == TY_BOOL {
+                        ir_write_ascii(compiler, ir, "  %optional.call.receiver.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, source_address); ir_write_ascii(compiler, ir, ", align 1\n  %optional.call.receiver."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = trunc i8 %optional.call.receiver.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i1\n")
+                    } else {
+                        ir_write_ascii(compiler, ir, "  %optional.call.receiver."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(receiver_parameter.ty)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, source_address); ir_write_ascii(compiler, ir, ", align 1\n")
+                    }
+                }
+            }
+        }
+        false
+    }
 }
 
 
 
 // E3a1 begin: shared compiler integration.
-fn emit_expr_linear(
+recursive fn emit_expr_linear(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -8429,10 +8902,10 @@ fn emit_expr_linear(
     return_ty: long,
     is_test: bool,
 ) {
-    compiler.expr_work.clear()
+    let base_depth = compiler.expr_work.count()
     compiler.expr_work.push(EmitExprFrame { node, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
     for emit_step in 0L..MAX_PARSE_WORK {
-        if compiler.expr_work.count() == 0L { break }
+        if compiler.expr_work.count() <= base_depth { break }
         let frame_index = compiler.expr_work.count() - 1L
         var frame = compiler.expr_work[frame_index]
         let current = frame.node
@@ -9246,7 +9719,7 @@ fn emit_expr_linear(
                     lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, frame.auxiliary, TY_UNIT, -1L)
                 }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
-                if compiler.expr_work.count() > 0L {
+                if compiler.expr_work.count() > base_depth {
                     let parent_index = compiler.expr_work.count() - 1L
                     var parent = compiler.expr_work[parent_index]
                     if tables.nodes[parent.node].kind == NodeKind.If && parent.phase == 3L { parent.reachable = true }
@@ -9275,7 +9748,7 @@ fn emit_expr_linear(
                 lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_IF_EXPR_END, frame.auxiliary, TY_UNIT, -1L)
             }
             match compiler.expr_work.pop() { some(_) => (), none => () }
-            if compiler.expr_work.count() > 0L {
+            if compiler.expr_work.count() > base_depth {
                 let parent_index = compiler.expr_work.count() - 1L
                 var parent = compiler.expr_work[parent_index]
                 if tables.nodes[parent.node].kind == NodeKind.If && parent.phase == 3L { parent.reachable = any_falls }
@@ -9284,7 +9757,7 @@ fn emit_expr_linear(
         } else if kind == NodeKind.Block && frame.phase == 10L {
             if !frame.reachable {
                 match compiler.expr_work.pop() { some(_) => (), none => () }
-                if compiler.expr_work.count() > 0L {
+                if compiler.expr_work.count() > base_depth {
                     let parent_index = compiler.expr_work.count() - 1L
                     var parent = compiler.expr_work[parent_index]
                     if tables.nodes[parent.node].kind == NodeKind.If && parent.phase == 2L { parent.cursor = 0L }
@@ -9292,6 +9765,14 @@ fn emit_expr_linear(
                     else { () }
                     compiler.expr_work[parent_index] = parent
                 }
+            } else if frame.child2 < 0L {
+                frame.child2 = 1L
+                compiler.expr_work[frame_index] = frame
+                let active_function_id = if compiler.work.count() > 0L { compiler.work[compiler.work.count() - 1L].function_id } else { -1L }
+                emit_function_body(source, files, tokens, tables, compiler, ir, current, file_index, active_function_id, return_ty, is_test, false, true)
+                frame = compiler.expr_work[frame_index]
+                frame.cursor = if (tables.nodes[current].flags & FLAG_HAS_TAIL) != 0L { frame.child0 } else { -1L }
+                compiler.expr_work[frame_index] = frame
             } else if frame.cursor >= 0L && (frame.cursor != frame.child0 || (tables.nodes[current].flags & FLAG_HAS_TAIL) == 0L) {
                 let statement = frame.cursor
                 frame.cursor = compiler.child_next[statement]
@@ -9380,7 +9861,7 @@ fn emit_expr_linear(
                 }
                 // E3a1 subsection end
                 match compiler.expr_work.pop() { some(_) => (), none => () }
-                if compiler.expr_work.count() > 0L {
+                if compiler.expr_work.count() > base_depth {
                     let parent_index = compiler.expr_work.count() - 1L
                     var parent = compiler.expr_work[parent_index]
                     if tables.nodes[parent.node].kind == NodeKind.If && parent.phase == 2L { parent.cursor = if frame.reachable { 1L } else { 0L } }
@@ -9392,7 +9873,8 @@ fn emit_expr_linear(
         } else if kind == NodeKind.Block && frame.phase == 11L {
             if compiler.facts[frame.child1].ty == TY_NEVER {
                 frame.reachable = false
-            } else if frame.auxiliary >= 0L && compiler.facts[frame.child1].ty != TY_UNIT {
+            } else if frame.auxiliary >= 0L && compiler.facts[frame.child1].ty != TY_UNIT &&
+                (compiler.facts[frame.child1].flags & FACT_PROVEN_SUCCESS) == 0L {
                 let parent = frame.auxiliary
                 let tail_ty = compiler.facts[frame.child1].ty
                 if is_aggregate_type(compiler, tail_ty) {
@@ -9410,7 +9892,7 @@ fn emit_expr_linear(
             }
             // E3a1 subsection end
             match compiler.expr_work.pop() { some(_) => (), none => () }
-            if compiler.expr_work.count() > 0L {
+            if compiler.expr_work.count() > base_depth {
                 let parent_index = compiler.expr_work.count() - 1L
                 var parent = compiler.expr_work[parent_index]
                 if tables.nodes[parent.node].kind == NodeKind.If && parent.phase == 2L { parent.cursor = if frame.reachable { 1L } else { 0L } }
@@ -9589,7 +10071,7 @@ fn emit_expect_after_expression(
 }
 // E3a1 end
 
-fn emit_expect_statement(
+recursive fn emit_expect_statement(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -9605,7 +10087,7 @@ fn emit_expect_statement(
 }
 
 // E3a1 begin: shared compiler integration.
-fn emit_function_body(
+recursive fn emit_function_body(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -9617,13 +10099,19 @@ fn emit_function_body(
     function_id: long,
     return_ty: long,
     is_test: bool,
+    function_root: bool,
+    stop_before_tail: bool,
 ) {
-    compiler.work.clear()
-    compiler.emit_loops.clear()
-    compiler.ir_terminated = false
+    var base_depth = compiler.work.count()
+    if function_root {
+        compiler.work.clear()
+        compiler.emit_loops.clear()
+        compiler.ir_terminated = false
+        base_depth = 0L
+    }
     compiler.work.push(CheckFrame { node: body, scope: -1L, expected: -1L, function_id, loop_depth: 0L, is_test, phase: 0L, cursor: compiler.child_first[body], child0: node_last_child(tables, compiler, body), child1: -1L, child2: -1L, result_ty: -1L, auxiliary: 0L, reachable: true }).unwrap()
     for emit_step in 0L..MAX_PARSE_WORK {
-        if compiler.work.count() == 0L { break }
+        if compiler.work.count() <= base_depth { break }
         let frame_index = compiler.work.count() - 1L
         var frame = compiler.work[frame_index]
         if frame.phase == 100L {
@@ -9691,7 +10179,7 @@ fn emit_function_body(
             if frame.auxiliary == 1L {
                 lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_WHILE_STEP, frame.node, TY_UNIT, -1L)
             }
-            ir_write_ascii(compiler, ir, "while.step."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n  %while.steps.old."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, " = load i64, ptr %while.steps, align 8\n  %while.steps.next."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, " = add i64 %while.steps.old."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", 1\n  store i64 %while.steps.next."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", ptr %while.steps, align 8\n  %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, " = icmp ule i64 %while.steps.next."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", 10000000\n  br i1 %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.cond."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, "\nwhile.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 23, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\nwhile.end."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n")
+            ir_write_ascii(compiler, ir, "while.step."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n  %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, " = call i1 @nl_core_nl_context_step_budget_take(ptr %nl.ctx)\n  br i1 %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.cond."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, "\nwhile.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 23, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\nwhile.end."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n")
             match compiler.emit_loops.pop() { some(_) => (), none => () }
             match compiler.work.pop() { some(_) => (), none => () }
             continue
@@ -9706,11 +10194,11 @@ fn emit_function_body(
                 emit_region_scope_exit(tables, compiler, ir, frame.node)
             }
             // E3a1 subsection end
-            if frame.node == body && frame.reachable {
+            if function_root && frame.node == body && frame.reachable {
                 lower_scope_exit(compiler, ir, -1L, EXIT_FALLTHROUGH, if is_test { 1L } else { 0L }, 0L, return_ty, -1L)
             }
             match compiler.work.pop() { some(_) => (), none => () }
-            if compiler.work.count() > 0L {
+            if compiler.work.count() > base_depth {
                 let parent_index = compiler.work.count() - 1L
                 var parent = compiler.work[parent_index]
                 if parent.phase == 100L { parent.child2 = if frame.reachable { 1L } else { 0L } }
@@ -9725,10 +10213,15 @@ fn emit_function_body(
         let child = frame.cursor
         frame.cursor = compiler.child_next[child]
         compiler.work[frame_index] = frame
+        if stop_before_tail && frame.node == body && child == frame.child0 &&
+            (tables.nodes[body].flags & FLAG_HAS_TAIL) != 0L {
+            compiler.work[frame_index].cursor = -1L
+            continue
+        }
         let is_statement = tables.nodes[child].kind == NodeKind.Let || tables.nodes[child].kind == NodeKind.Assign || tables.nodes[child].kind == NodeKind.ExpressionStatement || tables.nodes[child].kind == NodeKind.Discard || tables.nodes[child].kind == NodeKind.ReturnStatement || tables.nodes[child].kind == NodeKind.For || tables.nodes[child].kind == NodeKind.ForEach || tables.nodes[child].kind == NodeKind.While || tables.nodes[child].kind == NodeKind.Expect || tables.nodes[child].kind == NodeKind.BreakStatement || tables.nodes[child].kind == NodeKind.ContinueStatement || tables.nodes[child].kind == NodeKind.Block
         if !is_statement {
             emit_expr_linear(source, files, tokens, tables, compiler, ir, child, file_index, return_ty, is_test)
-            if frame.node == body {
+            if function_root && frame.node == body {
                 if (compiler.facts[child].flags & FACT_FALLS_THROUGH) != 0L {
                     if is_test { lower_scope_exit(compiler, ir, -1L, EXIT_TEST_SUCCESS, 0L, 0L, TY_UNIT, -1L) }
                     else if return_ty == TY_UNIT { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L) }
@@ -9929,7 +10422,10 @@ fn emit_function_body(
             frame.reachable = false
             compiler.work[frame_index] = frame
         } else {
-            ()
+            compiler.internal_emit_error_kind = 1L
+            compiler.internal_emit_error_node = child
+            compiler.internal_emit_error_file = file_index
+            compiler.ir_overflow = true
         }
     }
 }
@@ -10001,13 +10497,16 @@ fn emit_function_definition(
     }
     // E3a1 subsection end
     let body_first = function.body - tables.nodes[function.body].subtree + 1L
-    var has_while = false
-    for node in body_first..function.body + 1L {
-        if tables.nodes[node].kind == NodeKind.While { has_while = true; break }
-    }
-    if has_while { ir_write_ascii(compiler, ir, "  %while.steps = alloca i64, align 8\n  store i64 0, ptr %while.steps, align 8\n") }
     for node in 0L..tables.nodes.count() {
         if node < body_first || node > function.body { continue }
+        if tables.nodes[node].kind == NodeKind.OptionalCall && compiler.facts[node].function >= 0L {
+            let target = compiler.functions[compiler.facts[node].function]
+            let receiver = compiler.parameters[target.param_start]
+            if receiver.ty != TY_UNIT && is_aggregate_type(compiler, receiver.ty) {
+                let type_info = type_record(compiler, receiver.ty)
+                ir_write_ascii(compiler, ir, "  %optional.call.receiver.snapshot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca ["); ir_write_number(compiler, ir, type_info.size); ir_write_ascii(compiler, ir, " x i8], align "); ir_write_number(compiler, ir, type_info.align); ir_write_ascii(compiler, ir, "\n")
+            }
+        }
         if tables.nodes[node].kind == NodeKind.ForEach {
             ir_write_ascii(compiler, ir, "  %for.each.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca i64, align 8\n")
         }
@@ -10062,7 +10561,7 @@ fn emit_function_definition(
     }
     if !compiler.core_mode { emit_region_prologue(files, tables, compiler, ir, function.body, function.file) }
     compiler.memory_closure = compiler.core_mode && files[function.file].name == b"memory.nl"
-    emit_function_body(source, files, tokens, tables, compiler, ir, function.body, function.file, function_id, function.result_ty, false)
+    emit_function_body(source, files, tokens, tables, compiler, ir, function.body, function.file, function_id, function.result_ty, false, true, false)
     compiler.memory_closure = false
     ir_write_ascii(compiler, ir, "}\n\n")
     // E3a1 subsection: synthetic helpers emitted next do not inherit this frame's
@@ -10090,13 +10589,16 @@ fn emit_test_definition(
     ir_write_number(compiler, ir, function_id)
     ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top) {\nentry:\n")
     let body_first = test.body - tables.nodes[test.body].subtree + 1L
-    var has_while = false
-    for node in body_first..test.body + 1L {
-        if tables.nodes[node].kind == NodeKind.While { has_while = true; break }
-    }
-    if has_while { ir_write_ascii(compiler, ir, "  %while.steps = alloca i64, align 8\n  store i64 0, ptr %while.steps, align 8\n") }
     for node in 0L..tables.nodes.count() {
         if node < body_first || node > test.body { continue }
+        if tables.nodes[node].kind == NodeKind.OptionalCall && compiler.facts[node].function >= 0L {
+            let target = compiler.functions[compiler.facts[node].function]
+            let receiver = compiler.parameters[target.param_start]
+            if receiver.ty != TY_UNIT && is_aggregate_type(compiler, receiver.ty) {
+                let type_info = type_record(compiler, receiver.ty)
+                ir_write_ascii(compiler, ir, "  %optional.call.receiver.snapshot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca ["); ir_write_number(compiler, ir, type_info.size); ir_write_ascii(compiler, ir, " x i8], align "); ir_write_number(compiler, ir, type_info.align); ir_write_ascii(compiler, ir, "\n")
+            }
+        }
         if tables.nodes[node].kind == NodeKind.ForEach {
             ir_write_ascii(compiler, ir, "  %for.each.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca i64, align 8\n")
         }
@@ -10139,7 +10641,7 @@ fn emit_test_definition(
         }
     }
     emit_region_prologue(files, tables, compiler, ir, test.body, test.file)
-    emit_function_body(source, files, tokens, tables, compiler, ir, test.body, test.file, scope_function_id, TY_UNIT, true)
+    emit_function_body(source, files, tokens, tables, compiler, ir, test.body, test.file, scope_function_id, TY_UNIT, true, true, false)
     ir_write_ascii(compiler, ir, "}\n\n")
     // E3a1 subsection: keep test region offsets local to this emitted function.
     clear_function_regions(compiler)

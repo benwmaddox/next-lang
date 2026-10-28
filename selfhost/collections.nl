@@ -142,6 +142,38 @@ recursive fn count_loop_pushes_for_binding(
     if kind == NodeKind.For || kind == NodeKind.ForEach || kind == NodeKind.While {
         return LoopPushCount { count: 0L, valid: false }
     }
+    if kind == NodeKind.Assign {
+        let target = compiler.child_first[node]
+        if loop_push_receiver_binding(tables, compiler, target, scope) == binding {
+            return LoopPushCount { count: 0L, valid: false }
+        }
+    }
+    if kind == NodeKind.MethodCall {
+        let receiver = compiler.child_first[node]
+        if loop_push_receiver_binding(tables, compiler, receiver, scope) == binding {
+            let token = tables.nodes[node].token
+            let is_push = token_is_word_at(source, tokens, files, file_index, token, "push")
+            let changes_count = is_push || token_is_word_at(source, tokens, files, file_index, token, "insert") ||
+                token_is_word_at(source, tokens, files, file_index, token, "pop") ||
+                token_is_word_at(source, tokens, files, file_index, token, "remove") ||
+                token_is_word_at(source, tokens, files, file_index, token, "clear")
+            if changes_count && !is_push { return LoopPushCount { count: 0L, valid: false } }
+        }
+    }
+    if kind == NodeKind.Call {
+        let function = find_function_by_name(compiler, compiler.token_name_ids[tables.nodes[node].token])
+        if function >= 0L {
+            var argument = compiler.child_first[node]
+            for argument_index in 0L..compiler.functions[function].param_count {
+                let parameter = compiler.parameters[compiler.functions[function].param_start + argument_index]
+                if (parameter_mode(parameter) & FLAG_MODE_WRITE) != 0L && argument >= 0L &&
+                    loop_push_receiver_binding(tables, compiler, argument, scope) == binding {
+                    return LoopPushCount { count: 0L, valid: false }
+                }
+                if argument >= 0L { argument = compiler.child_next[argument] }
+            }
+        }
+    }
     if kind == NodeKind.Block {
         var statement = compiler.child_first[node]
         for statement_step in 0L..tables.nodes[node].subtree {
@@ -220,7 +252,9 @@ fn prepare_loop_push_proofs(
     scope: long,
     iterations: long,
     file_index: long,
+    loop_depth: long,
 ) {
+    begin_loop_count_snapshot(compiler, loop_node)
     if body < 0L || iterations < 0L { return }
     let first_node = body - tables.nodes[body].subtree + 1L
     for candidate in first_node..body + 1L {
@@ -244,19 +278,20 @@ fn prepare_loop_push_proofs(
         else { () }
         if fits {
             let final_count = before + pushes.count * iterations
-            compiler.loop_push_proofs.push(LoopPushProof { loop_node, binding, final_count }).unwrap()
+            compiler.loop_push_proofs.push(LoopPushProof { loop_node, binding, final_count, loop_depth }).unwrap()
         }
     }
 }
 
 fn loop_push_is_proven(compiler: CompilerTables, binding: long, loop_depth: long) -> bool {
     if binding < 0L || binding >= compiler.bindings.count() { return false }
+    if compiler.bindings[binding].collection_count < 0L { return false }
     if loop_depth == 0L {
         let count = compiler.bindings[binding].collection_count
         return count >= 0L && count < collection_capacity(compiler, compiler.bindings[binding].ty)
     }
     for proof_index in 0L..compiler.loop_push_proofs.count() {
-        if compiler.loop_push_proofs[proof_index].binding == binding { return true }
+        if compiler.loop_push_proofs[proof_index].binding == binding && compiler.loop_push_proofs[proof_index].loop_depth == loop_depth { return true }
     }
     false
 }
@@ -274,7 +309,7 @@ fn invalidate_collection_counts_for_write_call(
             if binding >= 0L && binding < compiler.bindings.count() &&
                 compiler.bindings[binding].ty == compiler.facts[argument].ty &&
                 type_kind(compiler, compiler.bindings[binding].ty) == TYPE_KIND_LIST {
-                compiler.bindings[binding].collection_count = -1L
+                set_binding_collection_count(compiler, binding, -1L)
             }
         }
         if argument >= 0L { argument = compiler.child_next[argument] }
@@ -282,22 +317,17 @@ fn invalidate_collection_counts_for_write_call(
 }
 
 fn finish_loop_push_proofs(compiler: write CompilerTables, loop_node: long) {
+    finish_loop_count_snapshot(compiler, loop_node)
     let original_count = compiler.loop_push_proofs.count()
     var write_index = 0L
     for read_index in 0L..original_count {
         let proof = compiler.loop_push_proofs[read_index]
-        if proof.loop_node == loop_node {
-            var binding = compiler.bindings[proof.binding]
-            binding.collection_count = proof.final_count
-            compiler.bindings[proof.binding] = binding
-        } else {
+        if proof.loop_node != loop_node {
             compiler.loop_push_proofs[write_index] = proof
             write_index += 1L
         }
     }
-    for pop_index in 0L..original_count - write_index {
-        match compiler.loop_push_proofs.pop() { some(_) => (), none() => () }
-    }
+    for pop_index in 0L..original_count - write_index { match compiler.loop_push_proofs.pop() { some(_) => (), none() => () } }
 }
 
 fn collection_type_matches(compiler: CompilerTables, kind: long, element: long, capacity: long) -> long {
