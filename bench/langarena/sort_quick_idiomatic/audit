@@ -1,0 +1,1 @@
+variant-idiomatic: retained the earlier quicksort partition with a ceiling-midpoint pivot and extra progress guards. The primary version uses Crystal's floor-midpoint Hoare partition. Both pass the checksum, but partition work differs, so this version is reported separately.

@@ -125,15 +125,25 @@ fn bwt_transform(input: list<byte, 100000>) -> BwtResult {
     result
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run_mode = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let size = if run_mode { 100000L } else { 50L }
     let iterations = if run_mode { 30L } else { 3L }
     let warmup = max(iterations / 5L, 1L)
 
+    // Prepare (untimed): test data only, as in Crystal. The transform is run work and stays inside the rounds.
     let test_data = generate_test_data(size)
+    let rounds = if prep { warmup } else { warmup + iterations }
     var result = 0L
-    for _w: long in 0L..warmup + iterations {
+    for _w: long in 0L..rounds {
         let transformed = bwt_transform(test_data)
         result = (result + transformed.transformed.count()) % 4294967296L
     }

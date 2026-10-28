@@ -1,0 +1,1 @@
+rewritten-to-match: same BFS with per-call visited, path_cell and path_parent arrays, same neighbour order and path reconstruction; each cell is a Cell struct with its kind and 4 neighbour indices (typed index instead of pointer), as in Crystal's per-cell objects. The earlier flat-array version is kept as maze_bfs_idiomatic.

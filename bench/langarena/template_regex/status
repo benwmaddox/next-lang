@@ -1,0 +1,1 @@
+not-comparable: Crystal Template::Regex and Rust template.rs use a regex engine (gsub /{{(.*?)}}/); this port uses a hand-written find_close scanner instead, so the algorithmic work is a library substitute

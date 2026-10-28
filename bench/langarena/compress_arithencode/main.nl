@@ -107,15 +107,24 @@ fn arith_encode(data: list<byte, 100004>) -> Encoded {
     Encoded { data: out, frequencies: frequencies }
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run_mode = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let size = if run_mode { 100004L } else { 54L }
     let iterations = if run_mode { 500L } else { 3L }
     let warmup = max(iterations / 5L, 1L)
 
     let test_data = generate_test_data(size)
+    let rounds = if prep { warmup } else { warmup + iterations }
     var result = 0L
-    for _w: long in 0L..warmup + iterations {
+    for _w: long in 0L..rounds {
         let encoded = arith_encode(test_data)
         result = (result + encoded.data.count()) % 4294967296L
     }

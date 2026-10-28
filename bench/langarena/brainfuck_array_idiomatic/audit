@@ -1,0 +1,1 @@
+variant-idiomatic: retained 100000-cell fixed int tape from the earlier port; the rewritten primary package uses a 30000-cell fixed tape to match Crystal's initial tape size more closely. Both compile to a command array with a jump table, use the same run inputs and checksum, and pass checksum verification. This variant uses a different tape capacity and is reported separately.

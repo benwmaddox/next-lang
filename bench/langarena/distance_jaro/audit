@@ -1,0 +1,1 @@
+pending: this port follows the Jaro matching-window and transposition calculation over the reference's random byte pairs. The result and checksum require double-precision arithmetic, which is scheduled for F1; there is no executable comparison yet.

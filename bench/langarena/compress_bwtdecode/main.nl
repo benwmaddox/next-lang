@@ -162,17 +162,27 @@ fn bwt_inverse(bwt: list<byte, 1000001>, original_idx: long) -> list<byte, 10000
     result
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run_mode = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let size = if run_mode { 1000001L } else { 51L }
     let iterations = if run_mode { 180L } else { 3L }
     let warmup = max(iterations / 5L, 1L)
 
+    // Prepare once (untimed); prep mode runs only the warmup rounds.
     let test_data = generate_test_data(size)
     let encoded = bwt_transform(test_data)
+    let rounds = if prep { warmup } else { warmup + iterations }
     var result = 0L
     var inverted: list<byte, 1000001> = list {}
-    for _w: long in 0L..warmup + iterations {
+    for _w: long in 0L..rounds {
         inverted = bwt_inverse(encoded.transformed, encoded.original_idx)
         result = (result + inverted.count()) % 4294967296L
     }

@@ -88,17 +88,27 @@ fn lzw_decode(encoded: Bytes max 2000014) -> Bytes max 1000007 {
     result
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run_mode = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let size = if run_mode { 1000007L } else { 61L }
     let iterations = if run_mode { 1600L } else { 3L }
     let warmup = max(iterations / 5L, 1L)
 
+    // Prepare once (untimed), then warmup rounds; prep mode stops after warmup.
     let test_data = generate_test_data(size)
     let encoded = lzw_encode(test_data)
+    let rounds = if prep { warmup } else { warmup + iterations }
     var result = 0L
     var decoded: Bytes max 1000007 = Bytes.empty()
-    for _w: long in 0L..warmup + iterations {
+    for _w: long in 0L..rounds {
         decoded = lzw_decode(encoded)
         result = (result + decoded.count()) % 4294967296L
     }

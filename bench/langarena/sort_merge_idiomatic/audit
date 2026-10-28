@@ -1,0 +1,1 @@
+variant-idiomatic: retained the earlier merge-sort port that allocates its scratch list once outside the timed rounds and reuses it. The primary version allocates and zero-fills scratch within each sort call, matching Crystal and Rust allocation timing. Both pass the checksum; the reusable-buffer variant is reported separately.

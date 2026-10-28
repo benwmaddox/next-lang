@@ -18,6 +18,13 @@ fn is_run_mode(env: Env) -> bool {
     }
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn first_name(k: long) -> Ascii max 8 {
     match k {
         0L => "John"
@@ -148,15 +155,17 @@ fn checksum_bytes(text: Page) -> long {
 
 fn main(env: Env) {
     let run = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let count_value = if run { RUN_COUNT } else { TEST_COUNT }
     let iterations = if run { RUN_ITERATIONS } else { TEST_ITERATIONS }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    let rounds = if prep { warmup } else { warmup + iterations }
     var text: Page = Bytes.empty()
     var vars: Vars = map {}
     prepare(text, vars, count_value)
     var rendered: Page = Bytes.empty()
     var total = 0L
-    for _round: long in 0L..(warmup + iterations) {
+    for _round: long in 0L..rounds {
         rendered = Bytes.empty()
         render(text, vars, rendered)
         total = (total + rendered.len()) % MODULUS

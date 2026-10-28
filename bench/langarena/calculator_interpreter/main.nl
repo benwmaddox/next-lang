@@ -45,6 +45,13 @@ fn is_run_mode(env: Env) -> bool {
     }
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 // ---- program text ----
 
 fn put(out: grow Bytes max 4194304, piece: Bytes max 128) {
@@ -331,9 +338,11 @@ fn run_program(nodes: list<Node, 1200000>, roots: list<int, 36000>) -> long {
 
 fn main(env: Env) {
     let run = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let operations = if run { 35000L } else { 10L }
     let iterations = 100L
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    let rounds = if prep { warmup } else { warmup + iterations }
 
     // Stage 0 reserves the data stack from one pass down each call chain, not from the recursion
     // depth the parser really reaches, so main sets some room aside.
@@ -346,7 +355,7 @@ fn main(env: Env) {
     parse(parser, text)
 
     var result = 0L
-    for _round in 0L..warmup + iterations {
+    for _round in 0L..rounds {
         let value = run_program(parser.nodes, parser.roots)
         // the reference adds the low 32 bits of the (wrapping) 64-bit result
         result = (result + (value % 4294967296L + 4294967296L) % 4294967296L) % 4294967296L

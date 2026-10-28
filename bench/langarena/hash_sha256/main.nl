@@ -10,6 +10,13 @@ fn is_run_mode(env: Env) -> bool {
     }
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn next_int(seed: write long, max_value: long) -> long {
     seed = (seed * 3877L + 29573L) % 139968L
     (seed * max_value) / 139968L
@@ -32,9 +39,17 @@ fn digest_word(data: list<byte, 1100000>) -> long {
         h = ((h + (h << 10L)) & MASK32) ^ (h >> 6L)
         hashes[lane] = h
     }
-    // First four digest bytes (big-endian words) read back as a little-endian u32.
-    let first = hashes[0L]
-    ((first >> 24L) & 255L) | (((first >> 16L) & 255L) << 8L) | (((first >> 8L) & 255L) << 16L) | ((first & 255L) << 24L)
+    // Write all 32 digest bytes (each lane big-endian), as the reference does.
+    var digest: long[32] = fill(0L)
+    for lane_index: long in 0L..8L {
+        let word = hashes[lane_index]
+        digest[lane_index * 4L] = (word >> 24L) & 255L
+        digest[lane_index * 4L + 1L] = (word >> 16L) & 255L
+        digest[lane_index * 4L + 2L] = (word >> 8L) & 255L
+        digest[lane_index * 4L + 3L] = word & 255L
+    }
+    // The reference reads the first four digest bytes back as a little-endian u32.
+    digest[0L] | (digest[1L] << 8L) | (digest[2L] << 16L) | (digest[3L] << 24L)
 }
 
 fn run_once(data: write list<byte, 1100000>, seed: write long, result: long) -> long {
@@ -46,6 +61,7 @@ fn run_once(data: write list<byte, 1100000>, seed: write long, result: long) -> 
 
 fn main(env: Env) {
     let run_mode = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let size = if run_mode { 1100000L } else { 100L }
     let iterations = if run_mode { 1200L } else { 50L }
     let warmup = max(iterations / 5L, 1L)
@@ -57,13 +73,18 @@ fn main(env: Env) {
     }
 
     // LangArena: prepare, warm up, reset the generator, then the timed iterations.
+    // Prep mode stops after the warmup rounds.
     var result = 0L
     for _w: long in 0L..warmup {
         result = run_once(data, seed, result)
     }
-    seed = 42L
-    for _r: long in 0L..iterations {
-        result = run_once(data, seed, result)
+    if prep {
+        print(result)
+    } else {
+        seed = 42L
+        for _r: long in 0L..iterations {
+            result = run_once(data, seed, result)
+        }
+        print(result)
     }
-    print(result)
 }

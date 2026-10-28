@@ -35,6 +35,14 @@ fn is_run_mode(env: Env) -> bool {
     }
 }
 
+// A second argument ("run prep" / "test prep") runs prepare plus the warmup rounds only.
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn put(out: grow Bytes max 4194304, piece: Bytes max 64) {
     discard out.try_append(piece)
 }
@@ -175,9 +183,11 @@ fn starts_with_coordinates(text: Bytes max 4194304) -> bool {
 
 fn main(env: Env) {
     let run = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let coords = if run { 20000L } else { 9L }
     let iterations = if run { 100L } else { 3L }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    let rounds = if prep { warmup } else { warmup + iterations }
 
     var rng = Rng { last: 42L }
     var data: list<Coordinate, 20000> = list {}
@@ -185,7 +195,7 @@ fn main(env: Env) {
 
     var result = 0L
     var text: Bytes max 4194304 = Bytes.empty()
-    for _round in 0L..warmup + iterations {
+    for _round in 0L..rounds {
         text = Bytes.empty()
         serialize(text, data)
         if starts_with_coordinates(text) { result += 1L }

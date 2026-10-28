@@ -54,7 +54,9 @@ fn fannkuchredux(n: long) -> Flips {
             if r == n { return Flips { checksum, max_flips } }
             let perm0 = perm1[0L]
             for i in 0L..r {
+                let held = perm1[i]
                 perm1[i] = perm1[i + 1L]
+                perm1[i + 1L] = held
             }
             perm1[r] = perm0
             counts[r] -= 1L
@@ -66,14 +68,24 @@ fn fannkuchredux(n: long) -> Flips {
     Flips { checksum, max_flips }
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let n = if run { 8L } else { 5L }
     let iterations = if run { 700L } else { 3L }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    // Crystal's Fannkuchredux has no prepare step, so prep mode is only the warmup rounds.
+    let rounds = if prep { warmup } else { warmup + iterations }
 
     var result = 0L
-    for _round in 0L..warmup + iterations {
+    for _round in 0L..rounds {
         let flips = fannkuchredux(n)
         let low = (flips.checksum % MODULUS + MODULUS) % MODULUS    // the reference casts the i32 to u32
         result = (result + (low * 100L + flips.max_flips) % MODULUS) % MODULUS

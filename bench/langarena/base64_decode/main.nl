@@ -95,11 +95,20 @@ fn checksum_bytes(text: Bytes max 100) -> long {
     hash
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run = is_run_mode(env)
     let size = if run { RUN_SIZE } else { TEST_SIZE }
     let iterations = if run { RUN_ITERATIONS } else { TEST_ITERATIONS }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    let prep = is_prep_mode(env)
+    let rounds = if prep { warmup } else { warmup + iterations }
     var table: int[256] = fill(-1)
     for i: long in 0L..64L { table[ALPHABET[i].to_long()] = (int)i }
 
@@ -110,7 +119,7 @@ fn main(env: Env) {
 
     var result = 0L
     var decoded: Bytes max 500000 = Bytes.empty()
-    for _round: long in 0L..(warmup + iterations) {
+    for _round: long in 0L..rounds {
         decoded = Bytes.empty()
         let length = decode(encoded, table, decoded).unwrap()
         result = (result + length) % MODULUS

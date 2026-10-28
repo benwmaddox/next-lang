@@ -1,0 +1,1 @@
+like-for-like: same CRC-32 (reflected poly 0xEDB88320, bit-at-a-time, init/final xor), same 1.2 MB buffer and one random byte changed per round, same seed reset between warmup and timed rounds; Crystal and Rust match the same bitwise loop.

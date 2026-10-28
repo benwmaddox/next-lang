@@ -186,17 +186,27 @@ fn arith_decode(encoded: Encoded) -> list<byte, 100005> {
     result
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run_mode = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let size = if run_mode { 100005L } else { 55L }
     let iterations = if run_mode { 350L } else { 3L }
     let warmup = max(iterations / 5L, 1L)
 
+    // Prepare once (untimed: test data and encoding); prep mode stops after warmup.
     let test_data = generate_test_data(size)
     let encoded = arith_encode(test_data)
+    let rounds = if prep { warmup } else { warmup + iterations }
     var result = 0L
     var decoded: list<byte, 100005> = list {}
-    for _w: long in 0L..warmup + iterations {
+    for _w: long in 0L..rounds {
         decoded = arith_decode(encoded)
         result = (result + decoded.count()) % 4294967296L
     }

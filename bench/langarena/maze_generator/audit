@@ -1,0 +1,1 @@
+rewritten-to-match: same LCG neighbour shuffle, dig stack order, recursive ensure_open_finish, reset and checksum; each cell is a Cell struct holding its 4 neighbour indices (neighbors: int[4]) in a Cell[1960000] array, the per-cell-object layout Crystal uses (typed index instead of pointer). The earlier flat kind[]/neighbors[] version is kept as maze_generator_idiomatic.

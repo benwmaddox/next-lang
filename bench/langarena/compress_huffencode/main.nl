@@ -42,12 +42,13 @@ fn generate_test_data(size: long) -> list<byte, 1000002> {
     data
 }
 
-// Insert a node index into the queue (from `head` on) after every node of equal or lower frequency.
+// Insert a node index into the queue (from `head` on) before the first node of equal or higher frequency,
+// matching Crystal's bsearch_index { |n| n.frequency >= parent.frequency }.
 fn insert_sorted(queue: write list<long, 512>, head: long, nodes: list<Node, 512>, id: long) {
     var position: long = queue.count()
     let frequency = nodes[id].frequency
     for at: long in head..queue.count() {
-        if nodes[queue[at]].frequency > frequency {
+        if nodes[queue[at]].frequency >= frequency {
             position = at
             break
         }
@@ -163,15 +164,25 @@ fn encode_once(data: list<byte, 1000002>) -> Encoded {
     huffman_encode(data, codes)
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run_mode = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let size = if run_mode { 1000002L } else { 52L }
     let iterations = if run_mode { 200L } else { 3L }
     let warmup = max(iterations / 5L, 1L)
 
+    // Prepare (untimed): test data only, as in Crystal. Each round builds frequencies, tree, codes and encodes.
     let test_data = generate_test_data(size)
+    let rounds = if prep { warmup } else { warmup + iterations }
     var result = 0L
-    for _w: long in 0L..warmup + iterations {
+    for _w: long in 0L..rounds {
         let encoded = encode_once(test_data)
         result = (result + encoded.data.count()) % 4294967296L
     }

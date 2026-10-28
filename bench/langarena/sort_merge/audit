@@ -1,0 +1,1 @@
+rewritten-to-match: scratch was allocated once outside the rounds loop, but Crystal and Rust allocate temp per sort call; now allocated and zero-filled per round, and the previous version is kept in sort_merge_idiomatic.

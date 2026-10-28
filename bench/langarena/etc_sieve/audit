@@ -1,0 +1,1 @@
+closest-possible: same sieve, odd-only scan, and checksum as Crystal (last prime + count, summed mod 2^32); the sqrt bound uses a hand-written integer_sqrt (a linear scan that stops at sqrt(limit), about 1,700 steps per call) because no float sqrt was found in next-lang's stdlib, where Crystal calls Math.sqrt once; the cost is negligible next to the 3,000,000-entry sieve.

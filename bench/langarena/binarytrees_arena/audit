@@ -1,0 +1,1 @@
+like-for-like: Crystal Arena is an array of records addressed by index (-1 for none), built recursively and summed recursively; the port uses a bounded list of structs with the same index scheme and recursion. Same per-round fresh array, same work per round.

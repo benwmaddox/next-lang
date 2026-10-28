@@ -1,0 +1,1 @@
+rewritten-to-match: the port used two flat bool arrays with arithmetic torus neighbours; Crystal makes each cell an object holding a precomputed list of its 8 torus neighbours (link_neighbors), so the main package now stores a Cell struct per cell with a list<long, 8> of neighbour indices built once in setup; the flat version is kept as etc_gameoflife_idiomatic

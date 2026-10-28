@@ -16,6 +16,13 @@ fn is_run_mode(env: Env) -> bool {
     }
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn method(k: long) -> Ascii max 8 {
     match k {
         0L => "GET"
@@ -498,15 +505,17 @@ fn total_matches(log: Log) -> long {
 
 fn main(env: Env) {
     let run = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let lines = if run { RUN_LINES } else { TEST_LINES }
     let iterations = if run { RUN_ITERATIONS } else { TEST_ITERATIONS }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    let rounds = if prep { warmup } else { warmup + iterations }
     var log: Log = Bytes.empty()
     for i: long in 0L..lines {
         generate_line(log, i)
     }
     var checksum = 0L
-    for _round: long in 0L..(warmup + iterations) {
+    for _round: long in 0L..rounds {
         checksum = (checksum + total_matches(log)) % MODULUS
     }
     print(checksum)

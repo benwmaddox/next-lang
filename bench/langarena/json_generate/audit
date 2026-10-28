@@ -1,0 +1,1 @@
+closest-possible: hand-written JSON serializer and integer-scaled (1e-8 unit) float printer, where the Crystal reference uses JSON::Serializable and Rust uses serde_json with f64 values; next-lang has no float support yet (pending-floats). Same data, rounding, name format and per-round full serialization, so the work per round is the same apart from the library.

@@ -35,6 +35,13 @@ fn is_run_mode(env: Env) -> bool {
     }
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn new_cache(capacity: long) -> Cache {
     Cache { capacity: capacity, index: map {}, nodes: list {}, free: list {}, head: -1, tail: -1, size: 0L }
 }
@@ -121,16 +128,19 @@ fn put(cache: write Cache, key: Ascii max 16, value: Ascii max 24) {
 
 fn main(env: Env) {
     let run = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let values = if run { RUN_VALUES } else { TEST_VALUES }
     let size = if run { RUN_SIZE } else { TEST_SIZE }
     let iterations = if run { RUN_ITERATIONS } else { TEST_ITERATIONS }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    // Crystal's CacheSimulation has no prepare step, so prep mode is only the warmup rounds.
+    let rounds = if prep { warmup } else { warmup + iterations }
     var cache = new_cache(size)
     var hits = 0L
     var misses = 0L
     var last = LCG_INIT
     // The warmup runs keep their cache and counters; only the random generator restarts.
-    for round: long in 0L..(warmup + iterations) {
+    for round: long in 0L..rounds {
         if round == warmup { last = LCG_INIT }
         let iteration_id = (int)(if round < warmup { round } else { round - warmup })
         for _step: long in 0L..1000L {

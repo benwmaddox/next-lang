@@ -1,0 +1,1 @@
+rewritten-to-match: previous version used a ceiling-midpoint pivot and extra step guards and held-swap loops that differ from Crystal's floor-midpoint Hoare partition; the previous version is kept in sort_quick_idiomatic.

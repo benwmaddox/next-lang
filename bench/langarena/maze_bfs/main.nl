@@ -12,11 +12,15 @@ const BORDER: int = 4
 
 struct Rng { last: long }
 
+struct Cell {
+    kind: int
+    neighbors: int[4]    // 4 neighbour cell indices
+}
+
 struct Maze {
     width: long
     height: long
-    kind: int[1960000]
-    neighbors: int[7840000]    // 4 cell indices per cell
+    cells: Cell[1960000]
 }
 
 fn next_int(rng: write Rng, max_value: long) -> long {
@@ -46,7 +50,7 @@ fn link_neighbors(maze: write Maze, rng: write Rng) {
         for x in 0L..w {
             let cell = y * w + x
             if x == 0L || y == 0L || x == w - 1L || y == h - 1L {
-                maze.kind[cell] = BORDER
+                maze.cells[cell].kind = BORDER
             } else {
                 var order: int[4] = fill(0)
                 order[0L] = (int)(cell - w)
@@ -62,18 +66,18 @@ fn link_neighbors(maze: write Maze, rng: write Rng) {
                         order[j] = held
                     }
                 }
-                for k in 0L..4L { maze.neighbors[cell * 4L + k] = order[k] }
+                for k in 0L..4L { maze.cells[cell].neighbors[k] = order[k] }
             }
         }
     }
-    maze.kind[w + 1L] = START
-    maze.kind[finish_cell(maze)] = FINISH
+    maze.cells[w + 1L].kind = START
+    maze.cells[finish_cell(maze)].kind = FINISH
 }
 
 fn walkable_neighbors(maze: Maze, cell: long) -> long {
     var found = 0L
     for k in 0L..4L {
-        if is_walkable(maze.kind[maze.neighbors[cell * 4L + k].to_long()]) { found += 1L }
+        if is_walkable(maze.cells[maze.cells[cell].neighbors[k].to_long()].kind) { found += 1L }
     }
     found
 }
@@ -84,10 +88,10 @@ fn dig(maze: write Maze, first: long) {
     for _step in 0L..MAX_NEIGHBORS + 1L {
         let cell = (stack.pop() ?? break).to_long()
         if walkable_neighbors(maze, cell) == 1L {
-            maze.kind[cell] = SPACE
+            maze.cells[cell].kind = SPACE
             for k in 0L..4L {
-                let neighbor = maze.neighbors[cell * 4L + k]
-                if maze.kind[neighbor.to_long()] == WALL {
+                let neighbor = maze.cells[cell].neighbors[k]
+                if maze.cells[neighbor.to_long()].kind == WALL {
                     discard stack.push(neighbor)
                 }
             }
@@ -96,11 +100,11 @@ fn dig(maze: write Maze, first: long) {
 }
 
 recursive fn ensure_open_finish(maze: write Maze, cell: long) {
-    maze.kind[cell] = SPACE
+    maze.cells[cell].kind = SPACE
     var walls: list<int, 4> = list {}
     for k in 0L..4L {
-        let neighbor = maze.neighbors[cell * 4L + k]
-        if maze.kind[neighbor.to_long()] == WALL { discard walls.push(neighbor) }
+        let neighbor = maze.cells[cell].neighbors[k]
+        if maze.cells[neighbor.to_long()].kind == WALL { discard walls.push(neighbor) }
     }
     if walkable_neighbors(maze, cell) > 1L { return }
     for wall in walls { ensure_open_finish(maze, wall.to_long()) }
@@ -109,18 +113,18 @@ recursive fn ensure_open_finish(maze: write Maze, cell: long) {
 fn generate(maze: write Maze) {
     let first = maze.width + 1L
     for k in 0L..4L {
-        let neighbor = maze.neighbors[first * 4L + k]
-        if maze.kind[neighbor.to_long()] == WALL { dig(maze, neighbor.to_long()) }
+        let neighbor = maze.cells[first].neighbors[k]
+        if maze.cells[neighbor.to_long()].kind == WALL { dig(maze, neighbor.to_long()) }
     }
     let finish = finish_cell(maze)
     for k in 0L..4L {
-        let neighbor = maze.neighbors[finish * 4L + k]
-        if maze.kind[neighbor.to_long()] == WALL { ensure_open_finish(maze, neighbor.to_long()) }
+        let neighbor = maze.cells[finish].neighbors[k]
+        if maze.cells[neighbor.to_long()].kind == WALL { ensure_open_finish(maze, neighbor.to_long()) }
     }
 }
 
 fn new_maze(width_value: long, height: long, rng: write Rng) -> Maze {
-    var maze = Maze { width: width_value, height, kind: fill(WALL), neighbors: fill(0) }
+    var maze = Maze { width: width_value, height, cells: fill(Cell { kind: WALL, neighbors: fill(0) }) }
     link_neighbors(maze, rng)
     maze
 }
@@ -149,7 +153,7 @@ fn bfs(maze: Maze, source: long, target: long) -> PathInfo {
         let path_id = (pending.pop() ?? return none_found).to_long()
         let cell = path_cell[path_id].to_long()
         for k in 0L..4L {
-            let neighbor = maze.neighbors[cell * 4L + k].to_long()
+            let neighbor = maze.cells[cell].neighbors[k].to_long()
             if neighbor == target {
                 var reverse_path: list<int, 1960000> = list {}
                 discard reverse_path.push((int)target)
@@ -162,7 +166,7 @@ fn bfs(maze: Maze, source: long, target: long) -> PathInfo {
                 let total = reverse_path.count()
                 return PathInfo { length: total, mid: mid_product(maze, reverse_path[total - 1L - total / 2L].to_long()) }
             }
-            if is_walkable(maze.kind[neighbor]) && !visited[neighbor] {
+            if is_walkable(maze.cells[neighbor].kind) && !visited[neighbor] {
                 visited[neighbor] = true
                 path_cell[path_count] = (int)neighbor
                 path_parent[path_count] = (int)path_id
@@ -174,19 +178,28 @@ fn bfs(maze: Maze, source: long, target: long) -> PathInfo {
     none_found
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run = is_run_mode(env)
     let width_value = if run { 1400L } else { 200L }
     let height = if run { 1400L } else { 30L }
     let iterations = if run { 70L } else { 2L }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    let prep = is_prep_mode(env)
+    let rounds = if prep { warmup } else { warmup + iterations }
 
     var rng = Rng { last: 42L }
     var maze = new_maze(width_value, height, rng)
     generate(maze)
     var result = 0L
     var last_mid = 0L
-    for _round in 0L..warmup + iterations {
+    for _round in 0L..rounds {
         let found = bfs(maze, width_value + 1L, finish_cell(maze))
         result += found.length
         last_mid = found.mid

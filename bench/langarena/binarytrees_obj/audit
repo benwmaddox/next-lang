@@ -1,0 +1,1 @@
+closest-possible: Crystal Obj allocates one heap object per node and frees via GC; the port uses a per-round pool with typed Id<P> references (the nearest next-lang equivalent of object references), freed wholesale each round. Same tree shape, same recursion, same item arithmetic, same warmup/iteration counts.

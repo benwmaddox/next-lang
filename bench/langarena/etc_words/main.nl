@@ -85,16 +85,26 @@ fn count_words(text: list<byte, 400000>) -> long {
     max_count + checksum_word(words[max_slot]) + words.count()
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let words = if run { RUN_WORDS } else { TEST_WORDS }
     let word_len = if run { RUN_WORD_LEN } else { TEST_WORD_LEN }
     let iterations = if run { RUN_ITERATIONS } else { TEST_ITERATIONS }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    // Crystal's prepare builds the text (untimed); prep mode here is the text plus the warmup rounds.
+    let rounds = if prep { warmup } else { warmup + iterations }
     var text: list<byte, 400000> = list {}
     generate(text, words, word_len)
     var checksum = 0L
-    for _round: long in 0L..(warmup + iterations) {
+    for _round: long in 0L..rounds {
         checksum = (checksum + count_words(text)) % MODULUS
     }
     print(checksum)

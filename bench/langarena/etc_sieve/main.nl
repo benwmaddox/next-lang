@@ -49,13 +49,23 @@ fn sieve(limit: long) -> long {
     last_prime + count_value
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let limit = if run { RUN_LIMIT } else { TEST_LIMIT }
     let iterations = if run { RUN_ITERATIONS } else { TEST_ITERATIONS }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    // Crystal's Sieve has no prepare step, so prep mode is only the warmup rounds.
+    let rounds = if prep { warmup } else { warmup + iterations }
     var checksum = 0L
-    for _round: long in 0L..(warmup + iterations) {
+    for _round: long in 0L..rounds {
         checksum = (checksum + sieve(limit)) % MODULUS
     }
     print(checksum)
