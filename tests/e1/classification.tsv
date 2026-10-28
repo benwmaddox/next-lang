@@ -700,3 +700,13 @@ expected	tests/e3/e3b_fix1_l1_runaway
 expected	tests/e3/e3b_fix1_l1_cross_call
 build	tests/e3/e3b_fix1_l2_receiver
 # E3b end
+# E3a3-fix begin
+# break/continue release the reservations of blocks between the jump and the loop body.
+build	tests/e3/e3a3fix_continue_if
+build	tests/e3/e3a3fix_break_inner
+build	tests/e3/e3a3fix_continue_match
+build	tests/e3/e3a3fix_continue_nested
+build	tests/e3/e3a3fix_expression_exits
+# Stage 0 does not parse while loops.
+expected	tests/e3/e3a3fix_while_exits
+# E3a3-fix end

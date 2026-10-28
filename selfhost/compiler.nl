@@ -9076,7 +9076,7 @@ recursive fn emit_expr_linear(
                 let is_break = (syntax.flags & FLAG_VALUE) != 0L
                 let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
                 // E3a1 subsection
-                emit_region_scope_exit(tables, compiler, ir, loop.body)
+                emit_region_loop_exit(tables, compiler, ir, loop.body, current)
                 // E3a1 subsection end
                 let target_kind = if tables.nodes[loop.node].kind == NodeKind.While { 1L } else { 0L }
                 if is_break { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, target_kind, loop.node, TY_UNIT, -1L) }
@@ -9769,8 +9769,9 @@ recursive fn emit_expr_linear(
                 frame.child2 = 1L
                 compiler.expr_work[frame_index] = frame
                 let active_function_id = if compiler.work.count() > 0L { compiler.work[compiler.work.count() - 1L].function_id } else { -1L }
-                emit_function_body(source, files, tokens, tables, compiler, ir, current, file_index, active_function_id, return_ty, is_test, false, true)
+                let falls = emit_function_body(source, files, tokens, tables, compiler, ir, current, file_index, active_function_id, return_ty, is_test, false, true)
                 frame = compiler.expr_work[frame_index]
+                frame.reachable = falls
                 frame.cursor = if (tables.nodes[current].flags & FLAG_HAS_TAIL) != 0L { frame.child0 } else { -1L }
                 compiler.expr_work[frame_index] = frame
             } else if frame.cursor >= 0L && (frame.cursor != frame.child0 || (tables.nodes[current].flags & FLAG_HAS_TAIL) == 0L) {
@@ -9839,7 +9840,7 @@ recursive fn emit_expr_linear(
                 } else if tables.nodes[statement].kind == NodeKind.BreakStatement || tables.nodes[statement].kind == NodeKind.ContinueStatement {
                     let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
                     // E3a1 subsection
-                    emit_region_scope_exit(tables, compiler, ir, loop.body)
+                    emit_region_loop_exit(tables, compiler, ir, loop.body, statement)
                     // E3a1 subsection end
                     let target_kind = if tables.nodes[loop.node].kind == NodeKind.While { 1L } else { 0L }
                     if tables.nodes[statement].kind == NodeKind.BreakStatement { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, target_kind, loop.node, TY_UNIT, -1L) }
@@ -10101,8 +10102,9 @@ recursive fn emit_function_body(
     is_test: bool,
     function_root: bool,
     stop_before_tail: bool,
-) {
+) -> bool {
     var base_depth = compiler.work.count()
+    var body_falls = true
     if function_root {
         compiler.work.clear()
         compiler.emit_loops.clear()
@@ -10197,6 +10199,7 @@ recursive fn emit_function_body(
             if function_root && frame.node == body && frame.reachable {
                 lower_scope_exit(compiler, ir, -1L, EXIT_FALLTHROUGH, if is_test { 1L } else { 0L }, 0L, return_ty, -1L)
             }
+            if frame.node == body { body_falls = frame.reachable }
             match compiler.work.pop() { some(_) => (), none => () }
             if compiler.work.count() > base_depth {
                 let parent_index = compiler.work.count() - 1L
@@ -10414,7 +10417,7 @@ recursive fn emit_function_body(
         } else if kind == NodeKind.BreakStatement || kind == NodeKind.ContinueStatement {
             let loop = compiler.emit_loops[compiler.emit_loops.count() - 1L]
             // E3a1 subsection
-            emit_region_scope_exit(tables, compiler, ir, loop.body)
+            emit_region_loop_exit(tables, compiler, ir, loop.body, child)
             // E3a1 subsection end
             let target_kind = if tables.nodes[loop.node].kind == NodeKind.While { 1L } else { 0L }
             if kind == NodeKind.BreakStatement { lower_scope_exit(compiler, ir, -1L, EXIT_BREAK, target_kind, loop.node, TY_UNIT, -1L) }
@@ -10428,6 +10431,7 @@ recursive fn emit_function_body(
             compiler.ir_overflow = true
         }
     }
+    body_falls
 }
 // E3a1 end
 
@@ -10561,7 +10565,7 @@ fn emit_function_definition(
     }
     if !compiler.core_mode { emit_region_prologue(files, tables, compiler, ir, function.body, function.file) }
     compiler.memory_closure = compiler.core_mode && files[function.file].name == b"memory.nl"
-    emit_function_body(source, files, tokens, tables, compiler, ir, function.body, function.file, function_id, function.result_ty, false, true, false)
+    let _ = emit_function_body(source, files, tokens, tables, compiler, ir, function.body, function.file, function_id, function.result_ty, false, true, false)
     compiler.memory_closure = false
     ir_write_ascii(compiler, ir, "}\n\n")
     // E3a1 subsection: synthetic helpers emitted next do not inherit this frame's
@@ -10641,7 +10645,7 @@ fn emit_test_definition(
         }
     }
     emit_region_prologue(files, tables, compiler, ir, test.body, test.file)
-    emit_function_body(source, files, tokens, tables, compiler, ir, test.body, test.file, scope_function_id, TY_UNIT, true, true, false)
+    let _ = emit_function_body(source, files, tokens, tables, compiler, ir, test.body, test.file, scope_function_id, TY_UNIT, true, true, false)
     ir_write_ascii(compiler, ir, "}\n\n")
     // E3a1 subsection: keep test region offsets local to this emitted function.
     clear_function_regions(compiler)
