@@ -1,8 +1,26 @@
 # B1 prerequisite: source-used recursion and native-stack checks
 
-Status: ready as the next serial task; Bytes fields passed full staged
-acceptance in `7dc2b4e`.
-Resolve the measured-frame linker/runtime bridge before ungating recursive calls.
+Status: deferred by Ben, 2026-10-28, pending further language design.
+The unmerged compiler/runtime/linker prototype and its added fixtures were
+removed. Existing recursion gates remain in place. The notes below record the
+previous proposal; they are not authorization to resume its implementation.
+
+Ben's direction is to keep syntax and rules close to StasisLang and require a
+specific justification for Rust-derived approaches. Resolve these questions
+before selecting a replacement recursion design:
+
+- DESIGN describes the recursion budget as additional to the nonrecursive
+  requirement, while the existing C runtime caps whole-job native stack use.
+- T19 derives the default from the process stack, while DESIGN gives each job
+  its own mapped native stack. Choose an explicit, understandable default.
+- The current rule permits a small recursive local but rejects a slightly
+  larger one when storage placement creates a data-stack region. Decide whether
+  this size-dependent restriction is acceptable or needs a simpler model.
+
+Prefer ordinary caller-provided workspace where useful; do not introduce
+lifetime parameters or a general ownership system without a defended need.
+The compiler's own-source probe remains blocked on recursion. Continue
+independent self-hosting prerequisites without claiming B1 completion.
 
 ## Trigger and scope
 
