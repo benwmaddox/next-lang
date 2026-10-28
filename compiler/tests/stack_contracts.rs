@@ -262,25 +262,22 @@ fn selfhost_stack_bound_has_an_exact_attributed_path() {
     let worst_case = parse_bytes("  data stack worst case: ");
     let attributed = parse_bytes("  data stack critical path sum: ");
     assert_eq!(attributed, worst_case, "{stdout}");
-    // E2's layout, defaults, helper and aggregate-frame tables live in main
-    // alongside the parser's source, token and node buffers. E3b tracks
-    // per-binding collection facts, loop proofs and bounded branch and loop
-    // count snapshots; keep the attributed total below the fixed 8 GB budget.
-    assert_eq!(worst_case, 7_248_095_393, "{stdout}");
+    // The worst case is a report (Ben, 2026-10-27): stage-0-built binaries
+    // reserve it as address space at startup, so it must stay below the
+    // suites' 8 GB `ulimit -v`; real memory is checked separately
+    // (selfhost_compiler_memory.rs). docs/research/selfhost-stack-bound.md
+    // explains its parts.
+    eprintln!("selfhost data stack worst case: {worst_case} bytes");
     assert!(worst_case < 8_000_000_000, "{stdout}");
-    assert_eq!(
-        parse_bytes("  data stack reservation: "),
-        7_248_097_280,
+    assert!(
+        parse_bytes("  data stack reservation: ") >= worst_case,
         "{stdout}"
     );
     assert!(
         stdout.contains("data stack critical path: main ->"),
         "{stdout}"
     );
-    assert!(
-        stdout.contains("main.nl:96 main.tables (680912049 bytes)"),
-        "{stdout}"
-    );
+    assert!(stdout.contains(" main.tables ("), "{stdout}");
     for line in [68, 72, 103, 128, 175] {
         assert!(
             !stdout.contains(&format!("dump.nl:{line} copy-down temporary for buffer")),
