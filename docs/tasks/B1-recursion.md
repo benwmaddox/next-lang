@@ -19,6 +19,10 @@ before selecting a replacement recursion design:
 
 Prefer ordinary caller-provided workspace where useful; do not introduce
 lifetime parameters or a general ownership system without a defended need.
+Use Ben's clarified memory baseline: optional StasisLang-style static storage
+that persists across runs of a reusable job instance, with most work in per-run
+stack arenas that may move/grow up to a cap and are reclaimed in bulk. A future
+recursion proposal must fit that model before adding another memory mechanism.
 The compiler's own-source probe remains blocked on recursion. Continue
 independent self-hosting prerequisites without claiming B1 completion.
 
