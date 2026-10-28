@@ -4,7 +4,9 @@ Status: review findings and proposals, not adopted language changes.
 Ben requested straightforward code and a defense for Rust-derived approaches.
 Recursion implementation is deferred; its unmerged prototype was removed.
 Luna/max performed independent language and source reviews; Sol coordinated and
-reviewed the findings. This was a read-only code review; no tests were needed.
+reviewed the findings. This began as a read-only review; the memory note below
+records the user's current design direction. No language implementation changes
+were made or tested.
 
 ## Assessment
 
@@ -17,6 +19,32 @@ ordinary control flow over additional inference and special cases.
 The comparison uses the local StasisLang `docs/spec.md` sections 7.5 and 7.8 and
 `docs/knowledge/language-quick-reference.md`: caller-backed views, explicit
 destinations for named aggregates, bounded storage, and optional effect checks.
+
+## Memory baseline clarification (2026-10-28)
+
+The current direction is two storage lifetimes: optional fixed-layout state
+persisting across runs of a reusable job instance, and a moving/growing bump
+arena for each run, reset at scope marks and bulk cleanup. Persistent state
+cannot retain arena references, and there is no per-object heap, ownership
+header, reference count, or general allocator by default. Main coordinates
+startup within the CPU/core/RAM grant the host gives it; the host may grant a
+subset of its resources. Main defines jobs and their counts/triggers and sets
+up HTTP/mailboxes. Further per-job resource subdivision or CPU affinity is
+optional policy, not a required baseline.
+
+Only one run of a reusable job instance executes at once; parallelism comes
+from additional instances. A full bounded-mailbox send returns a full status
+for the caller to handle; it does not wait, drop, or retry implicitly.
+
+The linked [Memory model, revision 1](../design/memory-revision-1.md) is a
+discussion draft, not adopted syntax or compiler behavior. Job-state binding
+syntax, rollback after a failed run, and arena-exhaustion behavior remain open.
+The older scheduler descriptions that make `main` a worker job remain
+provisional pending reconciliation.
+The current runtime still runs one job per process and does not implement the
+host resource grant. Snapshot versions and reference counts, frozen pools,
+text-lane size classes, and zero-copy move/append paths are optional extensions;
+each needs a concrete workload and a safety or measured-performance defense.
 
 ## Language findings
 

@@ -6,6 +6,17 @@ checks remain guards throughout. New benchmark ports and unrelated features wait
 This queue refines the historical phase order in PLAN.md using actual compiler
 source requirements; it does not claim language parity is already reached.
 
+Memory baseline clarified by Ben, 2026-10-28: a reusable job instance may have
+optional StasisLang-style static storage that persists across its runs. Most
+work uses per-run stack arenas that may move/grow up to a cap and are reclaimed
+in bulk. Keep prerequisite implementations within that model.
+Main configures job counts, triggers, and mailboxes within its startup CPU/RAM
+grant, which may be a subset of the host. Each job instance runs serially;
+mailbox-full is an explicit send status. See the
+[Revision 1 discussion draft](../design/memory-revision-1.md).
+Extra ownership, allocation, or lifetime machinery needs a concrete requirement
+and a defense; the older task proposals are not a reason to introduce it.
+
 ## Completed prerequisite: remove the name-check blocker
 
 The direct post-E3c compiler self-build probe at `ed7e867` reports:
