@@ -6,7 +6,7 @@ checks remain guards throughout. New benchmark ports and unrelated features wait
 This queue refines the historical phase order in PLAN.md using actual compiler
 source requirements; it does not claim language parity is already reached.
 
-## Active: remove the name-check blocker
+## Completed prerequisite: remove the name-check blocker
 
 The direct post-E3c compiler self-build probe at `ed7e867` exits 1:
 
@@ -29,6 +29,13 @@ follow the DESIGN rule, legitimate shadowing is still rejected, repeated-name pa
 longer scale cubically, and the self-build probe advances to a specific remaining
 feature gate. Passing that probe's name checks is not B1 completion. Stage0 remains
 frozen; intentional DESIGN forms it rejects use reviewed expected-output fixtures.
+
+The name-scope prerequisite is implemented and passed the full staged O1/O3
+suite (734 registered plus 256 generated packages), relocation, and scaling
+checks in source commit `a18eb70`. The compiler now reaches the unsupported
+constant-declarations gate at collections.nl:7. See the
+[name-scope completion report](B1-name-scopes-report.md). The next serial task
+is source-used scalar constants; the compiler does not yet self-host.
 
 ## Dependency queue
 

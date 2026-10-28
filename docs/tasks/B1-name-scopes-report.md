@@ -120,13 +120,30 @@ formal benchmark result. The test allows 2,000 functions up to four times the
 1,000-function time plus 500 ms, avoiding a fragile absolute-time target while
 catching the prior cubic regression. The test passed.
 
-## Remaining work
+## Full staged validation
 
-Constant declarations are the next selfhost source blocker. The full O1/O3
-suite with 64 generated cases and the required pre-commit hook are pending on
-the parent's final staged snapshot. An earlier full-suite attempt was
-interrupted and is not acceptance evidence. No claim is made here that B1 or
-selfhosting is complete.
+The required pre-commit hook passed the exact final source snapshot in 635
+seconds before source commit `a18eb70`:
+
+```sh
+NLC_LONG_TESTS=1 NLC_E1_GENERATED_COUNT=64 NLC_TEST_JOBS=4 git commit ...
+```
+
+The hook runs `NLC_FRONTEND=selfhost cargo test --offline --release -q --test '*'`
+under the 8,000,000 KiB address-space limit and one-hour timeout. This passed
+the complete O1/O3 comparison of 734 registered and 256 generated packages,
+O1/O3 forced relocation, the new scaling regression, and the existing budget,
+capacity, UTF-8/corruption, memory, interface, and runtime contracts. Formatting
+and diff checks passed. The earlier interrupted and failed attempts are not
+counted as passing evidence. Stage0/Rust implementation sources are unchanged.
+
+## Next task
+
+Constant declarations are the next selfhost source blocker. The source-closed
+[scalar constant task](B1-scalar-constants.md) is ready next: the compiler's
+207 declarations are all long-valued literals, references, or arithmetic.
+The [critical path](B1-critical-path.md) prioritizes this before builders;
+selfhosting and B1 are not yet complete.
 
 ## Complete intentional-rejection audit
 
@@ -147,4 +164,5 @@ expected output, and generated case at O1/O3. It found one further stale row:
 `t20_args_without_grant` now reaches the existing unsupported Env-type gate,
 which precedes capability diagnostics at this milestone. That row moves from
 diagnose to unsupported; its source and expected files are unchanged. The hook
-stopped with that classification failure, so that attempt is not a full pass.
+stopped with that classification failure; the corrected final snapshot then
+passed the complete hook as recorded above.

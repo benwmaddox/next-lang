@@ -33,9 +33,10 @@ language features until B1. The concrete blocker queue and B1 acceptance are in
 [the self-hosting critical path](tasks/B1-critical-path.md).
 
 The first direct post-E3c self-build probe fails in the name checker at
-`collections.nl:214`, rejecting local `count` against the built-in. Fix the
-checker to implement DESIGN's existing variable-only scope rule and remove its
-package-wide cubic walk before proceeding to builder prerequisites.
+`collections.nl:214`, rejecting local `count` against the built-in. The name-scope
+prerequisite now passes the full staged O1/O3 suite; see its completion report.
+The next task is the compiler's source-used scalar long constants, followed by
+the remaining source-closed builder prerequisites.
 
 **Stage 0 freeze (Ben, 2026-10-26):** the self-hosted compiler (selfhost/ and core/) is the primary compiler and the only line of new work. Rust nlc is frozen as **stage 0**: it builds the self-hosted compiler until the self-hosted compiler builds itself (B1), and it stays the behavioural reference for everything it supports. It receives fixes only when they are needed to keep building or testing the self-hosted compiler, never new features. The freeze is the tag `stage0-2026-10-26.4` (published as a GitHub Release on 2026-10-26 after four fix-ups found only on a clean Linux checkout: the binary_search check tied to the program's build mode, scripts executable in git, two Windows-unsafe test file names, a longer self-hosted cache-lock wait), rebuilt from the pinned toolchain (rust-toolchain.toml: Rust 1.93.0; clang 18.1.3) and published as a GitHub Release by the manual workflow `.github/workflows/stage0-release.yml`. Until B1, the self-hosted compiler's own source uses only what stage 0 accepts. For features stage 0 lacks, the test suite's expected-output files are the reference.
 
