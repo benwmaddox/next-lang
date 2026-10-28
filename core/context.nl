@@ -156,29 +156,32 @@ fn nl_context_create(
     }
     let header_bytes = context_header_bytes(page_size)
     if header_bytes <= 0L { write_context_startup_failure(entry_name, entry_name_length, reservation_bytes, sys.lit(b"requested reservation is too large")) }
-    let header_raw = map(sys.null(), header_bytes, 3, 16418, -1, 0L)
-    if header_raw.is_err() { write_context_startup_failure(entry_name, entry_name_length, reservation_bytes, sys.lit(b"could not reserve the requested address range")) }
-    let context = sys.from_raw(header_raw.unwrap())
-    let stack_total = reservation_bytes + page_size
-    let stack_raw = map(sys.null(), stack_total, 0, 16418, -1, 0L)
-    if stack_raw.is_err() {
-        let _header_cleanup = unmap(context, header_bytes)
-        write_context_startup_failure(entry_name, entry_name_length, reservation_bytes, sys.lit(b"could not reserve the requested address range"))
+    let context = match map(sys.null(), header_bytes, 3, 16418, -1, 0L) {
+        ok(address) => sys.from_raw(address),
+        err(_) => write_context_startup_failure(entry_name, entry_name_length, reservation_bytes, sys.lit(b"could not reserve the requested address range")),
     }
-    let base = sys.from_raw(stack_raw.unwrap())
+    let stack_total = reservation_bytes + page_size
+    let base = match map(sys.null(), stack_total, 0, 16418, -1, 0L) {
+        ok(address) => sys.from_raw(address),
+        err(_) => {
+            let _header_cleanup = unmap(context, header_bytes)
+            write_context_startup_failure(entry_name, entry_name_length, reservation_bytes, sys.lit(b"could not reserve the requested address range"))
+        },
+    }
     let writable = protect(base, reservation_bytes, 3)
     if writable.is_err() {
         let _stack_cleanup = unmap(base, stack_total)
         let _header_cleanup = unmap(context, header_bytes)
         write_context_startup_failure(entry_name, entry_name_length, reservation_bytes, sys.lit(b"could not enable writable data stack pages"))
     }
-    let state_raw = map(sys.null(), core_state_bytes(), 3, 16418, -1, 0L)
-    if state_raw.is_err() {
-        let _stack_cleanup = unmap(base, stack_total)
-        let _header_cleanup = unmap(context, header_bytes)
-        write_context_startup_failure(entry_name, entry_name_length, reservation_bytes, sys.lit(b"could not reserve the requested address range"))
+    let state = match map(sys.null(), core_state_bytes(), 3, 16418, -1, 0L) {
+        ok(address) => sys.from_raw(address),
+        err(_) => {
+            let _stack_cleanup = unmap(base, stack_total)
+            let _header_cleanup = unmap(context, header_bytes)
+            write_context_startup_failure(entry_name, entry_name_length, reservation_bytes, sys.lit(b"could not reserve the requested address range"))
+        },
     }
-    let state = sys.from_raw(state_raw.unwrap())
     let _cleared = sys.fill_bulk(context, 0, sys.context_size())
     let poison_records = sys.offset(context, sys.context_size())
     let limit = sys.offset(base, reservation_bytes)

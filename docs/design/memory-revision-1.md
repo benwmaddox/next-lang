@@ -1,11 +1,15 @@
 # Memory model, revision 1
 
 **Status:** discussion draft; not adopted. Confirmed directions are per-instance
-static-state lifetime, a movable per-run data arena with a cap, startup resource
-grants, one run at a time per instance, caller-backed struct parameters, and
-explicit `FULL` mailbox-send status. The no-GC/no-borrow-checker constraint is
-hard. Syntax, APIs, and the other rules below remain proposals; the examples
-are not supported by the current next-lang compiler.
+static-state lifetime, a movable per-run data arena, startup resource grants,
+serial runs per instance, caller-backed struct parameters, and explicit `FULL`
+mailbox-send status. A configurable arena cap is a future target, not current
+behavior. The no-GC/no-borrow-checker constraint is hard. Syntax/API spellings
+remain proposals; confirmed future failure rules are summarized below.
+
+Current runtime status: the core-managed data stack starts at 256 KiB and grows
+or moves with overflow and OS-failure guards; it has no configurable hard cap.
+Collection capacities and test limits are not a whole-run arena cap.
 
 The proposal follows Stasis's function/view/result style (`docs/spec.md`
 sections 7.1 and 7.5; language quick reference, Storage).
@@ -18,11 +22,11 @@ sections 7.1 and 7.5; language quick reference, Storage).
 - Each run gets a temporary bump arena. Ordinary locals and short-lived
   workspaces may use it without a source-level allocation call. Scope exit
   restores the arena mark; run completion resets the whole arena.
-- The data arena may move while growing, up to a configured cap. Its offsets
-  are runtime details: source code continues to access fields and array
-  elements by name and index. This says nothing about moving the native call
-  stack, which remains unchanged. Arena addresses are not exposed as a way to
-  retain run-local data.
+- Future target: the data arena may move while growing up to a configured hard
+  cap. Its offsets are runtime details: source code continues to access fields
+  and array elements by name and index. This says nothing about moving the
+  native call stack, which remains unchanged. Arena addresses are not exposed
+  as a way to retain run-local data.
 - Static fields contain fixed-layout values, never views into the run arena.
   To keep run-produced data, copy it into caller-provided static output.
 - Fixed-size arrays keep an explicit length/count and check every index. There
@@ -55,9 +59,15 @@ Proposed observable rules:
 - Invalid indices remain errors. Bounded operations check capacity before
   writing; the examples below leave outputs unchanged when they return `false`.
 
-The overflow policy for arena exhaustion is unresolved: should it return a
-checked `bool` from an ordinary operation, or fail the job with a diagnostic?
-This draft adds no propagation operator or hidden error channel.
+Revision 2 records the chosen future policy: an arena cap, if implemented,
+fails the run with typed `MemoryLimit`, handled only at the job boundary.
+Cap enforcement is deferred; current runtime behavior is unchanged.
+
+Before adding `.unwrap()` or an equivalent hidden failure path, get user review
+of the concrete failure, why explicit result/status handling is insufficient,
+and the simplest alternative. Review existing uses as they are touched.
+Revision 2 records the confirmed future failure policy; runtime APIs are not
+implemented and arena-cap enforcement is deferred.
 
 ## Sketches
 
@@ -193,12 +203,24 @@ function route(message: Message, inbox: Mailbox): void {
 ```
 
 `SendStatus`, `SENT`, `FULL`, and `try_send` are illustrative names, not
-selected syntax. What happens to static state after a failed delivery remains
-open; follow-up policy for `FULL` belongs to the caller.
+selected syntax. Completed persistent-state writes remain after a failed run;
+follow-up policy for `FULL` belongs to the caller.
 
-## Decisions for revision 2
+## Confirmed future failure policy (revision 2)
 
-1. If a run fails after earlier writes to static state, are those writes kept,
-   or is static state restored to its run-start value?
-2. What should arena-cap exhaustion do: return a checked result, or fail the
-   job with a diagnostic? How should callers handle that outcome?
+- If a configurable arena cap is implemented, exhausting it ends the current
+  run with a typed `MemoryLimit` failure; memory reservation does not return a
+  `Result` per allocation. This is future policy, not current runtime behavior.
+- Handling is only at the job boundary and names the exception type. There is
+  no bare catch or function-level try/catch.
+- Completed writes to persistent job state remain after failure; the failed
+  run's arena is cleared in bulk. There are no snapshots or rollback.
+- The failed run is not retried or resumed, and one instance still runs one
+  job at a time. A failed call produces no normal return value; ordinary
+  record-field invariants are unchanged.
+- Mailbox `FULL` remains an explicit status, not this exception. Policy for
+  logical collection `Full` remains unresolved.
+
+Handler resource limits, handler failure, future exception types, and explicit
+instance lifecycle after a failure remain open for a future implementation.
+Cap enforcement is deferred. See [Job failures, revision 2](job-failures-revision-2.md).

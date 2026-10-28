@@ -47,9 +47,11 @@ fn nl_stack_test_poison_full_enabled() -> bool {
 
 fn nl_stack_clock_nanoseconds(context: sys.Addr) -> long {
     let timespec = sys.offset(context, sys.context_offset(stack_context_clock_seconds()))
-    let result = clock_gettime(1, timespec)
-    if result.is_err() { return 0L }
-    if result.unwrap() != 0L { return 0L }
+    let clock_status = match clock_gettime(1, timespec) {
+        ok(status) => status,
+        err(_) => return 0L,
+    }
+    if clock_status != 0L { return 0L }
     let seconds = sys.load64(context, sys.context_offset(stack_context_clock_seconds()))
     let nanoseconds = sys.load64(context, sys.context_offset(stack_context_clock_seconds() + 1L))
     seconds * 1000000000L + nanoseconds
@@ -81,19 +83,22 @@ fn nl_stack_grow(needed_bytes: long, file_id: int, line: int, col: int) {
     new_bytes = ((new_bytes + page_size - 1L) / page_size) * page_size
     if new_bytes > 9223372036854775807L - page_size { nl_fail(18, file_id, line, col) }
     let new_mapping_bytes = new_bytes + page_size
-    let target_raw = map(sys.null(), new_mapping_bytes, 0, 16418, -1, 0L)
-    if target_raw.is_err() { nl_fail(18, file_id, line, col) }
-    let target = sys.from_raw(target_raw.unwrap())
+    let target = match map(sys.null(), new_mapping_bytes, 0, 16418, -1, 0L) {
+        ok(address) => sys.from_raw(address),
+        err(_) => nl_fail(18, file_id, line, col),
+    }
     let old_base = sys.load_addr(context, sys.context_offset(stack_context_base()))
     let top_offset = sys.load64(context, sys.context_offset(stack_context_top_offset()))
     let start = nl_stack_clock_nanoseconds(context)
     let moved_raw = remap(old_base, old_bytes, new_bytes, 3, target)
     let finish = nl_stack_clock_nanoseconds(context)
-    if moved_raw.is_err() {
-        let _target_cleanup = unmap(target, new_mapping_bytes)
-        nl_fail(18, file_id, line, col)
+    let moved = match moved_raw {
+        ok(address) => sys.from_raw(address),
+        err(_) => {
+            let _target_cleanup = unmap(target, new_mapping_bytes)
+            nl_fail(18, file_id, line, col)
+        },
     }
-    let moved = sys.from_raw(moved_raw.unwrap())
     let old_total = old_bytes + page_size
     let old_guard = sys.offset(old_base, old_bytes)
     let guard_unmapped = unmap(old_guard, page_size)

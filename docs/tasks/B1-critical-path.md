@@ -8,12 +8,21 @@ source requirements; it does not claim language parity is already reached.
 
 Memory baseline clarified by Ben, 2026-10-28: a reusable job instance may have
 optional StasisLang-style static storage that persists across its runs. Most
-work uses per-run stack arenas that may move/grow up to a cap and are reclaimed
-in bulk. Keep prerequisite implementations within that model.
+work uses per-run stack arenas that may move/grow and are reclaimed in bulk.
+The current core-managed data stack starts at 256 KiB and grows/moves with
+overflow and OS-failure guards; it has no configurable hard arena cap. Existing
+collection capacities and test limits are not an arena cap. Cap implementation
+is deferred and is not a B1 prerequisite.
 Main configures job counts, triggers, and mailboxes within its startup CPU/RAM
 grant, which may be a subset of the host. Each job instance runs serially;
 mailbox-full is an explicit send status. See the
 [Revision 1 discussion draft](../design/memory-revision-1.md).
+The confirmed future policy is a typed job-level `MemoryLimit` if a hard cap is
+implemented: the current run ends, completed persistent-state writes stay, and
+the run arena is cleared. There is no per-allocation memory `Result`, retry, or
+resume. No configurable hard-cap checks or typed exception dispatch exist in
+the current runtime, which remains one job process. See
+[Revision 2](../design/job-failures-revision-2.md).
 Extra ownership, allocation, or lifetime machinery needs a concrete requirement
 and a defense; the older task proposals are not a reason to introduce it.
 Hard constraint (Ben, 2026-10-28): no GC, borrow checker, or loan/move/inferred-
@@ -22,6 +31,9 @@ defer a prerequisite that seems to need one. Scope planning and arena reset are
 ordinary compiler work, not checker exceptions. Review each feature through an
 ordinary example, the simplest alternative, and its needed guarantee/cost, then
 get user review before adding language rules. See [DESIGN.md](../DESIGN.md).
+Before adding `.unwrap()` or an equivalent hidden failure path, get user review
+of the concrete failure, why explicit result/status handling is insufficient,
+and the simplest alternative; review existing uses as they are touched.
 
 ## Completed prerequisite: remove the name-check blocker
 
