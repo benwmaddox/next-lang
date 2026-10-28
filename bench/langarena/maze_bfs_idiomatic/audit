@@ -1,0 +1,1 @@
+variant-idiomatic: retained the earlier flat kind and neighbour arrays. The primary port keeps each cell's kind and four neighbour indices together in a Cell record, matching Crystal's per-cell object shape. The BFS traversal, neighbour order, and checksum are otherwise unchanged; the flat layout is reported separately.

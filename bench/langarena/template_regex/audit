@@ -1,0 +1,1 @@
+closest-possible: hand-written scanner standing in for Regex gsub; no regex library exists in next-lang, so the regex engine work is absent (status not-comparable)

@@ -1,0 +1,1 @@
+not-comparable: Crystal LogParser (13 Regex scan patterns) and Rust log_parser.rs (regex crate) use a regex engine; this port hand-writes 13 scanners, so the matching work is a library substitute

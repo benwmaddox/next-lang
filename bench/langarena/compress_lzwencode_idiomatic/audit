@@ -1,0 +1,1 @@
+closest-possible: this variant is the earlier port, kept for reference. Keys are integer pairs (current code * 256 + next byte) in map<long, long, 16384> instead of phrase keys; it covers all 256 byte values, but it does not hash phrase strings as the Crystal reference does (Hash(String, Int32)), so it is not like-for-like.

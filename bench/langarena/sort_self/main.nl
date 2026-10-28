@@ -16,11 +16,20 @@ fn is_run_mode(env: Env) -> bool {
     }
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run = is_run_mode(env)
     let size = if run { 400000L } else { 100000L }
     let iterations = if run { 50L } else { 2L }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    let prep = is_prep_mode(env)
+    let rounds = if prep { warmup } else { warmup + iterations }
 
     var rng = Rng { last: 42L }
     var data: list<int, 400000> = list {}
@@ -29,7 +38,7 @@ fn main(env: Env) {
     }
 
     var result = 0L
-    for _round in 0L..warmup + iterations {
+    for _round in 0L..rounds {
         if _round == warmup { rng.last = 42L }
         result = (result + data[next_int(rng, size)].to_long()) % MODULUS
         var t = data

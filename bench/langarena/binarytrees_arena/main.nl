@@ -40,13 +40,22 @@ recursive fn sum(arena: list<Node, 2097151>, index: int) -> long {
     total
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run = is_run_mode(env)
     let depth = if run { RUN_DEPTH } else { TEST_DEPTH }
     let iterations = if run { RUN_ITERATIONS } else { TEST_ITERATIONS }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
     var result = 0L
-    for _round: long in 0L..(warmup + iterations) {
+    let prep = is_prep_mode(env)
+    let rounds = if prep { warmup } else { warmup + iterations }
+    for _round: long in 0L..rounds {
         var arena: list<Node, 2097151> = list {}
         let root = build(arena, 0, depth)
         let total = sum(arena, root)

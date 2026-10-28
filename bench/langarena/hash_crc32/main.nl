@@ -9,6 +9,13 @@ fn is_run_mode(env: Env) -> bool {
     }
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn next_int(seed: write long, max_value: long) -> long {
     seed = (seed * 3877L + 29573L) % 139968L
     (seed * max_value) / 139968L
@@ -38,6 +45,7 @@ fn run_once(data: write list<byte, 1200000>, seed: write long, result: long) -> 
 
 fn main(env: Env) {
     let run_mode = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let size = if run_mode { 1200000L } else { 1000L }
     let iterations = if run_mode { 98L } else { 3L }
     let warmup = max(iterations / 5L, 1L)
@@ -49,13 +57,18 @@ fn main(env: Env) {
     }
 
     // LangArena: prepare, warm up, reset the generator, then the timed iterations.
+    // Prep mode stops after the warmup rounds.
     var result = 0L
     for _w: long in 0L..warmup {
         result = run_once(data, seed, result)
     }
-    seed = 42L
-    for _r: long in 0L..iterations {
-        result = run_once(data, seed, result)
+    if prep {
+        print(result)
+    } else {
+        seed = 42L
+        for _r: long in 0L..iterations {
+            result = run_once(data, seed, result)
+        }
+        print(result)
     }
-    print(result)
 }

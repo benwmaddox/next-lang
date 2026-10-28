@@ -43,12 +43,13 @@ fn generate_test_data(size: long) -> list<byte, 1000003> {
     data
 }
 
-// Insert a node index into the queue (from `head` on) after every node of equal or lower frequency.
+// Insert a node index into the queue (from `head` on) before the first node of equal or higher frequency,
+// matching Crystal's bsearch_index { |n| n.frequency >= parent.frequency }.
 fn insert_sorted(queue: write list<long, 512>, head: long, nodes: list<Node, 512>, id: long) {
     var position: long = queue.count()
     let frequency = nodes[id].frequency
     for at: long in head..queue.count() {
-        if nodes[queue[at]].frequency > frequency {
+        if nodes[queue[at]].frequency >= frequency {
             position = at
             break
         }
@@ -174,26 +175,34 @@ fn huffman_decode(encoded: Bytes max 1000003, tree: Tree, bit_count: long) -> li
         current = if bit == 1L { node.right } else { node.left }
         let reached = tree.nodes[current]
         if reached.is_leaf {
-            if reached.byte_value != 0L {
-                discard result.push((Octet)((int)reached.byte_value))
-            }
+            discard result.push((Octet)((int)reached.byte_value))
             current = tree.root
         }
     }
     result
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run_mode = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let size = if run_mode { 1000003L } else { 53L }
     let iterations = if run_mode { 350L } else { 3L }
     let warmup = max(iterations / 5L, 1L)
 
+    // Prepare once (untimed): test data, then encode_once as Crystal's encoder prepare and run(0).
     let test_data = generate_test_data(size)
     let encoded = encode_once(test_data)
+    let rounds = if prep { warmup } else { warmup + iterations }
     var result = 0L
     var decoded: list<byte, 1000003> = list {}
-    for _w: long in 0L..warmup + iterations {
+    for _w: long in 0L..rounds {
         let tree = build_huffman_tree(encoded.frequencies)
         decoded = huffman_decode(encoded.data, tree, encoded.bit_count)
         result = (result + decoded.count()) % 4294967296L

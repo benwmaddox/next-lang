@@ -75,6 +75,13 @@ fn dfs_find_path(start: int[500001], adj: int[11000000], source: long, target: l
     if best_path == 2147483647 { -1L } else { best_path.to_long() }
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn main(env: Env) {
     let run = is_run_mode(env)
     let vertices = if run { 500000L } else { 100L }
@@ -82,6 +89,8 @@ fn main(env: Env) {
     let jump_len = if run { 1000L } else { 100L }
     let iterations = if run { 15L } else { 3L }
     let warmup = if iterations / 5L > 1L { iterations / 5L } else { 1L }
+    let prep = is_prep_mode(env)
+    let rounds = if prep { warmup } else { warmup + iterations }
 
     var start: int[500001] = fill(0)
     var pos: int[500000] = fill(0)
@@ -94,7 +103,7 @@ fn main(env: Env) {
     generate(false, vertices, jumps, jump_len, start, pos, adj)
 
     var result = 0L
-    for _round in 0L..warmup + iterations {
+    for _round in 0L..rounds {
         let length = dfs_find_path(start, adj, 0L, vertices - 1L)
         result = (result + length + 4294967296L) % 4294967296L
     }

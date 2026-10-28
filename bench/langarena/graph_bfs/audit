@@ -1,0 +1,1 @@
+closest-possible: same queue-based BFS with per-call visited and dist arrays and the same generated graph and endpoints; the port keeps adjacency in CSR arrays (start/adj) where the Crystal reference uses per-vertex lists, a layout difference Crystal's Array-of-Array cannot be made to share.

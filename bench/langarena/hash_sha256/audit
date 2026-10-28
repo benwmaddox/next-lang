@@ -1,0 +1,1 @@
+like-for-like: same 8-lane multiply-shift hash (not real SHA-256) in the same order over the buffer; the digest now writes all 32 big-endian bytes and the test reads the first four back as little-endian u32, as Crystal and Rust do; seed reset between warmup and timed rounds.

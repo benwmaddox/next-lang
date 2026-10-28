@@ -1,0 +1,1 @@
+closest-possible: same DFS with visited-on-pop, best_path pruning, and the same pushes and parameters; the port keeps adjacency in CSR arrays (start/adj) where the Crystal reference uses per-vertex lists.

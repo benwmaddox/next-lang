@@ -9,6 +9,8 @@ const RUN_WARMUP_ITERATIONS: long = 1000L
 const RUN_ITERATIONS: long = 1L
 const MODULUS: long = 4294967296L
 const STEP_LIMIT: long = 1000000000000000L
+// The tape is a fixed 30000 cells (Crystal's Tape starts at 30000 and grows; these programs never leave it).
+const TAPE_CELLS: long = 30000L
 
 const OP_DEC: int = 1
 const OP_INC: int = 2
@@ -24,7 +26,7 @@ struct Op {
 }
 
 struct Machine {
-    tape: int[100000]
+    tape: int[TAPE_CELLS]
     pos: long
     result: long
 }
@@ -32,6 +34,13 @@ struct Machine {
 fn is_run_mode(env: Env) -> bool {
     match env.args().get(0L) {
         some(argument) => argument.count() == 3L,
+        none => false
+    }
+}
+
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
         none => false
     }
 }
@@ -101,17 +110,23 @@ fn run_program(source: Ascii max 512) -> long {
 
 fn main(env: Env) {
     let run = is_run_mode(env)
+    let prep = is_prep_mode(env)
     let program: Ascii max 512 = if run { RUN_PROGRAM } else { TEST_PROGRAM }
     let warmup_program: Ascii max 512 = if run { RUN_WARMUP_PROGRAM } else { TEST_WARMUP_PROGRAM }
     let warmup = if run { RUN_WARMUP_ITERATIONS } else { TEST_WARMUP_ITERATIONS }
     let iterations = if run { RUN_ITERATIONS } else { TEST_ITERATIONS }
+    // Warmup results are not part of Crystal's checksum; prep mode prints them so the warmup work is observable.
     var sink = 0L
     for _w: long in 0L..warmup {
         sink = (sink + run_program(warmup_program)) % MODULUS
     }
-    var checksum = 0L
-    for _i: long in 0L..iterations {
-        checksum = (checksum + run_program(program)) % MODULUS
+    if prep {
+        print(sink)
+    } else {
+        var checksum = 0L
+        for _i: long in 0L..iterations {
+            checksum = (checksum + run_program(program)) % MODULUS
+        }
+        print(checksum)
     }
-    print(checksum)
 }

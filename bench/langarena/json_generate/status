@@ -1,0 +1,1 @@
+not-comparable: hand-written JSON serializer and integer-scaled float printer, where the Crystal reference uses JSON::Serializable and the Rust reference uses serde_json (f64 values, HashMap opts)

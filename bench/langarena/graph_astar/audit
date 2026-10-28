@@ -1,0 +1,1 @@
+closest-possible: same A* with per-call g_score and best_f, push only on improvement, and early exit at the target; heap key packs the vertex as a tie-break (as the Rust reference does) where Crystal's PriorityQueue compares priority only; adjacency is CSR arrays, not per-vertex lists.

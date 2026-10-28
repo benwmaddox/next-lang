@@ -1,0 +1,1 @@
+pending: this port generates and parses the same CSV workload, but the numeric columns and checksum require floating-point parsing and formatting. Those language features are scheduled for F1, so there is no executable comparison yet.
