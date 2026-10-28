@@ -36,14 +36,16 @@ checks in source commit `a18eb70`. That advanced the compiler to the unsupported
 constant-declarations gate at collections.nl:7. See the
 [name-scope completion report](B1-name-scopes-report.md).
 
-## Scalar constants: final staged validation
+## Completed prerequisite: scalar constants
 
 The scalar-constant implementation evaluates the current source's 212 explicit
 long declarations. The direct own-source probe now exits 2 without IR at
 `collections.nl:18:12`, reporting `text in collections`. The parameter is
 `files: list<SourceFile, MAX_SOURCE_FILES>`, whose element has a bounded Bytes
-name. The [scalar report](B1-scalar-constants-report.md) records focused tests,
-the immediate-operand regression fixes, and final acceptance when available.
+name. Source commit `8dbcce0` passed the full staged suite in 694 seconds,
+including all 755 registered and 256 generated packages at O1/O3. The
+[scalar report](B1-scalar-constants-report.md) records focused tests, the
+immediate-operand regression fixes, and final acceptance.
 The compiler does not yet self-host.
 
 ## Dependency queue
@@ -55,7 +57,7 @@ run the direct self-build probe after each prerequisite lands.
 The current scalar-constant source has 212 constants, 200 grow-Bytes annotations,
 and 75 recursive declarations.
 
-1. **Source-used scalar constants (implemented; final staged validation).**
+1. **Source-used scalar constants (complete).**
    The original 207 declarations were all `long`: 194 literals, nine references,
    and four arithmetic expressions. Four fact flags and one layout-overflow
    state constant bring the current count to 212. The bounded

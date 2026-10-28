@@ -1,6 +1,6 @@
 # B1 scalar constant prerequisite
 
-Status: implementation and validation in progress. This prerequisite does not
+Status: complete; source commit `8dbcce0` passed the full staged suite. This prerequisite does not
 complete self-hosting or the B1 reproducibility gate.
 
 ## Scope and implementation
@@ -88,8 +88,23 @@ text-capacity contract failure. The corrected source passes all 11 cases in
 That earlier 636-second attempt is not full-suite acceptance evidence.
 
 The dependency/immediate regression passes on final source, and Rust formatting
-and diff checks pass. The exact staged full-suite result will be recorded here
-before landing.
+and diff checks pass.
+
+## Full staged acceptance
+
+The installed pre-commit hook passed the exact final source snapshot in 694
+seconds before creating source commit `8dbcce0`:
+
+```sh
+NLC_LONG_TESTS=1 NLC_E1_GENERATED_COUNT=64 NLC_TEST_JOBS=4 git commit ...
+```
+
+The hook runs `NLC_FRONTEND=selfhost cargo test --offline --release -q --test '*'`
+under its 8,000,000 KiB address-space limit and one-hour timeout. The final run
+passed all 755 registered and 256 generated packages at O1/O3, forced relocation,
+the new dependency/immediate regression, and existing capacity, UTF-8/corruption,
+memory, interface, and budget contracts. No old fixture or classification was
+changed. Source edits remained frozen throughout the passing snapshot run.
 
 ## Actual self-build gate
 
