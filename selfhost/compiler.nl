@@ -39,6 +39,7 @@ const TYPE_KIND_ASCII: long = 10L
 const TYPE_KIND_TEXT: long = 11L
 const TYPE_KIND_BYTES: long = 12L
 const TYPE_KIND_ADDRESS: long = 13L
+const TYPE_STATE_LAYOUT_OVERFLOW: long = 5L
 
 const LOCATION_NATIVE: long = 0L
 const LOCATION_DATA_STACK: long = 1L
@@ -111,6 +112,10 @@ const FACT_NEVER: long = 1L
 const FACT_FALLS_THROUGH: long = 2L
 const FACT_RESOLVED_TYPE: long = 4L
 const FACT_PROVEN_SUCCESS: long = 8L
+const FACT_CONSTANT_VALUE: long = 32L
+const FACT_CONSTANT_DECLARED: long = 64L
+const FACT_CONSTANT_VISITING: long = 128L
+const FACT_CONSTANT_EVALUATED: long = 256L
 const MATCH_PATTERN_CASE: long = 11L
 const MATCH_PATTERN_WILDCARD: long = 12L
 const MATCH_PATTERN_INTEGER: long = 13L
@@ -213,6 +218,11 @@ struct NodeFact {
     binding: long
     function: long
     literal: long
+}
+
+struct ScalarConstantResult {
+    value: long
+    supported: bool
 }
 
 struct NameSlot {
@@ -1429,17 +1439,37 @@ fn layout_sum_instance(compiler: write CompilerTables, type_id: long) -> bool {
             let payload = sum_payload_record(compiler, type_id, tag, part)
             let payload_size = value_type_size(compiler, payload.ty)
             let payload_align = value_type_align(compiler, payload.ty)
+            if payload.ty >= 0L && type_state(compiler, payload.ty) == TYPE_STATE_LAYOUT_OVERFLOW {
+                set_type_layout(compiler, type_id, -1L, alignment, TYPE_STATE_LAYOUT_OVERFLOW)
+                return false
+            }
             if payload_size < 0L || payload_align < 0L { return false }
-            let offset = size_align_saturated(end, payload_align)
+            let offset = checked_layout_size_align(end, payload_align)
+            if offset == -2L {
+                set_type_layout(compiler, type_id, -1L, alignment, TYPE_STATE_LAYOUT_OVERFLOW)
+                return false
+            }
+            if offset < 0L { return false }
             let record = type_record(compiler, type_id)
             let payload_index = record.field_start + tag
             compiler.enum_payloads[payload_index].offset = offset
-            end = size_add_saturated(offset, payload_size)
+            end = checked_layout_size_add(offset, payload_size)
+            if end == -2L {
+                set_type_layout(compiler, type_id, -1L, alignment, TYPE_STATE_LAYOUT_OVERFLOW)
+                return false
+            }
+            if end < 0L { return false }
             if payload_align > alignment { alignment = payload_align }
         }
         if end > max_end { max_end = end }
     }
-    set_type_layout(compiler, type_id, size_align_saturated(max_end, alignment), alignment, 2L)
+    let layout_size = checked_layout_size_align(max_end, alignment)
+    if layout_size == -2L {
+        set_type_layout(compiler, type_id, -1L, alignment, TYPE_STATE_LAYOUT_OVERFLOW)
+        return false
+    }
+    if layout_size < 0L { return false }
+    set_type_layout(compiler, type_id, layout_size, alignment, 2L)
     true
 }
 
@@ -2002,11 +2032,24 @@ fn size_package_types(
             let type_info = type_record(compiler, frame.type_index)
             let frame_kind = type_kind(compiler, frame.type_index)
             if frame_kind == TYPE_KIND_ARRAY || frame_kind == TYPE_KIND_LIST {
+                if frame_kind == TYPE_KIND_ARRAY && type_info.field_count == 0L {
+                    // A zero-length array has no element storage. Preserve the
+                    // Stage0 layout even when the unused element layout would
+                    // overflow on its own.
+                    set_type_layout(compiler, frame.type_index, 0L, 1L, 2L)
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
                 let element_ty = type_info.field_start
                 let element_size = value_type_size(compiler, element_ty)
                 let element_align = value_type_align(compiler, element_ty)
                 if element_size < 0L || element_align < 0L {
                     let element_kind = type_kind(compiler, element_ty)
+                    if element_ty >= 0L && type_state(compiler, element_ty) == TYPE_STATE_LAYOUT_OVERFLOW {
+                        set_type_layout(compiler, frame.type_index, -1L, 1L, TYPE_STATE_LAYOUT_OVERFLOW)
+                        let _ = compiler.type_walk.pop()
+                        continue
+                    }
                     if (element_kind == TYPE_KIND_STRUCT || is_sum_type(compiler, element_ty) || element_kind == TYPE_KIND_ARRAY || element_kind == TYPE_KIND_LIST) && type_state(compiler, element_ty) == 0L {
                         set_type_state(compiler, element_ty, 1L)
                         compiler.type_walk.push(initial_type_walk_frame(compiler, element_ty)).unwrap()
@@ -2020,7 +2063,9 @@ fn size_package_types(
                 let alignment = if frame_kind == TYPE_KIND_LIST && element_align < 8L { 8L }
                     else if frame_kind == TYPE_KIND_LIST { element_align }
                     else { element_align }
-                if size < 0L || size >= MAX_VALUE_SIZE {
+                if size == -2L {
+                    set_type_layout(compiler, frame.type_index, -1L, alignment, TYPE_STATE_LAYOUT_OVERFLOW)
+                } else if size < 0L || size >= MAX_VALUE_SIZE {
                     set_type_layout(compiler, frame.type_index, MAX_VALUE_SIZE, alignment, 2L)
                 } else { set_type_layout(compiler, frame.type_index, size, alignment, 2L) }
                 let _ = compiler.type_walk.pop()
@@ -2028,7 +2073,10 @@ fn size_package_types(
             }
             if frame_kind == TYPE_KIND_STRUCT {
                 if frame.field_index >= type_info.field_count {
-                    set_type_layout(compiler, frame.type_index, size_align_saturated(frame.size, frame.align), frame.align, 2L)
+                    let layout_size = checked_layout_size_align(frame.size, frame.align)
+                    if layout_size == -2L { set_type_layout(compiler, frame.type_index, -1L, frame.align, TYPE_STATE_LAYOUT_OVERFLOW) }
+                    else if layout_size < 0L { set_type_state(compiler, frame.type_index, 3L) }
+                    else { set_type_layout(compiler, frame.type_index, layout_size, frame.align, 2L) }
                     let _ = compiler.type_walk.pop()
                     continue
                 }
@@ -2039,6 +2087,11 @@ fn size_package_types(
                 let field_size = value_type_size(compiler, ty)
                 let field_align = value_type_align(compiler, ty)
                 if field_size < 0L || field_align < 0L {
+                    if ty >= 0L && type_state(compiler, ty) == TYPE_STATE_LAYOUT_OVERFLOW {
+                        set_type_layout(compiler, frame.type_index, -1L, frame.align, TYPE_STATE_LAYOUT_OVERFLOW)
+                        let _ = compiler.type_walk.pop()
+                        continue
+                    }
                     let child_kind = type_kind(compiler, ty)
                     if (child_kind == TYPE_KIND_STRUCT || is_sum_type(compiler, ty) || child_kind == TYPE_KIND_ARRAY || child_kind == TYPE_KIND_LIST) && type_state(compiler, ty) == 0L {
                         set_type_state(compiler, ty, 1L)
@@ -2049,9 +2102,29 @@ fn size_package_types(
                     let _ = compiler.type_walk.pop()
                     continue
                 }
-                let offset = size_align_saturated(frame.size, field_align)
+                let offset = checked_layout_size_align(frame.size, field_align)
+                if offset == -2L {
+                    set_type_layout(compiler, frame.type_index, -1L, frame.align, TYPE_STATE_LAYOUT_OVERFLOW)
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
+                if offset < 0L {
+                    set_type_state(compiler, frame.type_index, 3L)
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
                 compiler.struct_fields[field_index].offset = offset
-                frame.size = size_add_saturated(offset, field_size)
+                frame.size = checked_layout_size_add(offset, field_size)
+                if frame.size == -2L {
+                    set_type_layout(compiler, frame.type_index, -1L, frame.align, TYPE_STATE_LAYOUT_OVERFLOW)
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
+                if frame.size < 0L {
+                    set_type_state(compiler, frame.type_index, 3L)
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
                 if field_align > frame.align { frame.align = field_align }
                 frame.field_index += 1L
                 compiler.type_walk[frame_index] = frame
@@ -2059,7 +2132,10 @@ fn size_package_types(
                 let kind = type_kind(compiler, frame.type_index)
                 let case_count = sum_case_count(compiler, frame.type_index)
                 if frame.field_index >= case_count {
-                    set_type_layout(compiler, frame.type_index, size_align_saturated(frame.max_size, frame.align), frame.align, 2L)
+                    let layout_size = checked_layout_size_align(frame.max_size, frame.align)
+                    if layout_size == -2L { set_type_layout(compiler, frame.type_index, -1L, frame.align, TYPE_STATE_LAYOUT_OVERFLOW) }
+                    else if layout_size < 0L { set_type_state(compiler, frame.type_index, 3L) }
+                    else { set_type_layout(compiler, frame.type_index, layout_size, frame.align, 2L) }
                     let _ = compiler.type_walk.pop()
                     continue
                 }
@@ -2086,7 +2162,12 @@ fn size_package_types(
                 let payload_size = value_type_size(compiler, ty)
                 let payload_align = value_type_align(compiler, ty)
                 if payload_size < 0L || payload_align < 0L {
-                    if (type_kind(compiler, ty) == TYPE_KIND_STRUCT || is_sum_type(compiler, ty)) && type_state(compiler, ty) == 0L {
+                    if ty >= 0L && type_state(compiler, ty) == TYPE_STATE_LAYOUT_OVERFLOW {
+                        set_type_layout(compiler, frame.type_index, -1L, frame.align, TYPE_STATE_LAYOUT_OVERFLOW)
+                        let _ = compiler.type_walk.pop()
+                        continue
+                    }
+                    if (type_kind(compiler, ty) == TYPE_KIND_STRUCT || is_sum_type(compiler, ty) || type_kind(compiler, ty) == TYPE_KIND_ARRAY || type_kind(compiler, ty) == TYPE_KIND_LIST) && type_state(compiler, ty) == 0L {
                         set_type_state(compiler, ty, 1L)
                         compiler.type_walk.push(initial_type_walk_frame(compiler, ty)).unwrap()
                         continue
@@ -2095,9 +2176,29 @@ fn size_package_types(
                     let _ = compiler.type_walk.pop()
                     continue
                 }
-                let offset = size_align_saturated(frame.size, payload_align)
+                let offset = checked_layout_size_align(frame.size, payload_align)
+                if offset == -2L {
+                    set_type_layout(compiler, frame.type_index, -1L, frame.align, TYPE_STATE_LAYOUT_OVERFLOW)
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
+                if offset < 0L {
+                    set_type_state(compiler, frame.type_index, 3L)
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
                 compiler.enum_payloads[payload_index].offset = offset
-                frame.size = size_add_saturated(offset, payload_size)
+                frame.size = checked_layout_size_add(offset, payload_size)
+                if frame.size == -2L {
+                    set_type_layout(compiler, frame.type_index, -1L, frame.align, TYPE_STATE_LAYOUT_OVERFLOW)
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
+                if frame.size < 0L {
+                    set_type_state(compiler, frame.type_index, 3L)
+                    let _ = compiler.type_walk.pop()
+                    continue
+                }
                 if payload_align > frame.align { frame.align = payload_align }
                 frame.case_index += 1L
                 compiler.type_walk[frame_index] = frame
@@ -2122,9 +2223,45 @@ fn type_node_is_oversized(
 ) -> bool {
     let ty = resolve_value_type(source, tokens, files, tables, compiler, file_index, node)
     if !is_aggregate_type(compiler, ty) { return false }
-    // Finite aggregate layouts of any size can live in data-stack regions.
-    // Keep only the invalid-size sentinel out of the region planner.
-    value_type_size(compiler, ty) >= MAX_VALUE_SIZE
+    // Exact-MAX layouts are representable. Defer their unsupported-large
+    // decision until after bodies have had a chance to diagnose derived
+    // result layouts that overflow when they add headers or sum tags.
+    value_type_size(compiler, ty) > MAX_VALUE_SIZE
+}
+
+fn sum_layout_has_invalid_overflow(compiler: CompilerTables, type_id: long) -> bool {
+    if type_id < 0L || type_id >= type_count(compiler) { return true }
+    type_state(compiler, type_id) == TYPE_STATE_LAYOUT_OVERFLOW || value_type_size(compiler, type_id) < 0L
+}
+
+fn check_deferred_large_value_gate(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+) {
+    var hit = UnsupportedHit { found: false, file: 0L, node: -1L, offset: 0L, category: 0L, token: -1L }
+    for type_id in 0L..type_count(compiler) {
+        let record = type_record(compiler, type_id)
+        if type_record_state(record) != 2L || record.size != MAX_VALUE_SIZE ||
+            record.file < 0L || record.file >= files.count() ||
+            record.node < 0L || record.node >= tables.nodes.count() {
+            continue
+        }
+        let node = record.node
+        let start = tables.nodes[node].start
+        let is_earlier = !hit.found || record.file < hit.file ||
+            (record.file == hit.file && (start < hit.offset ||
+                (start == hit.offset && (tables.nodes[node].end > tables.nodes[hit.node].end ||
+                    (tables.nodes[node].end == tables.nodes[hit.node].end && node > hit.node)))))
+        if is_earlier {
+            hit = UnsupportedHit { found: true, file: record.file, node,
+                offset: start, category: UNSUPPORTED_LARGE_VALUE, token: tables.nodes[node].token }
+        }
+    }
+    if hit.found { report_unsupported(env, source, files, tokens, tables, compiler, hit) }
 }
 // E3a1 end
 // TYPE MODULE END
@@ -2378,7 +2515,7 @@ fn unsupported_category_for_node(
         NodeKind.FieldType => if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE } else { 0L },
         NodeKind.PayloadType => if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE } else { 0L },
         NodeKind.TypeAlias => UNSUPPORTED_NODE,
-        NodeKind.Const => UNSUPPORTED_NODE,
+        NodeKind.Const => if (compiler.facts[node].flags & FACT_CONSTANT_EVALUATED) != 0L { 0L } else { UNSUPPORTED_NODE },
         NodeKind.Global => UNSUPPORTED_NODE,
         NodeKind.ForEach => 0L,
         NodeKind.While => 0L,
@@ -2452,7 +2589,7 @@ fn unsupported_category_for_node(
         NodeKind.FunctionTypeParameter => UNSUPPORTED_NODE,
         NodeKind.Effect => UNSUPPORTED_NODE,
         NodeKind.AliasedType => UNSUPPORTED_NODE,
-        NodeKind.DeclaredType => UNSUPPORTED_NODE,
+        NodeKind.DeclaredType => if compiler.facts[node].ty == TY_LONG { 0L } else { UNSUPPORTED_NODE },
         NodeKind.TypeArgument => 0L,
         NodeKind.ParameterType => {
             if is_core_addr_type(source, tokens, files, tables, compiler, file_index, node) { 0L }
@@ -2657,6 +2794,15 @@ fn check_package_eligibility(
     tables: ParseTables,
     compiler: CompilerTables,
 ) {
+    for node in 0L..tables.nodes.count() {
+        if !is_type_node(tables.nodes[node].kind) { continue }
+        let file_index = node_file_index(tables.nodes, files, node)
+        let type_id = resolve_value_type(source, tokens, files, tables, compiler, file_index, node)
+        if type_id >= 0L && type_state(compiler, type_id) == TYPE_STATE_LAYOUT_OVERFLOW {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[node].start,
+                "collection size overflows long; reduce a capacity or the nested element size")
+        }
+    }
     check_const_bytes_diagnostic(env, source, files, tokens, tables, compiler)
     var deferred_text_states: list<byte, TYPE_TABLE_CAPACITY * 2L> = list {}
     populate_deferred_text_collection_states(compiler, deferred_text_states)
@@ -4520,11 +4666,16 @@ recursive fn natural_node_type(
         NodeKind.Bool => TY_BOOL,
         NodeKind.Unit => TY_UNIT,
         NodeKind.Name => {
-            let binding = find_binding_in_scope(compiler, scope, compiler.token_name_ids[value.token])
+            let name_id = compiler.token_name_ids[value.token]
+            let binding = find_binding_in_scope(compiler, scope, name_id)
             if binding >= 0L { compiler.bindings[binding].ty }
             else {
-                let candidate = user_case_matches(compiler, compiler.token_name_ids[value.token])
-                if candidate >= 0L { enum_case_owner_type_id(compiler, candidate) } else { -1L }
+                let constant = find_constant_declaration(tables, compiler, name_id)
+                if constant >= 0L && (compiler.facts[constant].flags & FACT_CONSTANT_EVALUATED) != 0L { TY_LONG }
+                else {
+                    let candidate = user_case_matches(compiler, name_id)
+                    if candidate >= 0L { enum_case_owner_type_id(compiler, candidate) } else { -1L }
+                }
             }
         },
         NodeKind.Call => {
@@ -4810,6 +4961,278 @@ fn literal_value(
         -unsigned
     } else {
         unsigned
+    }
+}
+
+fn unsupported_scalar_constant() -> ScalarConstantResult {
+    ScalarConstantResult { value: 0L, supported: false }
+}
+
+fn scalar_constant_value(value: long) -> ScalarConstantResult {
+    ScalarConstantResult { value, supported: true }
+}
+
+fn find_constant_declaration(tables: ParseTables, compiler: CompilerTables, name_id: long) -> long {
+    for candidate in 0L..tables.nodes.count() {
+        if tables.nodes[candidate].kind != NodeKind.Const { continue }
+        let token = tables.nodes[candidate].token
+        if token >= 0L && token < compiler.token_name_ids.count() && compiler.token_name_ids[token] == name_id {
+            return candidate
+        }
+    }
+    -1L
+}
+
+fn package_has_enum_case_name(tables: ParseTables, compiler: CompilerTables, name_id: long) -> bool {
+    for candidate in 0L..tables.nodes.count() {
+        if tables.nodes[candidate].kind == NodeKind.EnumCase {
+            let token = tables.nodes[candidate].token
+            if token >= 0L && token < compiler.token_name_ids.count() && compiler.token_name_ids[token] == name_id {
+                return true
+            }
+        }
+    }
+    false
+}
+
+fn package_name_declaration_token(tables: ParseTables, node: long) -> long {
+    let kind = tables.nodes[node].kind
+    if kind == NodeKind.Function || kind == NodeKind.Global || kind == NodeKind.Const ||
+        kind == NodeKind.Enum || kind == NodeKind.EnumCase || kind == NodeKind.Struct ||
+        kind == NodeKind.TypeAlias {
+        tables.nodes[node].token
+    } else { -1L }
+}
+
+fn scalar_constant_declaration_is_long(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    declaration: long,
+) -> bool {
+    if declaration < 0L || declaration >= tables.nodes.count() { return false }
+    let type_node = compiler.child_first[declaration]
+    if type_node < 0L || tables.nodes[type_node].kind != NodeKind.DeclaredType { return false }
+    let file_index = node_file_index(tables.nodes, files, type_node)
+    let syntax = tables.nodes[type_node]
+    token_is_word_at(source, tokens, files, file_index, syntax.token, "long") &&
+        syntax.flags == 0L && syntax.meta0 == 1L && syntax.meta1 == 0L &&
+        compiler.child_first[type_node] < 0L
+}
+
+fn fail_scalar_constant_type(
+    env: Env,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: CompilerTables,
+    tables: ParseTables,
+    file_index: long,
+    node: long,
+) -> never {
+    fail_at_message(env, files, compiler, file_index, tables.nodes[node].start, "constant initializer must have type long")
+}
+
+recursive fn evaluate_scalar_constant_declaration(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    declaration: long,
+    depth: long,
+) -> ScalarConstantResult {
+    if depth > MAX_PARSER_DEPTH {
+        let file_index = node_file_index(tables.nodes, files, declaration)
+        fail_at_message(env, files, compiler, file_index, tables.nodes[declaration].start, "constant dependency depth exceeds the compiler limit")
+    }
+    if declaration < 0L || declaration >= tables.nodes.count() { return unsupported_scalar_constant() }
+    let existing = compiler.facts[declaration]
+    if (existing.flags & FACT_CONSTANT_EVALUATED) != 0L { return scalar_constant_value(existing.literal) }
+    if (existing.flags & FACT_CONSTANT_VISITING) != 0L {
+        let file_index = node_file_index(tables.nodes, files, declaration)
+        fail_at_message(env, files, compiler, file_index, tables.nodes[declaration].start, "constant dependency cycle")
+    }
+    if (existing.flags & FACT_CONSTANT_DECLARED) == 0L { return unsupported_scalar_constant() }
+    compiler.facts[declaration].flags = FACT_CONSTANT_DECLARED | FACT_CONSTANT_VISITING
+    let expression = node_last_child(tables, compiler, declaration)
+    let value = evaluate_scalar_constant_expression(
+        env, source, tokens, files, tables, compiler, expression, depth + 1L,
+    )
+    if !value.supported {
+        compiler.facts[declaration].flags = FACT_CONSTANT_DECLARED
+        return value
+    }
+    compiler.facts[declaration] = NodeFact {
+        ty: TY_LONG,
+        flags: FACT_CONSTANT_DECLARED | FACT_CONSTANT_EVALUATED,
+        binding: -1L,
+        function: -1L,
+        literal: value.value,
+    }
+    value
+}
+
+recursive fn evaluate_scalar_constant_expression(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    node: long,
+    depth: long,
+) -> ScalarConstantResult {
+    if node < 0L || node >= tables.nodes.count() { return unsupported_scalar_constant() }
+    if depth > MAX_PARSER_DEPTH {
+        let file_index = node_file_index(tables.nodes, files, node)
+        fail_at_message(env, files, compiler, file_index, tables.nodes[node].start, "constant expression depth exceeds the compiler limit")
+    }
+    let syntax = tables.nodes[node]
+    let file_index = node_file_index(tables.nodes, files, node)
+    if syntax.kind == NodeKind.Integer {
+        scalar_constant_value(literal_value(env, source, tokens, files, compiler, tables, file_index, node, TY_LONG))
+    } else if syntax.kind == NodeKind.Name {
+        let name_id = compiler.token_name_ids[syntax.token]
+        let declaration = find_constant_declaration(tables, compiler, name_id)
+        if declaration >= 0L {
+            if (compiler.facts[declaration].flags & FACT_CONSTANT_DECLARED) == 0L { return unsupported_scalar_constant() }
+            evaluate_scalar_constant_declaration(env, source, tokens, files, tables, compiler, declaration, depth + 1L)
+        } else if user_case_matches(compiler, name_id) >= 0L ||
+            package_has_enum_case_name(tables, compiler, name_id) ||
+            builtin_case_name(source, tokens, files, file_index, syntax.token) {
+            fail_scalar_constant_type(env, files, compiler, tables, file_index, node)
+        } else {
+            var is_package_value = false
+            for candidate in 0L..tables.nodes.count() {
+                let token = package_name_declaration_token(tables, candidate)
+                if token >= 0L && compiler.token_name_ids[token] == name_id &&
+                    (tables.nodes[candidate].kind == NodeKind.Function || tables.nodes[candidate].kind == NodeKind.Global) {
+                    is_package_value = true
+                }
+            }
+            if is_package_value { unsupported_scalar_constant() }
+            else { fail_name_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, -1L, false) }
+        }
+    } else if syntax.kind == NodeKind.Unary && syntax.flags == 0L {
+        let child = compiler.child_first[node]
+        let value = evaluate_scalar_constant_expression(env, source, tokens, files, tables, compiler, child, depth + 1L)
+        if !value.supported { return value }
+        let negated = checked_capacity_negate(value.value)
+        if !negated.valid { fail_at_message(env, files, compiler, file_index, syntax.start, "constant arithmetic overflows long") }
+        scalar_constant_value(negated.value)
+    } else if syntax.kind == NodeKind.Unary && syntax.flags == 1L {
+        fail_scalar_constant_type(env, files, compiler, tables, file_index, node)
+    } else if syntax.kind == NodeKind.Unary {
+        unsupported_scalar_constant()
+    } else if syntax.kind == NodeKind.Binary && syntax.flags >= 0L && syntax.flags <= 4L {
+        let left_node = compiler.child_first[node]
+        let right_node = if left_node >= 0L { compiler.child_next[left_node] } else { -1L }
+        let left = evaluate_scalar_constant_expression(env, source, tokens, files, tables, compiler, left_node, depth + 1L)
+        if !left.supported { return left }
+        let right = evaluate_scalar_constant_expression(env, source, tokens, files, tables, compiler, right_node, depth + 1L)
+        if !right.supported { return right }
+        if syntax.flags == 0L {
+            let result = checked_capacity_add(left.value, right.value)
+            if !result.valid { fail_at_message(env, files, compiler, file_index, syntax.anchor, "constant arithmetic overflows long") }
+            scalar_constant_value(result.value)
+        } else if syntax.flags == 1L {
+            let result = checked_capacity_subtract(left.value, right.value)
+            if !result.valid { fail_at_message(env, files, compiler, file_index, syntax.anchor, "constant arithmetic overflows long") }
+            scalar_constant_value(result.value)
+        } else if syntax.flags == 2L {
+            let result = checked_capacity_multiply(left.value, right.value)
+            if !result.valid { fail_at_message(env, files, compiler, file_index, syntax.anchor, "constant arithmetic overflows long") }
+            scalar_constant_value(result.value)
+        } else if syntax.flags == 3L {
+            if right.value == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "constant division by zero") }
+            let result = checked_capacity_divide(left.value, right.value)
+            if !result.valid { fail_at_message(env, files, compiler, file_index, syntax.anchor, "constant arithmetic overflows long") }
+            scalar_constant_value(result.value)
+        } else {
+            if right.value == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "constant remainder by zero") }
+            let result = checked_capacity_remainder(left.value, right.value)
+            if !result.valid { fail_at_message(env, files, compiler, file_index, syntax.anchor, "constant arithmetic overflows long") }
+            scalar_constant_value(result.value)
+        }
+    } else if syntax.kind == NodeKind.Bool || syntax.kind == NodeKind.ByteString ||
+        syntax.kind == NodeKind.BytesLiteral || syntax.kind == NodeKind.ArrayLiteral ||
+        syntax.kind == NodeKind.ListLiteral || syntax.kind == NodeKind.StructInit ||
+        syntax.kind == NodeKind.Unit {
+        fail_scalar_constant_type(env, files, compiler, tables, file_index, node)
+    } else if syntax.kind == NodeKind.Call || syntax.kind == NodeKind.MethodCall ||
+        syntax.kind == NodeKind.OptionalCall || syntax.kind == NodeKind.Cast ||
+        syntax.kind == NodeKind.If || syntax.kind == NodeKind.Match || syntax.kind == NodeKind.Block ||
+        syntax.kind == NodeKind.Binary || syntax.kind == NodeKind.Unary {
+        unsupported_scalar_constant()
+    } else {
+        unsupported_scalar_constant()
+    }
+}
+
+fn register_scalar_constants(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+) {
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind != NodeKind.Const { continue }
+        let syntax = tables.nodes[node]
+        let name_id = compiler.token_name_ids[syntax.token]
+        let const_file_index = node_file_index(tables.nodes, files, node)
+        if builtin_case_name(source, tokens, files, const_file_index, syntax.token) {
+            fail_dynamic_checker_error(env, source, files, tokens, compiler, const_file_index, syntax.start,
+                "package name '", syntax.token, "' conflicts with a constant declaration")
+        }
+        for prior in 0L..node {
+            if tables.nodes[prior].kind == NodeKind.Const &&
+                compiler.token_name_ids[tables.nodes[prior].token] == name_id {
+                let file_index = node_file_index(tables.nodes, files, node)
+                fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start,
+                    "constant '", syntax.token, "' is declared more than once")
+            }
+        }
+        for other in 0L..tables.nodes.count() {
+            if other == node { continue }
+            let other_token = package_name_declaration_token(tables, other)
+            if other_token < 0L || compiler.token_name_ids[other_token] != name_id { continue }
+            let other_kind = tables.nodes[other].kind
+            if other_kind == NodeKind.Global {
+                let file_index = node_file_index(tables.nodes, files, node)
+                fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start,
+                    "constant '", syntax.token, "' is declared more than once")
+            } else if other_kind == NodeKind.Function {
+                let file_index = node_file_index(tables.nodes, files, other)
+                fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, tables.nodes[other].start,
+                    "function '", other_token, "' conflicts with a global or constant; choose a unique value name")
+            } else if other_kind == NodeKind.Enum || other_kind == NodeKind.EnumCase ||
+                other_kind == NodeKind.Struct || other_kind == NodeKind.TypeAlias {
+                let conflict = if other > node { other } else { node }
+                let conflict_token = tables.nodes[conflict].token
+                let file_index = node_file_index(tables.nodes, files, conflict)
+                fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, tables.nodes[conflict].start,
+                    "package name '", conflict_token, "' conflicts with a constant declaration")
+            } else { () }
+        }
+        if scalar_constant_declaration_is_long(source, tokens, files, tables, compiler, node) {
+            compiler.facts[node] = NodeFact {
+                ty: TY_LONG,
+                flags: FACT_CONSTANT_DECLARED,
+                binding: -1L,
+                function: -1L,
+                literal: 0L,
+            }
+        }
+    }
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind == NodeKind.Const &&
+            (compiler.facts[node].flags & FACT_CONSTANT_DECLARED) != 0L {
+            let _ = evaluate_scalar_constant_declaration(env, source, tokens, files, tables, compiler, node, 0L)
+        }
     }
 }
 
@@ -6063,6 +6486,21 @@ fn check_one_body(
             } else if kind == NodeKind.Name {
                 let binding = find_binding_in_scope(compiler, frame.scope, compiler.token_name_ids[syntax.token])
                 if binding < 0L {
+                    let constant = find_constant_declaration(tables, compiler, compiler.token_name_ids[syntax.token])
+                    if constant >= 0L && (compiler.facts[constant].flags & FACT_CONSTANT_EVALUATED) != 0L {
+                        if frame.expected >= 0L && frame.expected != TY_LONG {
+                            require_type(env, files, compiler, file_index, node, frame.expected, TY_LONG, tables)
+                        }
+                        compiler.facts[node] = NodeFact {
+                            ty: TY_LONG,
+                            flags: FACT_FALLS_THROUGH | FACT_CONSTANT_VALUE,
+                            binding: -1L,
+                            function: -1L,
+                            literal: compiler.facts[constant].literal,
+                        }
+                        match compiler.work.pop() { some(_) => (), none() => () }
+                        continue
+                    }
                     let function = find_function_by_name(compiler, compiler.token_name_ids[syntax.token])
                     if function >= 0L { report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node, offset: syntax.start, category: UNSUPPORTED_NODE, token: syntax.token }) }
                     var case_index = -1L
@@ -6475,7 +6913,7 @@ fn check_one_body(
                     else { intern_sum_type(compiler, sum_kind, payload, -1L, file_index, node, -1L, -1L) }
                 if ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "cannot infer the type of this Option or Result constructor") }
                 if type_state(compiler, ty) != 2L { let _ = layout_sum_instance(compiler, ty) }
-                if value_type_size(compiler, ty) >= MAX_VALUE_SIZE { fail_at_message(env, files, compiler, file_index, syntax.start, "Option or Result value layout is too large") }
+                if sum_layout_has_invalid_overflow(compiler, ty) { fail_at_message(env, files, compiler, file_index, syntax.start, "Option or Result value layout is too large") }
                 if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
                 compiler.facts[node] = NodeFact { ty, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: tag }
             } else if token_is_word_at(source, tokens, files, file_index, syntax.token, "fill") {
@@ -6585,6 +7023,9 @@ fn check_one_body(
                 }
                 optional_result_ty = if type_kind(compiler, function.result_ty) == TYPE_KIND_OPTION { function.result_ty }
                     else { intern_sum_type(compiler, TYPE_KIND_OPTION, function.result_ty, -1L, file_index, node, -1L, -1L) }
+                if sum_layout_has_invalid_overflow(compiler, optional_result_ty) {
+                    fail_at_message(env, files, compiler, file_index, syntax.start, "optional call result has an invalid Option layout")
+                }
                 if frame.function_id >= 0L {
                     let edge_id = compiler.call_edges.count()
                     let next_edge = compiler.edge_first[frame.function_id]
@@ -6707,21 +7148,40 @@ fn check_one_body(
                     method_result_ty = receiver_ty
                 } else if method == TEXT_METHOD_BYTES {
                     method_result_ty = intern_text_type(compiler, TYPE_KIND_BYTES, text_max_bytes(compiler, receiver_ty), 0L, file_index, node, -1L, -1L)
+                    if method_result_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Bytes view type exceeds the supported value size") }
                 } else if method == TEXT_METHOD_VALIDATE_UTF8 {
                     let error_ty = builtin_synthetic_type_id(compiler, -3L)
                     if error_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Utf8Error built-in type is unavailable") }
                     method_result_ty = intern_sum_type(compiler, TYPE_KIND_RESULT, TY_UNIT, error_ty, file_index, node, -1L, -1L)
+                    if sum_layout_has_invalid_overflow(compiler, method_result_ty) {
+                        fail_at_message(env, files, compiler, file_index, syntax.start, "Bytes.validate_utf8 result has an invalid layout")
+                    }
                 } else if method == TEXT_METHOD_TO_TEXT {
                     let error_ty = builtin_synthetic_type_id(compiler, -3L)
                     if error_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Utf8Error built-in type is unavailable") }
                     let maximum = text_max_bytes(compiler, receiver_ty)
+                    if maximum < 0L || maximum > MAX_VALUE_SIZE - 16L {
+                        fail_at_message(env, files, compiler, file_index, syntax.start, "Bytes.to_text Text maximum overflows; reduce the Bytes maximum")
+                    }
                     let text_ty = intern_text_type(compiler, TYPE_KIND_TEXT, maximum, maximum, file_index, node, -1L, -1L)
+                    if text_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Bytes.to_text Text result exceeds the supported value size") }
                     method_result_ty = intern_sum_type(compiler, TYPE_KIND_RESULT, text_ty, error_ty, file_index, node, -1L, -1L)
+                    if sum_layout_has_invalid_overflow(compiler, method_result_ty) {
+                        fail_at_message(env, files, compiler, file_index, syntax.start, "Bytes.to_text Result layout overflows; reduce the Bytes maximum")
+                    }
                 } else if method == TEXT_METHOD_TO_ASCII {
                     let error_ty = builtin_synthetic_type_id(compiler, -2L)
                     if error_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "TextError built-in type is unavailable") }
-                    let ascii_ty = intern_text_type(compiler, TYPE_KIND_ASCII, text_max_bytes(compiler, receiver_ty), 0L, file_index, node, -1L, -1L)
+                    let maximum = text_max_bytes(compiler, receiver_ty)
+                    if maximum < 0L || maximum > MAX_VALUE_SIZE - 8L {
+                        fail_at_message(env, files, compiler, file_index, syntax.start, "to_ascii Ascii maximum overflows; reduce the source maximum")
+                    }
+                    let ascii_ty = intern_text_type(compiler, TYPE_KIND_ASCII, maximum, 0L, file_index, node, -1L, -1L)
+                    if ascii_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "to_ascii Ascii result exceeds the supported value size") }
                     method_result_ty = intern_sum_type(compiler, TYPE_KIND_RESULT, ascii_ty, error_ty, file_index, node, -1L, -1L)
+                    if sum_layout_has_invalid_overflow(compiler, method_result_ty) {
+                        fail_at_message(env, files, compiler, file_index, syntax.start, "to_ascii Result layout overflows; reduce the source maximum")
+                    }
                 } else if method == TEXT_METHOD_CONTAINS || method == TEXT_METHOD_STARTS_WITH {
                     if argument < 0L || type_kind(compiler, compiler.facts[argument].ty) != TYPE_KIND_ASCII {
                         fail_at_message(env, files, compiler, file_index, if argument >= 0L { tables.nodes[argument].start } else { syntax.start }, "Ascii string methods require an Ascii argument")
@@ -6751,7 +7211,7 @@ fn check_one_body(
                 else if receiver_kind == TYPE_KIND_RESULT && method_ok {
                     let value_ty = sum_case_payload_type(compiler, receiver_ty, 0L, 0L)
                     method_result_ty = intern_sum_type(compiler, TYPE_KIND_OPTION, value_ty, -1L, file_index, node, -1L, -1L)
-                    if value_type_size(compiler, method_result_ty) >= MAX_VALUE_SIZE { fail_at_message(env, files, compiler, file_index, syntax.start, "Option value from Result.ok() has an invalid layout") }
+                    if sum_layout_has_invalid_overflow(compiler, method_result_ty) { fail_at_message(env, files, compiler, file_index, syntax.start, "Option value from Result.ok() has an invalid layout") }
                 } else {
                     fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching Option or Result method is available on this value")
                 }
@@ -6789,6 +7249,9 @@ fn check_one_body(
                     "fit input must be Ascii")
             }
             let option_ty = intern_sum_type(compiler, TYPE_KIND_OPTION, target_ty, -1L, file_index, node, -1L, -1L)
+            if sum_layout_has_invalid_overflow(compiler, option_ty) {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "fit result Option layout overflows; reduce the target maximum")
+            }
             if frame.expected >= 0L && frame.expected != option_ty { require_type(env, files, compiler, file_index, node, frame.expected, option_ty, tables) }
             compiler.facts[node] = NodeFact { ty: option_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.Cast {
@@ -6862,6 +7325,11 @@ fn check_one_body(
                     fail_at_message(env, files, compiler, file_index, syntax.anchor, "text concatenation maximum overflows; reduce an operand maximum")
                 }
                 let result_bytes = left_bytes + right_bytes
+                let result_header = if result_kind == TYPE_KIND_TEXT { 16L } else { 8L }
+                if result_bytes > MAX_VALUE_SIZE - result_header {
+                    fail_at_message(env, files, compiler, file_index, syntax.anchor,
+                        "text concatenation maximum overflows; reduce an operand maximum")
+                }
                 let result_points = if result_kind == TYPE_KIND_TEXT {
                     let left_points = text_max_codepoints(compiler, left.ty)
                     let right_points = text_max_codepoints(compiler, right.ty)
@@ -6871,6 +7339,10 @@ fn check_one_body(
                     left_points + right_points
                 } else { 0L }
                 var concat_result_ty = intern_text_type(compiler, result_kind, result_bytes, result_points, file_index, node, -1L, -1L)
+                if concat_result_ty < 0L {
+                    fail_at_message(env, files, compiler, file_index, syntax.anchor,
+                        "text concatenation result exceeds the supported value size")
+                }
                 if frame.expected >= 0L {
                     if text_width_fits(compiler, concat_result_ty, frame.expected) { concat_result_ty = frame.expected }
                     else { fail_type_mismatch(env, files, compiler, file_index, syntax.anchor, frame.expected, concat_result_ty) }
@@ -7646,8 +8118,13 @@ fn binding_for_node(compiler: CompilerTables, node: long) -> long {
 }
 
 fn ir_write_value_ref(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, node: long) {
-    ir_write_ascii(compiler, ir, "%v")
-    ir_write_number(compiler, ir, node)
+    if node >= 0L && node < compiler.facts.count() && (compiler.facts[node].flags & FACT_CONSTANT_VALUE) != 0L {
+        let value = compiler.facts[node].literal
+        ir_write_number(compiler, ir, value)
+    } else {
+        ir_write_ascii(compiler, ir, "%v")
+        ir_write_number(compiler, ir, node)
+    }
 }
 
 fn native_location(anchor_kind: long, anchor_node: long, byte_offset: long) -> StorageLocation {
@@ -7951,7 +8428,7 @@ recursive fn emit_collection_field_path_address(
     let field_type = compiler.facts[node].ty
     let stride = if is_aggregate_type(compiler, field_type) { 0L } else { value_type_size(compiler, field_type) }
     if stride > 0L {
-        ir_write_ascii(compiler, ir, "  %coll.field.index.bytes."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 %v"); ir_write_number(compiler, ir, index_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %coll.field.index.bytes."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, index_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.field.index.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, byte_offset); ir_write_ascii(compiler, ir, ", %coll.field.index.bytes."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 %coll.field.index.offset."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
     } else {
@@ -8405,7 +8882,7 @@ recursive fn emit_late_place_address(
             let stride = value_type_size(compiler, element_type)
             let base_offset = collection_element_base_offset(compiler, type_id)
             if stride < 0L || base_offset < 0L { compiler.ir_overflow = true; return address_id }
-            ir_write_ascii(compiler, ir, "  %late.place.index."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 %v"); ir_write_number(compiler, ir, index_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
+            ir_write_ascii(compiler, ir, "  %late.place.index."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, index_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
             ir_write_ascii(compiler, ir, "  %late.place.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 %late.place.index."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_push_byte(compiler, ir, 10)
             ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
             emit_location_pointer_reference(compiler, ir, base, pointer)
@@ -9539,7 +10016,9 @@ recursive fn emit_expr_linear(
                 let ty = compiler.facts[current].ty
                 let binding = compiler.facts[current].binding
                 let case_tag = compiler.facts[current].literal
-                if is_sum_type(compiler, ty) && binding < 0L {
+                if (compiler.facts[current].flags & FACT_CONSTANT_VALUE) != 0L {
+                    ()
+                } else if is_sum_type(compiler, ty) && binding < 0L {
                     if type_kind(compiler, ty) == TYPE_KIND_ENUM { emit_enum_tag_store(compiler, ir, current, case_tag) }
                     else { emit_sum_tag_store(compiler, ir, current, case_tag) }
                 } else if binding_is_view(compiler, binding) {
@@ -10415,7 +10894,7 @@ recursive fn emit_expr_linear(
                         if body >= 0L && compiler.facts[body].ty != TY_NEVER {
                             if wrote { ir_write_ascii(compiler, ir, ", ") }
                             let tail = if (tables.nodes[body].flags & FLAG_HAS_TAIL) != 0L { node_last_child(tables, compiler, body) } else { -1L }
-                            ir_write_ascii(compiler, ir, "[ %v"); ir_write_number(compiler, ir, tail); ir_write_ascii(compiler, ir, ", %match.arm.cont."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, ordinal); ir_write_ascii(compiler, ir, " ]")
+                            ir_write_ascii(compiler, ir, "[ "); ir_write_value_ref(compiler, ir, tail); ir_write_ascii(compiler, ir, ", %match.arm.cont."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, ordinal); ir_write_ascii(compiler, ir, " ]")
                             wrote = true
                         }
                         scan = compiler.child_next[scan]
@@ -12841,6 +13320,7 @@ fn compile_embedded_core(
     add_compiler_links(tables, compiler)
     intern_package_names(env, source, files, tokens, tables, compiler)
     build_line_start_index(env, source, files, compiler)
+    register_scalar_constants(env, source, tokens, files, tables, compiler)
     index_package_enums(source, files, tokens, tables, compiler)
     // E3a1 subsection: embedded core context intrinsics need the sized layout.
     index_package_structs(source, files, tokens, tables, compiler)
@@ -12853,6 +13333,7 @@ fn compile_embedded_core(
     register_package_declarations(env, source, files, tokens, tables, config, compiler)
     let _entry = check_entry_signature(env, source, files, tokens, tables, compiler, false)
     check_package_bodies(env, source, files, tokens, tables, config, compiler)
+    check_deferred_large_value_gate(env, source, files, tokens, tables, compiler)
     add_default_call_graph_edges(tables, compiler)
     check_call_cycles(env, source, files, tokens, tables, compiler)
     mark_struct_helpers(source, files, tokens, tables, compiler)
@@ -12890,6 +13371,7 @@ fn compile_selfhost_package(
     let entry = check_entry_signature(env, source, files, tokens, tables, compiler, !want_test_build)
     check_struct_defaults(env, source, files, tokens, tables, config, compiler)
     check_package_bodies(env, source, files, tokens, tables, config, compiler)
+    check_deferred_large_value_gate(env, source, files, tokens, tables, compiler)
     check_nested_collections_eligibility(env, source, files, tokens, tables, compiler)
     add_default_call_graph_edges(tables, compiler)
     check_call_cycles(env, source, files, tokens, tables, compiler)

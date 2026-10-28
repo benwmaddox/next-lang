@@ -1,6 +1,7 @@
 # B1 prerequisite: source-used scalar constants
 
-Status: ready as the next serial task; the name-scope prerequisite passed. This is a bounded
+Status: complete in source commit `8dbcce0`; full staged validation passed.
+See [the completion report](B1-scalar-constants-report.md). This is a bounded
 part of E3e pulled forward by compiler-source evidence, not full const support.
 
 ## Trigger and scope

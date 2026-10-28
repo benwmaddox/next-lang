@@ -1,0 +1,1 @@
+main.nl:1:24: error: constant 'VALUE' evaluation failed: division by zero during constant evaluation; call chain: constant VALUE

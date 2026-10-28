@@ -1,0 +1,11 @@
+const BASE: long = 10L
+const DOUBLE_BASE: long = BASE * 2L
+const MINIMUM: long = -9223372036854775808L
+const MAXIMUM: long = 9223372036854775807L
+const K: long = 7L
+const ZERO_INDEX: long = 0L
+const INDEX: long = 1L
+const SLICE_START: long = 1L
+const SLICE_END: long = 3L
+const WIDE_RATIO: long = 4294967296L / 2147483648L
+const CAPACITY: long = WIDE_RATIO + 1L

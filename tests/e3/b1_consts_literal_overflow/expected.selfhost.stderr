@@ -1,0 +1,1 @@
+main.nl:1:21: error: integer literal does not fit long; add 'L' for long or give it a long context

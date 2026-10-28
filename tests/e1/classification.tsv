@@ -767,3 +767,27 @@ build	tests/e3/b1_names_duplicate_case_pattern
 unsupported	tests/e3/b1_names_builtin_call_deferred
 build	tests/e3/b1_names_nested_arm_scope
 # B1 name scopes end
+
+# B1 scalar constants begin
+build	tests/e3/b1_consts_values
+diagnose	tests/e3/b1_consts_duplicate
+diagnose	tests/e3/b1_consts_wrong_type
+diagnose	tests/e3/b1_consts_wrong_enum_case_type
+diagnose	tests/e3/b1_consts_add_overflow
+diagnose	tests/e3/b1_consts_sub_overflow
+diagnose	tests/e3/b1_consts_mul_overflow
+diagnose	tests/e3/b1_consts_literal_overflow
+diagnose	tests/e3/b1_consts_negate_min
+diagnose	tests/e3/b1_consts_div_min_neg_one
+diagnose	tests/e3/b1_consts_div_zero
+diagnose	tests/e3/b1_consts_rem_zero
+diagnose	tests/e3/b1_consts_cycle
+diagnose	tests/e3/b1_consts_function_collision
+rejects	tests/e3/b1_consts_type_collision
+unsupported	tests/e3/b1_consts_unsupported_type
+unsupported	tests/e3/b1_consts_unsupported_capacity
+unsupported	tests/e3/b1_consts_unsupported_call
+unsupported	tests/e3/b1_consts_unsupported_control
+unsupported	tests/e3/b1_consts_unsupported_shift
+unsupported	tests/e3/b1_consts_unsupported_aggregate
+# B1 scalar constants end

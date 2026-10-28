@@ -57,6 +57,15 @@ fn check_const_bytes_diagnostic(
         if tables.nodes[node].kind != NodeKind.Const { continue }
         let name_token = tables.nodes[node].token
         if name_token < 0L || name_token >= compiler.token_name_ids.count() { continue }
+        let type_node = compiler.child_first[node]
+        if type_node < 0L || type_node >= tables.nodes.count() { continue }
+        let file_index = node_file_index(tables.nodes, files, node)
+        let type_token = tables.nodes[type_node].token
+        if !token_is_word_at(source, tokens, files, file_index, type_token, "Ascii") &&
+            !token_is_word_at(source, tokens, files, file_index, type_token, "Text") &&
+            !token_is_word_at(source, tokens, files, file_index, type_token, "Bytes") {
+            continue
+        }
         let name_id = compiler.token_name_ids[name_token]
         if name_id >= 0L && name_id < const_names.count() { const_names[name_id] = true }
         else { () }
