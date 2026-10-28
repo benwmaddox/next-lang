@@ -1,7 +1,8 @@
 # B1 Bytes-field collection prerequisite
 
-Status: implementation and validation in progress. Luna/max subagents own
-source and test implementation; Sol coordinates debugging and review.
+Status: complete; source commit `7dc2b4e` passed full staged validation.
+Luna/max subagents implemented source and tests; Sol coordinated debugging
+and review.
 
 ## Goal and scope
 
@@ -88,4 +89,18 @@ collections.nl:107:1: error: not supported by the self-hosted compiler yet: gene
 The declaration is recursive, so source-used recursion is the next demonstrated
 prerequisite. Current source census: 212 constants, 76 recursive declarations,
 and 201 grow-Bytes annotations. Builders and I/O remain later dependencies.
-The required full staged-suite result will be recorded before landing.
+## Full staged acceptance
+
+The installed pre-commit hook passed the exact final source snapshot in 642
+seconds before creating source commit `7dc2b4e`:
+
+```sh
+NLC_LONG_TESTS=1 NLC_E1_GENERATED_COUNT=64 NLC_TEST_JOBS=4 git commit ...
+```
+
+The hook runs `NLC_FRONTEND=selfhost cargo test --offline --release -q --test '*'`
+under its 8,000,000 KiB address-space limit and one-hour timeout. All 762
+registered and 256 generated packages passed at O1/O3, along with forced
+relocation, capacity, UTF-8/corruption, memory, interface, and budget contracts.
+Source implementation stayed frozen throughout the passing run. Stage0 and
+existing fixture contents/oracles were not changed.

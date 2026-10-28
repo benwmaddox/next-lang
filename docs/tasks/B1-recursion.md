@@ -1,6 +1,7 @@
 # B1 prerequisite: source-used recursion and native-stack checks
 
-Status: next demonstrated gate; begin only after Bytes-field acceptance lands.
+Status: ready as the next serial task; Bytes fields passed full staged
+acceptance in `7dc2b4e`.
 Resolve the measured-frame linker/runtime bridge before ungating recursive calls.
 
 ## Trigger and scope

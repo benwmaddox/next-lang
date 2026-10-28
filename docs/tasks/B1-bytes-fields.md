@@ -1,8 +1,8 @@
 # B1 prerequisite: Bytes fields in struct collections
 
-Status: in progress on `work/selfhost-bytes-fields`; scalar constants passed
-full staged validation in `8dbcce0`. This is the next demonstrated
-compiler-source gate, ahead of the remaining builder work.
+Status: complete in source commit `7dc2b4e`; the full staged suite passed.
+See [the completion report](B1-bytes-fields-report.md). The own-source probe
+now reaches recursive functions; builders remain a later prerequisite.
 
 ## Trigger and bounded scope
 
