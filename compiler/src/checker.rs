@@ -3035,6 +3035,65 @@ impl Checker {
         }
     }
 
+    fn grow_width_matches(&self, actual: Ty, expected: Ty) -> bool {
+        match (
+            self.types.get(actual.0).map(|definition| &definition.kind),
+            self.types
+                .get(expected.0)
+                .map(|definition| &definition.kind),
+        ) {
+            (
+                Some(TTypeKind::Ascii { max_bytes: actual }),
+                Some(TTypeKind::Ascii {
+                    max_bytes: expected,
+                }),
+            ) => actual == expected,
+            (
+                Some(TTypeKind::Bytes { max_bytes: actual }),
+                Some(TTypeKind::Bytes {
+                    max_bytes: expected,
+                }),
+            ) => actual == expected,
+            (
+                Some(TTypeKind::Text {
+                    max_codepoints: actual_codepoints,
+                    max_bytes: actual_bytes,
+                }),
+                Some(TTypeKind::Text {
+                    max_codepoints: expected_codepoints,
+                    max_bytes: expected_bytes,
+                }),
+            ) => actual_codepoints == expected_codepoints && actual_bytes == expected_bytes,
+            _ => false,
+        }
+    }
+
+    fn grow_width_error(&self, expected: Ty, actual: Ty) -> String {
+        let found = self.type_name(actual);
+        match self
+            .types
+            .get(expected.0)
+            .map(|definition| &definition.kind)
+        {
+            Some(TTypeKind::Ascii { max_bytes }) => format!(
+                "grow argument needs an Ascii builder with exactly {max_bytes} bytes reserved; found {found}"
+            ),
+            Some(TTypeKind::Bytes { max_bytes }) => format!(
+                "grow argument needs a Bytes builder with exactly {max_bytes} bytes reserved; found {found}"
+            ),
+            Some(TTypeKind::Text {
+                max_codepoints,
+                max_bytes,
+            }) => format!(
+                "grow argument needs a Text builder with exactly {max_bytes} bytes and {max_codepoints} code points reserved; found {found}"
+            ),
+            _ => format!(
+                "grow argument needs exactly {}; found {found}",
+                self.type_name(expected)
+            ),
+        }
+    }
+
     fn function_result_fits(&self, actual: Ty, expected: Ty) -> bool {
         actual == expected
             || self.string_width_fits(actual, expected)
@@ -5336,6 +5395,11 @@ impl Checker {
                 let before_ascii_lengths = self.ascii_lengths.clone();
                 let iteration_bound =
                     self.max_loop_iterations(&typed_start, &typed_end, *inclusive);
+                let minimum_iterations = if loop_body_contains_exit(body) {
+                    0
+                } else {
+                    self.min_loop_iterations(&typed_start, &typed_end, *inclusive)
+                };
                 let loop_pushes = self.prepare_loop_push_proofs(body, iteration_bound);
                 let before_loop = self.facts.clone();
                 let mut loop_writes = std::collections::HashSet::new();
@@ -5393,7 +5457,8 @@ impl Checker {
                     before_counts,
                     after_body_counts,
                     loop_pushes,
-                    iteration_bound.unwrap_or(0),
+                    iteration_bound,
+                    minimum_iterations,
                 );
                 self.locals.pop();
                 self.scope_ids.pop();
@@ -5618,7 +5683,8 @@ impl Checker {
                     before_counts,
                     after_body_counts,
                     loop_pushes,
-                    iterations,
+                    Some(iterations),
+                    0,
                 );
                 self.locals.pop();
                 self.scope_ids.pop();
@@ -7019,6 +7085,14 @@ impl Checker {
                         return Err(CheckError {
                             span: receiver.span,
                             message: "Bytes.push through a parameter requires 'grow' mode; 'write' cannot increase its length".to_owned(),
+                        });
+                    }
+                    if let Some(value) = byte_literal_out_of_range(&args[0]) {
+                        return Err(CheckError {
+                            span: args[0].span,
+                            message: format!(
+                                "cannot prove this value fits byte; use (byte)({value}) for a checked cast or {value}.fit<byte>() to handle failure"
+                            ),
                         });
                     }
                     let byte = self.check_expr(&args[0], Some(self.type_ids["byte"]))?;
@@ -9108,22 +9182,10 @@ impl Checker {
                     });
                 }
                 if param.mode == ParamMode::Grow {
-                    let expected_max = self.growable_string_max(param.ty);
-                    if !self.string_width_fits(place.ty, param.ty) {
-                        let builder_kind = if self.is_ascii(param.ty) {
-                            "Ascii"
-                        } else if self.is_text_type(param.ty) {
-                            "Text"
-                        } else {
-                            "Bytes"
-                        };
+                    if !self.grow_width_matches(place.ty, param.ty) {
                         return Err(CheckError {
                             span: arg.span,
-                            message: format!(
-                                "grow argument needs an {builder_kind} builder with at least {} bytes reserved; found {}",
-                                expected_max.unwrap_or(0),
-                                self.type_name(place.ty)
-                            ),
+                            message: self.grow_width_error(param.ty, place.ty),
                         });
                     }
                 } else if place.ty != param.ty {
@@ -9628,22 +9690,10 @@ impl Checker {
                     && self.specialized_struct_base.get(&place.ty) == Some(&param.ty)
                     && !self.specialized_struct_owners.contains_key(&place.ty);
                 if param.mode == ParamMode::Grow {
-                    let expected_max = self.growable_string_max(param.ty);
-                    if !self.string_width_fits(place.ty, param.ty) {
-                        let builder_kind = if self.is_ascii(param.ty) {
-                            "Ascii"
-                        } else if self.is_text_type(param.ty) {
-                            "Text"
-                        } else {
-                            "Bytes"
-                        };
+                    if !self.grow_width_matches(place.ty, param.ty) {
                         return Err(CheckError {
                             span: arg.span,
-                            message: format!(
-                                "grow argument needs an {builder_kind} builder with at least {} bytes reserved; found {}",
-                                expected_max.unwrap_or(0),
-                                self.type_name(place.ty)
-                            ),
+                            message: self.grow_width_error(param.ty, place.ty),
                         });
                     }
                 } else if place.ty != param.ty && !same_embedded_pool_shape {
@@ -11528,6 +11578,7 @@ impl Checker {
         span: Span,
     ) -> Result<(TExprKind, Ty), CheckError> {
         let scrutinee = self.check_expr(scrutinee, None)?;
+        let entry_counts = self.collection_counts.clone();
         let sum = self.types[scrutinee.ty.0].is_sum();
         let numeric = matches!(self.base_type(scrutinee.ty), Ty::Int | Ty::Long);
         if !sum && !numeric && scrutinee.ty != Ty::Bool {
@@ -11545,6 +11596,7 @@ impl Checker {
         let mut has_wildcard = false;
         let mut typed_arms = Vec::new();
         let mut reachable_ty = None;
+        let mut fallthrough_counts = Vec::new();
 
         for arm in arms {
             let (typed_pattern, binding_specs, is_wildcard) = match &arm.pattern {
@@ -11728,6 +11780,7 @@ impl Checker {
                 }
             };
 
+            self.collection_counts = entry_counts.clone();
             self.locals.push(HashMap::new());
             self.scope_ids.push(self.next_scope);
             self.next_scope += 1;
@@ -11744,6 +11797,9 @@ impl Checker {
             let checked_body = self.check_block(&arm.body, false, expected);
             self.conditional_depth -= 1;
             let typed_body = checked_body?;
+            if typed_body.falls_through {
+                fallthrough_counts.push(self.collection_counts.clone());
+            }
             self.locals.pop();
             self.scope_ids.pop();
             let pattern = match typed_pattern {
@@ -11827,6 +11883,11 @@ impl Checker {
                 });
             }
         }
+        self.collection_counts = if fallthrough_counts.is_empty() {
+            entry_counts
+        } else {
+            join_collection_count_paths(&fallthrough_counts.iter().collect::<Vec<_>>())
+        };
         let result_ty = reachable_ty.unwrap_or(Ty::Never);
         if let Some(want) = expected {
             self.type_mismatch(result_ty, want, span)?;
@@ -12319,19 +12380,10 @@ impl Checker {
             (false, true) => else_facts,
             (false, false) => entry_facts,
         };
-        self.collection_counts = match (
-            then_block.falls_through,
-            else_block.as_ref().is_none_or(|b| b.falls_through),
-        ) {
-            (true, true) => {
-                let mut joined = HashMap::new();
-                for (key, left) in &then_counts {
-                    if let Some(right) = else_counts.get(key) {
-                        joined.insert(key.clone(), (*left).max(*right));
-                    }
-                }
-                joined
-            }
+        let then_falls_through = then_block.falls_through;
+        let else_falls_through = else_block.as_ref().is_none_or(|b| b.falls_through);
+        self.collection_counts = match (then_falls_through, else_falls_through) {
+            (true, true) => join_collection_count_paths(&[&then_counts, &else_counts]),
             (true, false) => then_counts,
             (false, true) => else_counts,
             (false, false) => entry_counts,
@@ -12998,6 +13050,21 @@ impl Checker {
         usize::try_from(count).ok()
     }
 
+    fn min_loop_iterations(&self, start: &TExpr, end: &TExpr, inclusive: bool) -> usize {
+        let Some((_, start_max)) = self.expr_range(start) else {
+            return 0;
+        };
+        let Some((end_min, _)) = self.expr_range(end) else {
+            return 0;
+        };
+        let count = if inclusive {
+            end_min.saturating_sub(start_max).saturating_add(1).max(0)
+        } else {
+            end_min.saturating_sub(start_max).max(0)
+        };
+        usize::try_from(count).unwrap_or(0)
+    }
+
     fn loop_ascii_growth_roots_expr(
         expr: &TExpr,
         roots: &mut AsciiGrowthRoots,
@@ -13512,14 +13579,15 @@ impl Checker {
         let mut per_iteration = HashMap::new();
         if let Some(iterations) = iterations {
             for (key, amount) in pushes {
-                if let (Some(current), Some(capacity)) = (
-                    self.collection_counts.get(&key).copied(),
-                    self.count_key_capacity(&key),
-                ) {
-                    let total = amount
-                        .checked_mul(iterations)
-                        .and_then(|adds| current.checked_add(adds));
-                    if total.is_some_and(|total| total <= capacity) {
+                if let Some(capacity) = self.count_key_capacity(&key) {
+                    if iterations == 0 {
+                        proofs.insert(key.clone());
+                    } else if self.collection_counts.get(&key).is_some_and(|current| {
+                        amount
+                            .checked_mul(iterations)
+                            .and_then(|adds| current.checked_add(adds))
+                            .is_some_and(|total| total <= capacity)
+                    }) {
                         proofs.insert(key.clone());
                     }
                     per_iteration.insert(key, amount);
@@ -13535,38 +13603,32 @@ impl Checker {
         before: HashMap<CollectionCountKey, usize>,
         after_body: HashMap<CollectionCountKey, usize>,
         per_iteration: HashMap<CollectionCountKey, usize>,
-        iterations: usize,
+        iterations: Option<usize>,
+        minimum_iterations: usize,
     ) {
         let proofs = self.loop_push_proofs.pop().unwrap_or_default();
-        let push_keys = per_iteration
-            .keys()
-            .cloned()
-            .collect::<std::collections::HashSet<_>>();
-        self.collection_counts = before.clone();
-        for key in before.keys() {
-            if !after_body.contains_key(key) {
-                self.collection_counts.remove(key);
-            }
+        if iterations == Some(0) {
+            self.collection_counts = before;
+            return;
         }
+        let mut joined = if minimum_iterations > 0 {
+            after_body.clone()
+        } else {
+            join_collection_count_paths(&[&before, &after_body])
+        };
         for (key, amount) in per_iteration {
-            if !after_body.contains_key(&key) {
-                self.collection_counts.remove(&key);
-            } else if proofs.contains(&key) {
-                if let Some(start) = before.get(&key) {
+            if proofs.contains(&key) {
+                if let (Some(start), Some(iterations)) = (before.get(&key), iterations) {
                     let total = amount.saturating_mul(iterations);
-                    self.collection_counts
-                        .insert(key, start.saturating_add(total));
+                    joined.insert(key, start.saturating_add(total));
+                } else {
+                    joined.remove(&key);
                 }
             } else if let Some(capacity) = self.count_key_capacity(&key) {
-                self.collection_counts.insert(key, capacity);
+                joined.insert(key, capacity);
             }
         }
-        for (key, count) in after_body {
-            if !push_keys.contains(&key) {
-                let merged = before.get(&key).copied().unwrap_or(count).max(count);
-                self.collection_counts.insert(key, merged);
-            }
-        }
+        self.collection_counts = joined;
     }
 
     fn typed_place_expr(&self, place: &TPlace, span: Span) -> TExpr {
@@ -16364,6 +16426,109 @@ fn intersect_facts(
         .collect()
 }
 
+fn join_collection_count_paths(
+    paths: &[&HashMap<CollectionCountKey, usize>],
+) -> HashMap<CollectionCountKey, usize> {
+    let mut paths = paths.iter();
+    let Some(first) = paths.next() else {
+        return HashMap::new();
+    };
+    let mut joined = (**first).clone();
+    for path in paths {
+        joined.retain(|key, count| {
+            if let Some(other) = path.get(key) {
+                *count = (*count).max(*other);
+                true
+            } else {
+                false
+            }
+        });
+    }
+    joined
+}
+
+fn loop_body_contains_exit(body: &Block) -> bool {
+    fn expr(value: &Expr) -> bool {
+        match &value.kind {
+            ExprKind::Call { args, .. } | ExprKind::QualifiedCase { args, .. } => {
+                args.iter().any(expr)
+            }
+            ExprKind::IndirectCall { callee, args } => expr(callee) || args.iter().any(expr),
+            ExprKind::MethodCall { receiver, args, .. }
+            | ExprKind::OptionalCall { receiver, args, .. } => {
+                expr(receiver) || args.iter().any(expr)
+            }
+            ExprKind::Index {
+                receiver, index, ..
+            }
+            | ExprKind::Binary {
+                left: receiver,
+                right: index,
+                ..
+            } => expr(receiver) || expr(index),
+            ExprKind::GridIndex { receiver, x, y, .. } => expr(receiver) || expr(x) || expr(y),
+            ExprKind::Field { receiver, .. } => expr(receiver),
+            ExprKind::StructInit { fields, .. } => fields.iter().any(|field| expr(&field.value)),
+            ExprKind::ArrayLiteral(values) => values.iter().any(expr),
+            ExprKind::Take(value)
+            | ExprKind::Fit { value, .. }
+            | ExprKind::Try(value)
+            | ExprKind::ToLong { value, .. }
+            | ExprKind::Cast { value, .. }
+            | ExprKind::Unary { value, .. } => expr(value),
+            ExprKind::Return(Some(value)) => expr(value),
+            ExprKind::LoopExit(_) => true,
+            ExprKind::Match { scrutinee, arms } => {
+                expr(scrutinee) || arms.iter().any(|arm| block(&arm.body))
+            }
+            ExprKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => expr(condition) || block(then_block) || else_block.as_ref().is_some_and(block),
+            ExprKind::Unit
+            | ExprKind::Integer { .. }
+            | ExprKind::Bool(_)
+            | ExprKind::ByteString(..)
+            | ExprKind::BytesLiteral(_)
+            | ExprKind::Name(_)
+            | ExprKind::ListLiteral
+            | ExprKind::PoolLiteral
+            | ExprKind::MapLiteral
+            | ExprKind::SetLiteral
+            | ExprKind::QueueLiteral
+            | ExprKind::RingLiteral
+            | ExprKind::Return(None) => false,
+        }
+    }
+
+    fn statement(statement: &Stmt) -> bool {
+        match &statement.kind {
+            StmtKind::Let { value, .. } | StmtKind::Expr(value) | StmtKind::Discard(value) => {
+                expr(value)
+            }
+            StmtKind::Assign { target, value, .. } => expr(target) || expr(value),
+            StmtKind::Return(Some(value)) => expr(value),
+            StmtKind::For {
+                start, end, body, ..
+            } => expr(start) || expr(end) || block(body),
+            StmtKind::ForEach {
+                collection, body, ..
+            } => expr(collection) || block(body),
+            StmtKind::Expect { value, .. } => expr(value),
+            StmtKind::Block(body) => block(body),
+            StmtKind::Break | StmtKind::Continue => true,
+            StmtKind::Return(None) => false,
+        }
+    }
+
+    fn block(body: &Block) -> bool {
+        body.statements.iter().any(statement) || body.tail.as_ref().is_some_and(|tail| expr(tail))
+    }
+
+    block(body)
+}
+
 fn reverse_comparison(op: BinaryOp) -> BinaryOp {
     match op {
         BinaryOp::Lt => BinaryOp::Gt,
@@ -16525,6 +16690,37 @@ fn is_unsuffixed_integer(expr: &Expr) -> bool {
             ..
         }
     )
+}
+
+fn byte_literal_out_of_range(expr: &Expr) -> Option<String> {
+    let (magnitude, negative) = match &expr.kind {
+        ExprKind::Integer {
+            magnitude,
+            negative,
+            long_suffix: false,
+        } => (*magnitude, *negative),
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            value,
+            ..
+        } => match &value.kind {
+            ExprKind::Integer {
+                magnitude,
+                negative,
+                long_suffix: false,
+            } => (*magnitude, !negative),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    if magnitude <= 255 && (!negative || magnitude == 0) {
+        return None;
+    }
+    Some(if negative {
+        format!("-{magnitude}")
+    } else {
+        magnitude.to_string()
+    })
 }
 
 fn assign_binary(op: AssignOp) -> BinaryOp {

@@ -155,8 +155,9 @@ recursive fn count_loop_pushes_for_binding(
             let is_push = token_is_word_at(source, tokens, files, file_index, token, "push")
             let changes_count = is_push || token_is_word_at(source, tokens, files, file_index, token, "insert") ||
                 token_is_word_at(source, tokens, files, file_index, token, "pop") ||
-                token_is_word_at(source, tokens, files, file_index, token, "remove") ||
-                token_is_word_at(source, tokens, files, file_index, token, "clear")
+                token_is_word_at(source, tokens, files, file_index, token, "remove")
+            // clear() only lowers the count, so the bound before + pushes * iterations
+            // still holds after it (stage 0 keeps its loop proof across clear too).
             if changes_count && !is_push { return LoopPushCount { count: 0L, valid: false } }
         }
     }
@@ -271,7 +272,9 @@ fn prepare_loop_push_proofs(
         let pushes = count_loop_pushes_for_binding(source, tokens, files, tables, compiler, body, binding, scope, file_index, 0L)
         let before = compiler.bindings[binding].collection_count
         let capacity = collection_capacity(compiler, compiler.bindings[binding].ty)
-        if !pushes.valid || pushes.count <= 0L || before < 0L || before > capacity { continue }
+        if !pushes.valid || pushes.count <= 0L { continue }
+        // A loop that never runs proves its pushes whatever the count is (as in stage 0).
+        if iterations != 0L && (before < 0L || before > capacity) { continue }
         var fits = false
         if iterations == 0L { fits = true }
         else if pushes.count <= (capacity - before) / iterations { fits = true }

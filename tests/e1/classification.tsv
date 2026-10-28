@@ -710,3 +710,19 @@ build	tests/e3/e3a3fix_expression_exits
 # Stage 0 does not parse while loops.
 expected	tests/e3/e3a3fix_while_exits
 # E3a3-fix end
+# Stage 0 soundness regressions fixed for the 2026-10-27 release.
+diagnose	tests/e3/s0fix5_count_loop
+diagnose	tests/e3/s0fix5_count_match
+build	tests/e3/s0fix5_count_valid
+unsupported	tests/e3/s0fix5_grow_ascii_small
+unsupported	tests/e3/s0fix5_grow_ascii_large
+unsupported	tests/e3/s0fix5_grow_bytes_small
+unsupported	tests/e3/s0fix5_grow_text_codepoints
+unsupported	tests/e3/s0fix5_grow_text_bytes
+unsupported	tests/e3/s0fix5_grow_field
+unsupported	tests/e3/s0fix5_grow_indirect
+unsupported	tests/e3/s0fix5_grow_valid
+unsupported	tests/e3/s0fix5_byte_invalid
+unsupported	tests/e3/s0fix5_byte_valid
+unsupported	tests/e3/s0fix5_byte_negative
+diagnose	tests/e3/s0fix5_count_break

@@ -1,0 +1,1 @@
+main.nl:3:22: error: cannot prove this value fits byte; use (byte)(300) for a checked cast or 300.fit<byte>() to handle failure
