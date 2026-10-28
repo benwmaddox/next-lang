@@ -586,12 +586,11 @@ Workers grow and free their jobs' stacks without locks; changes go to the writer
 
 ## Types, and refinement types
 
-**No name shadowing** (Ben, 2026-10-26). Within a function, a name refers to exactly one thing, so a reader (or an AI) never has to work out which declaration wins. A name declared by `let`, `var`, a parameter, a loop variable or a `match` binding may not be the same as:
+**No variable shadowing** (Ben, 2026-10-26; narrowed 2026-10-27: variables only, not function or built-in names). Within a function, a variable name refers to exactly one variable, so a reader (or an AI) never has to work out which declaration wins. A name declared by `let`, `var`, a parameter, a loop variable or a `match` binding may not be the same as:
 - any local, parameter, loop variable or binding visible where it is declared (an enclosing block, the function's parameters, an outer loop);
-- a package-level name: a function, a type, a `const`, or a case of any enum that can be written bare (`Red`, and the built-in `some`, `none`, `ok`, `err`);
-- a built-in function (`print`, `str`, `min`, ...).
+- a case of any enum that can be written bare (`Red`, and the built-in `some`, `none`, `ok`, `err`), because a `match` pattern with that name would silently become a catch-all binding.
 
-Sibling scopes may reuse a name (two loops after each other may both use `i`), and qualified or field names don't count (`Color.Red`, `s.x`). Package-level names must differ from each other too, except that cases of different enums may share a name (`Color.Red`, `Light.Red`); a bare `Red` then needs an expected type, as now. The error names both declarations and suggests a new name. Stage 0 allows shadowing; the self-hosted compiler refuses it (PLAN "Stage 0 freeze").
+A variable may share a name with a function, a built-in function, a type or a `const` (`let max = 10`, `var count = 0`, `len: long`): in its scope the bare name is the variable, and a call `max(a, b)` still calls the function. Sibling scopes may reuse a name (two loops after each other may both use `i`), and qualified or field names don't count (`Color.Red`, `s.x`). Package-level names must differ from each other, except that cases of different enums may share a name (`Color.Red`, `Light.Red`); a bare `Red` then needs an expected type, as now. The error names both declarations and suggests a new name. The check stays local to the function: it never searches the whole package per declaration. Stage 0 allows shadowing; the self-hosted compiler refuses it (PLAN "Stage 0 freeze").
 
 Refinement types are the design's best lever: one declaration serves correctness, efficiency and every layer at once, if they stay small enough to check quickly.
 
@@ -977,7 +976,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 - Numbers use C#'s names and widths (`int` is 32-bit, `long` 64-bit, `float` and `double`), lowercase like C#'s keywords. No implicit conversions between number types: every one is a cast, and narrowing casts are checked. A plain `double` or `float` never holds NaN; an operation that would produce one fails the job (`double nan` allows it).
 - x86-64 builds target `x86-64-v2` by default; v3 and above are opt-in with a build flag or manifest setting, and public software adds v3/v4 clones of hot functions.
 - Game replays are exact on the same build and platform; a failed tick stops the game with its recorded inputs. Pages are HTML with `{…}` holes, `live` elements and `signal`; games have a fixed-step `tick(input)` and a read-only `draw(frame)`, as in StasisLang.
-- No name shadowing (2026-10-26, Types): a local, parameter, loop variable or binding can't reuse a visible local's name, a package-level name or a built-in's.
+- No variable shadowing (2026-10-26, narrowed 2026-10-27, Types): a local, parameter, loop variable or binding can't reuse a visible variable's name or a bare enum case; it may share a name with a function, built-in, type or `const`.
 - Interpolated strings use a `$` prefix, `$"{x} items"`, with the bound computed from the holes and the same one-pass, in-place building as concatenation (2026-10-26, Text, ASCII and bytes).
 - One function form, `fn`, with a fixed, checked set of attributes (`@[job]`, `@[page]`, `@[action]`, `@[api]`, `@[piece]`, `@[versions(...)]`) in place of function keywords (2026-10-26, Function attributes); only `@[job]` functions can be started as jobs.
 - Mutable globals are removed from the language (2026-10-26): program state is a local in `main` (or the entry point), passed as `write app: App`; shared state is passed to jobs as a `shared` parameter; `const` stays for immutable named values and tables. By-name access to mutable state was a hidden effect that forced effect inference on globals, created write-argument overlaps and evaluation-order bugs; now all state changes are visible at the call site.
