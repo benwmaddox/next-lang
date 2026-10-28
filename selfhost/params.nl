@@ -6,7 +6,7 @@ fn binding_is_write_parameter(compiler: CompilerTables, binding: long) -> bool {
 
 fn emit_location_index_value(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, location: StorageLocation) {
     if location.index_node >= 0L {
-        ir_write_ascii(compiler, ir, "%v"); ir_write_number(compiler, ir, location.index_node)
+        ir_write_value_ref(compiler, ir, location.index_node)
     } else if location.index_node < -1L {
         ir_write_ascii(compiler, ir, "%for.each.current."); ir_write_number(compiler, ir, -2L - location.index_node)
     } else if location.index == -1L {

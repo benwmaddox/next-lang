@@ -106,6 +106,7 @@ fn main(env: Env) {
         add_compiler_links(tables, compiler)
         intern_package_names(env, source, files, tokens, tables, compiler)
         build_line_start_index(env, source, files, compiler)
+        register_scalar_constants(env, source, tokens, files, tables, compiler)
         index_package_enums(source, files, tokens, tables, compiler)
         intern_builtin_full(source, files, tokens, compiler)
         index_package_structs(source, files, tokens, tables, compiler)

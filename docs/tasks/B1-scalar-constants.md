@@ -1,6 +1,6 @@
 # B1 prerequisite: source-used scalar constants
 
-Status: ready as the next serial task; the name-scope prerequisite passed. This is a bounded
+Status: in progress on `work/selfhost-scalar-constants`; the name-scope prerequisite passed. This is a bounded
 part of E3e pulled forward by compiler-source evidence, not full const support.
 
 ## Trigger and scope

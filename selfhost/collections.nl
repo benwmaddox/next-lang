@@ -38,6 +38,72 @@ fn collection_capacity_value(value: long) -> CollectionCapacityValue {
     CollectionCapacityValue { value, constant: true, valid: true }
 }
 
+fn collection_capacity_overflow() -> CollectionCapacityValue {
+    CollectionCapacityValue { value: 0L, constant: true, valid: false }
+}
+
+fn checked_capacity_add(left: long, right: long) -> CollectionCapacityValue {
+    if right > 0L && left > 9223372036854775807L - right { return collection_capacity_overflow() }
+    if right < 0L && left < -9223372036854775808L - right { return collection_capacity_overflow() }
+    collection_capacity_value(left + right)
+}
+
+fn checked_capacity_subtract(left: long, right: long) -> CollectionCapacityValue {
+    if right < 0L && left > 9223372036854775807L + right { return collection_capacity_overflow() }
+    if right > 0L && left < -9223372036854775808L + right { return collection_capacity_overflow() }
+    collection_capacity_value(left - right)
+}
+
+fn checked_capacity_multiply(left: long, right: long) -> CollectionCapacityValue {
+    if left == 0L || right == 0L { return collection_capacity_value(0L) }
+    if left > 0L {
+        if right > 0L && left > 9223372036854775807L / right { return collection_capacity_overflow() }
+        if right < 0L && right < -9223372036854775808L / left { return collection_capacity_overflow() }
+    } else {
+        if right > 0L && left < -9223372036854775808L / right { return collection_capacity_overflow() }
+        if right < 0L && right < 9223372036854775807L / left { return collection_capacity_overflow() }
+    }
+    collection_capacity_value(left * right)
+}
+
+fn checked_capacity_divide(left: long, right: long) -> CollectionCapacityValue {
+    if right == 0L || (left == -9223372036854775808L && right == -1L) {
+        return collection_capacity_overflow()
+    }
+    collection_capacity_value(left / right)
+}
+
+fn checked_capacity_remainder(left: long, right: long) -> CollectionCapacityValue {
+    if right == 0L { return collection_capacity_overflow() }
+    if left == -9223372036854775808L && right == -1L { return collection_capacity_value(0L) }
+    collection_capacity_value(left % right)
+}
+
+fn checked_capacity_negate(value: long) -> CollectionCapacityValue {
+    if value == -9223372036854775808L { return collection_capacity_overflow() }
+    collection_capacity_value(-value)
+}
+
+fn collection_integer_literal_capacity(tables: ParseTables, node: long) -> CollectionCapacityValue {
+    let syntax = tables.nodes[node]
+    if syntax.extra < 0L || syntax.extra >= tables.literals.count() { return collection_capacity_invalid() }
+    let literal = tables.literals[syntax.extra]
+    if literal.limb3 != 0L || literal.limb2 != 0L || literal.limb1 < 0L || literal.limb0 < 0L || literal.limb0 > 4294967295L {
+        return collection_capacity_overflow()
+    }
+    if (syntax.flags & FLAG_NEGATIVE) != 0L {
+        if literal.limb1 > 2147483648L || (literal.limb1 == 2147483648L && literal.limb0 != 0L) {
+            return collection_capacity_overflow()
+        }
+        if literal.limb1 == 2147483648L { return collection_capacity_value(-9223372036854775808L) }
+        let magnitude = literal.limb1 * 4294967296L + literal.limb0
+        collection_capacity_value(0L - magnitude)
+    } else {
+        if literal.limb1 > 2147483647L { return collection_capacity_overflow() }
+        collection_capacity_value(literal.limb1 * 4294967296L + literal.limb0)
+    }
+}
+
 recursive fn evaluate_collection_capacity(
     tables: ParseTables,
     compiler: CompilerTables,
@@ -48,57 +114,38 @@ recursive fn evaluate_collection_capacity(
     if node < 0L || node >= tables.nodes.count() { return collection_capacity_invalid() }
     let syntax = tables.nodes[node]
     if syntax.kind == NodeKind.Integer {
-        if syntax.extra < 0L || syntax.extra >= tables.literals.count() { return collection_capacity_invalid() }
-        let literal = tables.literals[syntax.extra]
-        if literal.limb1 != 0L || literal.limb2 != 0L || literal.limb3 != 0L || literal.limb0 < 0L {
-            return CollectionCapacityValue { value: 0L, constant: true, valid: false }
-        }
-        if (syntax.flags & FLAG_NEGATIVE) != 0L {
-            if literal.limb0 == -9223372036854775807L - 1L {
-                collection_capacity_value(-9223372036854775807L - 1L)
-            } else { collection_capacity_value(-literal.limb0) }
-        } else { collection_capacity_value(literal.limb0) }
+        collection_integer_literal_capacity(tables, node)
     } else if syntax.kind == NodeKind.Unary && syntax.flags == 0L {
         let child = compiler.child_first[node]
         let value = evaluate_collection_capacity(tables, compiler, child, depth + 1L)
         if !value.constant || !value.valid { return value }
-        if value.value == -9223372036854775807L - 1L {
-            CollectionCapacityValue { value: 0L, constant: true, valid: false }
-        } else { collection_capacity_value(-value.value) }
+        checked_capacity_negate(value.value)
     } else if syntax.kind == NodeKind.Binary && syntax.flags >= 0L && syntax.flags <= 4L {
         let left_node = compiler.child_first[node]
         let right_node = if left_node >= 0L { compiler.child_next[left_node] } else { -1L }
         let left = evaluate_collection_capacity(tables, compiler, left_node, depth + 1L)
         let right = evaluate_collection_capacity(tables, compiler, right_node, depth + 1L)
         if !left.constant || !right.constant { return collection_capacity_invalid() }
-        if !left.valid || !right.valid { return CollectionCapacityValue { value: 0L, constant: true, valid: false } }
+        if !left.valid || !right.valid { return collection_capacity_overflow() }
         if syntax.flags == 0L {
-            if right.value > 0L && left.value > 9223372036854775807L - right.value { return CollectionCapacityValue { value: 0L, constant: true, valid: false } }
-            if right.value < 0L && left.value < (-9223372036854775807L - 1L) - right.value { return CollectionCapacityValue { value: 0L, constant: true, valid: false } }
-            collection_capacity_value(left.value + right.value)
+            checked_capacity_add(left.value, right.value)
         } else if syntax.flags == 1L {
-            if right.value < 0L && left.value > 9223372036854775807L + right.value { return CollectionCapacityValue { value: 0L, constant: true, valid: false } }
-            if right.value > 0L && left.value < (-9223372036854775807L - 1L) + right.value { return CollectionCapacityValue { value: 0L, constant: true, valid: false } }
-            collection_capacity_value(left.value - right.value)
+            checked_capacity_subtract(left.value, right.value)
         } else if syntax.flags == 2L {
-            if left.value == 0L || right.value == 0L { collection_capacity_value(0L) }
-            else if left.value == -1L && right.value == -9223372036854775807L - 1L { CollectionCapacityValue { value: 0L, constant: true, valid: false } }
-            else if right.value == -1L && left.value == -9223372036854775807L - 1L { CollectionCapacityValue { value: 0L, constant: true, valid: false } }
-            else {
-                let product = left.value * right.value
-                if product / right.value != left.value { CollectionCapacityValue { value: 0L, constant: true, valid: false } }
-                else { collection_capacity_value(product) }
-            }
+            checked_capacity_multiply(left.value, right.value)
         } else if syntax.flags == 3L {
-            if right.value == 0L || (left.value == -9223372036854775807L - 1L && right.value == -1L) {
-                CollectionCapacityValue { value: 0L, constant: true, valid: false }
-            } else { collection_capacity_value(left.value / right.value) }
+            checked_capacity_divide(left.value, right.value)
         } else {
-            if right.value == 0L { CollectionCapacityValue { value: 0L, constant: true, valid: false } }
-            else { collection_capacity_value(left.value % right.value) }
+            checked_capacity_remainder(left.value, right.value)
         }
     } else if syntax.kind == NodeKind.Name && syntax.token >= 0L {
+        if node < compiler.facts.count() && compiler.facts[node].binding >= 0L {
+            return collection_capacity_invalid()
+        }
         let name_id = compiler.token_name_ids[syntax.token]
+        if node < compiler.facts.count() && (compiler.facts[node].flags & FACT_CONSTANT_VALUE) != 0L {
+            return collection_capacity_value(compiler.facts[node].literal)
+        }
         var constant_node = -1L
         for candidate in 0L..tables.nodes.count() {
             if tables.nodes[candidate].kind == NodeKind.Const && compiler.token_name_ids[tables.nodes[candidate].token] == name_id {
@@ -107,11 +154,43 @@ recursive fn evaluate_collection_capacity(
             }
         }
         if constant_node < 0L { return collection_capacity_invalid() }
-        let value_node = node_last_child(tables, compiler, constant_node)
-        evaluate_collection_capacity(tables, compiler, value_node, depth + 1L)
+        if constant_node < compiler.facts.count() &&
+            (compiler.facts[constant_node].flags & FACT_CONSTANT_EVALUATED) != 0L {
+            collection_capacity_value(compiler.facts[constant_node].literal)
+        } else { collection_capacity_invalid() }
     } else {
         collection_capacity_invalid()
     }
+}
+
+recursive fn unsupported_collection_capacity_constant(
+    tables: ParseTables,
+    compiler: CompilerTables,
+    node: long,
+    depth: long,
+) -> long {
+    if depth > 256L || node < 0L || node >= tables.nodes.count() { return -1L }
+    let syntax = tables.nodes[node]
+    if syntax.kind == NodeKind.Name && syntax.token >= 0L {
+        if node < compiler.facts.count() && compiler.facts[node].binding >= 0L { return -1L }
+        let name_id = compiler.token_name_ids[syntax.token]
+        let declaration = find_constant_declaration(tables, compiler, name_id)
+        if declaration >= 0L && (compiler.facts[declaration].flags & FACT_CONSTANT_EVALUATED) == 0L {
+            return declaration
+        }
+        return -1L
+    }
+    if syntax.kind == NodeKind.Unary && syntax.flags == 0L {
+        return unsupported_collection_capacity_constant(tables, compiler, compiler.child_first[node], depth + 1L)
+    }
+    if syntax.kind == NodeKind.Binary && syntax.flags >= 0L && syntax.flags <= 4L {
+        let left = compiler.child_first[node]
+        let right = if left >= 0L { compiler.child_next[left] } else { -1L }
+        let left_declaration = unsupported_collection_capacity_constant(tables, compiler, left, depth + 1L)
+        if left_declaration >= 0L { return left_declaration }
+        return unsupported_collection_capacity_constant(tables, compiler, right, depth + 1L)
+    }
+    -1L
 }
 
 recursive fn loop_push_receiver_binding(tables: ParseTables, compiler: CompilerTables, node: long, scope: long) -> long {
@@ -438,7 +517,11 @@ fn intern_collection_type_syntax(
         child = compiler.child_next[child]
         let capacity_node = child
         let capacity_value = evaluate_collection_capacity(tables, compiler, capacity_node, 0L)
-        if !capacity_value.constant { collection_capacity_error(env, files, compiler, file_index, if capacity_node >= 0L { tables.nodes[capacity_node].start } else { syntax.start }, true, false) }
+        if !capacity_value.constant {
+            let unsupported = unsupported_collection_capacity_constant(tables, compiler, capacity_node, 0L)
+            if unsupported >= 0L { return -1L }
+            collection_capacity_error(env, files, compiler, file_index, if capacity_node >= 0L { tables.nodes[capacity_node].start } else { syntax.start }, true, false)
+        }
         if !capacity_value.valid { collection_capacity_overflow_error(env, files, compiler, file_index, syntax.start) }
         if capacity_value.value < 0L { collection_capacity_error(env, files, compiler, file_index, tables.nodes[capacity_node].start, true, true) }
         let list_name_id = compiler.token_name_ids[syntax.token]
@@ -469,7 +552,11 @@ fn intern_collection_type_syntax(
         if type_id < 0L { return -1L }
         let capacity_node = child
         let capacity_value = evaluate_collection_capacity(tables, compiler, capacity_node, 0L)
-        if !capacity_value.constant { collection_capacity_error(env, files, compiler, file_index, tables.nodes[capacity_node].start, false, false) }
+        if !capacity_value.constant {
+            let unsupported = unsupported_collection_capacity_constant(tables, compiler, capacity_node, 0L)
+            if unsupported >= 0L { return -1L }
+            collection_capacity_error(env, files, compiler, file_index, tables.nodes[capacity_node].start, false, false)
+        }
         if !capacity_value.valid { collection_capacity_overflow_error(env, files, compiler, file_index, syntax.start) }
         if capacity_value.value < 0L { collection_capacity_error(env, files, compiler, file_index, tables.nodes[capacity_node].start, false, true) }
         type_id = intern_collection_type(compiler, TYPE_KIND_ARRAY, type_id, capacity_value.value, file_index, node, -1L, syntax.token)
@@ -541,7 +628,21 @@ fn syntax_has_nested_collection_elements(
 fn checked_size_product(left: long, right: long) -> long {
     if left < 0L || right < 0L { return -1L }
     if left == 0L || right == 0L { return 0L }
-    if left > MAX_VALUE_SIZE / right { MAX_VALUE_SIZE } else { left * right }
+    if left > MAX_VALUE_SIZE / right { -2L } else { left * right }
+}
+
+fn checked_layout_size_add(left: long, right: long) -> long {
+    if left == -2L || right == -2L { return -2L }
+    if left < 0L || right < 0L { return -1L }
+    if left > MAX_VALUE_SIZE - right { -2L } else { left + right }
+}
+
+fn checked_layout_size_align(value: long, align: long) -> long {
+    if value == -2L { return -2L }
+    if value < 0L || align <= 0L { return -1L }
+    if align <= 1L { return value }
+    let remainder = value % align
+    if remainder == 0L { value } else { checked_layout_size_add(value, align - remainder) }
 }
 
 recursive fn type_group_size(compiler: CompilerTables, type_id: long, copies: long) -> long {
@@ -555,25 +656,30 @@ recursive fn type_group_size(compiler: CompilerTables, type_id: long, copies: lo
             let field = compiler.struct_fields[record.field_start + field_offset]
             let field_size = type_group_size(compiler, field.ty, copies)
             let field_align = value_type_align(compiler, field.ty)
-            if field_size < 0L || field_align < 0L { return -1L }
-            offset = size_align_saturated(offset, field_align)
-            offset = size_add_saturated(offset, field_size)
+            if field_size < 0L { return field_size }
+            if field_align < 0L { return -1L }
+            offset = checked_layout_size_align(offset, field_align)
+            if offset < 0L { return offset }
+            offset = checked_layout_size_add(offset, field_size)
+            if offset < 0L { return offset }
             if field_align > alignment { alignment = field_align }
         }
-        size_align_saturated(offset, alignment)
+        checked_layout_size_align(offset, alignment)
     } else if kind == TYPE_KIND_ARRAY {
         let repeated = checked_size_product(copies, record.field_count)
-        if repeated < 0L { -1L } else { type_group_size(compiler, record.field_start, repeated) }
+        if repeated < 0L { repeated } else { type_group_size(compiler, record.field_start, repeated) }
     } else if kind == TYPE_KIND_LIST {
         let counts_size = checked_size_product(copies, 8L)
         let repeated = checked_size_product(copies, record.field_count)
         let element_align = value_type_align(compiler, record.field_start)
         let element_size = type_group_size(compiler, record.field_start, repeated)
-        if counts_size < 0L || repeated < 0L || element_align < 0L || element_size < 0L { -1L }
+        if counts_size == -2L || repeated == -2L || element_size == -2L { -2L }
+        else if counts_size < 0L || repeated < 0L || element_align < 0L || element_size < 0L { -1L }
         else {
-            let element_offset = size_align_saturated(counts_size, element_align)
+            let element_offset = checked_layout_size_align(counts_size, element_align)
+            if element_offset < 0L { return element_offset }
             let alignment = if element_align > 8L { element_align } else { 8L }
-            size_align_saturated(size_add_saturated(element_offset, element_size), alignment)
+            checked_layout_size_align(checked_layout_size_add(element_offset, element_size), alignment)
         }
     } else {
         let size = value_type_size(compiler, type_id)
@@ -984,28 +1090,28 @@ fn emit_collection_index_address(
     }
     let pointer_serial = emit_location_pointer_materialization(compiler, ir, location)
     let position = position_for_offset(file_index, files[file_index].base + tables.nodes[node].anchor, compiler)
-    ir_write_ascii(compiler, ir, "  %coll.index.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt i64 %v"); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", 0\n")
+    ir_write_ascii(compiler, ir, "  %coll.index.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt i64 "); ir_write_value_ref(compiler, ir, index); ir_write_ascii(compiler, ir, ", 0\n")
     if is_text_bytes {
         ir_write_ascii(compiler, ir, "  %text.index.length."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial)
         ir_write_ascii(compiler, ir, ", align 1\n  %coll.index.high."); ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, " = icmp sge i64 %v"); ir_write_number(compiler, ir, index)
+        ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, index)
         ir_write_ascii(compiler, ir, ", %text.index.length."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
     } else if kind == TYPE_KIND_LIST {
-        ir_write_ascii(compiler, ir, "  %coll.index.count.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 0\n  %coll.index.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr %coll.index.count.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n  %coll.index.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge i64 %v"); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", %coll.index.count."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %coll.index.count.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 0\n  %coll.index.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr %coll.index.count.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n  %coll.index.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, index); ir_write_ascii(compiler, ir, ", %coll.index.count."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
     } else {
-        ir_write_ascii(compiler, ir, "  %coll.index.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge i64 %v"); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity); ir_write_ascii(compiler, ir, "\n")
+        ir_write_ascii(compiler, ir, "  %coll.index.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, index); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity); ir_write_ascii(compiler, ir, "\n")
     }
     ir_write_ascii(compiler, ir, "  %coll.index.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = or i1 %coll.index.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.index.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  br i1 %coll.index.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.index.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.index.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.index.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 16, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncoll.index.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
     if is_text_bytes {
         ir_write_ascii(compiler, ir, "  %coll.index.bytes."); ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, " = add i64 %v"); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset)
+        ir_write_ascii(compiler, ir, " = add i64 "); ir_write_value_ref(compiler, ir, index); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset)
         ir_write_ascii(compiler, ir, "\n  %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
         emit_location_pointer_reference(compiler, ir, location, pointer_serial)
         ir_write_ascii(compiler, ir, ", i64 %coll.index.bytes."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
     } else if is_aggregate_type(compiler, element) { () }
     else {
-        ir_write_ascii(compiler, ir, "  %coll.index.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %v"); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.index.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.index.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.index.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %coll.index.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, index); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.index.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.index.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.index.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
     }
 }
 
@@ -1066,7 +1172,7 @@ recursive fn emit_collection_store_element_fields(
 
 fn emit_collection_lane_value(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, kind: long, node: long) {
     if kind == 1L { ir_write_ascii(compiler, ir, "%coll.push.count."); ir_write_number(compiler, ir, node) }
-    else if kind == 2L { ir_write_ascii(compiler, ir, "%v"); ir_write_number(compiler, ir, node) }
+    else if kind == 2L { ir_write_value_ref(compiler, ir, node) }
     else if kind == 3L { ir_write_ascii(compiler, ir, "%coll.insert.from."); ir_write_number(compiler, ir, node) }
     else if kind == 4L { ir_write_ascii(compiler, ir, "%coll.insert.cursor."); ir_write_number(compiler, ir, node) }
     else if kind == 5L { ir_write_ascii(compiler, ir, "%coll.remove.source.index."); ir_write_number(compiler, ir, node) }
@@ -1077,7 +1183,7 @@ fn emit_collection_lane_value(compiler: write CompilerTables, ir: grow Bytes max
 }
 
 fn emit_collection_lane_index(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, lane_node: long) {
-    if lane_node >= 0L { ir_write_ascii(compiler, ir, "%v"); ir_write_number(compiler, ir, lane_node) }
+    if lane_node >= 0L { ir_write_value_ref(compiler, ir, lane_node) }
     else { ir_write_ascii(compiler, ir, "%for.each.current."); ir_write_number(compiler, ir, -2L - lane_node) }
 }
 
@@ -1301,9 +1407,9 @@ fn emit_collection_literal_element(
     ir_write_ascii(compiler, ir, "  %coll.literal.addr."); ir_write_number(compiler, ir, collection_node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, lane); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, base_offset + lane * stride); ir_push_byte(compiler, ir, 10)
     let storage_type = collection_storage_type(element)
     if element == TY_BOOL {
-        ir_write_ascii(compiler, ir, "  %coll.literal.bool."); ir_write_number(compiler, ir, collection_node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, lane); ir_write_ascii(compiler, ir, " = zext i1 %v"); ir_write_number(compiler, ir, value_node); ir_write_ascii(compiler, ir, " to i8\n  store i8 %coll.literal.bool."); ir_write_number(compiler, ir, collection_node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, lane); ir_write_ascii(compiler, ir, ", ptr %coll.literal.addr."); ir_write_number(compiler, ir, collection_node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, lane); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %coll.literal.bool."); ir_write_number(compiler, ir, collection_node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, lane); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, " to i8\n  store i8 %coll.literal.bool."); ir_write_number(compiler, ir, collection_node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, lane); ir_write_ascii(compiler, ir, ", ptr %coll.literal.addr."); ir_write_number(compiler, ir, collection_node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, lane); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
     } else {
-        ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(element)); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, value_node); ir_write_ascii(compiler, ir, ", ptr %coll.literal.addr."); ir_write_number(compiler, ir, collection_node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, lane); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(element)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, ", ptr %coll.literal.addr."); ir_write_number(compiler, ir, collection_node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, lane); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
     }
     let _ = address
 }
@@ -1338,12 +1444,12 @@ fn emit_collection_fill_array(
     let stride = value_type_size(compiler, element)
     if stride < 0L { compiler.ir_overflow = true; return }
     if element == TY_BOOL {
-        ir_write_ascii(compiler, ir, "  %coll.fill.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i1 %v"); ir_write_number(compiler, ir, value_node); ir_write_ascii(compiler, ir, " to i8\n")
+        ir_write_ascii(compiler, ir, "  %coll.fill.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, " to i8\n")
     }
     ir_write_ascii(compiler, ir, "  store i64 0, ptr %coll.fill.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 8\n  br label %coll.fill.cond."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
     ir_write_ascii(compiler, ir, "coll.fill.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.fill.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr %coll.fill.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 8\n  %coll.fill.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.fill.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity); ir_write_ascii(compiler, ir, "\n  br i1 %coll.fill.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.fill.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.fill.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.fill.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.fill.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.fill.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.fill.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.fill.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.fill.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer); ir_write_ascii(compiler, ir, ", i64 %coll.fill.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
     if element == TY_BOOL { ir_write_ascii(compiler, ir, "  store i8 %coll.fill.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %coll.fill.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10) }
-    else { ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(element)); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, value_node); ir_write_ascii(compiler, ir, ", ptr %coll.fill.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10) }
+    else { ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(element)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, ", ptr %coll.fill.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10) }
     ir_write_ascii(compiler, ir, "  %coll.fill.next."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.fill.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  store i64 %coll.fill.next."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %coll.fill.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 8\n  br label %coll.fill.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.fill.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
 }
 
@@ -1419,7 +1525,7 @@ fn emit_collection_method_index_address(
     stride: long,
 ) {
     let serial = next_location_serial(ir)
-    ir_write_ascii(compiler, ir, "  %coll.method.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = mul i64 %v"); ir_write_number(compiler, ir, index_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
+    ir_write_ascii(compiler, ir, "  %coll.method.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, index_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
     ir_write_ascii(compiler, ir, "  %coll.method.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %coll.method.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_push_byte(compiler, ir, 10)
     ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.method.offset."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
 }
@@ -1499,9 +1605,9 @@ fn emit_collection_method(
             emit_collection_store_dynamic_fields(compiler, ir, element, capacity, base_offset, 0L,
                 location, pointer_serial, source_location, source_pointer, 1L, node)
         } else if element == TY_BOOL {
-            ir_write_ascii(compiler, ir, "  %coll.push.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i1 %v"); ir_write_number(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i8\n  store i8 %coll.push.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %coll.push.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+            ir_write_ascii(compiler, ir, "  %coll.push.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i8\n  store i8 %coll.push.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %coll.push.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
         } else {
-            ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(element)); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, argument); ir_write_ascii(compiler, ir, ", ptr %coll.push.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+            ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(element)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", ptr %coll.push.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
         }
         ir_write_ascii(compiler, ir, "  %coll.push.next."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.push.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  store i64 %coll.push.next."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
         emit_collection_capacity_result_tag(compiler, ir, node, 0L)
@@ -1516,7 +1622,7 @@ fn emit_collection_method(
     }
     if method == COLLECTION_METHOD_INSERT {
         let position = position_for_offset(file_index, files[file_index].base + tables.nodes[argument].anchor, compiler)
-        ir_write_ascii(compiler, ir, "  %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1\n  %coll.insert.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt i64 %v"); ir_write_number(compiler, ir, argument); ir_write_ascii(compiler, ir, ", 0\n  %coll.insert.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ugt i64 %v"); ir_write_number(compiler, ir, argument); ir_write_ascii(compiler, ir, ", %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %coll.insert.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = or i1 %coll.insert.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.insert.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  br i1 %coll.insert.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.valid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 16, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncoll.insert.valid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity); ir_write_ascii(compiler, ir, "\n  br i1 %coll.insert.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.full."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = phi i64 [ %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.insert.valid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ], [ %coll.insert.prev."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.insert.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ]\n  %coll.insert.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ugt i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %v"); ir_write_number(compiler, ir, argument); ir_write_ascii(compiler, ir, "\n  br i1 %coll.insert.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.from."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sub i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  %coll.insert.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.insert.from."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.insert.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.insert.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.insert.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.insert.to.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.insert.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.insert.from.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.insert.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %coll.insert.to.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.insert.to.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1\n  %coll.insert.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", 0\n  %coll.insert.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ugt i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %coll.insert.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = or i1 %coll.insert.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.insert.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  br i1 %coll.insert.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.valid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 16, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncoll.insert.valid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity); ir_write_ascii(compiler, ir, "\n  br i1 %coll.insert.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.full."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = phi i64 [ %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.insert.valid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ], [ %coll.insert.prev."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.insert.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ]\n  %coll.insert.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ugt i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, "\n  br i1 %coll.insert.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.from."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sub i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  %coll.insert.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.insert.from."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.insert.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.insert.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.insert.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.insert.to.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.insert.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.insert.from.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.insert.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %coll.insert.to.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.insert.to.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         let storage = collection_storage_type(element)
         if is_aggregate_type(compiler, element) {
             emit_collection_move_dynamic_fields(compiler, ir, element, capacity, base_offset,
@@ -1524,7 +1630,7 @@ fn emit_collection_method(
         } else {
             ir_write_ascii(compiler, ir, "  %coll.insert.moved."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, ", ptr %coll.insert.from.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n  store "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, " %coll.insert.moved."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %coll.insert.to.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
         }
-        ir_write_ascii(compiler, ir, "  %coll.insert.prev."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sub i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  br label %coll.insert.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %v"); ir_write_number(compiler, ir, argument); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.insert.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.insert.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.insert.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.insert.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %coll.insert.prev."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sub i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  br label %coll.insert.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.insert.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.insert.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.insert.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.insert.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         if is_aggregate_type(compiler, element) {
             let source_kind = if tables.nodes[value_argument].kind == NodeKind.Name && compiler.facts[value_argument].binding >= 0L {
                 if compiler.bindings[compiler.facts[value_argument].binding].parameter { 2L } else { 1L }
@@ -1534,8 +1640,8 @@ fn emit_collection_method(
             let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
             emit_collection_store_dynamic_fields(compiler, ir, element, capacity, base_offset, 0L,
                 location, pointer_serial, source_location, source_pointer, 2L, argument)
-        } else if element == TY_BOOL { ir_write_ascii(compiler, ir, "  %coll.insert.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i1 %v"); ir_write_number(compiler, ir, value_argument); ir_write_ascii(compiler, ir, " to i8\n  store i8 %coll.insert.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %coll.insert.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10) }
-        else { ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(element)); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, value_argument); ir_write_ascii(compiler, ir, ", ptr %coll.insert.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10) }
+        } else if element == TY_BOOL { ir_write_ascii(compiler, ir, "  %coll.insert.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value_argument); ir_write_ascii(compiler, ir, " to i8\n  store i8 %coll.insert.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %coll.insert.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10) }
+        else { ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(element)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_argument); ir_write_ascii(compiler, ir, ", ptr %coll.insert.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10) }
         ir_write_ascii(compiler, ir, "  %coll.insert.next.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  store i64 %coll.insert.next.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
         emit_collection_capacity_result_tag(compiler, ir, node, 0L)
         ir_write_ascii(compiler, ir, "  br label %coll.insert.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.full."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
@@ -1572,7 +1678,7 @@ fn emit_collection_method(
     }
     if method == COLLECTION_METHOD_REMOVE {
         let position = position_for_offset(file_index, files[file_index].base + tables.nodes[argument].anchor, compiler)
-        ir_write_ascii(compiler, ir, "  %coll.remove.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1\n  %coll.remove.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt i64 %v"); ir_write_number(compiler, ir, argument); ir_write_ascii(compiler, ir, ", 0\n  %coll.remove.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge i64 %v"); ir_write_number(compiler, ir, argument); ir_write_ascii(compiler, ir, ", %coll.remove.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %coll.remove.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = or i1 %coll.remove.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.remove.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  br i1 %coll.remove.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.remove.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.remove.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.remove.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 16, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncoll.remove.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+        ir_write_ascii(compiler, ir, "  %coll.remove.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1\n  %coll.remove.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", 0\n  %coll.remove.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", %coll.remove.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %coll.remove.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = or i1 %coll.remove.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.remove.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  br i1 %coll.remove.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.remove.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.remove.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.remove.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 16, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncoll.remove.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
         if is_aggregate_type(compiler, element) {
             let result_location = aggregate_destination_location(compiler, 0L, node)
             let result_pointer = emit_location_pointer_materialization(compiler, ir, result_location)
@@ -1583,7 +1689,7 @@ fn emit_collection_method(
             if element == TY_BOOL { ir_write_ascii(compiler, ir, "  %coll.remove.raw."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = trunc i8 %coll.remove.raw."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i1\n") }
             else { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(element)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n") }
         }
-        ir_write_ascii(compiler, ir, "  br label %coll.remove.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.remove.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.remove.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = phi i64 [ %v"); ir_write_number(compiler, ir, argument); ir_write_ascii(compiler, ir, ", %coll.remove.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ], [ %coll.remove.next."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.remove.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ]\n  %coll.remove.source.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.remove.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  %coll.remove.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.remove.source.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.remove.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  br i1 %coll.remove.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.remove.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.remove.finish."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.remove.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.remove.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.remove.source.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.remove.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.remove.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.remove.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.remove.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.remove.to.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.remove.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.remove.from.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.remove.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %coll.remove.to.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.remove.to.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  br label %coll.remove.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.remove.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.remove.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = phi i64 [ "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", %coll.remove.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ], [ %coll.remove.next."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.remove.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ]\n  %coll.remove.source.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.remove.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  %coll.remove.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.remove.source.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.remove.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  br i1 %coll.remove.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.remove.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.remove.finish."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.remove.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.remove.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.remove.source.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.remove.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.remove.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.remove.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.remove.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.remove.to.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.remove.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.remove.from.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.remove.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %coll.remove.to.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.remove.to.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         if is_aggregate_type(compiler, element) {
             emit_collection_move_dynamic_fields(compiler, ir, element, capacity, base_offset,
                 location, pointer_serial, 5L, node, 6L, node)

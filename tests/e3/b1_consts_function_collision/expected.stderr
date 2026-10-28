@@ -1,0 +1,1 @@
+main.nl:3:1: error: function 'VALUE' conflicts with a global or constant; choose a unique value name

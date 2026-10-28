@@ -1,0 +1,1 @@
+b.nl:1:21: error: constant dependency cycle: LEFT -> RIGHT -> LEFT

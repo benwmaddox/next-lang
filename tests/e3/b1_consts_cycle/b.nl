@@ -1,0 +1,1 @@
+const RIGHT: long = LEFT

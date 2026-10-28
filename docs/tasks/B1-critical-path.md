@@ -8,7 +8,7 @@ source requirements; it does not claim language parity is already reached.
 
 ## Completed prerequisite: remove the name-check blocker
 
-The direct post-E3c compiler self-build probe at `ed7e867` exits 1:
+The direct post-E3c compiler self-build probe at `ed7e867` reports:
 
 ```text
 collections.nl:214:5: error: name 'count' conflicts with package or built-in declaration 'count'; choose a different name
@@ -32,10 +32,19 @@ frozen; intentional DESIGN forms it rejects use reviewed expected-output fixture
 
 The name-scope prerequisite is implemented and passed the full staged O1/O3
 suite (734 registered plus 256 generated packages), relocation, and scaling
-checks in source commit `a18eb70`. The compiler now reaches the unsupported
+checks in source commit `a18eb70`. That advanced the compiler to the unsupported
 constant-declarations gate at collections.nl:7. See the
-[name-scope completion report](B1-name-scopes-report.md). The next serial task
-is source-used scalar constants; the compiler does not yet self-host.
+[name-scope completion report](B1-name-scopes-report.md).
+
+## Scalar constants: final staged validation
+
+The scalar-constant implementation evaluates the current source's 212 explicit
+long declarations. The direct own-source probe now exits 2 without IR at
+`collections.nl:18:12`, reporting `text in collections`. The parameter is
+`files: list<SourceFile, MAX_SOURCE_FILES>`, whose element has a bounded Bytes
+name. The [scalar report](B1-scalar-constants-report.md) records focused tests,
+the immediate-operand regression fixes, and final acceptance when available.
+The compiler does not yet self-host.
 
 ## Dependency queue
 
@@ -43,24 +52,28 @@ Static census of `selfhost/` at `ed7e867` (excluding generated embedded-core byt
 strings) found 207 constants, 200 grow-Bytes annotations, and 72 recursive
 functions. These counts are a baseline, not a permanent target; refresh them and
 run the direct self-build probe after each prerequisite lands.
+The current scalar-constant source has 212 constants, 200 grow-Bytes annotations,
+and 75 recursive declarations.
 
-1. **Source-used scalar constants.** The fresh name-fixed self-build probe stops
-   at `collections.nl:7:1`, with the unsupported-constant-declarations diagnostic. All 207
-   compiler declarations are `long`: 194 literals, nine constant references, and
-   four arithmetic expressions. Implement that source-closed subset first using
-   [B1-scalar-constants.md](B1-scalar-constants.md). It is independent of builders;
-   keep strings/aggregates/unsupported constant forms gated.
-2. **E3d1 builder prerequisites.** `ir_push_byte` writes through `grow Bytes`,
+1. **Source-used scalar constants (implemented; final staged validation).**
+   The original 207 declarations were all `long`: 194 literals, nine references,
+   and four arithmetic expressions. Four fact flags and one layout-overflow
+   state constant bring the current count to 212. The bounded
+   [scalar task](B1-scalar-constants.md) keeps strings,
+   aggregates, calls, other scalar kinds, and future expression forms gated.
+2. **Source-used Bytes fields in collections.** This is the next demonstrated
+   gate, ahead of builders: `SourceFile.name: Bytes max 4096` resides in
+   `list<SourceFile, ...>`. Implement the bounded
+   [Bytes-field task](B1-bytes-fields.md), preserving layout, independent live
+   bytes, indexed field stride, whole-element gather, and relocation. Broad
+   nesting, Ascii/Text lanes, sums, and reachability optimization stay deferred.
+3. **E3d1 builder prerequisites.** `ir_push_byte` writes through `grow Bytes`,
    and the compiler uses checked appends. Implement grow descriptors, byte pushes,
    append transactions, width checks, and the required proof/rollback rules.
    Use [prep-E3d1.md](prep-E3d1.md), especially its manager answers: equal maxima
    only; keep `+=` through grow refused with the `try_append(x)?` hint; rollback
    covers one append. Recount existing fixture classifications because E3c
    already promoted four rows from the old prep table.
-3. **Remaining E3e requirements used by the compiler.** Implement byte/text
-   fields in collections: `SourceFile.name: Bytes max 4096` resides in a
-   `list<SourceFile, ...>`. Preserve layout, relocation, and active-payload rules.
-   Broader nesting and reachability optimization are not automatically B1 gates.
 4. **E3f1 capability/I/O requirements used by the compiler.** `Env`, arguments,
    `Out.write`, and Fs listing/join/read/write support are required. The package
    grants fs/out/env. Deterministic source ordering from `list_with_extension`
@@ -68,8 +81,9 @@ run the direct self-build probe after each prerequisite lands.
    streaming writers need not precede B1 unless an actual source dependency appears.
 5. **E4s recursion and native-stack budget.** Support the source's recursive
    parser/checker helpers with bounded failure behavior and measured call cost.
-   The older count of 65 and five sort calls is stale: this census found 72
-   recursive declarations and zero direct sort/sort_by calls.
+   The older count of 65 and five sort calls is stale: the baseline found 72
+   recursive declarations and zero direct sort/sort_by calls; scalar constant
+   evaluation and its capacity dependency walk bring recursion to 75 declarations.
 6. **B1 stage chain and reproducibility.** Use Stage0 to build the seed compiler;
    use that compiler to emit stage 2, then stage 2 to emit stage 3. Require exact
    stage-2/stage-3 LLVM IR and binary identity, plus compiler corpus correctness.
