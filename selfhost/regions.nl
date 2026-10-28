@@ -43,7 +43,7 @@ fn compiler_file_id_base(compiler: CompilerTables) -> long {
 }
 
 fn compiler_test_build(compiler: CompilerTables) -> bool {
-    compiler.core_mode && compiler.file_id_base >= COMPILER_TEST_BUILD_FLAG
+    compiler.test_build || (compiler.core_mode && compiler.file_id_base >= COMPILER_TEST_BUILD_FLAG)
 }
 
 fn region_find_slot(compiler: CompilerTables, anchor_kind: long, anchor_node: long) -> long {
@@ -60,6 +60,57 @@ fn region_has_slot(compiler: CompilerTables, anchor_kind: long, anchor_node: lon
 fn region_node_has_binding(compiler: CompilerTables, node: long) -> bool {
     for binding_id in 0L..compiler.bindings.count() {
         if compiler.bindings[binding_id].node == node { return true }
+    }
+    false
+}
+
+// The parser stores nodes in postorder. The first later node whose subtree
+// contains a node is its direct syntax parent; later matches are ancestors.
+fn region_parent_node(tables: ParseTables, node: long) -> long {
+    if node < 0L || node >= tables.nodes.count() { return -1L }
+    for parent in node + 1L..tables.nodes.count() {
+        let first = parent - tables.nodes[parent].subtree + 1L
+        if node >= first { return parent }
+    }
+    -1L
+}
+
+fn region_node_needs_snapshot(tables: ParseTables, compiler: CompilerTables, node: long) -> bool {
+    let syntax_kind = tables.nodes[node].kind
+    if syntax_kind != NodeKind.Name && syntax_kind != NodeKind.Field { return false }
+    let ty = compiler.facts[node].ty
+    if !is_aggregate_type(compiler, ty) { return false }
+    if is_sum_type(compiler, ty) && compiler.facts[node].binding < 0L { return true }
+    if syntax_kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[node].binding) { return true }
+    let parent = region_parent_node(tables, node)
+    if parent < 0L { return false }
+    let parent_kind = tables.nodes[parent].kind
+    if parent_kind == NodeKind.Binary && compiler.child_first[parent] == node {
+        let right = compiler.child_next[node]
+        let op = tables.nodes[parent].flags
+        if op == 0L && text_concat_left_needs_snapshot(tables, compiler, parent) { return true }
+        if op >= 8L && op <= 13L &&
+            (!is_text_comparable(compiler, ty, compiler.facts[right].ty) || region_subtree_has_effect(tables, right, right)) {
+            return true
+        }
+    }
+    if (parent_kind == NodeKind.Call || parent_kind == NodeKind.OptionalCall) &&
+        direct_call_argument_needs_snapshot(tables, compiler, parent, node) { return true }
+    false
+}
+
+fn region_node_is_direct_output(tables: ParseTables, compiler: CompilerTables, node: long) -> bool {
+    let parent = region_parent_node(tables, node)
+    if parent < 0L { return false }
+    let parent_kind = tables.nodes[parent].kind
+    if parent_kind == NodeKind.Let || parent_kind == NodeKind.ReturnStatement { return true }
+    if parent_kind != NodeKind.Block || node_last_child(tables, compiler, parent) != node ||
+        (tables.nodes[parent].flags & FLAG_HAS_TAIL) == 0L { return false }
+    for function_id in 0L..compiler.functions.count() {
+        if compiler.functions[function_id].body == parent { return true }
+    }
+    for test_index in 0L..compiler.tests.count() {
+        if compiler.tests[test_index].body == parent { return true }
     }
     false
 }
@@ -117,7 +168,12 @@ fn region_node_is_temporary(tables: ParseTables, compiler: CompilerTables, node:
         syntax_kind == NodeKind.Annotation || syntax_kind == NodeKind.FieldType ||
         syntax_kind == NodeKind.PayloadType || syntax_kind == NodeKind.AliasedType ||
         syntax_kind == NodeKind.DeclaredType || syntax_kind == NodeKind.TypeArgument ||
-        syntax_kind == NodeKind.FitType || syntax_kind == NodeKind.CastType { return false }
+        syntax_kind == NodeKind.FitType || syntax_kind == NodeKind.CastType ||
+        syntax_kind == NodeKind.Block || syntax_kind == NodeKind.MatchArm { return false }
+    if region_node_is_direct_output(tables, compiler, node) { return false }
+    if syntax_kind == NodeKind.Name || syntax_kind == NodeKind.Field {
+        return region_node_needs_snapshot(tables, compiler, node)
+    }
     !region_node_has_binding(compiler, node) &&
         !region_node_is_pattern_binding(tables, node) &&
         !region_node_is_collection_method_receiver(tables, compiler, node)
@@ -211,11 +267,11 @@ fn region_add_slot(
     alignment: long,
 ) {
     if size <= 0L || alignment <= 0L || size > 9223372036854775807L - (alignment - 1L) ||
-        compiler.expected[0L] > 9223372036854775807L - (alignment - 1L) {
+        compiler.region_current_size > 9223372036854775807L - (alignment - 1L) {
         compiler.ir_overflow = true
         return
     }
-    let aligned = ((compiler.expected[0L] + alignment - 1L) / alignment) * alignment
+    let aligned = ((compiler.region_current_size + alignment - 1L) / alignment) * alignment
     if aligned > 9223372036854775807L - size {
         compiler.ir_overflow = true
         return
@@ -228,7 +284,7 @@ fn region_add_slot(
         return
     }
     compiler.expected[node] = aligned
-    compiler.expected[0L] = aligned + size
+    compiler.region_current_size = aligned + size
 }
 
 fn region_consider_binding(
@@ -289,7 +345,7 @@ fn plan_function_regions(
     for block_step in 0L..body - first + 1L {
         let block = body - block_step
         if tables.nodes[block].kind != NodeKind.Block && tables.nodes[block].kind != NodeKind.MatchArm { continue }
-        compiler.expected[0L] = 0L
+        compiler.region_current_size = 0L
         for group in 0L..2L {
             let small_group = group == 0L
             for binding_id in 0L..compiler.bindings.count() {
@@ -299,9 +355,9 @@ fn plan_function_regions(
                 region_consider_temporary(tables, compiler, function_id, body, block, node, small_group, threshold)
             }
         }
-        if compiler.expected[0L] > largest_block { largest_block = compiler.expected[0L] }
+        if compiler.region_current_size > largest_block { largest_block = compiler.region_current_size }
     }
-    compiler.expected[0L] = largest_block
+    compiler.region_max_size = largest_block
 }
 
 fn region_scope_end_offset(
@@ -362,7 +418,7 @@ fn emit_region_scope_enter(
     block: long,
     file_id: long,
 ) {
-    if compiler.core_mode || compiler.expected[0L] <= 0L { return }
+    if compiler.core_mode || compiler.region_max_size <= 0L { return }
     let function_id = region_function_for_block(tables, compiler, block)
     let body = region_body_for_block(tables, compiler, block)
     if function_id == -9223372036854775807L || body < 0L { compiler.ir_overflow = true; return }
@@ -460,7 +516,7 @@ fn emit_region_scope_enter(
 }
 
 fn emit_region_scope_exit(tables: ParseTables, compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, block: long) {
-    if compiler.core_mode || compiler.expected[0L] <= 0L { return }
+    if compiler.core_mode || compiler.region_max_size <= 0L { return }
     let function_id = region_function_for_block(tables, compiler, block)
     let body = region_body_for_block(tables, compiler, block)
     if function_id == -9223372036854775807L || body < 0L { compiler.ir_overflow = true; return }
@@ -482,7 +538,7 @@ fn emit_region_loop_exit(
     loop_body: long,
     jump: long,
 ) {
-    if compiler.core_mode || compiler.expected[0L] <= 0L { return }
+    if compiler.core_mode || compiler.region_max_size <= 0L { return }
     let function_id = region_function_for_block(tables, compiler, loop_body)
     let body = region_body_for_block(tables, compiler, loop_body)
     if function_id == -9223372036854775807L || body < 0L { compiler.ir_overflow = true; return }
@@ -499,14 +555,14 @@ fn emit_region_loop_exit(
 // E3a3-fix subsection end
 
 fn emit_current_top_load(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, node: long) {
-    if !compiler.core_mode && compiler.expected[0L] > 0L {
+    if !compiler.core_mode && compiler.region_max_size > 0L {
         ir_write_ascii(compiler, ir, "  %nl.current.top."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr %nl.top.current.slot, align 8\n")
     }
 }
 
 fn emit_current_top_reference(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, node: long) {
     if compiler.core_mode { ir_write_ascii(compiler, ir, "%nl.region.end") }
-    else if compiler.expected[0L] > 0L { ir_write_ascii(compiler, ir, "%nl.current.top."); ir_write_number(compiler, ir, node) }
+    else if compiler.region_max_size > 0L { ir_write_ascii(compiler, ir, "%nl.current.top."); ir_write_number(compiler, ir, node) }
     else { ir_write_ascii(compiler, ir, "%nl.top") }
 }
 
@@ -518,7 +574,7 @@ fn emit_region_prologue(
     body: long,
     file_id: long,
 ) {
-    if compiler.expected[0L] <= 0L { return }
+    if compiler.region_max_size <= 0L { return }
     ir_write_ascii(compiler, ir, "  %nl.top.current.slot = alloca i64, align 8\n  store i64 %nl.top, ptr %nl.top.current.slot, align 8\n")
     let first = body - tables.nodes[body].subtree + 1L
     for block in first..body + 1L {
@@ -531,6 +587,7 @@ fn emit_region_prologue(
 
 fn clear_function_regions(compiler: write CompilerTables) {
     for node in 0L..compiler.expected.count() { compiler.expected[node] = -1L }
-    compiler.expected[0L] = 0L
+    compiler.region_current_size = 0L
+    compiler.region_max_size = 0L
 }
 // E3a1 end

@@ -389,6 +389,7 @@ const FLAG_TYPE_UNIT: long = 524288L
 const FLAG_TYPE_TEXT_BYTES: long = 1048576L
 const FLAG_EFFECT_WRITES: long = 2097152L
 const FLAG_BYTESTRING_NONASCII_HEX: long = 4194304L
+const FLAG_CAST_UNCHECKED: long = 8388608L
 
 const PENDING_NAME: long = 1L
 const PENDING_QUALIFIED: long = 2L
@@ -1990,7 +1991,7 @@ fn direct_call_name_allowed(
     tables: ParseTables,
     name: CursorToken,
 ) -> bool {
-    !(token_is_word(source, tokens, name.token, tables.state.file_base, "true") || token_is_word(source, tokens, name.token, tables.state.file_base, "false") || token_is_word(source, tokens, name.token, tables.state.file_base, "fn") || token_is_word(source, tokens, name.token, tables.state.file_base, "break") || token_is_word(source, tokens, name.token, tables.state.file_base, "continue") || token_is_word(source, tokens, name.token, tables.state.file_base, "if") || token_is_word(source, tokens, name.token, tables.state.file_base, "match") || token_is_word(source, tokens, name.token, tables.state.file_base, "return") || token_is_word(source, tokens, name.token, tables.state.file_base, "take"))
+    !(token_is_word(source, tokens, name.token, tables.state.file_base, "true") || token_is_word(source, tokens, name.token, tables.state.file_base, "false") || token_is_word(source, tokens, name.token, tables.state.file_base, "fn") || token_is_word(source, tokens, name.token, tables.state.file_base, "break") || token_is_word(source, tokens, name.token, tables.state.file_base, "continue") || token_is_word(source, tokens, name.token, tables.state.file_base, "if") || token_is_word(source, tokens, name.token, tables.state.file_base, "match") || token_is_word(source, tokens, name.token, tables.state.file_base, "return") || token_is_word(source, tokens, name.token, tables.state.file_base, "take") || token_is_word(source, tokens, name.token, tables.state.file_base, "unchecked"))
 }
 
 recursive fn parse_direct_call(
@@ -2044,6 +2045,19 @@ recursive fn parse_prefix(
 ) -> Result<ExprRef, ParseError> {
     cursor_skip_newlines(tables, tokens)
     let token = cursor_next(tables, tokens)
+    if token.kind == TokenKind.Ident && token_is_word(source, tokens, token.token, tables.state.file_base, "unchecked") {
+        if !cursor_take(tables, tokens, TokenKind.LParen) {
+            return err(cursor_error(tables, tokens, ParseProblemKind.ExpectedCallOpen))
+        }
+        let value = parse_expression(source, tokens, tables, 0L)?
+        cursor_expect(tables, tokens, TokenKind.RParen, ParseProblemKind.ExpectedCloseParen)?
+        let node = value
+        if tables.nodes[node].kind != NodeKind.Cast {
+            return err(ParseError { kind: ParseProblemKind.ExpectedTypeName, offset: token.start, token: token.token })
+        }
+        tables.nodes[node].flags = tables.nodes[node].flags | FLAG_CAST_UNCHECKED
+        return postfix_expression(source, tokens, tables, ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start: token.start, end: tables.nodes[node].end })
+    }
     if token.kind == TokenKind.Minus {
         let next = cursor_peek(tables, tokens, 0L)
         if next.kind == TokenKind.Number {
@@ -2583,13 +2597,14 @@ recursive fn postfix_dot(
         let first = node_first_child(tables.nodes, receiver)
         cursor_expect(tables, tokens, TokenKind.LParen, ParseProblemKind.ExpectedCallOpen)?
         var arg_count = 0L
+        var method_flags = 0L
         if token_is_word(source, tokens, method.token, tables.state.file_base, "slice") {
             cursor_skip_newlines(tables, tokens)
             if cursor_peek(tables, tokens, 0L).kind != TokenKind.RParen {
                 parse_expression(source, tokens, tables, 0L)?
-                if !cursor_take(tables, tokens, TokenKind.Range) && !cursor_take(tables, tokens, TokenKind.RangeInclusive) {
-                    return err(cursor_error(tables, tokens, ParseProblemKind.ExpectedSliceRange))
-                }
+                if cursor_take(tables, tokens, TokenKind.RangeInclusive) { method_flags = FLAG_INCLUSIVE }
+                else if !cursor_take(tables, tokens, TokenKind.Range) { return err(cursor_error(tables, tokens, ParseProblemKind.ExpectedSliceRange)) }
+                else { () }
                 cursor_skip_newlines(tables, tokens)
                 parse_expression(source, tokens, tables, 0L)?
                 arg_count = 2L
@@ -2604,7 +2619,10 @@ recursive fn postfix_dot(
             let node = append_node(tables, NodeKind.ToLong, first, method.token, start, end, method.start, 0L, -1L, 0L)?
             return ok(ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start, end })
         }
-        let node = append_node(tables, NodeKind.MethodCall, first, method.token, start, end, method.start, 0L, -1L, arg_count)?
+        // MethodCall's wire flags are reserved by the frozen stage-zero tree
+        // reader. Carry slice inclusivity in its unused extra field instead.
+        let method_extra = if method_flags == FLAG_INCLUSIVE { 1L } else { -1L }
+        let node = append_node(tables, NodeKind.MethodCall, first, method.token, start, end, method.start, 0L, method_extra, arg_count)?
         ok(ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start, end })
     } else {
         let receiver = materialize_node(tables, expression)?
@@ -2667,7 +2685,7 @@ recursive fn parse_parenthesized(
 fn is_cast_start(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
     let first = cursor_peek(tables, tokens, 0L)
     let second = cursor_peek(tables, tokens, 1L)
-    let simple = token_is_word(source, tokens, first.token, tables.state.file_base, "int") || token_is_word(source, tokens, first.token, tables.state.file_base, "long") || token_is_word(source, tokens, first.token, tables.state.file_base, "bool")
+    let simple = token_is_word(source, tokens, first.token, tables.state.file_base, "int") || token_is_word(source, tokens, first.token, tables.state.file_base, "long") || token_is_word(source, tokens, first.token, tables.state.file_base, "bool") || token_is_word(source, tokens, first.token, tables.state.file_base, "byte")
     let ascii_max = token_is_word(source, tokens, first.token, tables.state.file_base, "Ascii") && token_is_word(source, tokens, second.token, tables.state.file_base, "max")
     let uppercase = first.kind == TokenKind.Ident && is_upper_ascii(source[tables.state.file_base + first.start])
     (simple && second.kind == TokenKind.RParen) || (uppercase && (second.kind == TokenKind.RParen || ascii_max))

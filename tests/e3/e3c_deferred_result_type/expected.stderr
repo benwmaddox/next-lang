@@ -1,0 +1,1 @@
+main.nl:3:25: error: expected long, found Result<(), Full>; cast explicitly with (long)value

@@ -170,3 +170,58 @@ fn direct_call_argument_is_write(tables: ParseTables, compiler: CompilerTables, 
     argument == wanted && argument_index < function.param_count &&
         (parameter_mode(compiler.parameters[function.param_start + argument_index]) & FLAG_MODE_WRITE) != 0L
 }
+
+fn direct_call_argument_uses_text_view(tables: ParseTables, compiler: CompilerTables, call: long, wanted: long) -> bool {
+    if call < 0L || wanted < 0L { return false }
+    let target = compiler.facts[call].function
+    if target < 0L || target >= compiler.functions.count() { return false }
+    let function = compiler.functions[target]
+    var argument = compiler.child_first[call]
+    var argument_index = 0L
+    for step in 0L..tables.nodes[call].subtree {
+        if argument < 0L || argument == wanted { break }
+        argument_index += 1L
+        argument = compiler.child_next[argument]
+    }
+    argument == wanted && argument_index < function.param_count &&
+        parameter_uses_text_read_view(compiler, compiler.parameters[function.param_start + argument_index])
+}
+
+fn direct_call_text_view_needs_snapshot(tables: ParseTables, compiler: CompilerTables, call: long, wanted: long) -> bool {
+    if !direct_call_argument_uses_text_view(tables, compiler, call, wanted) ||
+        (tables.nodes[wanted].kind != NodeKind.Name && tables.nodes[wanted].kind != NodeKind.Field) {
+        return false
+    }
+    var later = compiler.child_next[wanted]
+    for step in 0L..tables.nodes[call].subtree {
+        if later < 0L { break }
+        if region_subtree_has_effect(tables, later, later) { return true }
+        later = compiler.child_next[later]
+    }
+    false
+}
+
+// Aggregate arguments are already stable places for a single-argument call.
+// Snapshot a read argument only when evaluating a later argument may mutate
+// it; this preserves left-to-right value semantics without reserving a second
+// source-sized buffer for calls such as head(payload). Formatter builtins keep
+// their existing prepared-value path because their lowering consumes that
+// snapshot explicitly.
+fn direct_call_argument_needs_snapshot(tables: ParseTables, compiler: CompilerTables, call: long, wanted: long) -> bool {
+    if call < 0L || wanted < 0L ||
+        (tables.nodes[wanted].kind != NodeKind.Name && tables.nodes[wanted].kind != NodeKind.Field) ||
+        !is_aggregate_type(compiler, compiler.facts[wanted].ty) ||
+        direct_call_argument_is_write(tables, compiler, call, wanted) {
+        return false
+    }
+    if call < compiler.facts.count() && (compiler.facts[call].flags & FACT_FORMAT_TEXT) != 0L {
+        return true
+    }
+    var later = compiler.child_next[wanted]
+    for step in 0L..tables.nodes[call].subtree {
+        if later < 0L { break }
+        if region_subtree_has_effect(tables, later, later) { return true }
+        later = compiler.child_next[later]
+    }
+    false
+}

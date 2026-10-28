@@ -115,7 +115,7 @@ if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
     exit 2
 fi
 case "$class_filter" in
-    ""|build|diagnose|rejects|unsupported) ;;
+    ""|build|diagnose|rejects|unsupported|expected|expected-reject) ;;
     *) echo "unknown package class: $class_filter" >&2; exit 2 ;;
 esac
 

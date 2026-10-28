@@ -1,0 +1,5 @@
+step_budget.main = 10000000
+
+[package]
+name = "e3b-while-budget"
+capabilities = ["out"]

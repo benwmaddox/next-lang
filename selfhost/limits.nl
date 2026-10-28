@@ -27,9 +27,9 @@ const SCOPE_TABLE_CAPACITY: long = MAX_TREE_NODES
 // Includes package calls plus per-literal/default helper edges. The graph is
 // linear in syntax plus field entries for the E2 default/call closure.
 const CALL_EDGE_CAPACITY: long = EXTRA_STORAGE_CAPACITY
-// Six stable slots hold the built-in type ids; user types append after them.
-const TYPE_TABLE_CAPACITY: long = MAX_TREE_NODES + 6L
-const FIELD_TABLE_CAPACITY: long = MAX_TREE_NODES
+// Seven scalar builtin slots plus the E3c TextError and Utf8Error records.
+const TYPE_TABLE_CAPACITY: long = MAX_TREE_NODES + 9L
+const FIELD_TABLE_CAPACITY: long = MAX_TREE_NODES + 1L
 // E2i has no cleanup producers; the first cleanup owner derives and expands this.
 const EXIT_CLEANUP_CAPACITY: long = 1L
 const INTERN_NAME_CAPACITY: long = TOKEN_STORAGE_CAPACITY
@@ -43,7 +43,7 @@ const IR_BYTES_PER_TABLE_ENTRY: long = 256L
 const IR_FIXED_BYTES: long = 8388608L
 
 // E2b begin
-const ENUM_CASE_TABLE_CAPACITY: long = MAX_TREE_NODES
+const ENUM_CASE_TABLE_CAPACITY: long = MAX_TREE_NODES + 2L
 const ENUM_PAYLOAD_TABLE_CAPACITY: long = MAX_TREE_NODES
 // Enum declarations, cases and payload parts are distinct syntax nodes, so
 // together they stay within MAX_TREE_NODES. Per enum table entry, the existing

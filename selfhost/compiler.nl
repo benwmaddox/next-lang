@@ -20,7 +20,8 @@ const TY_BOOL: long = 2L
 const TY_UNIT: long = 3L
 const TY_NEVER: long = 4L
 const TY_ADDR: long = 5L
-const TY_STRUCT_BASE: long = 6L
+const TY_BYTE: long = 6L
+const TY_STRUCT_BASE: long = 7L
 // E3a1 begin: struct storage sizes are exact through signed long limits.
 const MAX_VALUE_SIZE: long = 9223372036854775807L
 // E3a1 end
@@ -127,6 +128,8 @@ const UNSUPPORTED_LARGE_VALUE: long = 9L
 const UNSUPPORTED_FRAME_BUDGET: long = 10L
 const UNSUPPORTED_RESULT_MAIN: long = 11L
 const UNSUPPORTED_NESTED_COLLECTIONS: long = 12L
+const UNSUPPORTED_TEXT_COLLECTION: long = 13L
+const UNSUPPORTED_TEXT_BUILDERS: long = 14L
 
 struct TypeRecord {
     // Kind and sizing state share a word; helper_mask is the registry row for this type id.
@@ -395,6 +398,7 @@ struct MemoryConfig {
     job_headroom: long
     globals_budget: long
     recursion_budget: long
+    step_budget_main: long
 }
 
 struct CompilerTables {
@@ -446,8 +450,15 @@ struct CompilerTables {
     internal_emit_error_file: long
     ir_terminated: bool
     core_mode: bool
+    test_build: bool
     file_id_base: long
     memory_closure: bool
+    step_budget_main: long
+    region_current_size: long
+    region_max_size: long
+    emit_destination_node: long
+    emit_destination_kind: long
+    emit_destination_anchor: long
 }
 
 fn binding_is_view(compiler: CompilerTables, binding: long) -> bool {
@@ -476,6 +487,7 @@ fn seed_builtin_types(types: write list<TypeRecord, TYPE_TABLE_CAPACITY>) {
     types.push(builtin_type_record(TYPE_KIND_UNIT, 0L, 1L)).unwrap()
     types.push(builtin_type_record(TYPE_KIND_NEVER, 0L, 1L)).unwrap()
     types.push(builtin_type_record(TYPE_KIND_ADDRESS, 8L, 8L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 4L, 4L)).unwrap()
 }
 
 fn empty_compiler_tables() -> CompilerTables {
@@ -528,8 +540,15 @@ fn empty_compiler_tables() -> CompilerTables {
         internal_emit_error_file: -1L,
         ir_terminated: false,
         core_mode: false,
+        test_build: false,
         file_id_base: 0L,
         memory_closure: false,
+        step_budget_main: -1L,
+        region_current_size: 0L,
+        region_max_size: 0L,
+        emit_destination_node: -1L,
+        emit_destination_kind: 0L,
+        emit_destination_anchor: -1L,
     }
 }
 
@@ -583,8 +602,11 @@ fn reset_compiler_tables(compiler: write CompilerTables) {
     compiler.internal_emit_error_file = -1L
     compiler.ir_terminated = false
     compiler.core_mode = false
+    compiler.test_build = false
     compiler.file_id_base = 0L
     compiler.memory_closure = false
+    compiler.region_current_size = 0L
+    compiler.region_max_size = 0L
 }
 
 fn add_compiler_links(tables: write ParseTables, compiler: write CompilerTables) {
@@ -1099,7 +1121,6 @@ fn known_non_scalar_type(
     token_is_word_at(source, tokens, files, file_index, token, "Ascii") ||
     token_is_word_at(source, tokens, files, file_index, token, "Text") ||
     token_is_word_at(source, tokens, files, file_index, token, "Bytes") ||
-    token_is_word_at(source, tokens, files, file_index, token, "byte") ||
     token_is_word_at(source, tokens, files, file_index, token, "Id") ||
     token_is_word_at(source, tokens, files, file_index, token, "Option") ||
     token_is_word_at(source, tokens, files, file_index, token, "Result") ||
@@ -1343,6 +1364,13 @@ fn type_state(compiler: CompilerTables, type_id: long) -> long {
 
 fn type_count(compiler: CompilerTables) -> long { compiler.type_records.count() }
 
+fn builtin_synthetic_type_id(compiler: CompilerTables, node_marker: long) -> long {
+    for type_id in 0L..type_count(compiler) {
+        if type_record(compiler, type_id).node == node_marker { return type_id }
+    }
+    -1L
+}
+
 fn type_helper_mask(compiler: CompilerTables, type_id: long) -> long {
     if type_id < 0L || type_id >= compiler.type_records.count() { return 0L }
     compiler.type_records[type_id].helper_mask
@@ -1494,6 +1522,7 @@ fn resolve_value_type(
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "int") { return TY_INT }
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "long") { return TY_LONG }
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "bool") { return TY_BOOL }
+    if token_is_word_at(source, tokens, files, file_index, syntax.token, "byte") { return TY_BYTE }
     if syntax.token < 0L { return -1L }
     let name_id = compiler.token_name_ids[syntax.token]
     let type_id = value_type_matches(compiler, name_id)
@@ -1557,6 +1586,9 @@ fn intern_written_type_instances(
         else {
             let collection_type = intern_collection_type_syntax(env, source, tokens, files, tables, compiler, file_index, node)
             if collection_type >= 0L { ty = collection_type }
+            if ty < 0L {
+                ty = intern_text_type_syntax(env, source, tokens, files, tables, compiler, file_index, node)
+            }
             let generic_kind = generic_type_kind(source, tokens, files, tables, file_index, node)
             let expected_args = if generic_kind == TYPE_KIND_OPTION { 1L } else if generic_kind == TYPE_KIND_RESULT { 2L } else { 0L }
             let has_only_type_args = (syntax.meta1 & 2097151L) == expected_args &&
@@ -1581,6 +1613,19 @@ fn intern_written_type_instances(
         }
         if ty >= 0L {
             compiler.facts[node] = NodeFact { ty, flags: FACT_RESOLVED_TYPE, binding: -1L, function: -1L, literal: 0L }
+        }
+    }
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind == NodeKind.Fit {
+            let value_node = compiler.child_first[node]
+            let target_node = if value_node >= 0L { compiler.child_next[value_node] } else { -1L }
+            if target_node >= 0L {
+                let target_ty = compiler.facts[target_node].ty
+                if type_kind(compiler, target_ty) == TYPE_KIND_ASCII {
+                    let _fit_option_type = intern_sum_type(compiler, TYPE_KIND_OPTION, target_ty, -1L,
+                        node_file_index(tables.nodes, files, node), node, -1L, -1L)
+                }
+            }
         }
     }
 }
@@ -1787,6 +1832,102 @@ fn intern_builtin_full(
         align: 4L,
         helper_mask: 0L,
     })
+}
+
+fn find_builtin_word_token(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    word: Ascii max 32,
+) -> long {
+    for file_index in 0L..files.count() {
+        let first = files[file_index].first_token
+        let last = first + files[file_index].token_count
+        for token in first..last {
+            if token_is_word_at(source, tokens, files, file_index, token, word) { return token }
+        }
+    }
+    -1L
+}
+
+fn intern_builtin_text_types(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: write CompilerTables,
+) {
+    var utf8_error_token = find_builtin_word_token(source, files, tokens, "Utf8Error")
+    var valid_up_to_token = find_builtin_word_token(source, files, tokens, "valid_up_to")
+    let invalid_utf8_token = find_builtin_word_token(source, files, tokens, "InvalidUtf8")
+    let non_ascii_token = find_builtin_word_token(source, files, tokens, "NonAscii")
+    var text_error_token = find_builtin_word_token(source, files, tokens, "TextError")
+    var text_error_file = 0L
+    var utf8_error_file = 0L
+    if text_error_token >= 0L {
+        for file_index in 0L..files.count() {
+            if text_error_token >= files[file_index].first_token && text_error_token < files[file_index].first_token + files[file_index].token_count { text_error_file = file_index }
+        }
+    }
+    if utf8_error_token >= 0L {
+        for file_index in 0L..files.count() {
+            if utf8_error_token >= files[file_index].first_token && utf8_error_token < files[file_index].first_token + files[file_index].token_count { utf8_error_file = file_index }
+        }
+    }
+    if text_error_token < 0L { text_error_token = -1L }
+    if utf8_error_token < 0L { utf8_error_token = -1L }
+    if valid_up_to_token < 0L { valid_up_to_token = -1L }
+    let text_error_name = if text_error_token >= 0L { compiler.token_name_ids[text_error_token] } else { -103L }
+    let utf8_error_name = if utf8_error_token >= 0L { compiler.token_name_ids[utf8_error_token] } else { -102L }
+    let invalid_utf8_name = if invalid_utf8_token >= 0L { compiler.token_name_ids[invalid_utf8_token] } else { -104L }
+    let non_ascii_name = if non_ascii_token >= 0L { compiler.token_name_ids[non_ascii_token] } else { -105L }
+    if enum_type_matches(compiler, text_error_name) < 0L {
+        let enum_index = enum_type_count(compiler)
+        let case_start = compiler.enum_cases.count()
+        compiler.enum_cases.push(EnumCaseRecord { owner: enum_index, name_id: invalid_utf8_name, name_token: invalid_utf8_token, node: -2L, payload_start: compiler.enum_payloads.count(), payload_count: 0L, tag: 0L }).unwrap()
+        compiler.enum_cases.push(EnumCaseRecord { owner: enum_index, name_id: non_ascii_name, name_token: non_ascii_token, node: -2L, payload_start: compiler.enum_payloads.count(), payload_count: 0L, tag: 1L }).unwrap()
+        let _text_error_type = append_type_record(compiler, TypeRecord {
+            kind_state: TYPE_KIND_ENUM * 16L + 2L,
+            name_id: text_error_name,
+            name_token: text_error_token,
+            node: -2L,
+            file: text_error_file,
+            field_start: case_start,
+            field_count: 2L,
+            size: 4L,
+            align: 4L,
+            helper_mask: 0L,
+        })
+    }
+    var have_utf8 = false
+    for type_id in 0L..type_count(compiler) {
+        if compiler.type_records[type_id].node == -3L { have_utf8 = true }
+    }
+    if !have_utf8 {
+        let struct_index = struct_type_count(compiler)
+        let field_start = compiler.struct_fields.count()
+        compiler.struct_fields.push(StructFieldRecord {
+            owner: struct_index,
+            name_id: if valid_up_to_token >= 0L { compiler.token_name_ids[valid_up_to_token] } else { -106L },
+            name_token: valid_up_to_token,
+            node: -3L,
+            type_node: -1L,
+            ty: TY_LONG,
+            offset: 0L,
+            default_node: -1L,
+        }).unwrap()
+        compiler.type_records.push(TypeRecord {
+            kind_state: TYPE_KIND_STRUCT * 16L + 2L,
+            name_id: utf8_error_name,
+            name_token: utf8_error_token,
+            node: -3L,
+            file: utf8_error_file,
+            field_start,
+            field_count: 1L,
+            size: 8L,
+            align: 8L,
+            helper_mask: 0L,
+        }).unwrap()
+    }
 }
 
 fn index_package_structs(
@@ -2226,10 +2367,18 @@ fn unsupported_category_for_node(
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tables: ParseTables,
     compiler: CompilerTables,
+    deferred_text_states: list<byte, TYPE_TABLE_CAPACITY * 2L>,
     node: long,
     file_index: long,
 ) -> long {
     let value = tables.nodes[node]
+    if value.kind == NodeKind.FieldType || value.kind == NodeKind.PayloadType ||
+        value.kind == NodeKind.ParameterType || value.kind == NodeKind.ResultType ||
+        value.kind == NodeKind.Annotation {
+        if syntax_has_deferred_text_collection(source, tokens, files, tables, compiler, deferred_text_states, file_index, node) {
+            return UNSUPPORTED_TEXT_COLLECTION
+        }
+    }
     match value.kind {
         NodeKind.Program => 0L,
         NodeKind.Enum => 0L,
@@ -2250,10 +2399,13 @@ fn unsupported_category_for_node(
         NodeKind.Cast => 0L,
         NodeKind.CastType => {
             if token_is_word_at(source, tokens, files, file_index, value.token, "int") ||
-                token_is_word_at(source, tokens, files, file_index, value.token, "long") { 0L }
+                token_is_word_at(source, tokens, files, file_index, value.token, "long") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "byte") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "Ascii") { 0L }
             else { UNSUPPORTED_NODE }
         },
-        NodeKind.Fit => UNSUPPORTED_NODE,
+        NodeKind.Fit => 0L,
+        NodeKind.FitType => 0L,
         NodeKind.Try => 0L,
         NodeKind.MethodCall => if is_core_sys_receiver(source, tokens, files, tables, compiler, node, file_index) ||
             token_is_word_at(source, tokens, files, file_index, value.token, "is_some") ||
@@ -2264,11 +2416,22 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "unwrap") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "len") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "count") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "byte_len") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "slice") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "bytes") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "contains") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "starts_with") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "validate_utf8") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "to_text") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "to_ascii") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "try_append") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "push") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "insert") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "remove") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "clear") ||
-            token_is_word_at(source, tokens, files, file_index, value.token, "pop") { 0L } else { UNSUPPORTED_NODE },
+            token_is_word_at(source, tokens, files, file_index, value.token, "pop") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "empty") ||
+            parse_number_method_kind(source, tokens, files, file_index, value.token) != PARSE_NUMBER_NONE { 0L } else { UNSUPPORTED_NODE },
         NodeKind.IndirectCall => UNSUPPORTED_NODE,
         NodeKind.Index => 0L,
         NodeKind.OptionalCall => 0L,
@@ -2303,7 +2466,6 @@ fn unsupported_category_for_node(
         NodeKind.AliasedType => UNSUPPORTED_NODE,
         NodeKind.DeclaredType => UNSUPPORTED_NODE,
         NodeKind.TypeArgument => 0L,
-        NodeKind.FitType => UNSUPPORTED_NODE,
         NodeKind.ParameterType => {
             if is_core_addr_type(source, tokens, files, tables, compiler, file_index, node) { 0L }
             else if (value.flags & FLAG_TYPE_UNIT) != 0L { 0L }
@@ -2357,7 +2519,8 @@ fn unsupported_category_for_node(
         NodeKind.Unit => 0L,
         NodeKind.Integer => 0L,
         NodeKind.Bool => 0L,
-        NodeKind.BytesLiteral => if compiler.core_mode { 0L } else { UNSUPPORTED_NODE },
+        NodeKind.BytesLiteral => 0L,
+        NodeKind.ByteString => 0L,
         NodeKind.Name => {
             if is_function_value_name(files, tables, compiler, node, file_index) { UNSUPPORTED_FUNCTION_VALUE }
             else if builtin_case_name(source, tokens, files, file_index, value.token) &&
@@ -2374,6 +2537,7 @@ fn unsupported_category_for_node(
         NodeKind.Binary => if value.flags < 0L || (value.flags > 20L && value.flags != 21L) || value.flags == 5L || value.flags == 6L || value.flags == 7L { UNSUPPORTED_OPERATOR } else { 0L },
         NodeKind.Call => {
             if token_is_word_at(source, tokens, files, file_index, value.token, "fill") { 0L }
+            else if format_text_builtin_kind(source, tokens, files, tables, compiler, file_index, node) != FORMAT_TEXT_NONE { 0L }
             else if builtin_function_name(source, tokens, files, file_index, value.token) {
                 let id = compiler.token_name_ids[value.token]
                 if function_exists_by_name(tables, files, compiler, id) { 0L } else { UNSUPPORTED_CALLEE }
@@ -2483,6 +2647,10 @@ fn report_unsupported(
         match env.err.write(b"value types larger than 4096 bytes") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_NESTED_COLLECTIONS {
         match env.err.write(b"nested collections") { ok(_) => (), err(_) => env.exit(3) }
+    } else if hit.category == UNSUPPORTED_TEXT_COLLECTION {
+        match env.err.write(b"text in collections") { ok(_) => (), err(_) => env.exit(3) }
+    } else if hit.category == UNSUPPORTED_TEXT_BUILDERS {
+        match env.err.write(b"text builders") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_FRAME_BUDGET {
         match env.err.write(b"aggregate locals over 1 MiB on one call path") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_RESULT_MAIN {
@@ -2501,10 +2669,13 @@ fn check_package_eligibility(
     tables: ParseTables,
     compiler: CompilerTables,
 ) {
+    check_const_bytes_diagnostic(env, source, files, tokens, tables, compiler)
+    var deferred_text_states: list<byte, TYPE_TABLE_CAPACITY * 2L> = list {}
+    populate_deferred_text_collection_states(compiler, deferred_text_states)
     var hit = UnsupportedHit { found: false, file: 0L, node: -1L, offset: 0L, category: 0L, token: -1L }
     for node in 0L..tables.nodes.count() {
         let file_index = node_file_index(tables.nodes, files, node)
-        let category = unsupported_category_for_node(source, tokens, files, tables, compiler, node, file_index)
+        let category = unsupported_category_for_node(source, tokens, files, tables, compiler, deferred_text_states, node, file_index)
         if category == 0L { continue }
         let start = if category == UNSUPPORTED_OPERATOR { tables.nodes[node].anchor } else { tables.nodes[node].start }
         let is_earlier = !hit.found || file_index < hit.file || (file_index == hit.file && (start < hit.offset || (start == hit.offset && (tables.nodes[node].end > tables.nodes[hit.node].end || (tables.nodes[node].end == tables.nodes[hit.node].end && node > hit.node)))))
@@ -2513,6 +2684,93 @@ fn check_package_eligibility(
         }
     }
     if hit.found { report_unsupported(env, source, files, tokens, tables, compiler, hit) }
+}
+
+fn report_typed_unsupported(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    node: long,
+    category: long,
+) -> never {
+    report_unsupported(env, source, files, tokens, tables, compiler,
+        UnsupportedHit { found: true, file: file_index, node, offset: tables.nodes[node].start, category, token: tables.nodes[node].token })
+}
+
+fn check_deferred_text_builder_method(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    file_index: long,
+    scope: long,
+    node: long,
+    receiver: long,
+    receiver_type: long,
+    expected: long,
+) -> never {
+    let method_token = tables.nodes[node].token
+    let receiver_kind = type_kind(compiler, receiver_type)
+    let is_push = token_is_word_at(source, tokens, files, file_index, method_token, "push")
+    let argument = compiler.child_next[receiver]
+    let argument_count = count_children(tables, compiler, node) - 1L
+    if argument_count != 1L {
+        let message: Ascii max 160 = if is_push { "Bytes.push(byte) takes one byte" }
+            else if receiver_kind == TYPE_KIND_ASCII { "Ascii.try_append(value) takes one Ascii value" }
+            else if receiver_kind == TYPE_KIND_TEXT { "Text.try_append(value) takes one Text or Ascii value" }
+            else { "Bytes.try_append(value) takes one Bytes value" }
+        fail_at_message(env, files, compiler, file_index, tables.nodes[node].anchor, message)
+    }
+    let receiver_binding = compiler.facts[receiver].binding
+    if receiver_binding < 0L {
+        let message: Ascii max 160 = if is_push { "Bytes.push needs a mutable builder; use a var or grow parameter" }
+            else if receiver_kind == TYPE_KIND_ASCII { "Ascii.try_append needs a mutable builder; use a var or grow parameter" }
+            else if receiver_kind == TYPE_KIND_TEXT { "Text.try_append needs a mutable builder; use a var or grow parameter" }
+            else { "Bytes.try_append needs a mutable builder; use a var or grow parameter" }
+        fail_at_message(env, files, compiler, file_index, tables.nodes[receiver].start, message)
+    }
+    if !compiler.bindings[receiver_binding].mutable {
+        let message: Ascii max 160 = if is_push { "Bytes.push needs a mutable builder; declare it with var" }
+            else if receiver_kind == TYPE_KIND_ASCII { "Ascii.try_append needs a mutable builder; declare it with var" }
+            else if receiver_kind == TYPE_KIND_TEXT { "Text.try_append needs a mutable builder; declare it with var" }
+            else { "Bytes.try_append needs a mutable builder; declare it with var" }
+        fail_at_message(env, files, compiler, file_index, tables.nodes[receiver].start, message)
+    }
+    if binding_is_write_parameter(compiler, receiver_binding) {
+        fail_at_message(env, files, compiler, file_index, tables.nodes[receiver].start,
+            "write text parameter cannot append")
+    }
+    if active_view_overlaps_place(tables, compiler, scope, receiver) {
+        fail_at_message(env, files, compiler, file_index, tables.nodes[node].start,
+            "cannot replace or modify storage that contains a live collection view")
+    }
+    if argument < 0L { fail_at_message(env, files, compiler, file_index, tables.nodes[node].anchor, "text builder method is missing its value") }
+    let argument_type = compiler.facts[argument].ty
+    let valid_argument = if is_push { argument_type == TY_BYTE }
+        else if receiver_kind == TYPE_KIND_ASCII { type_kind(compiler, argument_type) == TYPE_KIND_ASCII }
+        else if receiver_kind == TYPE_KIND_TEXT { type_kind(compiler, argument_type) == TYPE_KIND_TEXT || type_kind(compiler, argument_type) == TYPE_KIND_ASCII }
+        else { type_kind(compiler, argument_type) == TYPE_KIND_BYTES }
+    if !valid_argument {
+        let message: Ascii max 160 = if is_push { "Bytes.push needs byte" }
+            else if receiver_kind == TYPE_KIND_ASCII { "try_append needs Ascii" }
+            else if receiver_kind == TYPE_KIND_TEXT { "Text.try_append needs Text or Ascii" }
+            else { "try_append needs Bytes" }
+        fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, message)
+    }
+    let full_ty = builtin_full_type_id(compiler)
+    if full_ty < 0L { fail_at_message(env, files, compiler, file_index, tables.nodes[node].start, "internal capacity error type is unavailable") }
+    let result_ty = intern_sum_type(compiler, TYPE_KIND_RESULT, TY_UNIT, full_ty, file_index, node, -1L, -1L)
+    if expected >= 0L && expected != result_ty {
+        require_type(env, files, compiler, file_index, node, expected, result_ty, tables)
+    }
+    report_typed_unsupported(env, source, files, tokens, tables, compiler, file_index,
+        node, UNSUPPORTED_TEXT_BUILDERS)
 }
 
 fn check_nested_collections_eligibility(
@@ -2588,6 +2846,51 @@ fn manifest_number(contents: Bytes max FILE_SOURCE_CAPACITY, start: long, end: l
     if !had_digit { -1L } else { value }
 }
 
+fn manifest_step_budget_number(contents: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> long {
+    if start >= end { return -1L }
+    var value = 0L
+    var had_digit = false
+    var previous_was_digit = false
+    for index in start..end {
+        let digit = contents[index]
+        if digit >= 48 && digit <= 57 {
+            let number = digit.to_long() - 48L
+            if value > (9223372036854775807L - number) / 10L { return -1L }
+            value = value * 10L + number
+            had_digit = true
+            previous_was_digit = true
+        } else if digit == 95 {
+            if !previous_was_digit || index + 1L >= end || contents[index + 1L] < 48 || contents[index + 1L] > 57 { return -1L }
+            previous_was_digit = false
+        } else {
+            return -1L
+        }
+    }
+    if !had_digit || !previous_was_digit { -1L } else { value }
+}
+
+fn manifest_step_budget_assignment_malformed(
+    contents: Bytes max FILE_SOURCE_CAPACITY,
+    start: long,
+    end: long,
+) -> bool {
+    var key_end = start
+    for index in start..end {
+        if contents[index] == 61 || ascii_space(contents[index]) { break }
+        key_end = index + 1L
+    }
+    if !manifest_equals(contents, start, key_end, "step_budget.main") { return false }
+    var value_start = key_end
+    for index in key_end..end {
+        if !ascii_space(contents[index]) {
+            value_start = index
+            break
+        }
+        value_start = end
+    }
+    value_start >= end || contents[value_start] != 61
+}
+
 fn manifest_memory(contents: Bytes max FILE_SOURCE_CAPACITY, start: long, end: long) -> long {
     let unit_start = trim_start(contents, start, end)
     let trimmed_end = trim_end(contents, unit_start, end)
@@ -2653,7 +2956,7 @@ fn load_manifest(
     env: Env,
     package: Arg,
 ) -> MemoryConfig {
-    var config = MemoryConfig { capability_mask: 2L, job_headroom: 268435456L, globals_budget: 67108864L, recursion_budget: 0L }
+    var config = MemoryConfig { capability_mask: 2L, job_headroom: 268435456L, globals_budget: 67108864L, recursion_budget: 0L, step_budget_main: -1L }
     let manifest_path = match env.fs.join(package, "package.toml") {
         ok(path) => path,
         err(_) => fail_tool(env, "cannot join package manifest path"),
@@ -2672,6 +2975,7 @@ fn load_manifest(
         err(_) => fail_tool(env, "package manifest is not valid UTF-8"),
     }
     var capabilities_seen = false
+    var step_budget_main_seen = false
     var line_number = 1L
     var line_start = 0L
     for step in 0L..contents.count() + 1L {
@@ -2689,6 +2993,9 @@ fn load_manifest(
         let first = trim_start(contents, line_start, comment)
         let last = trim_end(contents, first, comment)
         if first < last && !(contents[first] == 91 && contents[last - 1L] == 93) {
+            if manifest_step_budget_assignment_malformed(contents, first, last) {
+                write_manifest_tool_error(env, display_path, line_number, "expected step_budget.main = <nonnegative integer step count>")
+            }
             var equals = -1L
             for offset in first..last {
                 if contents[offset] == 61 { equals = offset; break }
@@ -2751,6 +3058,14 @@ fn load_manifest(
                         config.capability_mask = config.capability_mask | bit
                         item_start = comma + 1L
                     }
+                } else if manifest_equals(contents, key_start, key_end, "step_budget.main") {
+                    if step_budget_main_seen { write_manifest_tool_error(env, display_path, line_number, "step_budget.main is listed more than once") }
+                    step_budget_main_seen = true
+                    let budget = manifest_step_budget_number(contents, value_start, value_end)
+                    if budget < 0L {
+                        write_manifest_tool_error(env, display_path, line_number, "expected step_budget.main to be a nonnegative integer step count")
+                    }
+                    config.step_budget_main = budget
                 } else if manifest_equals(contents, key_start, key_end, "job_headroom") || manifest_equals(contents, key_start, key_end, "globals_budget") || manifest_equals(contents, key_start, key_end, "recursion_budget") {
                     let memory = manifest_memory(contents, value_start, value_end)
                     if memory < 0L {
@@ -2777,6 +3092,7 @@ fn scalar_type_name(ty: long) -> Ascii max 16 {
     if ty == TY_INT { "int" }
     else if ty == TY_LONG { "long" }
     else if ty == TY_BOOL { "bool" }
+    else if ty == TY_BYTE { "byte" }
     else if ty == TY_UNIT { "()" }
     else if ty == TY_ADDR { "sys.Addr" }
     else { "never" }
@@ -2834,6 +3150,7 @@ fn is_builtin_type_name(
     token_is_word_at(source, tokens, files, file_index, token, "int") ||
     token_is_word_at(source, tokens, files, file_index, token, "long") ||
     token_is_word_at(source, tokens, files, file_index, token, "bool") ||
+    token_is_word_at(source, tokens, files, file_index, token, "byte") ||
     token_is_word_at(source, tokens, files, file_index, token, "Ascii") ||
     token_is_word_at(source, tokens, files, file_index, token, "Text") ||
     token_is_word_at(source, tokens, files, file_index, token, "Bytes") ||
@@ -2963,6 +3280,7 @@ fn check_struct_declarations(
     }
     for type_index in 0L..struct_type_count(compiler) {
         let ty = struct_record(compiler, type_index)
+        if ty.node < 0L { continue }
         for offset in 0L..ty.field_count {
             let field_index = ty.field_start + offset
             let field = compiler.struct_fields[field_index]
@@ -3443,7 +3761,7 @@ fn fail_match_requires_supported_type(
     match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(b": error: match requires an enum, Option, Result, int, long, a numeric refinement, or bool; found ") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: match requires an enum, Option, Result, int, long, byte, a numeric refinement, or bool; found ") { ok(_) => (), err(_) => env.exit(3) }
     write_type_name(env, source, files, tokens, compiler, type_id)
     match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
@@ -4169,9 +4487,28 @@ fn require_type(
     actual: long,
     tables: ParseTables,
 ) {
-    if actual == TY_NEVER || actual == expected { return }
+    if actual == TY_NEVER || actual == expected || text_width_fits(compiler, actual, expected) { return }
     let offset = tables.nodes[node].start
     fail_type_mismatch(env, files, compiler, file_index, offset, expected, actual)
+}
+
+fn parameter_uses_text_read_view(compiler: CompilerTables, parameter: ParameterRecord) -> bool {
+    type_kind(compiler, parameter.ty) == TYPE_KIND_TEXT &&
+        (parameter_mode(parameter) & FLAG_MODE_WRITE) == 0L
+}
+
+fn require_text_read_argument(
+    env: Env,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: CompilerTables,
+    file_index: long,
+    node: long,
+    expected: long,
+    actual: long,
+    tables: ParseTables,
+) {
+    if actual == TY_NEVER || text_read_argument_fits(compiler, expected, actual) { return }
+    fail_type_mismatch(env, files, compiler, file_index, tables.nodes[node].start, expected, actual)
 }
 
 fn is_unsuffixed_integer(tables: ParseTables, node: long) -> bool {
@@ -4248,7 +4585,15 @@ recursive fn natural_node_type(
             let target = compiler.child_first[node]
             if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "int") { TY_INT }
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "long") { TY_LONG }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "byte") { TY_BYTE }
             else { -1L }
+        },
+        NodeKind.Fit => {
+            let value_node = compiler.child_first[node]
+            let target_node = if value_node >= 0L { compiler.child_next[value_node] } else { -1L }
+            if target_node >= 0L && type_kind(compiler, compiler.facts[target_node].ty) == TYPE_KIND_ASCII {
+                find_sum_instance(compiler, TYPE_KIND_OPTION, compiler.facts[target_node].ty, -1L)
+            } else { -1L }
         },
         NodeKind.ToLong => TY_LONG,
         NodeKind.Unary => -1L,
@@ -4437,6 +4782,8 @@ fn fail_call_arity(
 
 fn literal_value(
     env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     files: list<SourceFile, MAX_SOURCE_FILES>,
     compiler: CompilerTables,
     tables: ParseTables,
@@ -4447,9 +4794,10 @@ fn literal_value(
     let syntax = tables.nodes[node]
     let magnitude = tables.literals[syntax.extra]
     let negative = (syntax.flags & FLAG_NEGATIVE) != 0L
-    let max_low = if ty == TY_INT { if negative { 2147483648L } else { 2147483647L } }
+    let max_low = if ty == TY_BYTE { if negative { 0L } else { 255L } }
+        else if ty == TY_INT { if negative { 2147483648L } else { 2147483647L } }
         else if negative { 0L } else { 4294967295L }
-    let max_high = if ty == TY_INT { 0L } else { if negative { 2147483648L } else { 2147483647L } }
+    let max_high = if ty == TY_BYTE || ty == TY_INT { 0L } else { if negative { 2147483648L } else { 2147483647L } }
     let too_big = magnitude.limb3 != 0L || magnitude.limb2 != 0L || magnitude.limb1 > max_high || (magnitude.limb1 == max_high && magnitude.limb0 > max_low)
     if too_big {
         let file = files[file_index]
@@ -4459,6 +4807,12 @@ fn literal_value(
         match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
         match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
         match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        if ty == TY_BYTE {
+            match env.err.write(b": error: byte literal '") { ok(_) => (), err(_) => env.exit(3) }
+            if negative { match env.err.write(b"-") { ok(_) => (), err(_) => env.exit(3) } }
+            match write_token_raw(env.err, source, tokens, file.base, syntax.token) { ok(_) => (), err(_) => env.exit(3) }
+            match env.err.write(b"' is outside 0..255\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+        }
         match env.err.write(b": error: integer literal does not fit ") { ok(_) => (), err(_) => env.exit(3) }
         match env.err.write(scalar_type_name(ty).bytes()) { ok(_) => (), err(_) => env.exit(3) }
         match env.err.write(b"; add 'L' for long or give it a long context\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
@@ -4771,7 +5125,8 @@ fn body_child_expected(
     } else if kind == NodeKind.StructInit {
         frame.auxiliary
     } else if kind == NodeKind.ArrayLiteral {
-        collection_element_type(compiler, frame.result_ty)
+        if type_kind(compiler, frame.result_ty) == TYPE_KIND_BYTES { TY_BYTE }
+        else { collection_element_type(compiler, frame.result_ty) }
     } else if kind == NodeKind.Index && child == frame.child1 {
         TY_LONG
     } else if kind == NodeKind.Field {
@@ -4795,7 +5150,8 @@ fn body_child_expected(
         else {
             let function = find_function_by_name(compiler, compiler.token_name_ids[tables.nodes[parent].token])
             if function >= 0L && child_index < compiler.functions[function].param_count {
-                compiler.parameters[compiler.functions[function].param_start + child_index].ty
+                let parameter = compiler.parameters[compiler.functions[function].param_start + child_index]
+                if parameter_uses_text_read_view(compiler, parameter) { -1L } else { parameter.ty }
             } else { -1L }
         }
     } else if kind == NodeKind.OptionalCall {
@@ -4804,7 +5160,8 @@ fn body_child_expected(
             let function = find_function_by_name(compiler, compiler.token_name_ids[tables.nodes[parent].token])
             let parameter_index = child_index + 1L
             if function >= 0L && parameter_index < compiler.functions[function].param_count {
-                compiler.parameters[compiler.functions[function].param_start + parameter_index].ty
+                let parameter = compiler.parameters[compiler.functions[function].param_start + parameter_index]
+                if parameter_uses_text_read_view(compiler, parameter) { -1L } else { parameter.ty }
             } else { -1L }
         }
     } else if kind == NodeKind.QualifiedCase && frame.child2 >= 0L {
@@ -4820,6 +5177,20 @@ fn body_child_expected(
         else if method == COLLECTION_METHOD_INSERT && child_index == 1L { collection_element_type(compiler, compiler.facts[frame.child0].ty) }
         else if method == COLLECTION_METHOD_REMOVE && child_index == 0L { TY_LONG }
         else { -1L }
+    } else if kind == NodeKind.MethodCall && frame.child0 >= 0L &&
+        (type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_ASCII ||
+         type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_TEXT ||
+         type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_BYTES) {
+        let receiver_type = compiler.facts[frame.child0].ty
+        let receiver_kind = type_kind(compiler, receiver_type)
+        let method = text_method_kind(source, tokens, files, file_index, tables.nodes[parent].token, receiver_kind)
+        if deferred_text_builder_method(source, tokens, files, file_index, tables.nodes[parent].token, receiver_type, compiler) &&
+            token_is_word_at(source, tokens, files, file_index, tables.nodes[parent].token, "push") && child_index == 0L { TY_BYTE }
+        else if method == TEXT_METHOD_SLICE { TY_LONG }
+        else if (method == TEXT_METHOD_CONTAINS || method == TEXT_METHOD_STARTS_WITH) && child_index == 0L { compiler.facts[frame.child0].ty }
+        else { -1L }
+    } else if kind == NodeKind.Fit && child == frame.child0 {
+        -1L
     } else if kind == NodeKind.Cast && child == frame.child0 {
         -1L
     } else if kind == NodeKind.Unary {
@@ -4848,6 +5219,7 @@ fn body_child_expected(
             let other = if child == frame.child0 { frame.child1 } else { frame.child0 }
             let known = natural_node_type(source, tokens, files, tables, compiler, other, frame.scope, file_index)
             if is_unsuffixed_integer(tables, other) && !is_unsuffixed_integer(tables, child) { -1L }
+            else if type_kind(compiler, known) == TYPE_KIND_ASCII || type_kind(compiler, known) == TYPE_KIND_TEXT || type_kind(compiler, known) == TYPE_KIND_BYTES { -1L }
             else if known >= 0L { known }
             else if is_unsuffixed_integer(tables, child) { -1L }
             else { -1L }
@@ -4984,7 +5356,7 @@ fn check_one_body(
             if !compiler.collection_count_joins[frame.auxiliary].started {
                 start_collection_count_join(compiler, frame.auxiliary)
             }
-            if !is_sum_type(compiler, matched_type) && !is_numeric_type(matched_type) && matched_type != TY_BOOL {
+            if !is_sum_type(compiler, matched_type) && !is_numeric_type(matched_type) && matched_type != TY_BYTE && matched_type != TY_BOOL {
                 fail_match_requires_supported_type(env, source, files, tokens, tables, compiler, file_index, node, matched_type)
             }
             let arm = frame.cursor
@@ -5027,13 +5399,13 @@ fn check_one_body(
                 }
                 compiler.facts[pattern] = NodeFact { ty: matched_type, flags: MATCH_PATTERN_WILDCARD, binding: -1L, function: -1L, literal: 0L }
             } else if pattern_kind == NodeKind.Integer {
-                if !is_numeric_type(matched_type) {
-                    fail_at_message(env, files, compiler, file_index, tables.nodes[pattern].start, "integer patterns require an int, long, or numeric refinement match value")
+                if !is_numeric_type(matched_type) && matched_type != TY_BYTE {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[pattern].start, "integer patterns require an int, long, byte, or numeric refinement match value")
                 }
                 if has_wildcard { fail_at_message(env, files, compiler, file_index, tables.nodes[arm].start, "unreachable match arm after '_'") }
                 let pattern_ty = if (tables.nodes[pattern].flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else { matched_type }
                 require_type(env, files, compiler, file_index, pattern, matched_type, pattern_ty, tables)
-                let value = literal_value(env, files, compiler, tables, file_index, pattern, pattern_ty)
+                let value = literal_value(env, source, tokens, files, compiler, tables, file_index, pattern, pattern_ty)
                 if match_prior_pattern(tables, compiler, node, arm, MATCH_PATTERN_INTEGER, value) {
                     fail_match_scalar_duplicate(env, files, tables, compiler, file_index, arm, value, false)
                 }
@@ -5337,11 +5709,11 @@ fn check_one_body(
             if kind == NodeKind.ArrayLiteral {
                 let collection_ty = frame.expected
                 let collection_kind = type_kind(compiler, collection_ty)
-                if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST {
+                if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST && collection_kind != TYPE_KIND_BYTES {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "cannot infer whether this literal is an array or list; add a T[N] or list<T, N> annotation")
                 }
                 let element_count = count_children(tables, compiler, node)
-                let capacity = collection_capacity(compiler, collection_ty)
+                let capacity = if collection_kind == TYPE_KIND_BYTES { text_max_bytes(compiler, collection_ty) } else { collection_capacity(compiler, collection_ty) }
                 if collection_kind == TYPE_KIND_ARRAY && element_count != capacity {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "array literal has the wrong number of elements for its array type")
                 }
@@ -5476,7 +5848,15 @@ fn check_one_body(
             }
             if kind == NodeKind.MethodCall {
                 let receiver = compiler.child_first[node]
-                if is_core_sys_receiver(source, tokens, files, tables, compiler, node, file_index) {
+                let empty_kind = text_empty_constructor_kind(source, tokens, files, tables, compiler, file_index, frame.scope, node)
+                if empty_kind != 0L {
+                    let text_ty = intern_text_type(compiler, empty_kind, 0L, 0L, file_index, node, -1L, -1L)
+                    if text_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "empty text type exceeds compiler capacity") }
+                    frame.child0 = receiver
+                    frame.cursor = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
+                    frame.auxiliary = TEXT_METHOD_EMPTY
+                    frame.result_ty = text_ty
+                } else if is_core_sys_receiver(source, tokens, files, tables, compiler, node, file_index) {
                     let operation = core_sys_operation(source, tokens, files, file_index, syntax.token)
                     if operation < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "unknown core system operation") }
                     frame.cursor = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
@@ -5494,10 +5874,31 @@ fn check_one_body(
                 let type_node = compiler.child_first[node]
                 let value_node = if type_node >= 0L { compiler.child_next[type_node] } else { -1L }
                 if type_node < 0L || value_node < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "malformed cast expression") }
-                let target_ty = parse_scalar_type(env, source, tokens, files, tables, compiler, file_index, type_node)
-                if !is_numeric_type(target_ty) { fail_at_message(env, files, compiler, file_index, syntax.start, "casts in this subset require int or long") }
+                let target_text_kind = text_type_syntax_kind(source, tokens, files, file_index, tables.nodes[type_node])
+                let target_ty = if target_text_kind == TYPE_KIND_ASCII {
+                    intern_text_type_syntax(env, source, tokens, files, tables, compiler, file_index, type_node)
+                } else { parse_scalar_type(env, source, tokens, files, tables, compiler, file_index, type_node) }
+                if !is_numeric_type(target_ty) && target_ty != TY_BYTE && type_kind(compiler, target_ty) != TYPE_KIND_ASCII {
+                    fail_at_message(env, files, compiler, file_index, syntax.start, "casts in this subset require int, long, byte, or a bounded Ascii type")
+                }
                 frame.child0 = value_node
                 frame.child1 = type_node
+                frame.result_ty = target_ty
+                frame.cursor = value_node
+                frame.phase = 1L
+                compiler.work[frame_index] = frame
+                continue
+            }
+            if kind == NodeKind.Fit {
+                let value_node = compiler.child_first[node]
+                let target_node = if value_node >= 0L { compiler.child_next[value_node] } else { -1L }
+                if value_node < 0L || target_node < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "malformed fit expression") }
+                let target_ty = compiler.facts[target_node].ty
+                if type_kind(compiler, target_ty) != TYPE_KIND_ASCII {
+                    fail_at_message(env, files, compiler, file_index, syntax.start, "fit<T>() needs an int or long refinement type")
+                }
+                frame.child0 = value_node
+                frame.child1 = target_node
                 frame.result_ty = target_ty
                 frame.cursor = value_node
                 frame.phase = 1L
@@ -5643,11 +6044,36 @@ fn check_one_body(
             if kind == NodeKind.Unit {
                 compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
             } else if kind == NodeKind.BytesLiteral {
-                compiler.facts[node] = NodeFact { ty: TY_ADDR, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+                if compiler.core_mode {
+                    compiler.facts[node] = NodeFact { ty: TY_ADDR, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+                } else {
+                    let literal = decode_string_token(source, tokens, files[file_index].base, syntax.extra, true)
+                    let text_ty = intern_text_type(compiler, TYPE_KIND_BYTES, literal.count(), 0L, file_index, node, -1L, -1L)
+                    if frame.expected >= 0L { require_type(env, files, compiler, file_index, node, frame.expected, text_ty, tables) }
+                    compiler.facts[node] = NodeFact { ty: text_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+                }
+            } else if kind == NodeKind.ByteString {
+                if (syntax.flags & FLAG_BYTESTRING_NONASCII_HEX) != 0L {
+                    fail_at_message(env, files, compiler, file_index, syntax.start,
+                        "non-ASCII \\xNN escapes are not allowed in Text or Ascii literals; write the character as UTF-8 or use a byte-string literal")
+                }
+                let literal = decode_string_token(source, tokens, files[file_index].base, syntax.token, false)
+                var literal_ty = -1L
+                if decoded_text_is_ascii(literal) {
+                    if type_kind(compiler, frame.expected) == TYPE_KIND_TEXT {
+                        literal_ty = intern_text_type(compiler, TYPE_KIND_TEXT, literal.count(), literal.count(), file_index, node, -1L, -1L)
+                    } else {
+                        literal_ty = intern_text_type(compiler, TYPE_KIND_ASCII, literal.count(), 0L, file_index, node, -1L, -1L)
+                    }
+                } else {
+                    literal_ty = intern_text_type(compiler, TYPE_KIND_TEXT, literal.count(), decoded_text_codepoints(literal), file_index, node, -1L, -1L)
+                }
+                if frame.expected >= 0L { require_type(env, files, compiler, file_index, node, frame.expected, literal_ty, tables) }
+                compiler.facts[node] = NodeFact { ty: literal_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
             } else if kind == NodeKind.Integer {
-                let ty = if (syntax.flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else if is_numeric_type(frame.expected) { frame.expected } else { TY_INT }
+                let ty = if (syntax.flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else if is_numeric_type(frame.expected) || frame.expected == TY_BYTE { frame.expected } else { TY_INT }
                 if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
-                let value = literal_value(env, files, compiler, tables, file_index, node, ty)
+                let value = literal_value(env, source, tokens, files, compiler, tables, file_index, node, ty)
                 compiler.facts[node] = NodeFact { ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: value }
             } else if kind == NodeKind.Bool {
                 if frame.expected >= 0L && frame.expected != TY_BOOL { require_type(env, files, compiler, file_index, node, frame.expected, TY_BOOL, tables) }
@@ -5709,8 +6135,9 @@ fn check_one_body(
         if kind == NodeKind.ForEach && frame.phase == 80L {
             let collection_type = compiler.facts[frame.child0].ty
             let collection_kind = type_kind(compiler, collection_type)
-            if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST {
-                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "for-each loops require an array or list")
+            if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST &&
+                collection_kind != TYPE_KIND_ASCII && collection_kind != TYPE_KIND_BYTES {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "for-each loops require an array, list, Ascii, or Bytes")
             }
             let collection_binding = place_root_binding(tables, compiler, frame.child0)
             if !is_assignable_place(tables, frame.child0) || collection_binding < 0L {
@@ -5828,7 +6255,7 @@ fn check_one_body(
                     frame.cursor = 2L
                 }
                 else { () }
-            } else if kind == NodeKind.Return || kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Discard || kind == NodeKind.Expect || kind == NodeKind.Unary || kind == NodeKind.Cast || kind == NodeKind.ToLong || kind == NodeKind.Try {
+            } else if kind == NodeKind.Return || kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Discard || kind == NodeKind.Expect || kind == NodeKind.Unary || kind == NodeKind.Cast || kind == NodeKind.Fit || kind == NodeKind.ToLong || kind == NodeKind.Try {
                 child = frame.cursor
                 frame.cursor = -1L
             } else if kind == NodeKind.Binary {
@@ -5899,6 +6326,10 @@ fn check_one_body(
         if kind == NodeKind.Let {
             let value = frame.child0
             let value_fact = compiler.facts[value]
+            if is_bytes_view_value(tables, compiler, value) {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[value].start,
+                    "a .bytes() view is temporary and cannot be stored or returned")
+            }
             if value_fact.ty == TY_NEVER {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[value].start, "a binding needs a value; functions and if expressions used here must return int, long, or bool")
             }
@@ -5920,15 +6351,15 @@ fn check_one_body(
             let index = frame.child1
             let collection_ty = if receiver >= 0L { compiler.facts[receiver].ty } else { -1L }
             let collection_kind = type_kind(compiler, collection_ty)
-            if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST {
-                fail_at_message(env, files, compiler, file_index, syntax.start, "this value cannot be indexed; use an array or list")
+            if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST && collection_kind != TYPE_KIND_BYTES && collection_kind != TYPE_KIND_ASCII {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "this value cannot be indexed; use an array, list, Bytes, or Ascii")
             }
             let index_ty = if index >= 0L { compiler.facts[index].ty } else { -1L }
             if index_ty != TY_LONG {
                 if index_ty == TY_INT { fail_at_message(env, files, compiler, file_index, tables.nodes[index].start, "collection indexes are long; cast an int index with .to_long()") }
                 else { fail_at_message(env, files, compiler, file_index, tables.nodes[index].start, "collection indexes must be long") }
             }
-            let element_ty = collection_element_type(compiler, collection_ty)
+            let element_ty = if collection_kind == TYPE_KIND_BYTES || collection_kind == TYPE_KIND_ASCII { TY_BYTE } else { collection_element_type(compiler, collection_ty) }
             if frame.expected >= 0L && frame.expected != element_ty { require_type(env, files, compiler, file_index, node, frame.expected, element_ty, tables) }
             let flags = if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }
             compiler.facts[node] = NodeFact { ty: element_ty, flags, binding: compiler.facts[receiver].binding, function: -1L, literal: collection_ty }
@@ -5986,6 +6417,19 @@ fn check_one_body(
             }
             let op = syntax.flags
             let value_fact = compiler.facts[value]
+            if deferred_text_assignment(op, target_fact.ty, compiler) {
+                require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables)
+                if binding_is_write_parameter(compiler, binding) {
+                    fail_at_message(env, files, compiler, file_index, syntax.start,
+                        "write text parameter cannot append")
+                }
+                report_typed_unsupported(env, source, files, tokens, tables, compiler,
+                    file_index, node, UNSUPPORTED_TEXT_BUILDERS)
+            } else { () }
+            if is_bytes_view_value(tables, compiler, value) {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[value].start,
+                    "a .bytes() view is temporary and cannot be stored or returned")
+            }
             if op == 0L { require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables) }
             else {
                 if !is_numeric_type(target_fact.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "compound assignment requires int or long") }
@@ -6001,6 +6445,10 @@ fn check_one_body(
                 if result_ty != TY_UNIT { fail_no_return_value(env, source, files, tokens, compiler, file_index, syntax.start, result_ty, compiler.functions[function_id]) }
                 else { compiler.facts[node] = NodeFact { ty: TY_NEVER, flags: FACT_NEVER, binding: -1L, function: -1L, literal: 0L } }
             } else {
+                if is_bytes_view_value(tables, compiler, frame.child0) {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start,
+                        "a .bytes() view is temporary and cannot be stored or returned")
+                }
                 let actual = compiler.facts[frame.child0].ty
                 require_type(env, files, compiler, file_index, frame.child0, result_ty, actual, tables)
                 compiler.facts[node] = NodeFact { ty: TY_NEVER, flags: FACT_NEVER, binding: -1L, function: -1L, literal: 0L }
@@ -6061,16 +6509,31 @@ fn check_one_body(
                 if arg_count != 1L { fail_at_message(env, files, compiler, file_index, syntax.start, "print takes one argument, but got an invalid number; call print(value)") }
                 let argument = child_at(tables, compiler, node, 0L)
                 let arg_ty = compiler.facts[argument].ty
-                if !is_numeric_type(arg_ty) && arg_ty != TY_BOOL && !is_aggregate_type(compiler, arg_ty) {
+                if !is_numeric_type(arg_ty) && arg_ty != TY_BOOL && arg_ty != TY_BYTE && !is_aggregate_type(compiler, arg_ty) {
                     fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values")
                 }
                 compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: 0L }
+            } else if format_text_builtin_kind(source, tokens, files, tables, compiler, file_index, node) != FORMAT_TEXT_NONE {
+                let format_kind = format_text_builtin_kind(source, tokens, files, tables, compiler, file_index, node)
+                let ty = check_format_text_builtin(env, source, tokens, files, tables, compiler, file_index, node, frame.expected)
+                let flags = if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }
+                compiler.facts[node] = NodeFact { ty, flags: flags | FACT_FORMAT_TEXT, binding: -1L, function: -1L, literal: format_kind }
             } else {
                 let target = find_function_by_name(compiler, name_id)
                 if target < 0L { fail_name_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, frame.scope, true) }
                 let function = compiler.functions[target]
                 check_call_count(env, source, files, tokens, tables, compiler, function, node, file_index)
                 check_call_write_modes(env, source, files, tables, compiler, function, node, file_index, frame.scope)
+                var read_text_argument = compiler.child_first[node]
+                for argument_index in 0L..function.param_count {
+                    if read_text_argument < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "call is missing an argument") }
+                    let parameter = compiler.parameters[function.param_start + argument_index]
+                    if parameter_uses_text_read_view(compiler, parameter) {
+                        require_text_read_argument(env, files, compiler, file_index, read_text_argument,
+                            parameter.ty, compiler.facts[read_text_argument].ty, tables)
+                    }
+                    read_text_argument = compiler.child_next[read_text_argument]
+                }
                 invalidate_collection_counts_for_write_call(compiler, function, node)
                 if function_id >= 0L {
                     let edge_id = compiler.call_edges.count()
@@ -6111,7 +6574,12 @@ fn check_one_body(
                 if (parameter_mode(receiver_parameter) & FLAG_MODE_WRITE) != 0L {
                     fail_at_message(env, files, compiler, file_index, syntax.anchor, "optional chaining cannot call a function whose receiver parameter is write")
                 }
-                require_type(env, files, compiler, file_index, receiver, receiver_parameter.ty, inner_ty, tables)
+                if parameter_uses_text_read_view(compiler, receiver_parameter) {
+                    require_text_read_argument(env, files, compiler, file_index, receiver,
+                        receiver_parameter.ty, inner_ty, tables)
+                } else {
+                    require_type(env, files, compiler, file_index, receiver, receiver_parameter.ty, inner_ty, tables)
+                }
                 var argument = compiler.child_next[receiver]
                 for argument_index in 1L..function.param_count {
                     let parameter = compiler.parameters[function.param_start + argument_index]
@@ -6119,7 +6587,12 @@ fn check_one_body(
                     if (parameter_mode(parameter) & FLAG_MODE_WRITE) != 0L {
                         fail_at_message(env, files, compiler, file_index, syntax.anchor, "optional calls cannot pass a write parameter; call a function directly with an assignable place")
                     }
-                    require_type(env, files, compiler, file_index, argument, parameter.ty, compiler.facts[argument].ty, tables)
+                    if parameter_uses_text_read_view(compiler, parameter) {
+                        require_text_read_argument(env, files, compiler, file_index, argument,
+                            parameter.ty, compiler.facts[argument].ty, tables)
+                    } else {
+                        require_type(env, files, compiler, file_index, argument, parameter.ty, compiler.facts[argument].ty, tables)
+                    }
                     argument = compiler.child_next[argument]
                 }
                 result_ty = if type_kind(compiler, function.result_ty) == TYPE_KIND_OPTION { function.result_ty }
@@ -6146,7 +6619,18 @@ fn check_one_body(
             let receiver = frame.child0
             let receiver_ty = if receiver >= 0L { compiler.facts[receiver].ty } else { -1L }
             let receiver_kind = type_kind(compiler, receiver_ty)
-            if receiver_kind == TYPE_KIND_ARRAY || receiver_kind == TYPE_KIND_LIST {
+            if check_parse_number_method(env, source, files, tokens, tables, compiler, file_index, node, frame.expected) {
+                ()
+            } else if operation == TEXT_METHOD_EMPTY {
+                if count_children(tables, compiler, node) != 1L {
+                    fail_at_message(env, files, compiler, file_index, syntax.start, "empty takes no arguments")
+                }
+                let result_ty = frame.result_ty
+                if frame.expected >= 0L && frame.expected != result_ty {
+                    require_type(env, files, compiler, file_index, node, frame.expected, result_ty, tables)
+                }
+                compiler.facts[node] = NodeFact { ty: result_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: TEXT_METHOD_EMPTY }
+            } else if receiver_kind == TYPE_KIND_ARRAY || receiver_kind == TYPE_KIND_LIST {
                 let method = collection_method_kind(source, tokens, files, file_index, syntax.token, receiver_kind)
                 if method == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching array or list method is available on this value") }
                 let actual_count = count_children(tables, compiler, node) - 1L
@@ -6210,6 +6694,57 @@ fn check_one_body(
                 let fact_flags = (if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }) |
                     (if proven { FACT_PROVEN_SUCCESS } else { 0L })
                 compiler.facts[node] = NodeFact { ty: operation_result_type, flags: fact_flags, binding: compiler.facts[receiver].binding, function: -1L, literal: method }
+            } else if receiver_kind == TYPE_KIND_ASCII || receiver_kind == TYPE_KIND_TEXT || receiver_kind == TYPE_KIND_BYTES {
+                if deferred_text_builder_method(source, tokens, files, file_index, syntax.token, receiver_ty, compiler) {
+                    check_deferred_text_builder_method(env, source, files, tokens, tables, compiler,
+                        file_index, frame.scope, node, receiver, receiver_ty, frame.expected)
+                } else { () }
+                let method = text_method_kind(source, tokens, files, file_index, syntax.token, receiver_kind)
+                if method == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching text method is available on this value") }
+                let actual_count = count_children(tables, compiler, node) - 1L
+                let wanted_count = if method == TEXT_METHOD_SLICE { 2L }
+                    else if method == TEXT_METHOD_CONTAINS || method == TEXT_METHOD_STARTS_WITH { 1L }
+                    else { 0L }
+                if actual_count != wanted_count { fail_at_message(env, files, compiler, file_index, syntax.start, "text method has the wrong number of arguments") }
+                var argument = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
+                var method_result_ty = TY_LONG
+                if method == TEXT_METHOD_SLICE {
+                    for bound in 0L..2L {
+                        if argument < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "slice is missing a bound") }
+                        if compiler.facts[argument].ty != TY_LONG {
+                            fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "slice bounds must be long")
+                        }
+                        argument = compiler.child_next[argument]
+                    }
+                    method_result_ty = receiver_ty
+                } else if method == TEXT_METHOD_BYTES {
+                    method_result_ty = intern_text_type(compiler, TYPE_KIND_BYTES, text_max_bytes(compiler, receiver_ty), 0L, file_index, node, -1L, -1L)
+                } else if method == TEXT_METHOD_VALIDATE_UTF8 {
+                    let error_ty = builtin_synthetic_type_id(compiler, -3L)
+                    if error_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Utf8Error built-in type is unavailable") }
+                    method_result_ty = intern_sum_type(compiler, TYPE_KIND_RESULT, TY_UNIT, error_ty, file_index, node, -1L, -1L)
+                } else if method == TEXT_METHOD_TO_TEXT {
+                    let error_ty = builtin_synthetic_type_id(compiler, -3L)
+                    if error_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Utf8Error built-in type is unavailable") }
+                    let maximum = text_max_bytes(compiler, receiver_ty)
+                    let text_ty = intern_text_type(compiler, TYPE_KIND_TEXT, maximum, maximum, file_index, node, -1L, -1L)
+                    method_result_ty = intern_sum_type(compiler, TYPE_KIND_RESULT, text_ty, error_ty, file_index, node, -1L, -1L)
+                } else if method == TEXT_METHOD_TO_ASCII {
+                    let error_ty = builtin_synthetic_type_id(compiler, -2L)
+                    if error_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "TextError built-in type is unavailable") }
+                    let ascii_ty = intern_text_type(compiler, TYPE_KIND_ASCII, text_max_bytes(compiler, receiver_ty), 0L, file_index, node, -1L, -1L)
+                    method_result_ty = intern_sum_type(compiler, TYPE_KIND_RESULT, ascii_ty, error_ty, file_index, node, -1L, -1L)
+                } else if method == TEXT_METHOD_CONTAINS || method == TEXT_METHOD_STARTS_WITH {
+                    if argument < 0L || type_kind(compiler, compiler.facts[argument].ty) != TYPE_KIND_ASCII {
+                        fail_at_message(env, files, compiler, file_index, if argument >= 0L { tables.nodes[argument].start } else { syntax.start }, "Ascii string methods require an Ascii argument")
+                    }
+                    require_type(env, files, compiler, file_index, argument, receiver_ty, compiler.facts[argument].ty, tables)
+                    method_result_ty = TY_BOOL
+                } else { method_result_ty = TY_LONG }
+                if frame.expected >= 0L && frame.expected != method_result_ty {
+                    require_type(env, files, compiler, file_index, node, frame.expected, method_result_ty, tables)
+                }
+                compiler.facts[node] = NodeFact { ty: method_result_ty, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: method }
             } else if operation < 0L {
                 if count_children(tables, compiler, node) != 1L {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "Option and Result methods take no arguments")
@@ -6258,12 +6793,26 @@ fn check_one_body(
                 }
                 compiler.facts[node] = NodeFact { ty: syscall_result_ty, flags: if syscall_result_ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: operation }
             }
+        } else if kind == NodeKind.Fit {
+            let source_ty = compiler.facts[frame.child0].ty
+            let target_ty = frame.result_ty
+            if type_kind(compiler, source_ty) != TYPE_KIND_ASCII {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start,
+                    "fit input must be Ascii")
+            }
+            let option_ty = intern_sum_type(compiler, TYPE_KIND_OPTION, target_ty, -1L, file_index, node, -1L, -1L)
+            if frame.expected >= 0L && frame.expected != option_ty { require_type(env, files, compiler, file_index, node, frame.expected, option_ty, tables) }
+            compiler.facts[node] = NodeFact { ty: option_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.Cast {
             let source_ty = compiler.facts[frame.child0].ty
             let target_ty = frame.result_ty
-            if !is_numeric_type(source_ty) || !is_numeric_type(target_ty) {
-                fail_at_message(env, files, compiler, file_index, syntax.start, "casts in this subset require int and long")
-            }
+            if type_kind(compiler, target_ty) == TYPE_KIND_ASCII {
+                if type_kind(compiler, source_ty) != TYPE_KIND_ASCII {
+                    fail_at_message(env, files, compiler, file_index, syntax.start, "Ascii casts require an Ascii input")
+                } else { () }
+            } else if (!is_numeric_type(source_ty) && source_ty != TY_BYTE) || (!is_numeric_type(target_ty) && target_ty != TY_BYTE) {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "casts in this subset require int, long, or byte")
+            } else { () }
             if frame.expected >= 0L && frame.expected != target_ty {
                 require_type(env, files, compiler, file_index, node, frame.expected, target_ty, tables)
             }
@@ -6313,12 +6862,39 @@ fn check_one_body(
                 }
                 ty = sum_case_payload_type(compiler, left.ty, 0L, 0L)
                 require_type(env, files, compiler, file_index, frame.child1, ty, right.ty, tables)
+            } else if op == 0L && is_text_concatenation(compiler, left.ty, right.ty) {
+                let left_kind = type_kind(compiler, left.ty)
+                let right_kind = type_kind(compiler, right.ty)
+                let result_kind = if left_kind == TYPE_KIND_BYTES { TYPE_KIND_BYTES }
+                    else if left_kind == TYPE_KIND_TEXT || right_kind == TYPE_KIND_TEXT { TYPE_KIND_TEXT }
+                    else { TYPE_KIND_ASCII }
+                let left_bytes = text_max_bytes(compiler, left.ty)
+                let right_bytes = text_max_bytes(compiler, right.ty)
+                if left_bytes < 0L || right_bytes < 0L || left_bytes > 9223372036854775807L - right_bytes {
+                    fail_at_message(env, files, compiler, file_index, syntax.anchor, "text concatenation maximum overflows; reduce an operand maximum")
+                }
+                let result_bytes = left_bytes + right_bytes
+                let result_points = if result_kind == TYPE_KIND_TEXT {
+                    let left_points = text_max_codepoints(compiler, left.ty)
+                    let right_points = text_max_codepoints(compiler, right.ty)
+                    if left_points < 0L || right_points < 0L || left_points > 9223372036854775807L - right_points {
+                        fail_at_message(env, files, compiler, file_index, syntax.anchor, "Text concatenation code-point maximum overflows; reduce an operand maximum")
+                    }
+                    left_points + right_points
+                } else { 0L }
+                var result_ty = intern_text_type(compiler, result_kind, result_bytes, result_points, file_index, node, -1L, -1L)
+                if frame.expected >= 0L {
+                    if text_width_fits(compiler, result_ty, frame.expected) { result_ty = frame.expected }
+                    else { fail_type_mismatch(env, files, compiler, file_index, syntax.anchor, frame.expected, result_ty) }
+                }
+                ty = result_ty
             } else if op >= 8L && op <= 13L {
-                if left.ty != right.ty { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, left.ty, right.ty) }
+                let text_pair = is_text_comparable(compiler, left.ty, right.ty)
+                if left.ty != right.ty && !text_pair { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, left.ty, right.ty) }
                 if (op == 8L || op == 9L) && (left.ty == TY_UNIT || left.ty == TY_NEVER) {
                     fail_at_message(env, files, compiler, file_index, syntax.anchor, "equality requires values other than ()")
                 }
-                if op >= 10L && !is_numeric_type(left.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "ordered comparisons require int or long values") }
+                if op >= 10L && !is_numeric_type(left.ty) && !text_pair { fail_at_message(env, files, compiler, file_index, syntax.anchor, "ordered comparisons require int or long values") }
                 ty = TY_BOOL
             } else if op >= 16L && op <= 20L {
                 if !is_numeric_type(left.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "bitwise operators require int or long values") }
@@ -7067,6 +7643,7 @@ fn llvm_type_name(ty: long) -> Ascii max 8 {
     if ty == TY_INT { "i32" }
     else if ty == TY_LONG { "i64" }
     else if ty == TY_BOOL { "i1" }
+    else if ty == TY_BYTE { "i32" }
     else if ty == TY_UNIT { "void" }
     else if ty == TY_NEVER { "void" }
     else if ty == TY_ADDR { "ptr" }
@@ -7089,6 +7666,12 @@ fn native_location(anchor_kind: long, anchor_node: long, byte_offset: long) -> S
     StorageLocation { origin: LOCATION_NATIVE, anchor_kind, anchor_node, byte_offset, copies: 1L, index: 0L, index_node: -1L, index_stride: 0L }
 }
 
+fn storage_location_with_offset(base: StorageLocation, extra_offset: long) -> StorageLocation {
+    StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node,
+        byte_offset: base.byte_offset + extra_offset, copies: base.copies, index: base.index,
+        index_node: base.index_node, index_stride: base.index_stride }
+}
+
 // E3a1 begin: resolve native-slot anchors through the per-function plan.
 fn compiler_location(compiler: CompilerTables, anchor_kind: long, anchor_node: long, byte_offset: long) -> StorageLocation {
     let native = native_location(anchor_kind, anchor_node, byte_offset)
@@ -7102,6 +7685,12 @@ fn compiler_location(compiler: CompilerTables, anchor_kind: long, anchor_node: l
 
 // E3a1 begin: shared compiler integration.
 fn aggregate_destination_location(compiler: CompilerTables, kind: long, node: long) -> StorageLocation {
+    if kind == 0L && node == compiler.emit_destination_node && compiler.emit_destination_kind == 1L {
+        return compiler_location(compiler, 1L, compiler.emit_destination_anchor, 0L)
+    }
+    if kind == 0L && node == compiler.emit_destination_node && compiler.emit_destination_kind == 2L {
+        return compiler_location(compiler, 9L, 0L, 0L)
+    }
     if kind == 0L { compiler_location(compiler, 0L, node, 0L) }
     else if kind == 1L { compiler_location(compiler, 1L, node, 0L) }
     // User function results carry a relocatable descriptor. Core helpers keep
@@ -7132,11 +7721,13 @@ recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTable
             let element_type = collection_element_type(compiler, collection_type)
             let capacity = collection_capacity(compiler, collection_type)
             let base_offset = collection_element_base_offset(compiler, collection_type)
+            let element_stride = if type_kind(compiler, collection_type) == TYPE_KIND_ASCII || type_kind(compiler, collection_type) == TYPE_KIND_BYTES { 1L }
+                else { value_type_size(compiler, element_type) }
             let base = collection_value_location(tables, compiler, collection)
             if is_aggregate_type(compiler, element_type) {
                 StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + base_offset, copies: capacity, index: 0L, index_node: -2L - loop_node, index_stride: 0L }
             } else {
-                StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + base_offset, copies: 1L, index: 0L, index_node: -2L - loop_node, index_stride: value_type_size(compiler, element_type) }
+                StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + base_offset, copies: 1L, index: 0L, index_node: -2L - loop_node, index_stride: element_stride }
             }
         } else if binding >= 0L && compiler.bindings[binding].parameter && is_aggregate_type(compiler, compiler.bindings[binding].ty) {
             let location = compiler_location(compiler, 3L, binding, 0L)
@@ -7276,7 +7867,7 @@ fn lower_scope_exit(
     // Restore the incoming top on function exits. Loop resets are emitted at
     // branch sites, which know the loop body's region scope.
     if !compiler.core_mode && (exit_kind == EXIT_RETURN || exit_kind == EXIT_RETURN_VALUE || exit_kind == EXIT_TEST_SUCCESS || exit_kind == EXIT_TEST_FAILURE || exit_kind == EXIT_FALLTHROUGH) {
-        if compiler.expected[0L] > 0L {
+        if compiler.region_max_size > 0L {
             ir_write_ascii(compiler, ir, "  call void @nl_context_set_top_offset(ptr %nl.ctx, i64 %nl.top)\n")
         }
     } else { () }
@@ -7566,7 +8157,8 @@ fn emit_collection_view_name_address(
     let collection = compiler.child_first[loop_node]
     let collection_type = compiler.facts[collection].ty
     let element_type = collection_element_type(compiler, collection_type)
-    let stride = value_type_size(compiler, element_type)
+    let stride = if type_kind(compiler, collection_type) == TYPE_KIND_ASCII || type_kind(compiler, collection_type) == TYPE_KIND_BYTES { 1L }
+        else { value_type_size(compiler, element_type) }
     let base_offset = collection_element_base_offset(compiler, collection_type)
     if stride < 0L || base_offset < 0L { compiler.ir_overflow = true; return true }
     let base = collection_value_location(tables, compiler, collection)
@@ -7634,6 +8226,10 @@ fn emit_aggregate_copy(
     destination: StorageLocation,
     source: StorageLocation,
 ) {
+    if type_kind(compiler, type_id) == TYPE_KIND_TEXT && text_read_view_binding(compiler, source) >= 0L {
+        emit_text_read_view_copy(compiler, ir, type_id, destination, source)
+        return
+    }
     let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
     ir_write_ascii(compiler, ir, "  call void ")
@@ -7645,6 +8241,7 @@ fn emit_aggregate_copy(
     ir_write_ascii(compiler, ir, "ptr ")
     emit_location_pointer_reference(compiler, ir, source, source_pointer)
     ir_write_ascii(compiler, ir, ")\n")
+    emit_text_assert_storage(compiler, ir, type_id, destination)
 }
 // E3a1 end
 
@@ -7722,6 +8319,13 @@ fn emit_type_helper_call_one(
     operand: StorageLocation,
     pointer: long,
 ) {
+    let text_view_binding = text_read_view_binding(compiler, operand)
+    if operation == HELPER_PRINT && type_kind(compiler, type_id) == TYPE_KIND_TEXT && text_view_binding >= 0L {
+        ir_write_ascii(compiler, ir, "@nl_print_ascii(ptr %nl.ctx, ptr ")
+        emit_location_pointer_reference(compiler, ir, operand, pointer)
+        ir_write_ascii(compiler, ir, ", i64 %arg.copies."); ir_write_number(compiler, ir, text_view_binding); ir_push_byte(compiler, ir, 41)
+        return
+    }
     emit_type_helper_symbol(compiler, ir, type_id, operation)
     ir_push_byte(compiler, ir, 40)
     ir_write_ascii(compiler, ir, "ptr %nl.ctx, ")
@@ -8467,7 +9071,7 @@ fn emit_enum_tag_store(
     tag: long,
 ) {
     let address = enum_temporary_address(node, 0L)
-    emit_layout_address(compiler, ir, address, compiler_location(compiler, 0L, node, 0L))
+    emit_layout_address(compiler, ir, address, aggregate_destination_location(compiler, 0L, node))
     ir_write_ascii(compiler, ir, "  %enum.tag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i32 0, "); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, "\n  store i32 %enum.tag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n")
 }
 
@@ -8478,7 +9082,7 @@ fn emit_sum_tag_store(
     tag: long,
 ) {
     let address = enum_temporary_address(node, MAX_TREE_NODES * 2L + tag)
-    emit_layout_address(compiler, ir, address, compiler_location(compiler, 0L, node, 0L))
+    emit_layout_address(compiler, ir, address, aggregate_destination_location(compiler, 0L, node))
     ir_write_ascii(compiler, ir, "  %sum.tag."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, " = add i32 0, "); ir_write_number(compiler, ir, tag)
     ir_write_ascii(compiler, ir, "\n  store i32 %sum.tag."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n")
 }
@@ -8496,7 +9100,7 @@ fn emit_enum_constructor_payload(
     let payload = compiler.enum_payloads[case.payload_start + payload_index]
     if payload.ty == TY_UNIT { return }
     let address = enum_temporary_address(constructor, payload_index + 1L)
-    emit_layout_address(compiler, ir, address, compiler_location(compiler, 0L, constructor, payload.offset))
+    emit_layout_address(compiler, ir, address, storage_location_with_offset(aggregate_destination_location(compiler, 0L, constructor), payload.offset))
     if is_aggregate_type(compiler, payload.ty) {
         let source_kind = aggregate_source_kind(tables, compiler, value_node)
         let source_node = aggregate_source_id(tables, compiler, value_node)
@@ -8519,7 +9123,7 @@ fn emit_sum_constructor_payload(
     let payload = sum_payload_record(compiler, type_id, tag, payload_index)
     if payload.ty == TY_UNIT { return }
     let address = enum_temporary_address(constructor, MAX_TREE_NODES + payload_index + 1L)
-    emit_layout_address(compiler, ir, address, compiler_location(compiler, 0L, constructor, payload.offset))
+    emit_layout_address(compiler, ir, address, storage_location_with_offset(aggregate_destination_location(compiler, 0L, constructor), payload.offset))
     if is_aggregate_type(compiler, payload.ty) {
         let source_kind = aggregate_source_kind(tables, compiler, value_node)
         let source_node = aggregate_source_id(tables, compiler, value_node)
@@ -8611,7 +9215,7 @@ fn emit_sum_payload_to_expression(
 ) {
     if payload_ty == TY_UNIT { return }
     if is_aggregate_type(compiler, payload_ty) {
-        emit_sum_payload_transfer(compiler, ir, payload_ty, source, source_offset, compiler_location(compiler, 0L, node, 0L), 0L, address_seed)
+        emit_sum_payload_transfer(compiler, ir, payload_ty, source, source_offset, aggregate_destination_location(compiler, 0L, node), 0L, address_seed)
     } else {
         let source_address = address_seed * 2L
         let source_location = StorageLocation { origin: source.origin, anchor_kind: source.anchor_kind, anchor_node: source.anchor_node, byte_offset: source.byte_offset + source_offset, copies: source.copies, index: source.index, index_node: source.index_node, index_stride: source.index_stride }
@@ -8641,7 +9245,7 @@ fn emit_sum_payload_to_coalesce(
 ) {
     if payload_ty == TY_UNIT { return }
     if is_aggregate_type(compiler, payload_ty) {
-        emit_sum_payload_transfer(compiler, ir, payload_ty, source, source_offset, compiler_location(compiler, 0L, node, 0L), 0L, address_seed)
+        emit_sum_payload_transfer(compiler, ir, payload_ty, source, source_offset, aggregate_destination_location(compiler, 0L, node), 0L, address_seed)
     } else {
         let source_address = address_seed * 2L
         let source_location = StorageLocation { origin: source.origin, anchor_kind: source.anchor_kind, anchor_node: source.anchor_node, byte_offset: source.byte_offset + source_offset, copies: source.copies, index: source.index, index_node: source.index_node, index_stride: source.index_stride }
@@ -8703,7 +9307,7 @@ fn emit_option_result_method(
         emit_sum_tag_store(compiler, ir, node, 0L)
         let source_payload = sum_payload_record(compiler, receiver_ty, 0L, 0L)
         let destination_payload = sum_payload_record(compiler, result_ty, 0L, 0L)
-        emit_sum_payload_transfer(compiler, ir, source_payload.ty, receiver_source, source_payload.offset, compiler_location(compiler, 0L, node, 0L), destination_payload.offset, enum_temporary_address(node, MAX_TREE_NODES + 7L))
+        emit_sum_payload_transfer(compiler, ir, source_payload.ty, receiver_source, source_payload.offset, aggregate_destination_location(compiler, 0L, node), destination_payload.offset, enum_temporary_address(node, MAX_TREE_NODES + 7L))
         ir_write_ascii(compiler, ir, "  br label %method.ok.end."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nmethod.ok.none."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
         emit_sum_tag_store(compiler, ir, node, 1L)
         ir_write_ascii(compiler, ir, "  br label %method.ok.end."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nmethod.ok.end."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
@@ -8760,7 +9364,7 @@ fn emit_optional_call_invoke(
     let result_type = target.result_ty
     let wraps_result = type_kind(compiler, result_type) != TYPE_KIND_OPTION
     let aggregate_result = is_aggregate_type(compiler, result_type)
-    var destination = compiler_location(compiler, 0L, node, 0L)
+    var destination = aggregate_destination_location(compiler, 0L, node)
     if wraps_result {
         let output_payload = sum_payload_record(compiler, compiler.facts[node].ty, 0L, 0L)
         destination = optional_payload_location(destination, output_payload.offset)
@@ -8769,14 +9373,26 @@ fn emit_optional_call_invoke(
     let receiver_descriptor = MAX_TREE_NODES * 5L + node
     if aggregate_result { emit_prepare_location_descriptor(compiler, ir, destination, true, node) }
     if receiver_parameter.ty != TY_UNIT && is_aggregate_type(compiler, receiver_parameter.ty) {
-        emit_prepare_location_descriptor(compiler, ir, receiver_value, true, receiver_descriptor)
+        if parameter_uses_text_read_view(compiler, receiver_parameter) {
+            prepare_text_parameter_descriptor(compiler, ir, receiver_payload.ty, receiver_value, node)
+        } else {
+            emit_prepare_location_descriptor(compiler, ir, receiver_value, true, receiver_descriptor)
+        }
     } else { () }
     var argument = compiler.child_next[receiver]
     for argument_index in 1L..target.param_count {
         let parameter = compiler.parameters[target.param_start + argument_index]
         if argument < 0L { compiler.ir_overflow = true; return }
         if parameter.ty != TY_UNIT && is_aggregate_type(compiler, parameter.ty) {
-            emit_prepare_location_descriptor(compiler, ir, aggregate_destination_location(compiler, 0L, argument), true, argument)
+            let use_snapshot = direct_call_argument_needs_snapshot(tables, compiler, node, argument)
+            let argument_location = if use_snapshot { aggregate_destination_location(compiler, 0L, argument) }
+                else { aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, argument), aggregate_source_id(tables, compiler, argument)) }
+            if parameter_uses_text_read_view(compiler, parameter) {
+                let argument_type = compiler.facts[argument].ty
+                prepare_text_parameter_descriptor(compiler, ir, argument_type, argument_location, argument)
+            } else {
+                emit_prepare_location_descriptor(compiler, ir, argument_location, true, argument)
+            }
         }
         argument = compiler.child_next[argument]
     }
@@ -8795,7 +9411,11 @@ fn emit_optional_call_invoke(
     if receiver_parameter.ty != TY_UNIT {
         ir_write_ascii(compiler, ir, ", ")
         if is_aggregate_type(compiler, receiver_parameter.ty) {
-            emit_location_descriptor_argument(compiler, ir, receiver_value, true, receiver_descriptor)
+            if parameter_uses_text_read_view(compiler, receiver_parameter) {
+                emit_text_parameter_descriptor(compiler, ir, receiver_payload.ty, receiver_value, node)
+            } else {
+                emit_location_descriptor_argument(compiler, ir, receiver_value, true, receiver_descriptor)
+            }
         } else {
             ir_write_ascii(compiler, ir, llvm_type_name(receiver_parameter.ty)); ir_write_ascii(compiler, ir, " %optional.call.receiver."); ir_write_number(compiler, ir, node)
         }
@@ -8807,7 +9427,15 @@ fn emit_optional_call_invoke(
         if parameter.ty != TY_UNIT {
             ir_write_ascii(compiler, ir, ", ")
             if is_aggregate_type(compiler, parameter.ty) {
-                emit_location_descriptor_argument(compiler, ir, aggregate_destination_location(compiler, 0L, argument), true, argument)
+                let use_snapshot = direct_call_argument_needs_snapshot(tables, compiler, node, argument)
+                let argument_location = if use_snapshot { aggregate_destination_location(compiler, 0L, argument) }
+                    else { aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, argument), aggregate_source_id(tables, compiler, argument)) }
+                if parameter_uses_text_read_view(compiler, parameter) {
+                    let argument_type = compiler.facts[argument].ty
+                    emit_text_parameter_descriptor(compiler, ir, argument_type, argument_location, argument)
+                } else {
+                    emit_location_descriptor_argument(compiler, ir, argument_location, true, argument)
+                }
             } else {
                 ir_write_ascii(compiler, ir, llvm_type_name(parameter.ty)); ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, argument)
             }
@@ -8857,7 +9485,7 @@ fn emit_optional_call_start(
         ir_write_ascii(compiler, ir, "  %optional.call.int."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, source_address); ir_write_ascii(compiler, ir, ", align 1\n  %optional.call.long."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sext i32 %optional.call.int."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i64\n")
         let output_payload = sum_payload_record(compiler, compiler.facts[node].ty, 0L, 0L)
         let output_address = enum_temporary_address(node, MAX_TREE_NODES * 80L + 5L)
-        emit_layout_address(compiler, ir, output_address, optional_payload_location(compiler_location(compiler, 0L, node, 0L), output_payload.offset))
+        emit_layout_address(compiler, ir, output_address, optional_payload_location(aggregate_destination_location(compiler, 0L, node), output_payload.offset))
         ir_write_ascii(compiler, ir, "  store i64 %optional.call.long."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, output_address); ir_write_ascii(compiler, ir, ", align 1\n")
         emit_sum_tag_store(compiler, ir, node, 0L)
         ir_write_ascii(compiler, ir, "  br label %optional.call.end."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\noptional.call.end."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
@@ -8871,7 +9499,9 @@ fn emit_optional_call_start(
                 let receiver_source = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, receiver), aggregate_source_id(tables, compiler, receiver))
                 let source_payload = optional_payload_location(receiver_source, receiver_payload.offset)
                 if is_aggregate_type(compiler, receiver_parameter.ty) {
-                    emit_aggregate_copy(compiler, ir, receiver_parameter.ty, native_location(10L, node, 0L), source_payload)
+                    let receiver_storage_ty = if parameter_uses_text_read_view(compiler, receiver_parameter) { receiver_payload.ty }
+                        else { receiver_parameter.ty }
+                    emit_aggregate_copy(compiler, ir, receiver_storage_ty, native_location(10L, node, 0L), source_payload)
                 } else {
                     let source_address = enum_temporary_address(node, MAX_TREE_NODES * 80L + 6L)
                     emit_layout_address(compiler, ir, source_address, source_payload)
@@ -8927,10 +9557,24 @@ recursive fn emit_expr_linear(
                 } else if binding_is_view(compiler, binding) {
                     if !is_aggregate_type(compiler, ty) && ty != TY_UNIT {
                         let _ = emit_collection_view_name_address(tables, compiler, ir, current)
-                        emit_load_scalar(compiler, ir, current, ty)
+                        let view_loop = compiler.bindings[binding].node
+                        let view_collection = compiler.child_first[view_loop]
+                        let view_kind = type_kind(compiler, compiler.facts[view_collection].ty)
+                        if ty == TY_BYTE && (view_kind == TYPE_KIND_ASCII || view_kind == TYPE_KIND_BYTES) {
+                            ir_write_ascii(compiler, ir, "  %text.view.byte."); ir_write_number(compiler, ir, current)
+                            ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, current)
+                            ir_write_ascii(compiler, ir, ", align 1\n  %v"); ir_write_number(compiler, ir, current)
+                            ir_write_ascii(compiler, ir, " = zext i8 %text.view.byte."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " to i32\n")
+                        } else { emit_load_scalar(compiler, ir, current, ty) }
                     } else if is_aggregate_type(compiler, ty) { emit_collection_gather_view_value(tables, compiler, ir, current) }
                     else { () }
-                } else if ty == TY_UNIT || is_aggregate_type(compiler, ty) { () }
+                } else if ty == TY_UNIT { () }
+                else if is_aggregate_type(compiler, ty) {
+                    if compiler.emit_destination_node == current {
+                        let source_kind = if compiler.bindings[binding].parameter { 2L } else { 1L }
+                        emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, 0L, current), aggregate_source_location(compiler, source_kind, binding))
+                    } else { () }
+                }
                 else if binding_is_write_parameter(compiler, binding) {
                     emit_layout_address(compiler, ir, current, compiler_location(compiler, 3L, binding, 0L))
                     emit_load_scalar(compiler, ir, current, ty)
@@ -8957,6 +9601,15 @@ recursive fn emit_expr_linear(
             } else if kind == NodeKind.ArrayLiteral {
                 frame.cursor = compiler.child_first[current]
                 frame.auxiliary = 0L
+                frame.child2 = -1L
+                if type_kind(compiler, compiler.facts[current].ty) == TYPE_KIND_BYTES {
+                    let destination = aggregate_destination_location(compiler, 0L, current)
+                    frame.child2 = emit_location_pointer_materialization(compiler, ir, destination)
+                    ir_write_ascii(compiler, ir, "  %text.bytes.literal.length.addr."); ir_write_number(compiler, ir, current)
+                    ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, frame.child2)
+                    ir_write_ascii(compiler, ir, ", i64 0\n  store i64 "); ir_write_number(compiler, ir, count_children(tables, compiler, current))
+                    ir_write_ascii(compiler, ir, ", ptr %text.bytes.literal.length.addr."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 10)
+                }
                 frame.phase = 72L
                 compiler.expr_work[frame_index] = frame
             } else if kind == NodeKind.ListLiteral {
@@ -8971,9 +9624,8 @@ recursive fn emit_expr_linear(
                 if frame.child0 >= 0L {
                     compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
                 }
-            } else if kind == NodeKind.BytesLiteral {
-                let literal = decode_string_token(source, tokens, files[file_index].base, syntax.extra, true)
-                ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = getelementptr inbounds ["); ir_write_number(compiler, ir, literal.count() + 1L); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.core.literal."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i64 0, i64 0\n")
+            } else if kind == NodeKind.ByteString || kind == NodeKind.BytesLiteral {
+                emit_text_literal_value(source, files, tokens, tables, compiler, ir, current, file_index, is_test || compiler.test_build)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             } else if kind == NodeKind.Unary {
                 frame.child0 = compiler.child_first[current]
@@ -9002,11 +9654,12 @@ recursive fn emit_expr_linear(
             } else if kind == NodeKind.MethodCall {
                 let receiver = compiler.child_first[current]
                 let is_sys = is_core_sys_receiver(source, tokens, files, tables, compiler, current, file_index)
+                let is_text_empty = compiler.facts[current].literal == TEXT_METHOD_EMPTY
                 frame.child0 = receiver
                 frame.cursor = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
                 frame.phase = 1L
                 compiler.expr_work[frame_index] = frame
-                if !is_sys && receiver >= 0L {
+                if !is_sys && !is_text_empty && receiver >= 0L {
                     compiler.expr_work.push(EmitExprFrame { node: receiver, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
                 }
             } else if kind == NodeKind.OptionalCall {
@@ -9022,6 +9675,13 @@ recursive fn emit_expr_linear(
                 frame.phase = 18L
                 compiler.expr_work[frame_index] = frame
                 compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+            } else if kind == NodeKind.Fit {
+                frame.child0 = compiler.child_first[current]
+                frame.phase = 2L
+                compiler.expr_work[frame_index] = frame
+                if frame.child0 >= 0L {
+                    compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+                }
             } else if kind == NodeKind.Cast {
                 let type_node = compiler.child_first[current]
                 frame.child0 = if type_node >= 0L { compiler.child_next[type_node] } else { -1L }
@@ -9088,7 +9748,12 @@ recursive fn emit_expr_linear(
         } else if kind == NodeKind.Field && frame.phase == 1L {
             emit_aggregate_address(tables, compiler, ir, current)
             let ty = compiler.facts[current].ty
-            if !is_aggregate_type(compiler, ty) && ty != TY_UNIT { emit_load_scalar(compiler, ir, current, ty) }
+            if is_aggregate_type(compiler, ty) {
+                if compiler.emit_destination_node == current {
+                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, 0L, current), aggregate_source_location(compiler, 3L, current))
+                } else { () }
+            } else if ty != TY_UNIT { emit_load_scalar(compiler, ir, current, ty) }
+            else { () }
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.Index && frame.phase == 70L {
             if frame.child0 >= 0L && (compiler.facts[frame.child0].flags & FACT_FALLS_THROUGH) == 0L {
@@ -9108,6 +9773,12 @@ recursive fn emit_expr_linear(
                 emit_collection_index_address(files, tables, compiler, ir, current, file_index)
                 let ty = compiler.facts[current].ty
                 if is_aggregate_type(compiler, ty) { emit_collection_gather_index_value(tables, compiler, ir, current) }
+                else if ty == TY_BYTE && (type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_BYTES || type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_ASCII) {
+                    ir_write_ascii(compiler, ir, "  %text.index.byte."); ir_write_number(compiler, ir, current)
+                    ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, current)
+                    ir_write_ascii(compiler, ir, ", align 1\n  %v"); ir_write_number(compiler, ir, current)
+                    ir_write_ascii(compiler, ir, " = zext i8 %text.index.byte."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " to i32\n")
+                }
                 else if ty != TY_UNIT { emit_load_scalar(compiler, ir, current, ty) }
                 else { () }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
@@ -9116,6 +9787,8 @@ recursive fn emit_expr_linear(
             if frame.cursor >= 0L {
                 let element = frame.cursor
                 frame.cursor = compiler.child_next[element]
+                if type_kind(compiler, compiler.facts[current].ty) == TYPE_KIND_BYTES &&
+                    text_expression_may_call(tables, compiler, element) { frame.child2 = -1L }
                 frame.child0 = element
                 frame.phase = 73L
                 compiler.expr_work[frame_index] = frame
@@ -9131,7 +9804,11 @@ recursive fn emit_expr_linear(
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             } else {
                 let collection_type = compiler.facts[current].ty
-                emit_collection_literal_element(tables, compiler, ir, current, collection_type, frame.auxiliary, element)
+                if type_kind(compiler, collection_type) == TYPE_KIND_BYTES {
+                    frame.child2 = emit_text_bytes_literal_element(compiler, ir, current, frame.auxiliary, element, frame.child2)
+                } else {
+                    emit_collection_literal_element(tables, compiler, ir, current, collection_type, frame.auxiliary, element)
+                }
                 frame.auxiliary += 1L
                 frame.phase = 72L
                 compiler.expr_work[frame_index] = frame
@@ -9163,7 +9840,7 @@ recursive fn emit_expr_linear(
                     }
                     // E3a1 subsection: materialize the current top after arguments.
                     emit_current_top_load(compiler, ir, current)
-                    ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_FILL); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 "); emit_current_top_reference(compiler, ir, current); ir_write_ascii(compiler, ir, ", "); emit_location_descriptor_argument(compiler, ir, compiler_location(compiler, 0L, current, 0L), true, current); ir_write_ascii(compiler, ir, ", ptr @.nl.given."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, item_count); ir_write_ascii(compiler, ir, ")\n")
+                    ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_FILL); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 "); emit_current_top_reference(compiler, ir, current); ir_write_ascii(compiler, ir, ", "); emit_location_descriptor_argument(compiler, ir, aggregate_destination_location(compiler, 0L, current), true, current); ir_write_ascii(compiler, ir, ", ptr @.nl.given."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, item_count); ir_write_ascii(compiler, ir, ")\n")
                     // E3a1 subsection end
                 }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
@@ -9177,7 +9854,8 @@ recursive fn emit_expr_linear(
                 let field_index = compiler.facts[initializer].binding
                 let field = compiler.struct_fields[field_index]
                 // E3a1 subsection: region-backed aggregate destinations reload the base at use.
-                emit_layout_address(compiler, ir, initializer, compiler_location(compiler, 0L, current, field.offset))
+                let destination = aggregate_destination_location(compiler, 0L, current)
+                emit_layout_address(compiler, ir, initializer, StorageLocation { origin: destination.origin, anchor_kind: destination.anchor_kind, anchor_node: destination.anchor_node, byte_offset: destination.byte_offset + field.offset, copies: destination.copies, index: destination.index, index_node: destination.index_node, index_stride: destination.index_stride })
                 // E3a1 subsection end
                 if is_aggregate_type(compiler, field.ty) {
                     let source_kind = aggregate_source_kind(tables, compiler, value)
@@ -9202,15 +9880,35 @@ recursive fn emit_expr_linear(
                 emit_runtime_failure(files, tables, compiler, ir, current, file_index, failure_kind)
             }
             match compiler.expr_work.pop() { some(_) => (), none => () }
+        } else if kind == NodeKind.Fit && frame.phase == 2L {
+            emit_ascii_fit(tables, compiler, ir, current)
+            match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.Cast && frame.phase == 1L {
             let source_ty = compiler.facts[frame.child0].ty
             let target_ty = frame.auxiliary
-            if source_ty == target_ty {
+            if type_kind(compiler, target_ty) == TYPE_KIND_ASCII {
+                emit_ascii_cast(files, tables, compiler, ir, current, file_index, frame.child0, target_ty)
+            } else if source_ty == target_ty {
                 ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = add "); ir_write_ascii(compiler, ir, llvm_type_name(target_ty)); ir_write_ascii(compiler, ir, " 0, "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, "\n")
             } else if source_ty == TY_INT && target_ty == TY_LONG {
                 ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = sext i32 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i64\n")
+            } else if source_ty == TY_BYTE && target_ty == TY_INT {
+                ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = add i32 0, "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, "\n")
+            } else if target_ty == TY_BYTE {
+                if (syntax.flags & FLAG_CAST_UNCHECKED) != 0L {
+                    if source_ty == TY_LONG {
+                        ir_write_ascii(compiler, ir, "  %cast.low8."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 255\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i64 %cast.low8."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " to i32\n")
+                    } else {
+                        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i32 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 255\n")
+                    }
+                } else {
+                    let width: Ascii max 4 = if source_ty == TY_LONG { "i64" } else { "i32" }
+                    ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge "); ir_write_ascii(compiler, ir, width); ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 0\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle "); ir_write_ascii(compiler, ir, width); ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 255\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = "); if source_ty == TY_LONG { ir_write_ascii(compiler, ir, "trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n") } else { ir_write_ascii(compiler, ir, "add i32 0, "); ir_write_value_ref(compiler, ir, frame.child0); ir_push_byte(compiler, ir, 10) }
+                }
+            } else if target_ty == TY_LONG && (source_ty == TY_BYTE || source_ty == TY_INT) {
+                ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = sext i32 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i64\n")
             } else {
-                ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", -2147483648\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 2147483647\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.anchor, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.anchor, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n")
+                ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", -2147483648\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 2147483647\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n")
             }
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.ToLong && frame.phase == 1L {
@@ -9313,8 +10011,12 @@ recursive fn emit_expr_linear(
                 if op == 14L { ir_write_ascii(compiler, ir, "false") } else { ir_write_ascii(compiler, ir, "true") }
                 ir_write_ascii(compiler, ir, ", ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n  br label %logic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\nlogic.rhs."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n")
             }
-            if (op == 8L || op == 9L) && is_aggregate_type(compiler, compiler.facts[frame.child0].ty) &&
-                (tables.nodes[frame.child0].kind == NodeKind.Name || tables.nodes[frame.child0].kind == NodeKind.Field) {
+            let comparison_snapshot = op >= 8L && op <= 13L &&
+                is_aggregate_type(compiler, compiler.facts[frame.child0].ty) &&
+                (tables.nodes[frame.child0].kind == NodeKind.Name || tables.nodes[frame.child0].kind == NodeKind.Field) &&
+                (!is_text_comparable(compiler, compiler.facts[frame.child0].ty, compiler.facts[frame.child1].ty) ||
+                    region_subtree_has_effect(tables, frame.child1, frame.child1))
+            if comparison_snapshot || text_concat_left_needs_snapshot(tables, compiler, current) {
                 let ty = compiler.facts[frame.child0].ty
                 let source_kind = aggregate_source_kind(tables, compiler, frame.child0)
                 let source_node = aggregate_source_id(tables, compiler, frame.child0)
@@ -9329,6 +10031,8 @@ recursive fn emit_expr_linear(
             let op = syntax.flags
             if op == 14L || op == 15L {
                 ir_write_ascii(compiler, ir, "  store i1 "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n  br label %logic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\nlogic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load i1, ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n")
+            } else if op >= 8L && op <= 13L && is_text_comparable(compiler, compiler.facts[left].ty, compiler.facts[right].ty) {
+                emit_text_compare(tables, compiler, ir, current, op)
             } else if (op == 8L || op == 9L) && is_aggregate_type(compiler, compiler.facts[left].ty) {
                 let ty = compiler.facts[left].ty
                 let left_location = if tables.nodes[left].kind == NodeKind.Name || tables.nodes[left].kind == NodeKind.Field { compiler_location(compiler, 0L, left, 0L) }
@@ -9344,6 +10048,8 @@ recursive fn emit_expr_linear(
                 } else {
                     ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = xor i1 %eq.value."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", true\n")
                 }
+            } else if op == 0L && is_text_concatenation(compiler, compiler.facts[left].ty, compiler.facts[right].ty) {
+                emit_text_concat(tables, compiler, ir, current, is_test || compiler.test_build)
             } else if op == 0L || op == 1L || op == 2L {
                 let ty = compiler.facts[left].ty
                 let failure_kind = if ty == TY_INT { op + 1L } else { op + 5L }
@@ -9415,8 +10121,7 @@ recursive fn emit_expr_linear(
                 if (compiler.facts[argument].flags & FACT_FALLS_THROUGH) == 0L {
                     match compiler.expr_work.pop() { some(_) => (), none() => () }
                 } else {
-                    if !direct_call_argument_is_write(tables, compiler, current, argument) &&
-                        (tables.nodes[argument].kind == NodeKind.Name || tables.nodes[argument].kind == NodeKind.Field) {
+                    if direct_call_argument_needs_snapshot(tables, compiler, current, argument) {
                         let ty = compiler.facts[argument].ty
                         let source_kind = aggregate_source_kind(tables, compiler, argument)
                         let source_node = aggregate_source_id(tables, compiler, argument)
@@ -9445,8 +10150,11 @@ recursive fn emit_expr_linear(
             } else {
                 let is_print = token_is_word_at(source, tokens, files, file_index, syntax.token, "print")
                 let is_fill = token_is_word_at(source, tokens, files, file_index, syntax.token, "fill")
+                let format_kind = if (compiler.facts[current].flags & FACT_FORMAT_TEXT) != 0L { compiler.facts[current].literal } else { FORMAT_TEXT_NONE }
                 let first_arg = compiler.child_first[current]
-                if is_print {
+                if format_kind != FORMAT_TEXT_NONE {
+                    emit_format_text_builtin(source, files, tokens, tables, compiler, ir, current, file_index, is_test, format_kind)
+                } else if is_print {
                     let arg_ty = compiler.facts[first_arg].ty
                     if is_aggregate_type(compiler, arg_ty) {
                         let location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, first_arg), aggregate_source_id(tables, compiler, first_arg))
@@ -9454,7 +10162,7 @@ recursive fn emit_expr_linear(
                         ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, arg_ty, HELPER_PRINT, location, pointer); ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline(ptr %nl.ctx)\n")
                     } else {
                         ir_write_ascii(compiler, ir, "  call void @nl_print_")
-                        if arg_ty == TY_INT { ir_write_ascii(compiler, ir, "int(ptr %nl.ctx, i32 ") }
+                        if arg_ty == TY_INT || arg_ty == TY_BYTE { ir_write_ascii(compiler, ir, "int(ptr %nl.ctx, i32 ") }
                         else if arg_ty == TY_LONG { ir_write_ascii(compiler, ir, "long(ptr %nl.ctx, i64 ") }
                         else { ir_write_ascii(compiler, ir, "bool(ptr %nl.ctx, i1 zeroext ") }
                         ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ")\n")
@@ -9480,8 +10188,24 @@ recursive fn emit_expr_linear(
                                     let geometry = is_aggregate_type(compiler, parameter.ty)
                                     emit_prepare_location_descriptor(compiler, ir, location, geometry, prepared_argument)
                                 } else if is_aggregate_type(compiler, parameter.ty) {
-                                    let location = aggregate_destination_location(compiler, 0L, prepared_argument)
-                                    emit_prepare_location_descriptor(compiler, ir, location, true, prepared_argument)
+                                    if parameter_uses_text_read_view(compiler, parameter) {
+                                        let argument_type = compiler.facts[prepared_argument].ty
+                                        let use_snapshot = direct_call_text_view_needs_snapshot(tables, compiler, current, prepared_argument)
+                                        let location = if use_snapshot { compiler_location(compiler, 0L, prepared_argument, 0L) }
+                                            else { aggregate_source_location(compiler,
+                                                aggregate_source_kind(tables, compiler, prepared_argument),
+                                                aggregate_source_id(tables, compiler, prepared_argument)) }
+                                        prepare_text_parameter_descriptor(compiler, ir, argument_type, location, prepared_argument)
+                                    } else {
+                                        let location = if direct_call_argument_needs_snapshot(tables, compiler, current, prepared_argument) {
+                                            aggregate_destination_location(compiler, 0L, prepared_argument)
+                                        } else {
+                                            aggregate_source_location(compiler,
+                                                aggregate_source_kind(tables, compiler, prepared_argument),
+                                                aggregate_source_id(tables, compiler, prepared_argument))
+                                        }
+                                        emit_prepare_location_descriptor(compiler, ir, location, true, prepared_argument)
+                                    }
                                 } else { () }
                             }
                             prepared_argument = compiler.child_next[prepared_argument]
@@ -9509,7 +10233,7 @@ recursive fn emit_expr_linear(
                     if !compiler.core_mode { wrote_argument = true }
                     if aggregate_result {
                         if wrote_argument { ir_write_ascii(compiler, ir, ", ") }
-                        emit_hidden_destination_argument(compiler, ir, compiler_location(compiler, 0L, current, 0L))
+                        emit_hidden_destination_argument(compiler, ir, aggregate_destination_location(compiler, 0L, current))
                         wrote_argument = true
                     }
                     var arg = first_arg
@@ -9521,7 +10245,19 @@ recursive fn emit_expr_linear(
                             if (parameter_mode(parameter) & FLAG_MODE_WRITE) != 0L {
                                 emit_location_descriptor_argument(compiler, ir, place_storage_location(tables, compiler, arg), is_aggregate_type(compiler, param_ty), arg)
                             } else if is_aggregate_type(compiler, param_ty) {
-                                emit_location_descriptor_argument(compiler, ir, aggregate_destination_location(compiler, 0L, arg), true, arg)
+                                if parameter_uses_text_read_view(compiler, parameter) {
+                                    emit_text_parameter_argument(tables, compiler, ir, arg,
+                                        direct_call_text_view_needs_snapshot(tables, compiler, current, arg))
+                                } else {
+                                    let location = if direct_call_argument_needs_snapshot(tables, compiler, current, arg) {
+                                        aggregate_destination_location(compiler, 0L, arg)
+                                    } else {
+                                        aggregate_source_location(compiler,
+                                            aggregate_source_kind(tables, compiler, arg),
+                                            aggregate_source_id(tables, compiler, arg))
+                                    }
+                                    emit_location_descriptor_argument(compiler, ir, location, true, arg)
+                                }
                             } else {
                                 ir_write_ascii(compiler, ir, llvm_type_name(param_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, arg)
                             }
@@ -9567,8 +10303,7 @@ recursive fn emit_expr_linear(
                 ir_write_ascii(compiler, ir, "optional.call.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n")
                 match compiler.expr_work.pop() { some(_) => (), none() => () }
             } else {
-                if is_aggregate_type(compiler, compiler.facts[argument].ty) &&
-                    (tables.nodes[argument].kind == NodeKind.Name || tables.nodes[argument].kind == NodeKind.Field) {
+                if direct_call_argument_needs_snapshot(tables, compiler, current, argument) {
                     let argument_type = compiler.facts[argument].ty
                     let source_kind = aggregate_source_kind(tables, compiler, argument)
                     let source_node = aggregate_source_id(tables, compiler, argument)
@@ -9580,6 +10315,10 @@ recursive fn emit_expr_linear(
             }
         } else if kind == NodeKind.MethodCall {
             if frame.cursor >= 0L {
+                if frame.child2 < 0L && text_method_needs_receiver_metrics_capture(tables, compiler, current) {
+                    emit_text_method_receiver_metrics(tables, compiler, ir, current)
+                    frame.child2 = 0L
+                }
                 let argument = frame.cursor
                 frame.cursor = compiler.child_next[argument]
                 compiler.expr_work[frame_index] = frame
@@ -9587,7 +10326,14 @@ recursive fn emit_expr_linear(
             } else {
                 let receiver = compiler.child_first[current]
                 let receiver_ty = compiler.facts[receiver].ty
-                if is_sum_type(compiler, receiver_ty) && type_kind(compiler, receiver_ty) != TYPE_KIND_ENUM {
+                let receiver_kind = type_kind(compiler, receiver_ty)
+                if parse_number_method_kind(source, tokens, files, file_index, syntax.token) != PARSE_NUMBER_NONE {
+                    emit_parse_number_method(source, files, tokens, tables, compiler, ir, current, file_index)
+                } else if compiler.facts[current].literal == TEXT_METHOD_EMPTY {
+                    emit_text_empty_value(compiler, ir, current, is_test || compiler.test_build)
+                } else if receiver_kind == TYPE_KIND_ASCII || receiver_kind == TYPE_KIND_TEXT || receiver_kind == TYPE_KIND_BYTES {
+                    emit_text_method_call(source, files, tokens, tables, compiler, ir, current, file_index, is_test || compiler.test_build)
+                } else if is_sum_type(compiler, receiver_ty) && receiver_kind != TYPE_KIND_ENUM {
                     emit_option_result_method(source, files, tokens, tables, compiler, ir, current, file_index)
                 } else {
                     emit_sys_method(source, files, tokens, tables, compiler, ir, current, file_index)
@@ -10000,7 +10746,13 @@ fn emit_expect_after_expression(
         let right_node = compiler.child_next[left_node]
         let operand_ty = compiler.facts[left_node].ty
         if is_aggregate_type(compiler, operand_ty) {
-            let left_location = compiler_location(compiler, 0L, left_node, 0L)
+            let left_location = if region_node_needs_snapshot(tables, compiler, left_node) {
+                compiler_location(compiler, 0L, left_node, 0L)
+            } else {
+                aggregate_source_location(compiler,
+                    aggregate_source_kind(tables, compiler, left_node),
+                    aggregate_source_id(tables, compiler, left_node))
+            }
             let right_location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, right_node), aggregate_source_id(tables, compiler, right_node))
             let left_pointer = emit_location_pointer_materialization(compiler, ir, left_location)
             let right_pointer = emit_location_pointer_materialization(compiler, ir, right_location)
@@ -10181,7 +10933,11 @@ recursive fn emit_function_body(
             if frame.auxiliary == 1L {
                 lower_scope_exit(compiler, ir, -1L, EXIT_BRANCH, BRANCH_WHILE_STEP, frame.node, TY_UNIT, -1L)
             }
-            ir_write_ascii(compiler, ir, "while.step."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n  %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, " = call i1 @nl_core_nl_context_step_budget_take(ptr %nl.ctx)\n  br i1 %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.cond."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, "\nwhile.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 23, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\nwhile.end."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n")
+            ir_write_ascii(compiler, ir, "while.step."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n")
+            if compiler.step_budget_main >= 0L {
+                ir_write_ascii(compiler, ir, "  %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, " = call i1 @nl_core_nl_context_step_budget_take(ptr %nl.ctx)\n  br i1 %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.cond."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, "\nwhile.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 23, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\n")
+            } else { ir_write_ascii(compiler, ir, "  br label %while.cond."); ir_write_number(compiler, ir, frame.node); ir_push_byte(compiler, ir, 10) }
+            ir_write_ascii(compiler, ir, "while.end."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n")
             match compiler.emit_loops.pop() { some(_) => (), none => () }
             match compiler.work.pop() { some(_) => (), none => () }
             continue
@@ -10223,7 +10979,22 @@ recursive fn emit_function_body(
         }
         let is_statement = tables.nodes[child].kind == NodeKind.Let || tables.nodes[child].kind == NodeKind.Assign || tables.nodes[child].kind == NodeKind.ExpressionStatement || tables.nodes[child].kind == NodeKind.Discard || tables.nodes[child].kind == NodeKind.ReturnStatement || tables.nodes[child].kind == NodeKind.For || tables.nodes[child].kind == NodeKind.ForEach || tables.nodes[child].kind == NodeKind.While || tables.nodes[child].kind == NodeKind.Expect || tables.nodes[child].kind == NodeKind.BreakStatement || tables.nodes[child].kind == NodeKind.ContinueStatement || tables.nodes[child].kind == NodeKind.Block
         if !is_statement {
+            let redirect_return = function_root && frame.node == body && child == frame.child0 &&
+                (tables.nodes[body].flags & FLAG_HAS_TAIL) != 0L && is_aggregate_type(compiler, return_ty)
+            let saved_destination_node = compiler.emit_destination_node
+            let saved_destination_kind = compiler.emit_destination_kind
+            let saved_destination_anchor = compiler.emit_destination_anchor
+            if redirect_return {
+                compiler.emit_destination_node = child
+                compiler.emit_destination_kind = 2L
+                compiler.emit_destination_anchor = -1L
+            }
             emit_expr_linear(source, files, tokens, tables, compiler, ir, child, file_index, return_ty, is_test)
+            if redirect_return {
+                compiler.emit_destination_node = saved_destination_node
+                compiler.emit_destination_kind = saved_destination_kind
+                compiler.emit_destination_anchor = saved_destination_anchor
+            }
             if function_root && frame.node == body {
                 if (compiler.facts[child].flags & FACT_FALLS_THROUGH) != 0L {
                     if is_test { lower_scope_exit(compiler, ir, -1L, EXIT_TEST_SUCCESS, 0L, 0L, TY_UNIT, -1L) }
@@ -10231,7 +11002,9 @@ recursive fn emit_function_body(
                     else if is_aggregate_type(compiler, return_ty) {
                         let source_kind = aggregate_source_kind(tables, compiler, child)
                         let source_node = aggregate_source_id(tables, compiler, child)
-                        emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(compiler, 2L, 0L), aggregate_source_location(compiler, source_kind, source_node))
+                        if !redirect_return {
+                            emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(compiler, 2L, 0L), aggregate_source_location(compiler, source_kind, source_node))
+                        }
                         lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L)
                     }
                     else {
@@ -10252,18 +11025,34 @@ recursive fn emit_function_body(
                 if tables.nodes[sub].kind != NodeKind.Annotation { value = sub }
                 sub = compiler.child_next[sub]
             }
-            emit_expr_linear(source, files, tokens, tables, compiler, ir, value, file_index, return_ty, is_test)
             let binding = compiler.facts[child].binding
             let ty = compiler.bindings[binding].ty
+            let redirect_value = is_aggregate_type(compiler, ty)
+            let saved_destination_node = compiler.emit_destination_node
+            let saved_destination_kind = compiler.emit_destination_kind
+            let saved_destination_anchor = compiler.emit_destination_anchor
+            if redirect_value {
+                compiler.emit_destination_node = value
+                compiler.emit_destination_kind = 1L
+                compiler.emit_destination_anchor = binding
+            }
+            emit_expr_linear(source, files, tokens, tables, compiler, ir, value, file_index, return_ty, is_test)
+            if redirect_value {
+                compiler.emit_destination_node = saved_destination_node
+                compiler.emit_destination_kind = saved_destination_kind
+                compiler.emit_destination_anchor = saved_destination_anchor
+            }
             if (compiler.facts[value].flags & FACT_FALLS_THROUGH) == 0L {
                 frame.reachable = false
                 frame.cursor = -1L
                 compiler.work[frame_index] = frame
             } else {
                 if is_aggregate_type(compiler, ty) {
-                    let source_kind = aggregate_source_kind(tables, compiler, value)
-                    let source_node = aggregate_source_id(tables, compiler, value)
-                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, 1L, binding), aggregate_source_location(compiler, source_kind, source_node))
+                    if !redirect_value {
+                        let source_kind = aggregate_source_kind(tables, compiler, value)
+                        let source_node = aggregate_source_id(tables, compiler, value)
+                        emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, 1L, binding), aggregate_source_location(compiler, source_kind, source_node))
+                    }
                 } else if ty == TY_BOOL {
                     ir_write_ascii(compiler, ir, "  %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
                 } else if ty != TY_UNIT {
@@ -10310,15 +11099,31 @@ recursive fn emit_function_body(
         } else if kind == NodeKind.ReturnStatement {
             let value = compiler.child_first[child]
             if value >= 0L {
+                let redirect_return = is_aggregate_type(compiler, return_ty)
+                let saved_destination_node = compiler.emit_destination_node
+                let saved_destination_kind = compiler.emit_destination_kind
+                let saved_destination_anchor = compiler.emit_destination_anchor
+                if redirect_return {
+                    compiler.emit_destination_node = value
+                    compiler.emit_destination_kind = 2L
+                    compiler.emit_destination_anchor = -1L
+                }
                 emit_expr_linear(source, files, tokens, tables, compiler, ir, value, file_index, return_ty, is_test)
+                if redirect_return {
+                    compiler.emit_destination_node = saved_destination_node
+                    compiler.emit_destination_kind = saved_destination_kind
+                    compiler.emit_destination_anchor = saved_destination_anchor
+                }
                 if (compiler.facts[value].flags & FACT_FALLS_THROUGH) == 0L {
                     frame.reachable = false
                     frame.cursor = -1L
                     compiler.work[frame_index] = frame
                 } else if is_aggregate_type(compiler, return_ty) {
-                    let source_kind = aggregate_source_kind(tables, compiler, value)
-                    let source_node = aggregate_source_id(tables, compiler, value)
-                    emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(compiler, 2L, 0L), aggregate_source_location(compiler, source_kind, source_node))
+                    if !redirect_return {
+                        let source_kind = aggregate_source_kind(tables, compiler, value)
+                        let source_node = aggregate_source_id(tables, compiler, value)
+                        emit_aggregate_copy(compiler, ir, return_ty, aggregate_destination_location(compiler, 2L, 0L), aggregate_source_location(compiler, source_kind, source_node))
+                    }
                     lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L)
                 } else if return_ty == TY_UNIT { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN, 0L, 0L, return_ty, -1L) }
                 else { lower_scope_exit(compiler, ir, -1L, EXIT_RETURN_VALUE, 0L, 0L, return_ty, value) }
@@ -10387,6 +11192,8 @@ recursive fn emit_function_body(
             let location = collection_value_location(tables, compiler, collection)
             let pointer = emit_location_pointer_materialization(compiler, ir, location)
             if collection_kind == TYPE_KIND_LIST {
+                ir_write_ascii(compiler, ir, "  %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 0\n  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 1\n")
+            } else if collection_kind == TYPE_KIND_ASCII || collection_kind == TYPE_KIND_BYTES {
                 ir_write_ascii(compiler, ir, "  %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 0\n  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 1\n")
             } else {
                 ir_write_ascii(compiler, ir, "  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = add i64 0, "); ir_write_number(compiler, ir, capacity); ir_push_byte(compiler, ir, 10)
@@ -10505,9 +11312,12 @@ fn emit_function_definition(
         if node < body_first || node > function.body { continue }
         if tables.nodes[node].kind == NodeKind.OptionalCall && compiler.facts[node].function >= 0L {
             let target = compiler.functions[compiler.facts[node].function]
-            let receiver = compiler.parameters[target.param_start]
-            if receiver.ty != TY_UNIT && is_aggregate_type(compiler, receiver.ty) {
-                let type_info = type_record(compiler, receiver.ty)
+            let receiver_parameter = compiler.parameters[target.param_start]
+            let receiver_type = if parameter_uses_text_read_view(compiler, receiver_parameter) {
+                sum_case_payload_type(compiler, compiler.facts[compiler.child_first[node]].ty, 0L, 0L)
+            } else { receiver_parameter.ty }
+            if receiver_type != TY_UNIT && is_aggregate_type(compiler, receiver_type) {
+                let type_info = type_record(compiler, receiver_type)
                 ir_write_ascii(compiler, ir, "  %optional.call.receiver.snapshot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca ["); ir_write_number(compiler, ir, type_info.size); ir_write_ascii(compiler, ir, " x i8], align "); ir_write_number(compiler, ir, type_info.align); ir_write_ascii(compiler, ir, "\n")
             }
         }
@@ -10530,7 +11340,7 @@ fn emit_function_definition(
             let ty = if tables.nodes[node].kind == NodeKind.Binary { compiler.facts[node].ty } else { compiler.facts[compiler.child_first[node]].ty }
             ir_write_ascii(compiler, ir, "  %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", align 1\n")
         }
-        if is_aggregate_type(compiler, compiler.facts[node].ty) && !region_has_slot(compiler, 0L, node) {
+        if is_aggregate_type(compiler, compiler.facts[node].ty) && region_node_is_temporary(tables, compiler, node) && !region_has_slot(compiler, 0L, node) {
             let type_info = type_record(compiler, compiler.facts[node].ty)
             let size = type_info.size
             let alignment = type_info.align
@@ -10597,9 +11407,12 @@ fn emit_test_definition(
         if node < body_first || node > test.body { continue }
         if tables.nodes[node].kind == NodeKind.OptionalCall && compiler.facts[node].function >= 0L {
             let target = compiler.functions[compiler.facts[node].function]
-            let receiver = compiler.parameters[target.param_start]
-            if receiver.ty != TY_UNIT && is_aggregate_type(compiler, receiver.ty) {
-                let type_info = type_record(compiler, receiver.ty)
+            let receiver_parameter = compiler.parameters[target.param_start]
+            let receiver_type = if parameter_uses_text_read_view(compiler, receiver_parameter) {
+                sum_case_payload_type(compiler, compiler.facts[compiler.child_first[node]].ty, 0L, 0L)
+            } else { receiver_parameter.ty }
+            if receiver_type != TY_UNIT && is_aggregate_type(compiler, receiver_type) {
+                let type_info = type_record(compiler, receiver_type)
                 ir_write_ascii(compiler, ir, "  %optional.call.receiver.snapshot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca ["); ir_write_number(compiler, ir, type_info.size); ir_write_ascii(compiler, ir, " x i8], align "); ir_write_number(compiler, ir, type_info.align); ir_write_ascii(compiler, ir, "\n")
             }
         }
@@ -10622,7 +11435,7 @@ fn emit_test_definition(
             let ty = if tables.nodes[node].kind == NodeKind.Binary { compiler.facts[node].ty } else { compiler.facts[compiler.child_first[node]].ty }
             ir_write_ascii(compiler, ir, "  %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", align 1\n")
         }
-        if is_aggregate_type(compiler, compiler.facts[node].ty) && !region_has_slot(compiler, 0L, node) {
+        if is_aggregate_type(compiler, compiler.facts[node].ty) && region_node_is_temporary(tables, compiler, node) && !region_has_slot(compiler, 0L, node) {
             let type_info = type_record(compiler, compiler.facts[node].ty)
             let size = type_info.size
             let alignment = type_info.align
@@ -10802,7 +11615,7 @@ fn mark_struct_helpers(
         } else { () }
         if syntax.kind == NodeKind.Expect {
             let expression = compiler.child_first[node]
-            if expression >= 0L && tables.nodes[expression].kind == NodeKind.Binary && (tables.nodes[expression].flags == 8L || tables.nodes[expression].flags == 9L) {
+            if expression >= 0L && tables.nodes[expression].kind == NodeKind.Binary && tables.nodes[expression].flags >= 8L && tables.nodes[expression].flags <= 13L {
                 let left = compiler.child_first[expression]
                 if left >= 0L {
                     let ty = compiler.facts[left].ty
@@ -11102,7 +11915,7 @@ fn emit_struct_print_helpers(
             } else if field.ty == TY_BOOL {
                 ir_write_ascii(compiler, ir, "  %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = trunc i8 %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " to i1\n  call void @nl_print_bool_raw(ptr %nl.ctx, i1 zeroext %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n")
             } else {
-                let raw_name: Ascii max 16 = if field.ty == TY_INT { "int" } else { "long" }
+                let raw_name: Ascii max 16 = if field.ty == TY_LONG { "long" } else { "int" }
                 ir_write_ascii(compiler, ir, "  %print.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  call void @nl_print_"); ir_write_ascii(compiler, ir, raw_name); ir_write_ascii(compiler, ir, "_raw(ptr %nl.ctx, "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, " %print.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n")
             }
         }
@@ -11548,6 +12361,8 @@ fn emit_type_helpers_for_kind(
         emit_collection_copy_helpers(compiler, ir, kind)
         emit_collection_equal_helpers(compiler, ir, kind)
         emit_collection_print_helpers(compiler, ir, kind)
+    } else if kind == TYPE_KIND_ASCII || kind == TYPE_KIND_TEXT || kind == TYPE_KIND_BYTES {
+        emit_text_type_helpers(compiler, ir, kind)
     } else {
         for type_id in 0L..type_count(compiler) {
             if type_kind(compiler, type_id) == kind && type_has_registered_helper(compiler, type_id) { compiler.ir_overflow = true }
@@ -11622,6 +12437,22 @@ fn emit_file_globals(
         ir_write_ascii(compiler, ir, " x i8] c\"")
         for index in 0L..files[file_index].name.count() { ir_write_escaped_byte(compiler, ir, files[file_index].name[index]) }
         ir_write_ascii(compiler, ir, "\\00\", align 1\n")
+    }
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind == NodeKind.BytesLiteral || tables.nodes[node].kind == NodeKind.ByteString {
+            let syntax = tables.nodes[node]
+            let literal_file = node_file_index(tables.nodes, files, node)
+            let literal = if syntax.kind == NodeKind.BytesLiteral {
+                decode_string_token(source, tokens, files[literal_file].base, syntax.extra, true)
+            } else { decode_string_token(source, tokens, files[literal_file].base, syntax.token, false) }
+            ir_write_ascii(compiler, ir, "@.nl.literal.")
+            ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = private unnamed_addr constant [")
+            ir_write_number(compiler, ir, literal.count() + 1L)
+            ir_write_ascii(compiler, ir, " x i8] c\"")
+            for index in 0L..literal.count() { ir_write_escaped_byte(compiler, ir, literal[index]) }
+            ir_write_ascii(compiler, ir, "\\00\", align 1\n")
+        }
     }
     let first_file_id = compiler_file_id_base(compiler)
     emit_file_table_global(files, compiler, ir, first_file_id)
@@ -11720,6 +12551,7 @@ fn emit_file_globals(
     ir_write_global_string(compiler, ir, "@.nl.sum.Full = private unnamed_addr constant [", sum_full)
     for type_index in 0L..struct_type_count(compiler) {
         let ty = struct_record(compiler, type_index)
+        if ty.node < 0L { continue }
         ir_write_struct_identifier_global(source, files, tokens, compiler, ir, "type", type_index, ty.file, ty.name_token)
         for offset in 0L..ty.field_count {
             let field_index = ty.field_start + offset
@@ -11749,6 +12581,8 @@ fn emit_main_function(
     // E3a1 subsection: create the stable context before any context-passing hook.
     ir_write_ascii(compiler, ir, "define i32 @main(i32 %argc, ptr %argv, ptr %envp, ptr %auxv) {\nentry:\n  %nl.ctx = call ptr @nl_context_create(i64 4096, i64 ")
     ir_write_number(compiler, ir, config.recursion_budget)
+    ir_write_ascii(compiler, ir, ", i64 ")
+    ir_write_number(compiler, ir, config.step_budget_main)
     ir_write_ascii(compiler, ir, ", ptr @.nl.entry.table, i64 0, ptr %envp, ptr %auxv)\n  call void @nl_core_init(ptr %nl.ctx, i32 %argc, ptr %argv, ptr %envp, ptr %auxv)\n")
     // E3a1 subsection end
     if compiler.tests.count() > 0L {
@@ -11920,10 +12754,12 @@ fn emit_core_file_globals(
     let first_file_id = compiler_file_id_base(compiler)
     emit_file_table_global(files, compiler, ir, first_file_id)
     for node in 0L..tables.nodes.count() {
-        if tables.nodes[node].kind == NodeKind.BytesLiteral {
+        if tables.nodes[node].kind == NodeKind.BytesLiteral || tables.nodes[node].kind == NodeKind.ByteString {
             let syntax = tables.nodes[node]
             let literal_file = node_file_index(tables.nodes, files, node)
-            let literal = decode_string_token(source, tokens, files[literal_file].base, syntax.extra, true)
+            let literal = if syntax.kind == NodeKind.BytesLiteral {
+                decode_string_token(source, tokens, files[literal_file].base, syntax.extra, true)
+            } else { decode_string_token(source, tokens, files[literal_file].base, syntax.token, false) }
             ir_write_ascii(compiler, ir, "@.nl.core.literal.")
             ir_write_number(compiler, ir, node)
             ir_write_ascii(compiler, ir, " = private unnamed_addr constant [")
@@ -12012,6 +12848,7 @@ fn compile_embedded_core(
     append_embedded_core_sources(env, source, files, tokens, delimiters, tables)
     reset_compiler_tables(compiler)
     compiler.core_mode = true
+    compiler.test_build = test_build
     compiler.file_id_base = file_id_base + if test_build { COMPILER_TEST_BUILD_FLAG } else { 0L }
     add_compiler_links(tables, compiler)
     intern_package_names(env, source, files, tokens, tables, compiler)
@@ -12058,6 +12895,7 @@ fn compile_selfhost_package(
     want_test_build: bool,
     core_hash: Ascii max 64,
 ) {
+    compiler.test_build = want_test_build
     check_struct_declarations(env, source, files, tokens, tables, compiler)
     register_package_declarations(env, source, files, tokens, tables, config, compiler)
     initialize_default_graph_nodes(compiler)

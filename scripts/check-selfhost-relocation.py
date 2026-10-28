@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 
-from test_harness import add_filter_arguments, changed_paths, filter_label, select_packages, worker_count
+from test_harness import add_filter_arguments, changed_paths, filter_label, read_classification_table, select_packages, worker_count
 
 
 TIMEOUT_SECONDS = 180
@@ -57,20 +57,10 @@ def command_result(result: subprocess.CompletedProcess[bytes]) -> str:
 
 
 def read_classifications(path: Path, root: Path) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for number, raw in enumerate(path.read_text().splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split("\t")
-        if len(parts) != 2 or parts[0] not in ("build", "diagnose", "rejects", "unsupported", "expected"):
-            raise CheckError(f"{path}:{number}: expected class<TAB>package")
-        if parts[1] in result:
-            raise CheckError(f"{path}:{number}: duplicate package {parts[1]}")
-        if not (root / parts[1]).is_dir():
-            raise CheckError(f"{path}:{number}: missing package directory {parts[1]}")
-        result[parts[1]] = parts[0]
-    return result
+    try:
+        return read_classification_table(path, root)
+    except ValueError as error:
+        raise CheckError(str(error)) from error
 
 
 def package_cwd(root: Path, package: str) -> Path:
