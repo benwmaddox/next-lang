@@ -243,10 +243,18 @@ def check_package(
         if stats[4] > 0:
             package_relocated = True
 
-    if (
-        package.startswith(("tests/e3/a1_", "tests/e3/merge_", "tests/e3/a2_relocation_", "tests/e3/e3b_relocation_"))
-        or package == "tests/e3/e3b_relocation"
-    ) and not package_relocated:
+    directed_relocation = package.startswith(
+        (
+            "tests/e3/a1_",
+            "tests/e3/merge_",
+            "tests/e3/a2_relocation_",
+            "tests/e3/e3b_relocation_",
+        )
+    ) or package in (
+        "tests/e3/e3b_relocation",
+        "tests/e3/b1_bytes_fields_records",
+    )
+    if directed_relocation and not package_relocated:
         raise CheckError(f"directed relocation fixture {package} never relocated at O{level}")
 
     if package == "tests/e3/a1_core_probes":

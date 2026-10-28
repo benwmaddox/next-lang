@@ -409,6 +409,13 @@ fn emit_text_type_helpers(compiler: write CompilerTables, ir: grow Bytes max IR_
         if has_type_helper(compiler, type_id, HELPER_COPY) {
             ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY)
             ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr %nl.p4, ptr %nl.p5) {\nentry:\n")
+            if kind == TYPE_KIND_BYTES {
+                ir_write_ascii(compiler, ir, "  %text.copy.same."); ir_write_number(compiler, ir, type_id)
+                ir_write_ascii(compiler, ir, " = icmp eq ptr %nl.p4, %nl.p5\n  br i1 %text.copy.same."); ir_write_number(compiler, ir, type_id)
+                ir_write_ascii(compiler, ir, ", label %text.copy.done."); ir_write_number(compiler, ir, type_id)
+                ir_write_ascii(compiler, ir, ", label %text.copy.body."); ir_write_number(compiler, ir, type_id)
+                ir_write_ascii(compiler, ir, "\ntext.copy.body."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n")
+            }
             ir_write_ascii(compiler, ir, "  %text.copy.length.src."); ir_write_number(compiler, ir, type_id)
             ir_write_ascii(compiler, ir, " = load i64, ptr %nl.p5, align 1\n  store i64 %text.copy.length.src."); ir_write_number(compiler, ir, type_id)
             ir_write_ascii(compiler, ir, ", ptr %nl.p4, align 1\n")
@@ -428,7 +435,11 @@ fn emit_text_type_helpers(compiler: write CompilerTables, ir: grow Bytes max IR_
             ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %text.copy.destination.data."); ir_write_number(compiler, ir, type_id)
             ir_write_ascii(compiler, ir, ", ptr %text.copy.source.data."); ir_write_number(compiler, ir, type_id)
             ir_write_ascii(compiler, ir, ", i64 %text.copy.length.src."); ir_write_number(compiler, ir, type_id)
-            ir_write_ascii(compiler, ir, ")\n  ret void\n}\n\n")
+            ir_write_ascii(compiler, ir, ")\n  ret void\n")
+            if kind == TYPE_KIND_BYTES {
+                ir_write_ascii(compiler, ir, "text.copy.done."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n  ret void\n")
+            }
+            ir_write_ascii(compiler, ir, "}\n\n")
         }
         if has_type_helper(compiler, type_id, HELPER_EQUAL) {
             ir_write_ascii(compiler, ir, "define internal i1 "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_EQUAL)

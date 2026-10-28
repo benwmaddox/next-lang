@@ -383,7 +383,7 @@ diagnose	tests/run/t16_text_write_byte_limit
 unsupported	tests/run/t16_view_field_write
 unsupported	tests/run/t16_view_indirect_write
 unsupported	tests/run/t16_view_remove
-unsupported	tests/run/t16_view_shift
+diagnose	tests/run/t16_view_shift
 unsupported	tests/run/t17_worked_reservation
 unsupported	tests/run/t18_abs_min
 diagnose	tests/run/t18_bad_radix
@@ -791,3 +791,13 @@ unsupported	tests/e3/b1_consts_unsupported_control
 unsupported	tests/e3/b1_consts_unsupported_shift
 unsupported	tests/e3/b1_consts_unsupported_aggregate
 # B1 scalar constants end
+
+# B1 Bytes fields begin
+build	tests/e3/b1_bytes_fields_records
+unsupported	tests/e3/b1_bytes_fields_unsupported_bytes_element
+unsupported	tests/e3/b1_bytes_fields_unsupported_ascii_field
+unsupported	tests/e3/b1_bytes_fields_unsupported_text_field
+unsupported	tests/e3/b1_bytes_fields_unsupported_nested
+unsupported	tests/e3/b1_bytes_fields_unsupported_sum_payload
+diagnose	tests/e3/b1_bytes_fields_invalid_write
+# B1 Bytes fields end

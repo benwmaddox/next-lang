@@ -1,8 +1,8 @@
 # B1 prerequisite: Bytes fields in struct collections
 
-Status: ready as the next serial task; scalar constants passed full staged
-validation in `8dbcce0`. This is the next demonstrated compiler-source gate,
-ahead of the remaining builder work.
+Status: in progress on `work/selfhost-bytes-fields`; scalar constants passed
+full staged validation in `8dbcce0`. This is the next demonstrated
+compiler-source gate, ahead of the remaining builder work.
 
 ## Trigger and bounded scope
 

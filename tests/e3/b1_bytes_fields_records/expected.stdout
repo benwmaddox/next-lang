@@ -1,0 +1,82 @@
+97
+121
+true
+3
+0
+5
+115
+115
+true
+false
+122
+17
+103
+2
+20
+Record { id: 2, name: short, key: xyz, payload: 1234567890abcdefg, score: 20, active: false }
+[Record { id: 1, name: , key: a, payload: empty, score: 10, active: true }, Record { id: 2, name: short, key: xyz, payload: 1234567890abcdefg, score: 20, active: false }, Record { id: 3, name: shifted, key: xy, payload: payload-3, score: 30, active: true }]
+true
+false
+true
+true
+true
+false
+true
+true
+true
+88
+true
+0
+1
+0
+1
+2
+5
+115
+2
+3
+8
+88
+[Record { id: 1, name: , key: a, payload: empty, score: 10, active: true }, Record { id: 2, name: short, key: xyz, payload: 1234567890abcdefg, score: 20, active: false }, Record { id: 3, name: Xunction, key: xy, payload: payload-3, score: 30, active: true }]
+ok(())
+4
+4096
+65
+65
+true
+3
+45
+4096
+65
+65
+true
+true
+false
+false
+100
+Record { id: 2, name: short, key: xyz, payload: 1234567890abcdefg, score: 20, active: false }
+3
+true
+65
+ok(())
+4
+Record { id: 5, name: insert, key: ins, payload: insert-data, score: 50, active: true }
+65
+4096
+65
+3
+[Record { id: 1, name: , key: a, payload: empty, score: 10, active: true }, Record { id: 5, name: insert, key: ins, payload: insert-data, score: 50, active: true }, Record { id: 3, name: Xunction, key: xy, payload: payload-3, score: 30, active: true }]
+3
+8
+88
+2
+[Record { id: 1, name: , key: a, payload: empty, score: 10, active: true }, Record { id: 5, name: insert, key: ins, payload: insert-data, score: 50, active: true }]
+0
+[]
+0
+0
+2
+true
+[Record { id: 6, name: refilled, key: ref, payload: refill-data, score: 60, active: true }, Record { id: 7, name: again, key: two, payload: again-data, score: 70, active: false }]
+0
+0
