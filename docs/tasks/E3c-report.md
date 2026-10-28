@@ -1,9 +1,8 @@
 # E3c implementation handoff
 
-**Status: implementation and correctness gates passed; performance acceptance
-is pending.** The complete long-mode selfhost suite passed on 2026-10-28.
-Text/copy/bootstrap measurements passed. Committed-HEAD performance pairs
-remain pending before PR acceptance.
+**Status: E3c acceptance passed.** The complete long O1/O3 suite, default
+staged-tree suite, formatting and diff checks, Text/copy/bootstrap measurements,
+and committed-HEAD performance comparisons all passed.
 
 The binding scope is [`prompt-E3c.md`](prompt-E3c.md) together with the E3c
 row and sections of [`E3-selfhost-collections-text.md`](E3-selfhost-collections-text.md).
@@ -278,8 +277,9 @@ frozen compiler exhausts its predicted data stack for the 4096-byte fixture;
 that exact reference preflight failure is recorded, while the selfhost and
 copy measurements still pass. Builder execution remains deferred to E3d1.
 
-The E3a3 performance-pair regression check is pending a source commit because
-the standard benchmark script builds committed HEAD.
+The committed-HEAD standard benchmark exited 0 at `5ea0a5a`. All four E3a3
+regression pairs passed, with best times 0.22s / 0.64s / 0.78s / 0.50s for
+calls / increment-heavy / struct-update / tight-list, respectively.
 
 ## Validation status
 
@@ -329,10 +329,11 @@ the benchmark runner, `bash -n scripts/compare-selfhost.sh`, and
 `git diff --check` also passed. The full Stage0 Rust suite is not required
 because `compiler/src/` is unchanged.
 
-Text-heavy, specialized-copy, bootstrap, and stack measurements passed.
-The remaining performance gate is `scripts/bench-vs-rust.sh --selfhost --time`
-from committed HEAD, with no E3a3-pair regression. Results belong in
-[E3c-benchmark-report.md](E3c-benchmark-report.md).
+The installed pre-commit hook also passed the complete default selfhost suite
+on exactly the staged tree in 518 seconds before source commit `5ea0a5a`.
+Text-heavy, specialized-copy, bootstrap, stack, and committed-HEAD standard
+performance measurements passed; no E3a3 pair regressed. Exact results and
+limits are in [E3c-benchmark-report.md](E3c-benchmark-report.md).
 
 ## Awkwardness, limits, and next step
 
@@ -351,9 +352,8 @@ E3e owns const values, nested/text collection lanes, reachable-only emission,
 and Unicode Text case mapping. General numeric refinements, aliases, numeric
 `fit`, and unrelated parsers remain outside E3c.
 
-After the parent records every pending gate above, the next implementation
-step is E3d1. Keep the fixed `text builders` and `text in collections`
-boundaries in place until those later steps implement the corresponding
+The next implementation step is E3d1. Keep the fixed `text builders` and
+`text in collections` boundaries in place until those later steps implement the corresponding
 storage and lifetime rules.
 
 The agent-created `.scratch-e3c-debug` and `.scratch-e3c-memory-debug`

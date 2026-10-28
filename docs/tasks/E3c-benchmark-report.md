@@ -1,8 +1,7 @@
 # E3c benchmark report
 
-Status: the E3c measurements are complete and output-checked, and the
-coordinator's O1/O3 and relocation suite passed. Standard HEAD-pair comparison
-and PR readiness checks remain a separate integration step.
+Status: all E3c measurements and the committed-HEAD performance gate passed.
+The full default staged-tree suite and long O1/O3 integration suite passed.
 
 ## Measurement setup
 
@@ -43,7 +42,7 @@ python3 scripts/bench-e3c-text.py \
 ## Text-heavy workload
 
 The generated workload's final measured run uses 26,000,000 iterations. Each iteration forms a
-Unicode Text value from `"é" + str(index)`, concatenates it between Ascii
+Unicode Text value from `"Ã©" + str(index)`, concatenates it between Ascii
 pieces in a helper, slices the result by code-point range, compares the
 returned Text with an oracle string, and feeds that result plus code-point
 and byte lengths into a checksum. The input depends on the loop index, so
@@ -61,7 +60,7 @@ checked output volume remained constant. The final report records the actual
 iteration count and checksum.
 
 The `render` parameter is `Text max 21 bytes max 22`: it permits a `long`
-formatted in up to 20 ASCII characters plus the two-byte `é` prefix. Adding
+formatted in up to 20 ASCII characters plus the two-byte `Ã©` prefix. Adding
 the two seven-byte Ascii literals gives the slice expression's declared upper
 bound of `Text max 35 bytes max 36`; `slice` retains that receiver bound even
 though this workload returns only eight code points (nine bytes).
@@ -157,3 +156,28 @@ address-space limit.
 | --- | --- |
 | Builder benchmark | Deferred to E3d1; `text_format` requires builders |
 | `tokenize` benchmark | Deferred to E3e; text-in-collections remains unsupported |
+
+## Committed-HEAD standard comparison
+
+`scripts/bench-vs-rust.sh --selfhost --time` exited 0 using source commit
+`5ea0a5a8cb1df78b1e16ba1738d84adeb6840fbf`, the fresh release reference, CPU 8, the shared
+benchmark lock, and the 8,000,000 KiB address-space limit. It checked the
+stage-zero/Rust outputs for all 11 pairs and the selfhost outputs wherever
+supported. The raw table is retained in [E3c-vs-rust.csv](E3c-vs-rust.csv).
+The standard script reports best-of-five wall times and peak RSS; it does not
+retain individual samples or publish their spread. The standalone E3c
+measurements above report their spreads separately.
+
+| E3a3 pair | Previous selfhost best (s) | Current best (s) | Change |
+| --- | ---: | ---: | ---: |
+| calls | 0.22 | 0.22 | +0.00% |
+| increment_heavy | 0.68 | 0.64 | -5.88% |
+| struct_update | 0.83 | 0.78 | -6.02% |
+| tight_list | 0.53 | 0.50 | -5.66% |
+
+All four pass the no-greater-than-10% regression gate against the previous
+E3a3 report. `struct_math` also builds and matches (selfhost best 0.32s).
+`collatz`, `nested_lists`, `request_scratch`, `search_heavy`, `text_format`,
+and `tokenize` remain unsupported by selfhost in this matrix and have dash
+columns. In particular, `text_format` needs E3d1 builders and `tokenize` needs
+E3e text collection lanes, as expected by the E3c prompt.
