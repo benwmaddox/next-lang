@@ -40,8 +40,10 @@ fn output_terminal(stream: int) -> bool {
     let offset = if stream == 0 { state_out_terminal() } else { state_err_terminal() }
     let cached = sys.load32(state, offset)
     if cached >= 0 { return cached != 0 }
-    let result = ioctl(output_fd(stream), 21505L, sys.offset(state, output_scratch()))
-    let terminal = result.is_ok() && result.unwrap() == 0L
+    let terminal = match ioctl(output_fd(stream), 21505L, sys.offset(state, output_scratch())) {
+        ok(status) => status == 0L,
+        err(_) => false,
+    }
     sys.store32(state, offset, if terminal { 1 } else { 0 })
     terminal
 }
@@ -52,16 +54,16 @@ fn output_shared_terminal() -> bool {
     if cached >= 0 { return cached != 0 }
     var same = output_terminal(0) && output_terminal(1)
     if same {
-        let out_stat = statx(1, sys.lit(b""), 4096, 256, sys.offset(state, output_scratch()))
-        if out_stat.is_err() { same = false }
-        else if out_stat.unwrap() != 0L { same = false }
-        else { () }
+        same = match statx(1, sys.lit(b""), 4096, 256, sys.offset(state, output_scratch())) {
+            ok(status) => status == 0L,
+            err(_) => false,
+        }
     }
     if same {
-        let err_stat = statx(2, sys.lit(b""), 4096, 256, sys.offset(state, output_scratch() + 256L))
-        if err_stat.is_err() { same = false }
-        else if err_stat.unwrap() != 0L { same = false }
-        else { () }
+        same = match statx(2, sys.lit(b""), 4096, 256, sys.offset(state, output_scratch() + 256L)) {
+            ok(status) => status == 0L,
+            err(_) => false,
+        }
     }
     if same {
         same = sys.load64(state, output_scratch() + 32L) == sys.load64(state, output_scratch() + 256L + 32L) &&
