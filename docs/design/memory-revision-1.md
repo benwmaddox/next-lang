@@ -2,9 +2,10 @@
 
 **Status:** discussion draft; not adopted. Confirmed directions are per-instance
 static-state lifetime, a movable per-run data arena with a cap, startup resource
-grants, one run at a time per instance, and explicit `FULL` mailbox-send status.
-Syntax, APIs, and the other rules below remain proposals; the examples are not
-supported by the current next-lang compiler.
+grants, one run at a time per instance, caller-backed struct parameters, and
+explicit `FULL` mailbox-send status. The no-GC/no-borrow-checker constraint is
+hard. Syntax, APIs, and the other rules below remain proposals; the examples
+are not supported by the current next-lang compiler.
 
 The proposal follows Stasis's function/view/result style (`docs/spec.md`
 sections 7.1 and 7.5; language quick reference, Storage).
@@ -30,6 +31,13 @@ sections 7.1 and 7.5; language quick reference, Storage).
   allocation API, or new allocation keyword. Bounded containers remain
   available; pools, free lists, and shared snapshots can be considered when a
   concrete need appears. Recursion remains deferred.
+
+**Hard constraint (2026-10-28):** no GC, borrow checker, or loan/move/inferred-
+ownership/lifetime analysis to legalize ordinary code. Lexical scope planning,
+arena marks/resets, and bounds checks remain ordinary compiler work. Simplify,
+restrict, or defer any feature that seems to need a checker. The local rules are
+structural, not a checker. See
+[DESIGN.md](../DESIGN.md) for the full constraint and review of older proposals.
 
 ## Passing, results, and failure
 
@@ -111,6 +119,24 @@ function try_add_score(state: ScoreState, delta: int): bool {
 Bind `state` to the instance's fixed static region. The update validates first,
 then writes once, so a `false` result leaves this field unchanged. This is an
 ordinary function contract, not an implicit transaction over the whole job.
+
+## Pointer review
+
+Caller-backed struct parameters are confirmed: a function edits the caller's
+record without spelling an address. Stored links use checked indices into
+bounded collections, not retained arena addresses.
+
+```text
+struct Unit { health: i32; }
+function heal(unit: Unit, amount: i32): void {
+    unit.health = unit.health + amount;
+}
+```
+
+Raw-pointer policy remains open for feature-by-feature review. This adds no
+blanket ban and does not change current compiler raw-pointer support. For each
+feature, show a small ordinary example, the simplest alternative, and the
+guarantee and cost required; get user review before adding language rules.
 
 ## Startup and job coordination
 
