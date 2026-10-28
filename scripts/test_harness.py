@@ -8,7 +8,26 @@ from pathlib import Path
 import subprocess
 
 
-CLASSES = ("build", "diagnose", "rejects", "unsupported", "expected")
+CLASSES = ("build", "diagnose", "rejects", "unsupported", "expected", "expected-reject")
+
+
+def read_classification_table(path: Path, root: Path) -> dict[str, str]:
+    """Read the shared package-class protocol used by comparison and relocation."""
+    classes: dict[str, str] = {}
+    for number, raw in enumerate(path.read_text().splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) != 2 or parts[0] not in CLASSES:
+            raise ValueError(f"{path}:{number}: expected class<TAB>package")
+        kind, package = parts
+        if package in classes:
+            raise ValueError(f"{path}:{number}: duplicate package {package}")
+        if not (root / package).is_dir():
+            raise ValueError(f"{path}:{number}: missing package directory {package}")
+        classes[package] = kind
+    return classes
 
 
 def worker_count() -> int:

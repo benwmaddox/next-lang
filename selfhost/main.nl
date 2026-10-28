@@ -101,6 +101,7 @@ fn main(env: Env) {
         let config = load_manifest(env, package)
         var compiler = empty_compiler_tables() // E3a1 begin
         compiler.file_id_base = if test_region_threshold < 0L { 4096L } else { test_region_threshold } // E3a1 end
+        compiler.step_budget_main = config.step_budget_main
         seed_builtin_types(compiler.type_records)
         add_compiler_links(tables, compiler)
         intern_package_names(env, source, files, tokens, tables, compiler)
@@ -108,6 +109,7 @@ fn main(env: Env) {
         index_package_enums(source, files, tokens, tables, compiler)
         intern_builtin_full(source, files, tokens, compiler)
         index_package_structs(source, files, tokens, tables, compiler)
+        intern_builtin_text_types(source, files, tokens, compiler)
         intern_written_type_instances(env, source, tokens, files, tables, compiler)
         size_package_types(source, files, tokens, tables, compiler)
         check_package_name_shadows(env, source, files, tokens, tables, compiler)

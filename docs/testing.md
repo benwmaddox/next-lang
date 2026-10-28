@@ -34,6 +34,21 @@ the package's committed `expected.exit`, `expected.stdout`, and
 `expected.stderr` files. These packages also participate in relocation checks
 when selected by the relocation harness.
 
+The `rejects` classification covers an intentional stricter rule in selfhost:
+stage 0 must build the package, and selfhost must reject it with status 2 and
+real error text without producing IR. This includes the no-variable-shadowing
+rule and E3c byte literal elements outside 0 to 255. Keep the stage-0 behavior
+recorded in the package's expected files; explain the intentional difference
+in the task report. This class does not permit an unsupported-feature error.
+An optional `expected.selfhost.stderr` fixes the exact selfhost diagnostic,
+for example to require that a byte-literal error names the offending value.
+
+The `expected-reject` class is for a diagnostic whose stage-0 behavior is not
+a usable oracle, such as its broken `const.bytes()` diagnostic. Selfhost must
+produce exactly the committed `expected.*` result with status 2, empty stdout,
+real error text, and no IR. An unsupported-feature placeholder does not pass.
+These compile-rejection packages do not participate in relocation runs.
+
 Under `NLC_FRONTEND=selfhost`, `language` and `parse_dump` would drive the
 hybrid frontend (the self-hosted lexer and parser feeding the frozen stage-0
 checker), which is parse parity with stage 0; they run only with
@@ -69,6 +84,18 @@ comparison and relocation checks; regular runs remain O1. For example:
 
 ```sh
 NLC_FRONTEND=selfhost NLC_STAGE0_PARITY=1 NLC_LONG_TESTS=1 cargo test --offline --release -q
+```
+
+The deterministic generated corpus also runs independently of stage-zero parity
+when `NLC_E1_GENERATED_COUNT` is set explicitly (0..1000, per corpus). It includes
+scalar programs, rejection cases, and Text programs with Unicode, embedded NUL,
+borrowed read parameters, owned returns, payloads, and effectful operands. The
+original scalar random sequence is preserved. For a larger O1/O3 audit:
+
+```sh
+NLC_E1_GENERATED_COUNT=64 NLC_LONG_TESTS=1 NLC_TEST_JOBS=4 \
+scripts/compare-selfhost.sh --build --only '*generated*' \
+  --reference "$CARGO_TARGET_DIR/release/nlc"
 ```
 
 The lexer/parser comparison accepts the same selectors and remains available

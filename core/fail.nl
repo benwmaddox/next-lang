@@ -36,6 +36,7 @@ fn failure_message(kind: int) -> sys.Addr {
     else if kind == 19 { sys.lit(b"recursion budget exhausted") }
     else if kind == 20 { sys.lit(b"standard output write failed") }
     else if kind == 21 { sys.lit(b"clamp lower bound is greater than its upper bound") }
+    else if kind == 22 { sys.lit(b"invalid Text constructed (compiler or core library bug)") }
     else if kind == 23 { sys.lit(b"loop step budget exhausted") }
     else { sys.lit(b"runtime failure") }
 }

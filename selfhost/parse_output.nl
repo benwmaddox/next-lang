@@ -724,7 +724,13 @@ fn dump_node_fields(
             dump_name_list(out, buffer, source, tokens, tables, base, node.extra, node.aux)?
         } else if node.kind == NodeKind.Name { dump_name_field(out, buffer, " name=", source, tokens, base, node.token)? }
         else if node.kind == NodeKind.Field { dump_name_field(out, buffer, " name=", source, tokens, base, node.token)? }
-        else if node.kind == NodeKind.MethodCall || node.kind == NodeKind.OptionalCall { dump_name_field(out, buffer, " name=", source, tokens, base, node.token)? }
+        else if node.kind == NodeKind.MethodCall || node.kind == NodeKind.OptionalCall {
+            dump_name_field(out, buffer, " name=", source, tokens, base, node.token)?
+            if node.kind == NodeKind.MethodCall && same_source_word(source, node.token, base + tokens[node.token].start, tokens[node.token].length, "slice") {
+                dump_bytes(out, buffer, b" range_inclusive=")?
+                dump_bool_word(out, buffer, node.extra == 1L)?
+            }
+        }
         else if node.kind == NodeKind.StructInit { dump_name_field(out, buffer, " name=", source, tokens, base, node.token)? }
         else if node.kind == NodeKind.InitializerField { dump_name_field(out, buffer, " name=", source, tokens, base, node.token)? }
         else { dump_name_field(out, buffer, " name=", source, tokens, base, node.token)? }

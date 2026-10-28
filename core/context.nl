@@ -124,6 +124,7 @@ fn context_header_bytes(page_size: long) -> long {
 fn nl_context_create(
     requested_bytes: long,
     requested_recursion_budget: long,
+    requested_step_budget: long,
     entry_table: sys.Addr,
     entry_index: long,
     envp: sys.Addr,
@@ -201,17 +202,18 @@ fn nl_context_create(
     sys.store64(context, sys.context_offset(17L), 0L)
     sys.store_addr(context, sys.context_offset(18L), state)
     sys.store64(context, sys.context_offset(19L), entry_name_length)
+    sys.store64(context, sys.context_offset(22L), requested_step_budget)
     let _budget = requested_recursion_budget
     context
 }
 
-// Each job owns one allowance shared by every unproven while loop it runs.
+// The manifest supplies this job's allowance; each call consumes one step.
 fn nl_context_step_budget_take() -> bool {
     let context = sys.context()
     let offset = sys.context_offset(22L)
     let steps = sys.load64(context, offset)
-    if steps >= 10000000L { return false }
-    sys.store64(context, offset, steps + 1L)
+    if steps <= 0L { return false }
+    sys.store64(context, offset, steps - 1L)
     true
 }
 

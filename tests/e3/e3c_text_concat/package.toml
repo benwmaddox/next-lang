@@ -1,0 +1,3 @@
+[package]
+name = "e3c-text-concat"
+capabilities = ["out"]

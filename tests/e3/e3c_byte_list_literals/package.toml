@@ -1,0 +1,3 @@
+[package]
+name = "e3c-byte-list-literals"
+capabilities = ["out"]

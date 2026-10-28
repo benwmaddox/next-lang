@@ -1,0 +1,2 @@
+# Output oracles may intentionally contain padding and empty final lines.
+tests/**/expected.stdout whitespace=-blank-at-eol,-blank-at-eof

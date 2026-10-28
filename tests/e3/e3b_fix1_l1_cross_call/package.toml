@@ -1,3 +1,5 @@
+step_budget.main = 10000000
+
 [package]
 name = "e3b-fix1-l1-cross-call"
 capabilities = ["out"]

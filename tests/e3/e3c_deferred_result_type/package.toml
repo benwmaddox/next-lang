@@ -1,0 +1,3 @@
+[package]
+name = "e3c-deferred-result-type"
+capabilities = ["out"]

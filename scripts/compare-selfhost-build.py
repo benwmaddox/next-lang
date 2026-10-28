@@ -21,7 +21,6 @@ import json
 import os
 from pathlib import Path
 import re
-import random
 import shutil
 import statistics
 import subprocess
@@ -31,7 +30,8 @@ import threading
 import time
 from dataclasses import dataclass
 
-from test_harness import add_filter_arguments, changed_paths, filter_label, select_packages, worker_count
+from generated_selfhost_cases import generate_seeded_cases
+from test_harness import CLASSES, add_filter_arguments, changed_paths, filter_label, read_classification_table, select_packages, worker_count
 
 
 TIMEOUT_SECONDS = 90
@@ -313,7 +313,7 @@ def main() -> int:
     levels = (1, 3) if long_tests else (1,)
     runtimes = ("core",)
     table = root / "tests/e1/classification.tsv"
-    classifications = read_classifications(table, root)
+    classifications = read_classification_table(table, root)
     discovered = {
         path.relative_to(root).as_posix()
         for base in (root / "tests/run", root / "tests/test", root / "tests/e1", root / "tests/e2", root / "tests/e3")
@@ -367,11 +367,11 @@ def main() -> int:
         )
 
         counts = {
-            level: {kind: 0 for kind in ("build", "diagnose", "rejects", "unsupported", "expected", "mismatches")}
+            level: {kind: 0 for kind in (*CLASSES, "mismatches")}
             for level in levels
         }
         generated_cases = []
-        if parity_mode and long_tests:
+        if (parity_mode and long_tests) or "NLC_E1_GENERATED_COUNT" in os.environ:
             generated_count = int(os.environ.get("NLC_E1_GENERATED_COUNT", "8"))
             generated_cases = generate_seeded_cases(root, work, generated_count)
         generated_classes = dict(generated_cases)
@@ -442,6 +442,18 @@ def main() -> int:
         def check_classified_package(
             package: str, kind: str, run_env: dict[str, str], package_work: Path, level: int
         ) -> None:
+            if kind == "expected-reject":
+                expected = expected_result(root, package)
+                if expected[0] != 2 or expected[1] != b"" or b"error" not in expected[2]:
+                    raise Mismatch("expected-reject requires a status-2 diagnostic oracle and empty stdout")
+                self_result, wrote_ir = run_selfhost(
+                    stage0, reference, root, package, run_env, package_work, level
+                )
+                if wrote_ir or not is_real_rejection(self_result):
+                    raise Mismatch("expected-reject must diagnose without producing IR", selfhost=self_result)
+                if normalize_result(self_result, root, package) != expected:
+                    raise Mismatch("selfhost rejection differs from its expected.* oracle", selfhost=self_result)
+                return
             if kind == "expected":
                 expected = expected_result(root, package)
                 for runtime in runtimes:
@@ -535,13 +547,18 @@ def main() -> int:
                 )
                 if wrote_ir:
                     raise Mismatch(
-                        "selfhosted compiler wrote IR for a shadowing package", reference_result, self_result
+                        "selfhosted compiler wrote IR for an intentionally rejected package", reference_result, self_result
                     )
                 if not is_real_rejection(self_result):
                     raise Mismatch(
-                        "selfhost did not reject the shadowing package with status 2 and real error text",
+                        "selfhost did not reject the package with status 2 and real error text",
                         reference_result,
                         self_result,
+                    )
+                expected_selfhost = root / package / "expected.selfhost.stderr"
+                if expected_selfhost.is_file() and self_result.stderr != expected_selfhost.read_bytes():
+                    raise Mismatch(
+                        "selfhost rejection differs from its explicit oracle", reference_result, self_result
                     )
             else:
                 self_result, wrote_ir = run_selfhost(
@@ -695,9 +712,10 @@ def main() -> int:
             print(
                 f"O{level}: built and matching {counts[level]['build']}; "
                 f"diagnosed and matching {counts[level]['diagnose']}; "
-                f"rejected by new name rule {counts[level]['rejects']}; "
+                f"intentional rejections {counts[level]['rejects']}; "
                 f"unsupported {counts[level]['unsupported']}; "
                 f"expected outputs matched {counts[level]['expected']}; "
+                f"expected rejections matched {counts[level]['expected-reject']}; "
                 f"mismatches {counts[level]['mismatches']}; "
                 f"seeded builds {generated_counts[level]['build']}; "
                 f"seeded diagnostics {generated_counts[level]['diagnose']}; "
@@ -721,80 +739,6 @@ class Mismatch(Exception):
         super().__init__(message)
         self.reference = reference
         self.selfhost = selfhost
-
-
-def read_classifications(path: Path, root: Path) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for number, raw in enumerate(path.read_text().splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split("\t")
-        if len(parts) != 2 or parts[0] not in ("build", "diagnose", "rejects", "unsupported", "expected"):
-            raise ValueError(f"{path}:{number}: expected class<TAB>package")
-        package = parts[1]
-        if package in result:
-            raise ValueError(f"{path}:{number}: duplicate package {package}")
-        if not (root / package).is_dir():
-            raise ValueError(f"{path}:{number}: missing package directory {package}")
-        result[package] = parts[0]
-    return result
-
-
-def generate_seeded_cases(root: Path, work: Path, count: int) -> list[tuple[str, str]]:
-    if count < 0 or count > 1000:
-        raise ValueError("NLC_E1_GENERATED_COUNT must be between 0 and 1000")
-    rng = random.Random(0xE1)
-    cases: list[tuple[str, str]] = []
-    base = work / "generated"
-    valid_root = base / "valid"
-    invalid_root = base / "invalid"
-    valid_root.mkdir(parents=True)
-    invalid_root.mkdir(parents=True)
-    for index in range(count):
-        package = valid_root / f"case-{index:04d}"
-        package.mkdir()
-        seed = rng.randint(-9, 9)
-        start = rng.randint(-3, 0)
-        end = rng.randint(0, 3)
-        wide = rng.randint(-100, 100)
-        source = (
-            "fn adjust(value: int) -> int {\n"
-            "    if value > 0 { value * 2 } else { value - 3 }\n"
-            "}\n"
-            "fn double(value: long) -> long { value * 2L }\n"
-            "fn main() {\n"
-            f"    var total = {seed}\n"
-            f"    for item in {start}..={end} {{\n"
-            "        if item % 2 == 0 { total += adjust(item) } else { total -= item }\n"
-            "    }\n"
-            f"    print(total + {rng.randint(-2, 2)})\n"
-            f"    print(double({wide}L) / 2L)\n"
-            "    print(false && (1 / 0 == 0))\n"
-            "}\n"
-        )
-        (package / "main.nl").write_text(source)
-        cases.append((package.relative_to(root).as_posix(), "build"))
-
-    diagnostics = [
-        "fn main() {\n    let value = 1\n    print(vaule)\n}\n",
-        "fn main() {\n    let left: int = 1\n    let right: long = 2L\n    print(left + right)\n}\n",
-        "fn main() {\n    let start = 0\n    let end = 2L\n    for index in start..end {}\n}\n",
-        "fn value(flag: bool) -> int {\n    if flag { return 1 }\n}\n",
-        "fn first() -> int { second() }\nfn second() -> int { first() }\nfn main() {}\n",
-        "fn main() {\n    let item = 1\n    let item = 2\n}\n",
-        "fn main(value: int) {}\n",
-        "fn main() {\n    print(2147483648 + missing)\n}\n",
-        "fn main() {\n    break\n}\n",
-        "fn main() {\n    for index in 0..true {}\n}\n",
-    ]
-    rng.shuffle(diagnostics)
-    for index in range(count):
-        package = invalid_root / f"case-{index:04d}"
-        package.mkdir()
-        (package / "main.nl").write_text(diagnostics[index % len(diagnostics)])
-        cases.append((package.relative_to(root).as_posix(), "diagnose"))
-    return cases
 
 
 def check_struct_helper_ir_bound(stage0: Path, root: Path, env: dict[str, str], work: Path) -> dict[int, int]:
