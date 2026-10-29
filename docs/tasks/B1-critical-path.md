@@ -8,29 +8,29 @@ source requirements; it does not claim language parity is already reached.
 
 ## Current checkpoint (2026-10-29)
 
-Source commit `4744334` is pushed as PR #15. The staged-tree selfhost suite
-passed in 754 seconds, and the Stage3 corpus passed at O1/O3 with 792
-registered plus 256 seeded cases and zero mismatches. Stage2/Stage3 chains
-passed at O1 and O3 with identical IR and binaries.
+Source commit `a8dd0c9` passes the O3 Stage2/Stage3 identity check, the full
+O1/O3 Stage3 corpus (793 registered plus 256 seeded cases, zero mismatches),
+and the required staged-tree suite (779 seconds). Focused projection,
+enum-scaling, C bootstrap, and arena-relocation checks also pass. The prior
+compiler's LLVM output for the updated self-host source matches Stage2
+byte-for-byte. The benchmark matrix still has one case exceeding the speed
+target. Results are recorded in the
+[shared-path checkpoint](B1-shared-path-checkpoint.md).
 
-The current user goal is at most 1.1x Rust Stage0. The warm O3 C-runtime
-IR-generation matrix used three measured samples after one warm-up on CPU 0.
-Median wall times were: selfhost 1.895 s Rust Stage0 vs 3.752 s Stage3
-(1.979947x); generated-128 0.046 s vs 0.093 s (2.021739x); generated-2048
-0.219 s vs 0.413 s (1.885845x). All three cases exceed 1.1x; the updated
-performance goal is unmet. The byte-exact matrix retains its historical 3x
-threshold and `status: passed`; that status is not a pass under the new goal.
-PR #15 is a correctness and incremental-optimization milestone, not achievement
-of the updated speed goal. Rust Stage0 used pointer mode and Stage3 offset mode;
-this records the current implementations, not a permanent arena constraint.
-The core data-stack idiom remains the model: preserve stack allocation, scoped
-lifetimes, and bulk reclamation. Alternate arena address strategies are
-implementation choices within it; heap, GC, and ownership redesigns are out of
-scope.
-Cold-start, end-to-end compile/link, and broader stack benchmarks remain
-pending. See the
-[byte-output checkpoint](B1-byte-output-checkpoint.md) and the
-[raw final matrix](B1-byte-output-matrix.json).
+The current user goal is at most 1.1x Rust Stage0 per case. The latest warm O3
+C-runtime IR-generation medians are selfhost 1.875 s Rust Stage0 vs 1.321 s
+Stage3 (0.704533x); generated-128 0.046 s vs 0.040 s (0.869565x); and
+generated-2048 0.210 s vs 0.271 s (1.290476x). The first two meet 1.1x; the
+large generated case fails, so the goal remains unmet. The prior matrix in
+[B1-byte-output-matrix.json](B1-byte-output-matrix.json) retains its historical
+3x result and must not be read as passing the current target.
+
+This batch is an incremental performance milestone. Rust Stage0 used pointer mode and Stage3
+offset mode; that records the current implementations and leaves other accurate
+arena addressing strategies open. The core data-stack idiom remains the model:
+stack allocation, scoped lifetimes, and bulk reclamation. Heap, GC, and
+ownership redesigns are out of scope. Cold-start, end-to-end compile/link, and
+broader package benchmarks remain pending.
 
 Copy-syntax and snapshot/enforcement work remain deferred; no language rule or
 enforcement change was made.
@@ -183,7 +183,7 @@ and 76 recursive declarations.
    Stage3 corpus has zero mismatches. Earlier timeout and mismatch reports are
    historical. The required suite for `27256a3` is also a historical milestone;
    see the current checkpoint for commit `4744334` and its validation.
-7. **Benchmark the self-built compiler (current warm IR cases exceed 1.1x; full benchmark pending).**
+7. **Benchmark the self-built compiler (current warm large-input IR case exceeds 1.1x).**
    Pin toolchain, flags, source revision, and corpus; verify outputs before
    timing. Measure IR generation and end-to-end
    builds separately, cold and warm runs, peak RSS, data/native-stack measures,
@@ -203,15 +203,13 @@ and 76 recursive declarations.
    offset mode because those are the measured implementations. Record this
    representation difference; it does not make offset mode permanent or rule
    out another correct, faster arena strategy. Do not modify the Stage0
-   baseline. The warm O3 C-runtime IR-generation medians are selfhost 1.895 s
-   vs 3.752 s (1.979947x), generated-128 0.046 s vs 0.093 s (2.021739x), and
-   generated-2048 0.219 s vs 0.413 s (1.885845x). Each used three measured
-   samples after one warm-up on CPU 0; all three exceed the current 1.1x goal.
-   This is not full benchmark acceptance: cold-start, end-to-end compile/link,
-   and broader stack benchmarks remain pending. Earlier one-sample timing
-   results are historical; the matrix was run against the prior 3x threshold.
-   See the [byte-output checkpoint](B1-byte-output-checkpoint.md) and
-   [raw final matrix](B1-byte-output-matrix.json).
+   baseline. Current O3 results are in the
+   [shared-path checkpoint](B1-shared-path-checkpoint.md) and raw
+   [shared-path matrix](B1-shared-path-matrix.json). Two of three warm IR cases
+   meet 1.1x; generated-2048 remains at 1.290476x. Cold-start, end-to-end
+   compile/link, and broader real-package benchmarks remain pending. The older
+   [byte-output matrix](B1-byte-output-matrix.json) predates the 1.1x target and
+   retains its 3x threshold.
 8. **Improve measured bottlenecks (further profiling).** Prioritize checker/emitter scaling,
    bootstrap memory, generated IR size, LLVM/link time, or runtime costs according
    to the profile. A five-sample GDB trace on an earlier source revision showed
@@ -219,12 +217,16 @@ and 76 recursive declarations.
    census found no whole-file call sites for the audited working-data helpers.
    Treat selfhost compilation as a stress workload for shared compiler paths.
    Direct scalar field projection through indexed collections (for example,
-   `rows[i].field`) is a candidate for general lowering improvement, not a
-   selfhost-specific path. Benchmark varied inputs and preserve correctness;
-   no language change is required. Each optimization needs before/after data.
-   Source lookup hoists preserve emitted-program argument semantics. Further
-   profiling continues; compile-error and copy-syntax enforcement remain
-   deferred, not an open prerequisite for this work.
+   `rows[i].field`), bounded checker/region scans, active name-table sizing,
+   and literal byte counting now have general shared-path implementations.
+   Their effect is measured on the compiler source and 128-/2,048-function
+   generated packages; no language or copy rule changed. Continue profiling
+   the large generated case and preserve source behavior. Sparse GDB samples
+   repeatedly hit `clear_function_regions` and `is_top_level_function`; they
+   are not CPU percentages. Audit region-slot lifetimes before considering a
+   narrower table reset, and choose one bounded change at a time. Compile-error and
+   copy-syntax enforcement remain deferred, not an open prerequisite for this
+   work.
 
 ## Explicitly deferred until evidence requires them
 
