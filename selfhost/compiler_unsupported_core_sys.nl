@@ -295,6 +295,7 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "remove") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "clear") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "pop") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "set") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "empty") ||
             (compiler.c_runtime && (
                 token_is_word_at(source, tokens, files, file_index, value.token, "args") ||
@@ -324,7 +325,7 @@ fn unsupported_category_for_node(
         NodeKind.ArrayLiteral => 0L,
         NodeKind.ListLiteral => 0L,
         NodeKind.PoolLiteral => UNSUPPORTED_NODE,
-        NodeKind.MapLiteral => UNSUPPORTED_NODE,
+        NodeKind.MapLiteral => 0L,
         NodeKind.SetLiteral => UNSUPPORTED_NODE,
         NodeKind.QueueLiteral => 0L,
         NodeKind.RingLiteral => UNSUPPORTED_NODE,
@@ -428,7 +429,7 @@ fn unsupported_category_for_node(
         NodeKind.LoopExit => 0L,
         NodeKind.Unary => 0L,
         NodeKind.If => 0L,
-        NodeKind.Binary => if value.flags < 0L || (value.flags > 20L && value.flags != 21L) || value.flags == 5L || value.flags == 6L || value.flags == 7L { UNSUPPORTED_OPERATOR } else { 0L },
+        NodeKind.Binary => if value.flags < 0L || (value.flags > 20L && value.flags != 21L) { UNSUPPORTED_OPERATOR } else { 0L },
         NodeKind.Call => {
             if token_is_word_at(source, tokens, files, file_index, value.token, "fill") { 0L }
             else if numeric_builtin_kind(source, tokens, files, compiler, file_index, value.token, -1L) != NUMERIC_BUILTIN_NONE { 0L }
@@ -535,6 +536,10 @@ fn report_unsupported(
         match env.err.write(b"the >>= operator") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_QUEUE_USE {
         match env.err.write(b"iterating or indexing a queue") { ok(_) => (), err(_) => env.exit(3) }
+    } else if hit.category == UNSUPPORTED_MAP_USE {
+        match env.err.write(b"iterating a map") { ok(_) => (), err(_) => env.exit(3) }
+    } else if hit.category == UNSUPPORTED_MAP_ELEMENT {
+        match env.err.write(b"maps whose keys or values are not numbers, bools, enums or text") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_QUEUE_ELEMENT {
         match env.err.write(b"queues of element types other than int and long") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_CALLEE {

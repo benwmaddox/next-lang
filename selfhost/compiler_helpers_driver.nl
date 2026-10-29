@@ -892,6 +892,11 @@ fn emit_type_helpers_for_kind(
         emit_sum_print_helpers(compiler, ir)
     } else if kind == TYPE_KIND_RESULT {
         ()
+    } else if kind == TYPE_KIND_QUEUE {
+        ()
+    } else if kind == TYPE_KIND_MAP {
+        emit_map_copy_helpers(compiler, ir)
+        emit_map_type_functions(compiler, ir)
     } else if kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) {
         emit_collection_copy_helpers(compiler, ir, kind)
         emit_collection_equal_helpers(compiler, ir, kind)
@@ -914,7 +919,7 @@ fn emit_registered_type_helpers(
     ir: grow Bytes max IR_BUFFER_CAPACITY,
 ) {
     emit_collection_print_globals(compiler, ir)
-    for kind in TYPE_KIND_STRUCT..TYPE_KIND_ADDRESS + 1L {
+    for kind in TYPE_KIND_STRUCT..TYPE_KIND_MAP + 1L {
         emit_type_helpers_for_kind(source, files, tokens, tables, compiler, ir, kind)
     }
 }
