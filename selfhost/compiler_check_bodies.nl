@@ -808,6 +808,21 @@ fn check_one_body(
                 let binding = find_binding_in_scope(compiler, frame.scope, compiler.token_name_ids[syntax.token])
                 if binding < 0L {
                     let constant = find_constant_declaration(tables, compiler, compiler.token_name_ids[syntax.token])
+                    if constant >= 0L && (compiler.facts[constant].flags & FACT_CONSTANT_TEXT) != 0L {
+                        let constant_ty = compiler.facts[constant].ty
+                        if frame.expected >= 0L && frame.expected != constant_ty {
+                            require_type(env, files, compiler, file_index, node, frame.expected, constant_ty, tables)
+                        }
+                        compiler.facts[node] = NodeFact {
+                            ty: constant_ty,
+                            flags: FACT_FALLS_THROUGH | FACT_CONSTANT_TEXT,
+                            binding: -1L,
+                            function: -1L,
+                            literal: compiler.facts[constant].literal,
+                        }
+                        match compiler.work.pop() { some(_) => (), none() => () }
+                        continue
+                    }
                     if constant >= 0L && (compiler.facts[constant].flags & FACT_CONSTANT_EVALUATED) != 0L {
                         let constant_ty = compiler.facts[constant].ty
                         if frame.expected >= 0L && frame.expected != constant_ty {
@@ -1304,6 +1319,49 @@ fn check_one_body(
                     fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values")
                 }
                 compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: 0L }
+            } else if numeric_builtin_kind(source, tokens, files, compiler, file_index, syntax.token, frame.scope) != NUMERIC_BUILTIN_NONE {
+                let builtin_kind = numeric_builtin_kind(source, tokens, files, compiler, file_index, syntax.token, frame.scope)
+                let required_args = if builtin_kind == NUMERIC_BUILTIN_ABS { 1L } else if builtin_kind == NUMERIC_BUILTIN_CLAMP { 3L } else { 2L }
+                if arg_count != required_args {
+                    let shape: Ascii max 160 = if builtin_kind == NUMERIC_BUILTIN_ABS { " takes one int or long value" }
+                        else if builtin_kind == NUMERIC_BUILTIN_CLAMP { " takes a value, a lower bound and an upper bound" }
+                        else { " takes two values" }
+                    fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "", syntax.token, shape)
+                }
+                let first_argument = child_at(tables, compiler, node, 0L)
+                let ty = compiler.facts[first_argument].ty
+                if ty != TY_INT && ty != TY_LONG {
+                    fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, tables.nodes[first_argument].start, "", syntax.token, " needs int or long values")
+                }
+                for argument_index in 1L..required_args {
+                    let argument = child_at(tables, compiler, node, argument_index)
+                    if compiler.facts[argument].ty != ty { require_type(env, files, compiler, file_index, argument, ty, compiler.facts[argument].ty, tables) }
+                }
+                if builtin_kind == NUMERIC_BUILTIN_CLAMP {
+                    let lower_operand = child_at(tables, compiler, node, 1L)
+                    let upper_operand = child_at(tables, compiler, node, 2L)
+                    let lower_known = tables.nodes[lower_operand].kind == NodeKind.Integer || (compiler.facts[lower_operand].flags & FACT_CONSTANT_VALUE) != 0L
+                    let upper_known = tables.nodes[upper_operand].kind == NodeKind.Integer || (compiler.facts[upper_operand].flags & FACT_CONSTANT_VALUE) != 0L
+                    if lower_known && upper_known && compiler.facts[lower_operand].literal > compiler.facts[upper_operand].literal {
+                        fail_at_message(env, files, compiler, file_index, syntax.start, "clamp lower bound is greater than its upper bound")
+                    }
+                }
+                // stage 0 infers the range of clamp(v, lo, hi) from literal bounds, so a clamp with bounds inside
+                // 0..255 fits a byte; the result is computed as an int and narrowed.
+                var builtin_result_ty = ty
+                var recorded_kind = builtin_kind
+                if builtin_kind == NUMERIC_BUILTIN_CLAMP && frame.expected == TY_BYTE && ty == TY_INT {
+                    let lower_bound = child_at(tables, compiler, node, 1L)
+                    let upper_bound = child_at(tables, compiler, node, 2L)
+                    if tables.nodes[lower_bound].kind == NodeKind.Integer && tables.nodes[upper_bound].kind == NodeKind.Integer &&
+                        compiler.facts[lower_bound].literal >= 0L && compiler.facts[upper_bound].literal <= 255L {
+                        builtin_result_ty = TY_BYTE
+                        recorded_kind = builtin_kind + NUMERIC_BUILTIN_NARROW_TO_BYTE
+                    }
+                }
+                if frame.expected >= 0L && frame.expected != builtin_result_ty { require_type(env, files, compiler, file_index, node, frame.expected, builtin_result_ty, tables) }
+                let builtin_flags = if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }
+                compiler.facts[node] = NodeFact { ty: builtin_result_ty, flags: builtin_flags | FACT_NUMERIC_BUILTIN, binding: -1L, function: -1L, literal: recorded_kind }
             } else if format_text_builtin_kind(source, tokens, files, tables, compiler, file_index, node) != FORMAT_TEXT_NONE {
                 let format_kind = format_text_builtin_kind(source, tokens, files, tables, compiler, file_index, node)
                 let ty = check_format_text_builtin(env, source, tokens, files, tables, compiler, file_index, node, frame.expected)
@@ -1314,7 +1372,16 @@ fn check_one_body(
                 if target < 0L {
                     let local = find_binding_in_scope(compiler, frame.scope, name_id)
                     if local >= 0L {
-                        fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "value '", syntax.token, "' is not callable; use a function-typed value")
+                        let local_ty = compiler.bindings[local].ty
+                        if local_ty == TY_INT || local_ty == TY_LONG || local_ty == TY_BOOL || local_ty == TY_BYTE {
+                            let typed_suffix: Ascii max 160 = if local_ty == TY_INT { "' has type int and cannot be called; use a function-typed value" }
+                                else if local_ty == TY_LONG { "' has type long and cannot be called; use a function-typed value" }
+                                else if local_ty == TY_BOOL { "' has type bool and cannot be called; use a function-typed value" }
+                                else { "' has type byte and cannot be called; use a function-typed value" }
+                            fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "value '", syntax.token, typed_suffix)
+                        } else {
+                            fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "value '", syntax.token, "' is not callable; use a function-typed value")
+                        }
                     }
                     fail_name_error(env, source, files, tokens, compiler, file_index, syntax.start, syntax.token, frame.scope, true)
                 }

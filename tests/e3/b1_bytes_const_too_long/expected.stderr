@@ -1,0 +1,1 @@
+main.nl:1:24: error: byte literal has 6 bytes, exceeding Bytes max 3; increase the byte maximum

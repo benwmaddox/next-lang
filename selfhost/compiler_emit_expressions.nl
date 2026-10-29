@@ -519,7 +519,8 @@ fn emit_sys_method(
 // E3a1 end
 
 fn enum_temporary_address(node: long, part: long) -> long {
-    1000000000000L + node * (MAX_TREE_NODES + 1L) + part
+    // The stride exceeds the largest part (MAX_TREE_NODES * 80 + 6), so two nodes never share an id.
+    1000000000000L + node * (MAX_TREE_NODES * 100L) + part
 }
 
 fn emit_enum_tag_store(
@@ -1002,6 +1003,9 @@ recursive fn emit_expr_linear(
                 let case_tag = compiler.facts[current].literal
                 if (compiler.facts[current].flags & FACT_CONSTANT_VALUE) != 0L {
                     ()
+                } else if (compiler.facts[current].flags & FACT_CONSTANT_TEXT) != 0L {
+                    let text_literal = compiler.facts[current].literal
+                    emit_text_literal_value(source, files, tokens, tables, compiler, ir, current, text_literal, file_index, is_test || compiler.test_build)
                 } else if is_sum_type(compiler, ty) && binding < 0L {
                     if type_kind(compiler, ty) == TYPE_KIND_ENUM { emit_enum_tag_store(compiler, ir, current, case_tag) }
                     else { emit_sum_tag_store(compiler, ir, current, case_tag) }
@@ -1075,7 +1079,7 @@ recursive fn emit_expr_linear(
                     compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
                 }
             } else if kind == NodeKind.ByteString || kind == NodeKind.BytesLiteral {
-                emit_text_literal_value(source, files, tokens, tables, compiler, ir, current, file_index, is_test || compiler.test_build)
+                emit_text_literal_value(source, files, tokens, tables, compiler, ir, current, current, file_index, is_test || compiler.test_build)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             } else if kind == NodeKind.Unary {
                 frame.child0 = compiler.child_first[current]
@@ -1370,6 +1374,10 @@ recursive fn emit_expr_linear(
             } else {
                 ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", -2147483648\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 2147483647\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_fail", "nlc_fail"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n")
             }
+            if type_kind(compiler, target_ty) != TYPE_KIND_ASCII {
+                let cast_range = written_type_range_node(tables, compiler, compiler.child_first[current])
+                if cast_range >= 0L { emit_cast_range_check(files, tables, compiler, ir, current, file_index, cast_range, target_ty) }
+            }
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.ToLong && frame.phase == 1L {
             ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = sext i32 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i64\n")
@@ -1644,6 +1652,8 @@ recursive fn emit_expr_linear(
                             ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_newline", "nlc_print_newline"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n")
                         }
                     }
+                } else if (compiler.facts[current].flags & FACT_NUMERIC_BUILTIN) != 0L {
+                    emit_numeric_builtin(files, tables, compiler, ir, current, file_index)
                 } else if is_fill {
                     let fill_type = compiler.facts[current].ty
                     emit_collection_fill_array(tables, compiler, ir, current, fill_type, first_arg)
@@ -2962,3 +2972,88 @@ fn has_type_helper(compiler: CompilerTables, type_id: long, operation: long) -> 
     bit != 0L && (mask / bit) % 2L == 1L
 }
 
+
+// min, max, abs and clamp lower to one LLVM intrinsic each, with no call into a library
+// function. abs keeps the language's rule that abs of the minimum value fails (as a negation
+// overflow), which also makes llvm.abs's poison-on-minimum flag safe. clamp fails when the
+// lower bound is above the upper bound.
+fn emit_numeric_builtin(
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    file_index: long,
+) {
+    let recorded = compiler.facts[node].literal
+    let narrow = recorded >= NUMERIC_BUILTIN_NARROW_TO_BYTE
+    let kind = if narrow { recorded - NUMERIC_BUILTIN_NARROW_TO_BYTE } else { recorded }
+    // A narrowed clamp is computed on its int operands; a byte value is held as an int in IR anyway.
+    let ty = if narrow { TY_INT } else { compiler.facts[node].ty }
+    let llvm_ty = llvm_type_name(ty)
+    let first = compiler.child_first[node]
+    let second = if first >= 0L { compiler.child_next[first] } else { -1L }
+    let third = if second >= 0L { compiler.child_next[second] } else { -1L }
+    if kind == NUMERIC_BUILTIN_MIN || kind == NUMERIC_BUILTIN_MAX {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call ")
+        ir_write_ascii(compiler, ir, llvm_ty)
+        ir_write_ascii(compiler, ir, if kind == NUMERIC_BUILTIN_MIN { " @llvm.smin." } else { " @llvm.smax." })
+        ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, "("); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " ")
+        ir_write_value_ref(compiler, ir, first)
+        ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " ")
+        ir_write_value_ref(compiler, ir, second); ir_write_ascii(compiler, ir, ")\n")
+    } else if kind == NUMERIC_BUILTIN_ABS {
+        ir_write_ascii(compiler, ir, "  %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq ")
+        ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " ")
+        ir_write_value_ref(compiler, ir, first)
+        ir_write_ascii(compiler, ir, if ty == TY_INT { ", -2147483648\n" } else { ", -9223372036854775808\n" })
+        emit_runtime_failure(files, tables, compiler, ir, node, file_index, if ty == TY_INT { 4L } else { 8L })
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ")
+        ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " @llvm.abs."); ir_write_ascii(compiler, ir, llvm_ty)
+        ir_write_ascii(compiler, ir, "("); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " ")
+        ir_write_value_ref(compiler, ir, first); ir_write_ascii(compiler, ir, ", i1 true)\n")
+    } else {
+        ir_write_ascii(compiler, ir, "  %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sgt ")
+        ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " ")
+        ir_write_value_ref(compiler, ir, second); ir_write_ascii(compiler, ir, ", ")
+        ir_write_value_ref(compiler, ir, third); ir_write_ascii(compiler, ir, "\n")
+        emit_runtime_failure(files, tables, compiler, ir, node, file_index, 21L)
+        ir_write_ascii(compiler, ir, "  %clamp.low."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ")
+        ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " @llvm.smax."); ir_write_ascii(compiler, ir, llvm_ty)
+        ir_write_ascii(compiler, ir, "("); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " ")
+        ir_write_value_ref(compiler, ir, first)
+        ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " ")
+        ir_write_value_ref(compiler, ir, second); ir_write_ascii(compiler, ir, ")\n")
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ")
+        ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " @llvm.smin."); ir_write_ascii(compiler, ir, llvm_ty)
+        ir_write_ascii(compiler, ir, "("); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " %clamp.low."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " ")
+        ir_write_value_ref(compiler, ir, third); ir_write_ascii(compiler, ir, ")\n")
+    }
+}
+
+// A cast to a range alias keeps the cast's result and fails (bad cast) when it lies outside the
+// written bounds. The result has the plain base type.
+fn emit_cast_range_check(
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    file_index: long,
+    range_node: long,
+    ty: long,
+) {
+    let llvm_ty = llvm_type_name(ty)
+    ir_write_ascii(compiler, ir, "  %cast.below."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt ")
+    ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, range_bound_value(tables, range_node, 0L)); ir_write_ascii(compiler, ir, "\n")
+    ir_write_ascii(compiler, ir, "  %cast.above."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sgt ")
+    ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, range_bound_value(tables, range_node, 1L)); ir_write_ascii(compiler, ir, "\n")
+    ir_write_ascii(compiler, ir, "  %ov.flag."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = or i1 %cast.below."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", %cast.above."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
+    emit_runtime_failure(files, tables, compiler, ir, node, file_index, 10L)
+}

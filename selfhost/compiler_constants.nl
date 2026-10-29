@@ -62,21 +62,19 @@ fn scalar_constant_arithmetic_value(
     expected_ty: long,
     value: long,
 ) -> ScalarConstantResult {
+    if expected_ty == TY_BYTE && (value < 0L || value > 255L) {
+        fail_at_message(env, files, compiler, file_index, node_offset, "constant arithmetic overflows byte")
+    }
     if expected_ty == TY_INT && (value < -2147483648L || value > 2147483647L) {
         fail_at_message(env, files, compiler, file_index, node_offset, "constant arithmetic overflows int")
     }
     scalar_constant_value(value)
 }
 
+// The first constant declared with this name (index built by register_scalar_constants), or -1.
 fn find_constant_declaration(tables: ParseTables, compiler: CompilerTables, name_id: long) -> long {
-    for candidate in 0L..tables.nodes.count() {
-        if tables.nodes[candidate].kind != NodeKind.Const { continue }
-        let token = tables.nodes[candidate].token
-        if token >= 0L && token < compiler.token_name_ids.count() && compiler.token_name_ids[token] == name_id {
-            return candidate
-        }
-    }
-    -1L
+    if name_id < 0L || name_id >= compiler.constant_by_name.count() { return -1L }
+    compiler.constant_by_name[name_id]
 }
 
 fn package_has_enum_case_name(tables: ParseTables, compiler: CompilerTables, name_id: long) -> bool {
@@ -113,7 +111,8 @@ fn scalar_constant_declaration_type(
     if type_node < 0L || tables.nodes[type_node].kind != NodeKind.DeclaredType { return -1L }
     let file_index = node_file_index(tables.nodes, files, type_node)
     let syntax = tables.nodes[type_node]
-    let ty = if token_is_word_at(source, tokens, files, file_index, syntax.token, "int") { TY_INT }
+    let ty = if token_is_word_at(source, tokens, files, file_index, syntax.token, "byte") { TY_BYTE }
+        else if token_is_word_at(source, tokens, files, file_index, syntax.token, "int") { TY_INT }
         else if token_is_word_at(source, tokens, files, file_index, syntax.token, "long") { TY_LONG }
         else { -1L }
     if ty >= 0L && syntax.flags == 0L && syntax.meta0 == 1L && syntax.meta1 == 0L &&
@@ -132,7 +131,9 @@ fn fail_scalar_constant_type(
     expected_ty: long,
 ) -> never {
     fail_at_message(env, files, compiler, file_index, tables.nodes[node].start,
-        if expected_ty == TY_INT { "constant initializer must have type int" } else { "constant initializer must have type long" })
+        if expected_ty == TY_BYTE { "constant initializer must have type byte" }
+            else if expected_ty == TY_INT { "constant initializer must have type int" }
+            else { "constant initializer must have type long" })
 }
 
 recursive fn evaluate_scalar_constant_declaration(
@@ -196,7 +197,7 @@ recursive fn evaluate_scalar_constant_expression(
     let syntax = tables.nodes[node]
     let file_index = node_file_index(tables.nodes, files, node)
     if syntax.kind == NodeKind.Integer {
-        if expected_ty == TY_INT && (syntax.flags & FLAG_LONG_SUFFIX) != 0L {
+        if (expected_ty == TY_INT || expected_ty == TY_BYTE) && (syntax.flags & FLAG_LONG_SUFFIX) != 0L {
             fail_scalar_constant_type(env, files, compiler, tables, file_index, node, expected_ty)
         }
         scalar_constant_value(literal_value(env, source, tokens, files, compiler, tables, file_index, node, expected_ty))
@@ -289,6 +290,15 @@ fn register_scalar_constants(
     tables: ParseTables,
     compiler: write CompilerTables,
 ) {
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind != NodeKind.Const { continue }
+        let token = tables.nodes[node].token
+        if token < 0L || token >= compiler.token_name_ids.count() { continue }
+        let indexed_name = compiler.token_name_ids[token]
+        if indexed_name >= 0L && indexed_name < compiler.constant_by_name.count() && compiler.constant_by_name[indexed_name] < 0L {
+            compiler.constant_by_name[indexed_name] = node
+        }
+    }
     for node in 0L..tables.nodes.count() {
         if tables.nodes[node].kind != NodeKind.Const { continue }
         let syntax = tables.nodes[node]
@@ -418,3 +428,44 @@ fn place_path_depth(tables: ParseTables, compiler: CompilerTables, node: long) -
     -1L
 }
 
+
+// A constant of type Ascii max N or Bytes max N initialised with a literal of that kind. A use of
+// the constant copies the literal into the use's own temporary (see emit_text_literal_value), so
+// the constant needs no storage of its own.
+fn register_text_constants(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+) {
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind != NodeKind.Const { continue }
+        if (compiler.facts[node].flags & FACT_CONSTANT_EVALUATED) != 0L { continue }
+        let type_node = compiler.child_first[node]
+        if type_node < 0L || (compiler.facts[type_node].flags & FACT_RESOLVED_TYPE) == 0L { continue }
+        let declared = compiler.facts[type_node].ty
+        let kind = type_kind(compiler, declared)
+        if kind != TYPE_KIND_ASCII && kind != TYPE_KIND_BYTES { continue }
+        let initializer = node_last_child(tables, compiler, node)
+        if initializer < 0L || initializer == type_node { continue }
+        let wanted = if kind == TYPE_KIND_ASCII { NodeKind.ByteString } else { NodeKind.BytesLiteral }
+        if tables.nodes[initializer].kind != wanted { continue }
+        let file_index = node_file_index(tables.nodes, files, node)
+        let literal = if wanted == NodeKind.BytesLiteral {
+            decode_string_token(source, tokens, files[file_index].base, tables.nodes[initializer].extra, true)
+        } else { decode_string_token(source, tokens, files[file_index].base, tables.nodes[initializer].token, false) }
+        if literal.count() > text_max_bytes(compiler, declared) {
+            fail_text_literal_too_long(env, files, compiler, file_index, tables.nodes[initializer].start,
+                wanted == NodeKind.BytesLiteral, literal.count(), text_max_bytes(compiler, declared))
+        }
+        compiler.facts[node] = NodeFact {
+            ty: declared,
+            flags: FACT_CONSTANT_DECLARED | FACT_CONSTANT_EVALUATED | FACT_CONSTANT_TEXT,
+            binding: -1L,
+            function: -1L,
+            literal: initializer,
+        }
+    }
+}

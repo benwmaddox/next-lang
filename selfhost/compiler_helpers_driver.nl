@@ -137,6 +137,7 @@ fn mark_struct_helpers(
         }
     }
     for pass in 0L..type_count(compiler) {
+        let helpers_before = type_helper_mask_sum(compiler)
         for type_id in 0L..type_count(compiler) {
             if type_kind(compiler, type_id) == TYPE_KIND_STRUCT {
                 let type_info = type_record(compiler, type_id)
@@ -182,11 +183,13 @@ fn mark_struct_helpers(
                 }
             } else { () }
         }
+        if type_helper_mask_sum(compiler) == helpers_before { break }
     }
 }
 
 fn propagate_sum_type_helpers(compiler: write CompilerTables) {
     for pass in 0L..type_count(compiler) {
+        let helpers_before = type_helper_mask_sum(compiler)
         for type_id in 0L..type_count(compiler) {
             let kind = type_kind(compiler, type_id)
             if kind != TYPE_KIND_OPTION && kind != TYPE_KIND_RESULT { continue }
@@ -201,6 +204,7 @@ fn propagate_sum_type_helpers(compiler: write CompilerTables) {
                 }
             }
         }
+        if type_helper_mask_sum(compiler) == helpers_before { break }
     }
 }
 
@@ -1460,7 +1464,7 @@ fn compile_selfhost_package(
         }
         ir_write_ascii(compiler, ir, "\n")
     }
-    ir_write_ascii(compiler, ir, "source_filename = \"next-lang\"\n\ndeclare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.smul.with.overflow.i32(i32, i32)\ndeclare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)\ndeclare void @llvm.trap()\n")
+    ir_write_ascii(compiler, ir, "source_filename = \"next-lang\"\n\ndeclare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.smul.with.overflow.i32(i32, i32)\ndeclare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)\ndeclare void @llvm.trap()\ndeclare i32 @llvm.smin.i32(i32, i32)\ndeclare i32 @llvm.smax.i32(i32, i32)\ndeclare i64 @llvm.smin.i64(i64, i64)\ndeclare i64 @llvm.smax.i64(i64, i64)\ndeclare i32 @llvm.abs.i32(i32, i1)\ndeclare i64 @llvm.abs.i64(i64, i1)\n")
     ir_write_ascii(compiler, ir, "\n")
     if compiler.c_runtime { emit_c_runtime_adapters(compiler, ir) }
     for function_id in 0L..compiler.functions.count() {

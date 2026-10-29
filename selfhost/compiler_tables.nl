@@ -121,6 +121,8 @@ const FACT_CONSTANT_VALUE: long = 32L
 const FACT_CONSTANT_DECLARED: long = 64L
 const FACT_CONSTANT_VISITING: long = 128L
 const FACT_CONSTANT_EVALUATED: long = 256L
+const FACT_NUMERIC_BUILTIN: long = 512L
+const FACT_CONSTANT_TEXT: long = 1024L
 const MATCH_PATTERN_CASE: long = 11L
 const MATCH_PATTERN_WILDCARD: long = 12L
 const MATCH_PATTERN_INTEGER: long = 13L
@@ -427,9 +429,13 @@ struct CompilerTables {
     token_name_ids: list<long, TOKEN_STORAGE_CAPACITY>
     intern_slots: list<NameSlot, INTERN_HASH_CAPACITY>
     enum_type_by_name: list<long, TOKEN_STORAGE_CAPACITY>
+    value_type_by_name: list<long, TOKEN_STORAGE_CAPACITY>
+    constant_by_name: list<long, TOKEN_STORAGE_CAPACITY>
+    enum_case_by_name: list<long, TOKEN_STORAGE_CAPACITY>
     enum_case_name_counts: list<long, TOKEN_STORAGE_CAPACITY>
     enum_type_ids: list<long, TYPE_TABLE_CAPACITY>
     reserved_names: list<bool, TOKEN_STORAGE_CAPACITY>
+    range_alias_names: list<bool, TOKEN_STORAGE_CAPACITY>
     function_name_present: list<bool, TOKEN_STORAGE_CAPACITY>
     functions: list<FunctionRecord, FUNCTION_TABLE_CAPACITY>
     parameters: list<ParameterRecord, BINDING_TABLE_CAPACITY>
@@ -534,9 +540,13 @@ fn empty_compiler_tables() -> CompilerTables {
         token_name_ids: list {},
         intern_slots: list {},
         enum_type_by_name: list {},
+        value_type_by_name: list {},
+        constant_by_name: list {},
+        enum_case_by_name: list {},
         enum_case_name_counts: list {},
         enum_type_ids: list {},
         reserved_names: list {},
+        range_alias_names: list {},
         function_name_present: list {},
         functions: list {},
         parameters: list {},
@@ -600,9 +610,13 @@ fn reset_compiler_tables(env: Env, compiler: write CompilerTables) {
     compiler.token_name_ids.clear()
     compiler.intern_slots.clear()
     compiler.enum_type_by_name.clear()
+    compiler.value_type_by_name.clear()
+    compiler.constant_by_name.clear()
+    compiler.enum_case_by_name.clear()
     compiler.enum_case_name_counts.clear()
     compiler.enum_type_ids.clear()
     compiler.reserved_names.clear()
+    compiler.range_alias_names.clear()
     compiler.function_name_present.clear()
     compiler.functions.clear()
     compiler.parameters.clear()
@@ -894,8 +908,12 @@ fn intern_package_names(
     }
     for name_id in 0L..next_name_id {
         compiler.enum_type_by_name.push(-1L).unwrap()
+        compiler.value_type_by_name.push(-1L).unwrap()
+        compiler.constant_by_name.push(-1L).unwrap()
+        compiler.enum_case_by_name.push(-1L).unwrap()
         compiler.enum_case_name_counts.push(0L).unwrap()
         compiler.reserved_names.push(false).unwrap()
+        compiler.range_alias_names.push(false).unwrap()
         match compiler.function_name_present.push(false) {
             ok(_) => (),
             err(_) => fail_tool(env, "compiler function name map capacity exceeded"),

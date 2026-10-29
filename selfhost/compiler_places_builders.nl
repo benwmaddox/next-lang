@@ -385,6 +385,9 @@ fn body_child_expected(
             if type_kind(compiler, frame.expected) == TYPE_KIND_ARRAY { collection_element_type(compiler, frame.expected) } else { -1L }
         }
         else if token_is_word_at(source, tokens, files, file_index, tables.nodes[parent].token, "print") { -1L }
+        else if numeric_builtin_kind(source, tokens, files, compiler, file_index, tables.nodes[parent].token, frame.scope) != NUMERIC_BUILTIN_NONE {
+            if frame.expected == TY_INT || frame.expected == TY_LONG { frame.expected } else { -1L }
+        }
         else {
             let function = find_function_by_name(compiler, compiler.token_name_ids[tables.nodes[parent].token])
             if function >= 0L && child_index < compiler.functions[function].param_count {

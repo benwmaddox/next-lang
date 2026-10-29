@@ -531,3 +531,36 @@ fn check_type_alias_targets(
             "unknown type in alias '", tables.nodes[node].token, "'; declare the base type first")
     }
 }
+
+// A text or bytes literal longer than the type it initialises (stage 0's wording).
+fn fail_text_literal_too_long(
+    env: Env,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: CompilerTables,
+    file_index: long,
+    offset: long,
+    is_bytes: bool,
+    length: long,
+    capacity: long,
+) -> never {
+    let file = files[file_index]
+    let position = position_for_offset(file_index, file.base + offset, compiler)
+    match env.err.write(file.name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    if is_bytes {
+        match env.err.write(b": error: byte literal has ") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(str(length).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b" bytes, exceeding Bytes max ") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(str(capacity).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b"; increase the byte maximum") { ok(_) => (), err(_) => env.exit(3) }
+    } else {
+        match env.err.write(b": error: ASCII literal does not fit Ascii max ") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(str(capacity).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b"; increase its byte maximum") { ok(_) => (), err(_) => env.exit(3) }
+    }
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}

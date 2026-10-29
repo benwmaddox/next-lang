@@ -240,9 +240,15 @@ fn unsupported_category_for_node(
             return UNSUPPORTED_TEXT_COLLECTION
         }
     }
-    // Range types (int 0..=255) are not implemented: reject them wherever a type is written
-    // instead of treating them as their base type and dropping the range check.
-    if is_type_node(value.kind) && (value.flags & FLAG_RANGE) != 0L { return UNSUPPORTED_TYPE_FORM }
+    // Range types are only handled as the target of a type alias that is itself used only in casts:
+    // anywhere else the range would be dropped silently, so refuse it.
+    if is_type_node(value.kind) {
+        if (value.flags & FLAG_RANGE) != 0L {
+            if value.kind != NodeKind.AliasedType || !range_node_supported(source, tokens, files, tables, file_index, node) { return UNSUPPORTED_TYPE_FORM }
+        } else if value.kind != NodeKind.CastType && value.kind != NodeKind.AliasedType && type_node_uses_range_alias(compiler, value) {
+            return UNSUPPORTED_TYPE_FORM
+        } else { () }
+    }
     match value.kind {
         NodeKind.Program => 0L,
         NodeKind.Enum => 0L,
@@ -341,7 +347,13 @@ fn unsupported_category_for_node(
         NodeKind.FunctionTypeParameter => UNSUPPORTED_NODE,
         NodeKind.Effect => UNSUPPORTED_NODE,
         NodeKind.AliasedType => if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L { 0L } else { UNSUPPORTED_TYPE },
-        NodeKind.DeclaredType => if compiler.facts[node].ty == TY_INT || compiler.facts[node].ty == TY_LONG { 0L } else { UNSUPPORTED_NODE },
+        NodeKind.DeclaredType => {
+            let declared = compiler.facts[node].ty
+            if declared == TY_INT || declared == TY_LONG || declared == TY_BYTE { 0L }
+            else if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L &&
+                (type_kind(compiler, declared) == TYPE_KIND_ASCII || type_kind(compiler, declared) == TYPE_KIND_BYTES) { 0L }
+            else { UNSUPPORTED_NODE }
+        },
         NodeKind.TypeArgument => 0L,
         NodeKind.ParameterType => {
             if is_core_addr_type(source, tokens, files, tables, compiler, file_index, node) { 0L }
@@ -425,6 +437,7 @@ fn unsupported_category_for_node(
         NodeKind.Binary => if value.flags < 0L || (value.flags > 20L && value.flags != 21L) || value.flags == 5L || value.flags == 6L || value.flags == 7L { UNSUPPORTED_OPERATOR } else { 0L },
         NodeKind.Call => {
             if token_is_word_at(source, tokens, files, file_index, value.token, "fill") { 0L }
+            else if numeric_builtin_kind(source, tokens, files, compiler, file_index, value.token, -1L) != NUMERIC_BUILTIN_NONE { 0L }
             else if format_text_builtin_kind(source, tokens, files, tables, compiler, file_index, node) != FORMAT_TEXT_NONE { 0L }
             else if builtin_function_name(source, tokens, files, file_index, value.token) {
                 let id = compiler.token_name_ids[value.token]
