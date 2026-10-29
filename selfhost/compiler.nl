@@ -430,6 +430,7 @@ struct CompilerTables {
     enum_case_name_counts: list<long, TOKEN_STORAGE_CAPACITY>
     enum_type_ids: list<long, TYPE_TABLE_CAPACITY>
     reserved_names: list<bool, TOKEN_STORAGE_CAPACITY>
+    function_name_present: list<bool, TOKEN_STORAGE_CAPACITY>
     functions: list<FunctionRecord, FUNCTION_TABLE_CAPACITY>
     parameters: list<ParameterRecord, BINDING_TABLE_CAPACITY>
     type_records: list<TypeRecord, TYPE_TABLE_CAPACITY>
@@ -536,6 +537,7 @@ fn empty_compiler_tables() -> CompilerTables {
         enum_case_name_counts: list {},
         enum_type_ids: list {},
         reserved_names: list {},
+        function_name_present: list {},
         functions: list {},
         parameters: list {},
         type_records: list {},
@@ -601,6 +603,7 @@ fn reset_compiler_tables(env: Env, compiler: write CompilerTables) {
     compiler.enum_case_name_counts.clear()
     compiler.enum_type_ids.clear()
     compiler.reserved_names.clear()
+    compiler.function_name_present.clear()
     compiler.functions.clear()
     compiler.parameters.clear()
     compiler.type_records.clear()
@@ -885,22 +888,30 @@ fn intern_package_names(
         compiler.enum_type_by_name.push(-1L).unwrap()
         compiler.enum_case_name_counts.push(0L).unwrap()
         compiler.reserved_names.push(false).unwrap()
+        match compiler.function_name_present.push(false) {
+            ok(_) => (),
+            err(_) => fail_tool(env, "compiler function name map capacity exceeded"),
+        }
+    }
+    for node in 0L..tables.nodes.count() {
+        let syntax = tables.nodes[node]
+        if syntax.kind != NodeKind.Function { continue }
+        let token = syntax.token
+        if token >= 0L && token < compiler.token_name_ids.count() {
+            let name_id = compiler.token_name_ids[token]
+            if name_id >= 0L && name_id < compiler.function_name_present.count() {
+                compiler.function_name_present[name_id] = true
+            }
+        }
     }
 }
 
 fn function_exists_by_name(
-    tables: ParseTables,
-    files: list<SourceFile, MAX_SOURCE_FILES>,
     compiler: CompilerTables,
     name_id: long,
 ) -> bool {
-    for node in 0L..tables.nodes.count() {
-        if tables.nodes[node].kind == NodeKind.Function {
-            let token = tables.nodes[node].token
-            if token >= 0L && compiler.token_name_ids[token] == name_id { return true }
-        }
-    }
-    false
+    name_id >= 0L && name_id < compiler.function_name_present.count() &&
+        compiler.function_name_present[name_id]
 }
 
 fn binding_is_visible(
@@ -1080,7 +1091,7 @@ fn is_function_value_name(
     let token = tables.nodes[node].token
     if token < 0L { return false }
     let name_id = compiler.token_name_ids[token]
-    function_exists_by_name(tables, files, compiler, name_id) && !is_shadowed_function_value(tables, compiler, node, name_id)
+    function_exists_by_name(compiler, name_id) && !is_shadowed_function_value(tables, compiler, node, name_id)
 }
 
 fn builtin_function_name(
@@ -2936,7 +2947,7 @@ fn unsupported_category_for_node(
             else if format_text_builtin_kind(source, tokens, files, tables, compiler, file_index, node) != FORMAT_TEXT_NONE { 0L }
             else if builtin_function_name(source, tokens, files, file_index, value.token) {
                 let id = compiler.token_name_ids[value.token]
-                if function_exists_by_name(tables, files, compiler, id) { 0L } else { UNSUPPORTED_CALLEE }
+                if function_exists_by_name(compiler, id) { 0L } else { UNSUPPORTED_CALLEE }
             } else if builtin_case_name(source, tokens, files, file_index, value.token) &&
                 user_case_matches(compiler, compiler.token_name_ids[value.token]) == -1L &&
                 !builtin_sum_case_name(source, tokens, files, file_index, value.token) &&
@@ -8564,16 +8575,24 @@ fn ir_push_byte(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAP
 }
 
 fn ir_write_ascii(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, value: Ascii max 8192) {
-    for index in 0L..value.len() { ir_push_byte(compiler, ir, value.bytes()[index]) }
+    if compiler.ir_overflow { return }
+    match ir.try_append(value.bytes()) {
+        ok(_) => (),
+        err(_) => { for index in 0L..value.len() { ir_push_byte(compiler, ir, value.bytes()[index]) } },
+    }
 }
 
 fn ir_write_bytes(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, value: Bytes max 4096) {
-    for index in 0L..value.count() { ir_push_byte(compiler, ir, value[index]) }
+    if compiler.ir_overflow { return }
+    match ir.try_append(value) {
+        ok(_) => (),
+        err(_) => { for index in 0L..value.count() { ir_push_byte(compiler, ir, value[index]) } },
+    }
 }
 
 fn ir_write_number(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, value: long) {
     let text = str(value)
-    for index in 0L..text.len() { ir_push_byte(compiler, ir, text.bytes()[index]) }
+    ir_write_ascii(compiler, ir, text)
 }
 
 fn ir_hex_digit(value: long, lowercase: bool) -> byte {
