@@ -8709,6 +8709,23 @@ fn storage_location_with_offset(base: StorageLocation, extra_offset: long) -> St
         index_node: base.index_node, index_stride: base.index_stride }
 }
 
+fn sum_parameter_location(compiler: CompilerTables, binding: long, base: StorageLocation) -> StorageLocation {
+    if binding < 0L || binding >= compiler.bindings.count() { return base }
+    let type_id = compiler.bindings[binding].ty
+    if !is_sum_type(compiler, type_id) { return base }
+    // A sum value is one contiguous leaf in the caller's indexed lane group.
+    // Keep its descriptor and apply the runtime lane index when materializing
+    // the address; structs still use their existing noncontiguous geometry.
+    StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node,
+        byte_offset: base.byte_offset, copies: -1L, index: -1L, index_node: -1L,
+        index_stride: value_type_size(compiler, type_id) }
+}
+
+fn is_indexed_sum_parameter_location(location: StorageLocation) -> bool {
+    location.origin == LOCATION_NATIVE && location.anchor_kind == 3L && location.anchor_node >= 0L &&
+        location.copies == -1L && location.index == -1L && location.index_node == -1L && location.index_stride > 0L
+}
+
 // E3a1 begin: resolve native-slot anchors through the per-function plan.
 fn compiler_location(compiler: CompilerTables, anchor_kind: long, anchor_node: long, byte_offset: long) -> StorageLocation {
     let native = native_location(anchor_kind, anchor_node, byte_offset)
@@ -8741,7 +8758,10 @@ fn aggregate_destination_location(compiler: CompilerTables, kind: long, node: lo
 fn aggregate_source_location(compiler: CompilerTables, kind: long, node: long) -> StorageLocation {
     if kind == 0L { compiler_location(compiler, 0L, node, 0L) }
     else if kind == 1L { compiler_location(compiler, 1L, node, 0L) }
-    else if kind == 2L { compiler_location(compiler, 3L, node, 0L) }
+    else if kind == 2L {
+        let location = compiler_location(compiler, 3L, node, 0L)
+        sum_parameter_location(compiler, node, location)
+    }
     else { compiler_location(compiler, 2L, node, 0L) }
 }
 // E3a1 end
@@ -8783,7 +8803,7 @@ recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTable
             }
         } else if binding >= 0L && compiler.bindings[binding].parameter && is_aggregate_type(compiler, compiler.bindings[binding].ty) {
             let location = compiler_location(compiler, 3L, binding, 0L)
-            StorageLocation { origin: location.origin, anchor_kind: location.anchor_kind, anchor_node: location.anchor_node, byte_offset: location.byte_offset, copies: -1L, index: -1L, index_node: -1L, index_stride: 0L }
+            sum_parameter_location(compiler, binding, StorageLocation { origin: location.origin, anchor_kind: location.anchor_kind, anchor_node: location.anchor_node, byte_offset: location.byte_offset, copies: -1L, index: -1L, index_node: -1L, index_stride: 0L })
         } else if binding >= 0L && compiler.bindings[binding].parameter { compiler_location(compiler, 3L, binding, 0L) }
         else { compiler_location(compiler, 1L, binding, 0L) }
     } else if kind == NodeKind.Field {
@@ -8855,7 +8875,7 @@ fn emit_location_pointer_materialization(
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     location: StorageLocation,
     ) -> long {
-    if location.copies != 1L || location.index != 0L {
+    if !is_indexed_sum_parameter_location(location) && (location.copies != 1L || location.index != 0L) {
         compiler.ir_overflow = true
         return -1L
     }
@@ -8869,7 +8889,14 @@ fn emit_location_pointer_materialization(
         return serial
     } else if location.anchor_kind == 3L || location.anchor_kind == 9L {
         if location.anchor_kind == 3L {
-            ir_write_ascii(compiler, ir, "  %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = select i1 true, ptr %arg.anchor."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, ", ptr %arg.anchor."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, "\n  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %arg.offset."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, location.byte_offset); ir_write_ascii(compiler, ir, "\n")
+            ir_write_ascii(compiler, ir, "  %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = select i1 true, ptr %arg.anchor."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, ", ptr %arg.anchor."); ir_write_number(compiler, ir, location.anchor_node); ir_push_byte(compiler, ir, 10)
+            if is_indexed_sum_parameter_location(location) {
+                ir_write_ascii(compiler, ir, "  %loc.offset.index."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = mul i64 %arg.index."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, location.index_stride); ir_push_byte(compiler, ir, 10)
+                ir_write_ascii(compiler, ir, "  %loc.offset.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %arg.offset."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, location.byte_offset); ir_push_byte(compiler, ir, 10)
+                ir_write_ascii(compiler, ir, "  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %loc.offset.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", %loc.offset.index."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
+            } else {
+                ir_write_ascii(compiler, ir, "  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %arg.offset."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, location.byte_offset); ir_push_byte(compiler, ir, 10)
+            }
         } else {
             ir_write_ascii(compiler, ir, "  %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = select i1 true, ptr %nl.dest.anchor, ptr %nl.dest.anchor\n  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %nl.dest.offset, "); ir_write_number(compiler, ir, location.byte_offset); ir_write_ascii(compiler, ir, "\n")
         }
@@ -8977,6 +9004,24 @@ fn emit_layout_address(
     result_node: long,
     location: StorageLocation,
 ) {
+    if is_indexed_sum_parameter_location(location) {
+        let pointer_location = StorageLocation {
+            origin: location.origin,
+            anchor_kind: location.anchor_kind,
+            anchor_node: location.anchor_node,
+            byte_offset: 0L,
+            copies: location.copies,
+            index: location.index,
+            index_node: location.index_node,
+            index_stride: location.index_stride,
+        }
+        let pointer_serial = emit_location_pointer_materialization(compiler, ir, pointer_location)
+        ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, result_node)
+        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
+        emit_location_pointer_reference(compiler, ir, pointer_location, pointer_serial)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, location.byte_offset); ir_push_byte(compiler, ir, 10)
+        return
+    }
     if location.origin != LOCATION_NATIVE || location.copies != 1L || location.index != 0L {
         if location.origin != LOCATION_DATA_STACK || location.copies != 1L || location.index != 0L { compiler.ir_overflow = true; return }
     }
@@ -10266,7 +10311,7 @@ fn emit_match_payload_bindings(
         if tables.nodes[binding_node].kind == NodeKind.PatternBinding {
             let binding = compiler.facts[binding_node].binding
             let source_address = aggregate_source_location(compiler, source_kind, source_node)
-            emit_layout_address(compiler, ir, binding_node, compiler_location(compiler, source_address.anchor_kind, source_address.anchor_node, payload.offset))
+            emit_layout_address(compiler, ir, binding_node, storage_location_with_offset(source_address, payload.offset))
             if payload.ty != TY_UNIT {
                 if is_aggregate_type(compiler, payload.ty) {
                     emit_aggregate_copy(compiler, ir, payload.ty, aggregate_destination_location(compiler, 1L, binding), aggregate_source_location(compiler, 3L, binding_node))
@@ -10390,7 +10435,7 @@ fn emit_option_result_method(
     let receiver_kind = type_kind(compiler, receiver_ty)
     let receiver_source = aggregate_source_location_for_node(tables, compiler, receiver)
     let tag_address = enum_temporary_address(node, MAX_TREE_NODES + 5L)
-    emit_layout_address(compiler, ir, tag_address, compiler_location(compiler, receiver_source.anchor_kind, receiver_source.anchor_node, 0L))
+    emit_layout_address(compiler, ir, tag_address, receiver_source)
     ir_write_ascii(compiler, ir, "  %method.tag."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, tag_address); ir_write_ascii(compiler, ir, ", align 1\n")
     let is_some = token_is_word_at(source, tokens, files, file_index, tables.nodes[node].token, "is_some")
@@ -10436,16 +10481,7 @@ fn match_wildcard_ordinal(tables: ParseTables, compiler: CompilerTables, first_a
 }
 
 fn optional_payload_location(base: StorageLocation, payload_offset: long) -> StorageLocation {
-    StorageLocation {
-        origin: base.origin,
-        anchor_kind: base.anchor_kind,
-        anchor_node: base.anchor_node,
-        byte_offset: base.byte_offset + payload_offset,
-        copies: 1L,
-        index: 0L,
-        index_node: -1L,
-        index_stride: 0L,
-    }
+    storage_location_with_offset(base, payload_offset)
 }
 
 fn emit_optional_call_invoke(
@@ -11044,7 +11080,7 @@ recursive fn emit_expr_linear(
             let operand_kind = type_kind(compiler, operand_ty)
             let operand_source = aggregate_source_location_for_node(tables, compiler, operand)
             let tag_address = enum_temporary_address(current, MAX_TREE_NODES + 8L)
-            emit_layout_address(compiler, ir, tag_address, compiler_location(compiler, operand_source.anchor_kind, operand_source.anchor_node, 0L))
+            emit_layout_address(compiler, ir, tag_address, operand_source)
             ir_write_ascii(compiler, ir, "  %try.tag."); ir_write_number(compiler, ir, current)
             ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, tag_address)
             ir_write_ascii(compiler, ir, ", align 1\n  %try.is.success."); ir_write_number(compiler, ir, current)
@@ -11078,7 +11114,7 @@ recursive fn emit_expr_linear(
             let option_ty = compiler.facts[left].ty
             let left_source = aggregate_source_location_for_node(tables, compiler, left)
             let tag_address = enum_temporary_address(current, MAX_TREE_NODES + 2L)
-            emit_layout_address(compiler, ir, tag_address, compiler_location(compiler, left_source.anchor_kind, left_source.anchor_node, 0L))
+            emit_layout_address(compiler, ir, tag_address, left_source)
             ir_write_ascii(compiler, ir, "  %coalesce.tag."); ir_write_number(compiler, ir, current)
             ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, tag_address)
             ir_write_ascii(compiler, ir, ", align 1\n  %coalesce.is.some."); ir_write_number(compiler, ir, current)
@@ -11478,7 +11514,7 @@ recursive fn emit_expr_linear(
                 let source_node = aggregate_source_id(tables, compiler, frame.child0)
                 let source_location = aggregate_source_location(compiler, source_kind, source_node)
                 let tag_address = enum_temporary_address(current, MAX_TREE_NODES)
-                emit_layout_address(compiler, ir, tag_address, compiler_location(compiler, source_location.anchor_kind, source_location.anchor_node, 0L))
+                emit_layout_address(compiler, ir, tag_address, source_location)
                 ir_write_ascii(compiler, ir, "  %match.tag."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, tag_address); ir_write_ascii(compiler, ir, ", align 1\n  switch i32 %match.tag."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %")
             } else {
                 ir_write_ascii(compiler, ir, "  switch "); ir_write_ascii(compiler, ir, llvm_type_name(matched_type)); ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", label %")
@@ -11803,7 +11839,7 @@ recursive fn emit_expr_linear(
                 if is_aggregate_type(compiler, ty) {
                     let source_kind = aggregate_source_kind(tables, compiler, value)
                     let source_node = aggregate_source_id(tables, compiler, value)
-                    let destination = if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index { compiler_location(compiler, 2L, target, 0L) } else if binding_is_write_parameter(compiler, binding) { compiler_location(compiler, 3L, binding, 0L) } else { aggregate_destination_location(compiler, 1L, binding) }
+                    let destination = if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index { compiler_location(compiler, 2L, target, 0L) } else if binding_is_write_parameter(compiler, binding) && is_sum_type(compiler, ty) { place_storage_location(tables, compiler, target) } else if binding_is_write_parameter(compiler, binding) { compiler_location(compiler, 3L, binding, 0L) } else { aggregate_destination_location(compiler, 1L, binding) }
                     emit_aggregate_copy(compiler, ir, ty, destination, aggregate_source_location(compiler, source_kind, source_node))
                 } else if ty == TY_BOOL {
                     if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index || binding_is_write_parameter(compiler, binding) || binding_is_view(compiler, binding) { emit_store_scalar_to_place(tables, compiler, ir, target, ty, value) }
@@ -12196,7 +12232,7 @@ recursive fn emit_function_body(
             let op = tables.nodes[child].flags
             if op == 0L {
                 if is_aggregate_type(compiler, ty) {
-                    let destination = if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index { compiler_location(compiler, 2L, target, 0L) } else if binding_is_write_parameter(compiler, binding) { compiler_location(compiler, 3L, binding, 0L) } else { aggregate_destination_location(compiler, 1L, binding) }
+                    let destination = if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index { compiler_location(compiler, 2L, target, 0L) } else if binding_is_write_parameter(compiler, binding) && is_sum_type(compiler, ty) { place_storage_location(tables, compiler, target) } else if binding_is_write_parameter(compiler, binding) { compiler_location(compiler, 3L, binding, 0L) } else { aggregate_destination_location(compiler, 1L, binding) }
                     emit_aggregate_copy_to_place(tables, compiler, ir, ty, target, value, destination)
                 } else if ty == TY_BOOL {
                     if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index || binding_is_write_parameter(compiler, binding) || binding_is_view(compiler, binding) { emit_store_scalar_to_place(tables, compiler, ir, target, ty, value) }

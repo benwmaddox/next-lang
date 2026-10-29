@@ -1,0 +1,3 @@
+[package]
+name = "b1-sum-parameter-geometry"
+capabilities = ["out"]
