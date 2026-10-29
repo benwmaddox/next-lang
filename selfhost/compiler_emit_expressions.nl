@@ -2550,14 +2550,30 @@ recursive fn emit_function_body(
             let target = compiler.child_first[child]
             let value = compiler.child_next[target]
             if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index || binding_is_write_parameter(compiler, compiler.facts[target].binding) || binding_is_view(compiler, compiler.facts[target].binding) { emit_expr_linear(source, files, tokens, tables, compiler, ir, target, file_index, return_ty, is_test) }
+            let in_place = assign_builds_in_place(tables, compiler, child)
+            let saved_destination_node = compiler.emit_destination_node
+            let saved_destination_kind = compiler.emit_destination_kind
+            let saved_destination_anchor = compiler.emit_destination_anchor
+            if in_place {
+                compiler.emit_destination_node = value
+                compiler.emit_destination_kind = 1L
+                compiler.emit_destination_anchor = compiler.facts[target].binding
+            }
             emit_expr_linear(source, files, tokens, tables, compiler, ir, value, file_index, return_ty, is_test)
+            if in_place {
+                compiler.emit_destination_node = saved_destination_node
+                compiler.emit_destination_kind = saved_destination_kind
+                compiler.emit_destination_anchor = saved_destination_anchor
+            }
             let binding = compiler.facts[target].binding
             let ty = compiler.facts[target].ty
             let op = tables.nodes[child].flags
             if op == 0L {
                 if is_aggregate_type(compiler, ty) {
-                    let destination = assignment_destination(tables, compiler, ir, target, ty, binding)
-                    emit_aggregate_copy_to_place(tables, compiler, ir, ty, target, value, destination)
+                    if !in_place {
+                        let destination = assignment_destination(tables, compiler, ir, target, ty, binding)
+                        emit_aggregate_copy_to_place(tables, compiler, ir, ty, target, value, destination)
+                    }
                 } else if ty == TY_BOOL {
                     if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index || binding_is_write_parameter(compiler, binding) || binding_is_view(compiler, binding) { emit_store_scalar_to_place(tables, compiler, ir, target, ty, value) }
                     else { ir_write_ascii(compiler, ir, "  %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value); ir_write_ascii(compiler, ir, " to i8\n  store i8 %bool.store."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
