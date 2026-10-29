@@ -85,6 +85,10 @@ typedef struct {
     uint64_t recursion_budget;
 } nl_data_stack_context;
 
+/* The generated code reads the stack base straight from the context (selfhost/c_runtime.nl,
+   nlc_context_current_base); keep the offset it uses in step with this struct. */
+_Static_assert(offsetof(nl_data_stack_context, base) == 56, "generated code reads the context base at offset 56");
+
 _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col);
 static int nl_write_all(int fd, const unsigned char *bytes, uint64_t length);
 
