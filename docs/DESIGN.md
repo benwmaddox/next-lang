@@ -268,6 +268,7 @@ Adding to a full collection returns `Result`, which the code must handle (an unu
 
 **Layout: structure of arrays, as Stasis lowers it**
 
+- **Default to inline, flattened layout (Ben, 2026-10-29).** For every data structure (collections, nested collections, text and bytes in collections, records), store data inline in the enclosing storage and flatten nesting into shared lanes as far as the design allows. Diverge (pointers, side tables, size classes, per-element indirection) only when there is a clear, written reason, and record each divergence with its reason in docs/layout-divergences.md. The first self-hosted versions of `queue`, nested collections and bounded text in collections may copy stage 0's per-element inline layout for parity; that is a staging choice, not a divergence from inline.
 - A collection of structs is stored as one array per field, so a loop that reads two fields streams through just those two arrays. `app.world.units[id].hp` reads the array `World_units_hp` at the id's slot.
 - **Nested fixed-capacity collections flatten** (the target layout): each unit's `inventory: list<Item, 8>` becomes arrays of 4,096 × 8 items plus one count per unit, as Stasis flattens nested fixed arrays. So a collection inside a collection needs no pointers and no growing values; it's just more lanes. The current compiler still stores each nested collection's lanes inline per enclosing element (T06); PLAN.md's L1 flattens them before M4.
 - **Fixed-size fields** (numbers, ids, enums, small records) sit in their array directly.
