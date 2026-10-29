@@ -1,0 +1,2235 @@
+{
+  "acceptance_result": "pass",
+  "benchmark_lock": "/home/ben/linuxbench/bench.lock",
+  "cases": {
+    "generated-128": {
+      "acceptance_result": "not_above_threshold",
+      "expected_checksum": 9682,
+      "expected_stdout": "9682\n",
+      "function_count": 128,
+      "links": {
+        "rust-stage0": {
+          "case": "generated-128",
+          "command": [
+            "clang",
+            "-O3",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/rust-stage0.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 0.800016,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/rust-stage0.exe",
+            "sha256": "b550873fef263c39b8ff43e304e0fdb1639734a0e5363775e8a3adf6e1006ccb"
+          },
+          "frontend": "rust-stage0",
+          "label": "link-generated-128-rust-stage0",
+          "stack_mode": "pointer",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-128-rust-stage0.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-128-rust-stage0.stdout",
+          "timed_out": false
+        },
+        "stage3": {
+          "case": "generated-128",
+          "command": [
+            "clang",
+            "-O3",
+            "-DNLC_STACK_MODE_OFFSET=1",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/stage3.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 0.591821,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/stage3.exe",
+            "sha256": "55265737ea501e58cca65bf102b837fffbc962096298ef2465e19b59e4e48583"
+          },
+          "frontend": "stage3",
+          "label": "link-generated-128-stage3",
+          "stack_mode": "offset",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-128-stage3.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-128-stage3.stdout",
+          "timed_out": false
+        }
+      },
+      "package": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+      "sample_order": [
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "stage3",
+          "rust-stage0"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ]
+      ],
+      "samples": {
+        "rust-stage0": [
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-0.ll"
+            ],
+            "cpu_seconds": 0.0,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.054,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-0.ll",
+              "sha256": "54cc90e6adc5809940e448800422214ca453af4bdf9b2e8bab080575a5e6bc26"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-0.ll",
+            "label": "generated-128-rust-stage0-sample-0",
+            "max_resident_set_kib": 8148,
+            "phase": "warmup",
+            "primary_wall_seconds": 0.054,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-0.stdout",
+            "system_cpu_seconds": 0.0,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.0,
+            "wall_seconds": 0.03,
+            "wrapper_and_rounding_difference_seconds": 0.024,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-0.ll"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-1.ll"
+            ],
+            "cpu_seconds": 0.0,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.046,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-1.ll",
+              "sha256": "54cc90e6adc5809940e448800422214ca453af4bdf9b2e8bab080575a5e6bc26"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-1.ll",
+            "label": "generated-128-rust-stage0-sample-1",
+            "max_resident_set_kib": 8148,
+            "phase": "measured",
+            "primary_wall_seconds": 0.046,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-1.stdout",
+            "system_cpu_seconds": 0.0,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.0,
+            "wall_seconds": 0.03,
+            "wrapper_and_rounding_difference_seconds": 0.016,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-1.ll"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-2.ll"
+            ],
+            "cpu_seconds": 0.01,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.044,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-2.ll",
+              "sha256": "54cc90e6adc5809940e448800422214ca453af4bdf9b2e8bab080575a5e6bc26"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-2.ll",
+            "label": "generated-128-rust-stage0-sample-2",
+            "max_resident_set_kib": 8148,
+            "phase": "measured",
+            "primary_wall_seconds": 0.044,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-2.stdout",
+            "system_cpu_seconds": 0.0,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.01,
+            "wall_seconds": 0.03,
+            "wrapper_and_rounding_difference_seconds": 0.014,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-2.ll"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-3.ll"
+            ],
+            "cpu_seconds": 0.01,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.046,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-3.ll",
+              "sha256": "54cc90e6adc5809940e448800422214ca453af4bdf9b2e8bab080575a5e6bc26"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-3.ll",
+            "label": "generated-128-rust-stage0-sample-3",
+            "max_resident_set_kib": 8152,
+            "phase": "measured",
+            "primary_wall_seconds": 0.046,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-3.stdout",
+            "system_cpu_seconds": 0.0,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.01,
+            "wall_seconds": 0.02,
+            "wrapper_and_rounding_difference_seconds": 0.026,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-rust-stage0-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-3.ll"
+            ]
+          }
+        ],
+        "stage3": [
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-0.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.05,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.124,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-0.ll",
+              "sha256": "e1841dbf81f1461d14a5d6b9e560e35cb5a4b42d7fadf0eca54dd4de169e60f9"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-0.ll",
+            "label": "generated-128-stage3-sample-0",
+            "max_resident_set_kib": 152768,
+            "phase": "warmup",
+            "primary_wall_seconds": 0.124,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-0.stdout",
+            "system_cpu_seconds": 0.04,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.01,
+            "wall_seconds": 0.1,
+            "wrapper_and_rounding_difference_seconds": 0.024,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-0.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-1.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.05,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.091,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-1.ll",
+              "sha256": "e1841dbf81f1461d14a5d6b9e560e35cb5a4b42d7fadf0eca54dd4de169e60f9"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-1.ll",
+            "label": "generated-128-stage3-sample-1",
+            "max_resident_set_kib": 152944,
+            "phase": "measured",
+            "primary_wall_seconds": 0.091,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-1.stdout",
+            "system_cpu_seconds": 0.04,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.01,
+            "wall_seconds": 0.08,
+            "wrapper_and_rounding_difference_seconds": 0.011,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-1.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-2.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.05,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.093,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-2.ll",
+              "sha256": "e1841dbf81f1461d14a5d6b9e560e35cb5a4b42d7fadf0eca54dd4de169e60f9"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-2.ll",
+            "label": "generated-128-stage3-sample-2",
+            "max_resident_set_kib": 152768,
+            "phase": "measured",
+            "primary_wall_seconds": 0.093,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-2.stdout",
+            "system_cpu_seconds": 0.04,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.01,
+            "wall_seconds": 0.07,
+            "wrapper_and_rounding_difference_seconds": 0.023,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-2.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-3.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.05,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.097,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-3.ll",
+              "sha256": "e1841dbf81f1461d14a5d6b9e560e35cb5a4b42d7fadf0eca54dd4de169e60f9"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-3.ll",
+            "label": "generated-128-stage3-sample-3",
+            "max_resident_set_kib": 152768,
+            "phase": "measured",
+            "primary_wall_seconds": 0.097,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-3.stdout",
+            "system_cpu_seconds": 0.03,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.02,
+            "wall_seconds": 0.08,
+            "wrapper_and_rounding_difference_seconds": 0.017,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-128-stage3-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-3.ll",
+              "--runtime=c"
+            ]
+          }
+        ]
+      },
+      "stage3_over_rust_median_ratio": 2.021739,
+      "timing": {
+        "rust-stage0": {
+          "best_wall_seconds": 0.044,
+          "gnu_time_wall_median_seconds": 0.03,
+          "median_wall_seconds": 0.046,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            0.046,
+            0.044,
+            0.046
+          ],
+          "spread_wall_seconds": 0.002,
+          "wrapper_and_rounding_difference_median_seconds": 0.016,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        },
+        "stage3": {
+          "best_wall_seconds": 0.091,
+          "gnu_time_wall_median_seconds": 0.08,
+          "median_wall_seconds": 0.093,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            0.091,
+            0.093,
+            0.097
+          ],
+          "spread_wall_seconds": 0.006,
+          "wrapper_and_rounding_difference_median_seconds": 0.017,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        }
+      },
+      "validation": [
+        {
+          "actual_stdout": "9682\n",
+          "command": [
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/rust-stage0.exe"
+          ],
+          "duration_seconds": 0.003478,
+          "expected_stdout": "9682\n",
+          "label": "validate-generated-128-rust-stage0",
+          "status": 0,
+          "stderr_preview": "",
+          "stdout_matches": true,
+          "timed_out": false
+        },
+        {
+          "actual_stdout": "9682\n",
+          "command": [
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/stage3.exe"
+          ],
+          "duration_seconds": 0.004659,
+          "expected_stdout": "9682\n",
+          "label": "validate-generated-128-stage3",
+          "status": 0,
+          "stderr_preview": "",
+          "stdout_matches": true,
+          "timed_out": false
+        }
+      ]
+    },
+    "generated-2048": {
+      "acceptance_result": "not_above_threshold",
+      "expected_checksum": 2123690,
+      "expected_stdout": "2123690\n",
+      "function_count": 2048,
+      "links": {
+        "rust-stage0": {
+          "case": "generated-2048",
+          "command": [
+            "clang",
+            "-O3",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/rust-stage0.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 6.828328,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/rust-stage0.exe",
+            "sha256": "3f58d5be8fe34a79f36dd66a1657887ea8859ee188b464fbb312baff134a59c4"
+          },
+          "frontend": "rust-stage0",
+          "label": "link-generated-2048-rust-stage0",
+          "stack_mode": "pointer",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-2048-rust-stage0.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-2048-rust-stage0.stdout",
+          "timed_out": false
+        },
+        "stage3": {
+          "case": "generated-2048",
+          "command": [
+            "clang",
+            "-O3",
+            "-DNLC_STACK_MODE_OFFSET=1",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/stage3.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 2.87789,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/stage3.exe",
+            "sha256": "a049e0ab8c62aa537d05c48a6dd2b3516908fe2f76a630f7cfff58a92ca89f79"
+          },
+          "frontend": "stage3",
+          "label": "link-generated-2048-stage3",
+          "stack_mode": "offset",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-2048-stage3.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-2048-stage3.stdout",
+          "timed_out": false
+        }
+      },
+      "package": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+      "sample_order": [
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "stage3",
+          "rust-stage0"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ]
+      ],
+      "samples": {
+        "rust-stage0": [
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-0.ll"
+            ],
+            "cpu_seconds": 0.12,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.194,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-0.ll",
+              "sha256": "b847cc8bd3dd6963ff60aadee7581af4c44ce92bf6ca930db48a7efaa4cdf3cf"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-0.ll",
+            "label": "generated-2048-rust-stage0-sample-0",
+            "max_resident_set_kib": 60408,
+            "phase": "warmup",
+            "primary_wall_seconds": 0.194,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-0.stdout",
+            "system_cpu_seconds": 0.02,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.1,
+            "wall_seconds": 0.18,
+            "wrapper_and_rounding_difference_seconds": 0.014,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-0.ll"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-1.ll"
+            ],
+            "cpu_seconds": 0.14,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.222,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-1.ll",
+              "sha256": "b847cc8bd3dd6963ff60aadee7581af4c44ce92bf6ca930db48a7efaa4cdf3cf"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-1.ll",
+            "label": "generated-2048-rust-stage0-sample-1",
+            "max_resident_set_kib": 60408,
+            "phase": "measured",
+            "primary_wall_seconds": 0.222,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-1.stdout",
+            "system_cpu_seconds": 0.02,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.12,
+            "wall_seconds": 0.2,
+            "wrapper_and_rounding_difference_seconds": 0.022,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-1.ll"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-2.ll"
+            ],
+            "cpu_seconds": 0.13,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.205,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-2.ll",
+              "sha256": "b847cc8bd3dd6963ff60aadee7581af4c44ce92bf6ca930db48a7efaa4cdf3cf"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-2.ll",
+            "label": "generated-2048-rust-stage0-sample-2",
+            "max_resident_set_kib": 60404,
+            "phase": "measured",
+            "primary_wall_seconds": 0.205,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-2.stdout",
+            "system_cpu_seconds": 0.03,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.1,
+            "wall_seconds": 0.19,
+            "wrapper_and_rounding_difference_seconds": 0.015,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-2.ll"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-3.ll"
+            ],
+            "cpu_seconds": 0.13,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.219,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-3.ll",
+              "sha256": "b847cc8bd3dd6963ff60aadee7581af4c44ce92bf6ca930db48a7efaa4cdf3cf"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-3.ll",
+            "label": "generated-2048-rust-stage0-sample-3",
+            "max_resident_set_kib": 60404,
+            "phase": "measured",
+            "primary_wall_seconds": 0.219,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-3.stdout",
+            "system_cpu_seconds": 0.02,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.11,
+            "wall_seconds": 0.19,
+            "wrapper_and_rounding_difference_seconds": 0.029,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-rust-stage0-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-3.ll"
+            ]
+          }
+        ],
+        "stage3": [
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-0.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.38,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.453,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-0.ll",
+              "sha256": "b60a040aa8fc98bf8c7bf66089af3edfb6c0fab5533a50c2b89cb33f0582d8d2"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-0.ll",
+            "label": "generated-2048-stage3-sample-0",
+            "max_resident_set_kib": 166848,
+            "phase": "warmup",
+            "primary_wall_seconds": 0.453,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-0.stdout",
+            "system_cpu_seconds": 0.06,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.32,
+            "wall_seconds": 0.43,
+            "wrapper_and_rounding_difference_seconds": 0.023,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-0.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-1.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.35,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.409,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-1.ll",
+              "sha256": "b60a040aa8fc98bf8c7bf66089af3edfb6c0fab5533a50c2b89cb33f0582d8d2"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-1.ll",
+            "label": "generated-2048-stage3-sample-1",
+            "max_resident_set_kib": 166848,
+            "phase": "measured",
+            "primary_wall_seconds": 0.409,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-1.stdout",
+            "system_cpu_seconds": 0.04,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.31,
+            "wall_seconds": 0.39,
+            "wrapper_and_rounding_difference_seconds": 0.019,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-1.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-2.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.35,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.413,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-2.ll",
+              "sha256": "b60a040aa8fc98bf8c7bf66089af3edfb6c0fab5533a50c2b89cb33f0582d8d2"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-2.ll",
+            "label": "generated-2048-stage3-sample-2",
+            "max_resident_set_kib": 166848,
+            "phase": "measured",
+            "primary_wall_seconds": 0.413,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-2.stdout",
+            "system_cpu_seconds": 0.04,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.31,
+            "wall_seconds": 0.39,
+            "wrapper_and_rounding_difference_seconds": 0.023,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-2.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-3.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.37,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.43,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-3.ll",
+              "sha256": "b60a040aa8fc98bf8c7bf66089af3edfb6c0fab5533a50c2b89cb33f0582d8d2"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-3.ll",
+            "label": "generated-2048-stage3-sample-3",
+            "max_resident_set_kib": 166848,
+            "phase": "measured",
+            "primary_wall_seconds": 0.43,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-3.stdout",
+            "system_cpu_seconds": 0.07,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.3,
+            "wall_seconds": 0.41,
+            "wrapper_and_rounding_difference_seconds": 0.02,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/generated-2048-stage3-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "target/b1-performance-matrix/run-hppi6frb/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-3.ll",
+              "--runtime=c"
+            ]
+          }
+        ]
+      },
+      "stage3_over_rust_median_ratio": 1.885845,
+      "timing": {
+        "rust-stage0": {
+          "best_wall_seconds": 0.205,
+          "gnu_time_wall_median_seconds": 0.19,
+          "median_wall_seconds": 0.219,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            0.222,
+            0.205,
+            0.219
+          ],
+          "spread_wall_seconds": 0.017,
+          "wrapper_and_rounding_difference_median_seconds": 0.022,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        },
+        "stage3": {
+          "best_wall_seconds": 0.409,
+          "gnu_time_wall_median_seconds": 0.39,
+          "median_wall_seconds": 0.413,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            0.409,
+            0.413,
+            0.43
+          ],
+          "spread_wall_seconds": 0.021,
+          "wrapper_and_rounding_difference_median_seconds": 0.02,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        }
+      },
+      "validation": [
+        {
+          "actual_stdout": "2123690\n",
+          "command": [
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/rust-stage0.exe"
+          ],
+          "duration_seconds": 0.0123,
+          "expected_stdout": "2123690\n",
+          "label": "validate-generated-2048-rust-stage0",
+          "status": 0,
+          "stderr_preview": "",
+          "stdout_matches": true,
+          "timed_out": false
+        },
+        {
+          "actual_stdout": "2123690\n",
+          "command": [
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/stage3.exe"
+          ],
+          "duration_seconds": 0.004915,
+          "expected_stdout": "2123690\n",
+          "label": "validate-generated-2048-stage3",
+          "status": 0,
+          "stderr_preview": "",
+          "stdout_matches": true,
+          "timed_out": false
+        }
+      ]
+    },
+    "selfhost": {
+      "acceptance_result": "not_above_threshold",
+      "expected_checksum": null,
+      "expected_stdout": null,
+      "function_count": null,
+      "links": {
+        "rust-stage0": {
+          "case": "selfhost",
+          "command": [
+            "clang",
+            "-O3",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost/rust-stage0.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 15.338548,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost/rust-stage0.exe",
+            "sha256": "5e19a7c8b9b8aedf82cc02157ee1e3cdbbf84d46a9481cbdbce6f9daadedc35c"
+          },
+          "frontend": "rust-stage0",
+          "label": "link-selfhost-rust-stage0",
+          "stack_mode": "pointer",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-rust-stage0.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-rust-stage0.stdout",
+          "timed_out": false
+        },
+        "stage3": {
+          "case": "selfhost",
+          "command": [
+            "clang",
+            "-O3",
+            "-DNLC_STACK_MODE_OFFSET=1",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost/stage3.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 18.19603,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost/stage3.exe",
+            "sha256": "e34e8ebcaee8fb37f151b7f6c08510dedefaea87e7e94b7861780f7d3233ac03"
+          },
+          "frontend": "stage3",
+          "label": "link-selfhost-stage3",
+          "stack_mode": "offset",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-stage3.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-stage3.stdout",
+          "timed_out": false
+        }
+      },
+      "package": "/mnt/d/code/next-lang/selfhost",
+      "sample_order": [
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "stage3",
+          "rust-stage0"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ]
+      ],
+      "samples": {
+        "rust-stage0": [
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-0.ll"
+            ],
+            "cpu_seconds": 1.8,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.961,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-0.ll",
+              "sha256": "ddde0162f90af276b298dd2a6252296360ca4407cf2fc273d1f50345bc788cc7"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-0.ll",
+            "label": "selfhost-rust-stage0-sample-0",
+            "max_resident_set_kib": 269208,
+            "phase": "warmup",
+            "primary_wall_seconds": 1.961,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-0.stdout",
+            "system_cpu_seconds": 0.17,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 1.63,
+            "wall_seconds": 1.94,
+            "wrapper_and_rounding_difference_seconds": 0.021,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-0.ll"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-1.ll"
+            ],
+            "cpu_seconds": 1.75,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.937,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-1.ll",
+              "sha256": "ddde0162f90af276b298dd2a6252296360ca4407cf2fc273d1f50345bc788cc7"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-1.ll",
+            "label": "selfhost-rust-stage0-sample-1",
+            "max_resident_set_kib": 269204,
+            "phase": "measured",
+            "primary_wall_seconds": 1.937,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-1.stdout",
+            "system_cpu_seconds": 0.12,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 1.63,
+            "wall_seconds": 1.9,
+            "wrapper_and_rounding_difference_seconds": 0.037,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-1.ll"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-2.ll"
+            ],
+            "cpu_seconds": 1.72,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.895,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-2.ll",
+              "sha256": "ddde0162f90af276b298dd2a6252296360ca4407cf2fc273d1f50345bc788cc7"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-2.ll",
+            "label": "selfhost-rust-stage0-sample-2",
+            "max_resident_set_kib": 269028,
+            "phase": "measured",
+            "primary_wall_seconds": 1.895,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-2.stdout",
+            "system_cpu_seconds": 0.11,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 1.61,
+            "wall_seconds": 1.87,
+            "wrapper_and_rounding_difference_seconds": 0.025,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-2.ll"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-3.ll"
+            ],
+            "cpu_seconds": 1.72,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.875,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-3.ll",
+              "sha256": "ddde0162f90af276b298dd2a6252296360ca4407cf2fc273d1f50345bc788cc7"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-3.ll",
+            "label": "selfhost-rust-stage0-sample-3",
+            "max_resident_set_kib": 269208,
+            "phase": "measured",
+            "primary_wall_seconds": 1.875,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-3.stdout",
+            "system_cpu_seconds": 0.09,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 1.63,
+            "wall_seconds": 1.86,
+            "wrapper_and_rounding_difference_seconds": 0.015,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-rust-stage0-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-3.ll"
+            ]
+          }
+        ],
+        "stage3": [
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-0.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 3.27,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 3.712,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-0.ll",
+              "sha256": "6d77f5573e33376026a3f6886371f76a88c151bddb367664b6487522732748d9"
+            },
+            "ir_matches_chain": true,
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-0.ll",
+            "label": "selfhost-stage3-sample-0",
+            "max_resident_set_kib": 300608,
+            "phase": "warmup",
+            "primary_wall_seconds": 3.712,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-0.stdout",
+            "system_cpu_seconds": 0.14,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 3.13,
+            "wall_seconds": 3.69,
+            "wrapper_and_rounding_difference_seconds": 0.022,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-0.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-1.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 3.26,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 3.76,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-1.ll",
+              "sha256": "6d77f5573e33376026a3f6886371f76a88c151bddb367664b6487522732748d9"
+            },
+            "ir_matches_chain": true,
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-1.ll",
+            "label": "selfhost-stage3-sample-1",
+            "max_resident_set_kib": 300784,
+            "phase": "measured",
+            "primary_wall_seconds": 3.76,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-1.stdout",
+            "system_cpu_seconds": 0.1,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 3.16,
+            "wall_seconds": 3.74,
+            "wrapper_and_rounding_difference_seconds": 0.02,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-1.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-2.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 3.26,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 3.752,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-2.ll",
+              "sha256": "6d77f5573e33376026a3f6886371f76a88c151bddb367664b6487522732748d9"
+            },
+            "ir_matches_chain": true,
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-2.ll",
+            "label": "selfhost-stage3-sample-2",
+            "max_resident_set_kib": 300608,
+            "phase": "measured",
+            "primary_wall_seconds": 3.752,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-2.stdout",
+            "system_cpu_seconds": 0.12,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 3.14,
+            "wall_seconds": 3.74,
+            "wrapper_and_rounding_difference_seconds": 0.012,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-2.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-3.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 3.26,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 3.666,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-3.ll",
+              "sha256": "6d77f5573e33376026a3f6886371f76a88c151bddb367664b6487522732748d9"
+            },
+            "ir_matches_chain": true,
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-3.ll",
+            "label": "selfhost-stage3-sample-3",
+            "max_resident_set_kib": 300608,
+            "phase": "measured",
+            "primary_wall_seconds": 3.666,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-3.stdout",
+            "system_cpu_seconds": 0.09,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 3.17,
+            "wall_seconds": 3.65,
+            "wrapper_and_rounding_difference_seconds": 0.016,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/selfhost-stage3-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-3.ll",
+              "--runtime=c"
+            ]
+          }
+        ]
+      },
+      "stage3_over_rust_median_ratio": 1.979947,
+      "timing": {
+        "rust-stage0": {
+          "best_wall_seconds": 1.875,
+          "gnu_time_wall_median_seconds": 1.87,
+          "median_wall_seconds": 1.895,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            1.937,
+            1.895,
+            1.875
+          ],
+          "spread_wall_seconds": 0.062,
+          "wrapper_and_rounding_difference_median_seconds": 0.025,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        },
+        "stage3": {
+          "best_wall_seconds": 3.666,
+          "gnu_time_wall_median_seconds": 3.74,
+          "median_wall_seconds": 3.752,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            3.76,
+            3.752,
+            3.666
+          ],
+          "spread_wall_seconds": 0.094,
+          "wrapper_and_rounding_difference_median_seconds": 0.016,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        }
+      },
+      "validation": []
+    }
+  },
+  "chain_report": {
+    "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/report.json",
+    "sha256": "72e603bf4460d65f603077e94e9995527c28e3a5134580fe9e2b6222721901c5"
+  },
+  "comparison_modes": {
+    "rust-stage0": {
+      "implementation": "Rust frontend API from the fresh helper linked against the specified release rlib",
+      "runtime": "C",
+      "stack_mode": "pointer (NLC_STACK_MODE=pointer)"
+    },
+    "stage3": {
+      "implementation": "O3 self-hosted compiler from the passing stage-chain report",
+      "runtime": "C (--runtime=c)",
+      "stack_mode": "offset (Stage 3 emitter mode)"
+    }
+  },
+  "cpu_affinity": [
+    0
+  ],
+  "expected_stage3_binary_sha256": "e34e8ebcaee8fb37f151b7f6c08510dedefaea87e7e94b7861780f7d3233ac03",
+  "expected_stage3_selfhost_ir_sha256": "6d77f5573e33376026a3f6886371f76a88c151bddb367664b6487522732748d9",
+  "input_fingerprints_unchanged": true,
+  "inputs_after": {
+    "benchmark_runner": {
+      "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/bench-selfhost-matrix.py",
+      "sha256": "4bfc15a685ebf086a54084275626da9f9b912c5d9fc2a21f1dadfb5e942949f6"
+    },
+    "case_packages": {
+      "generated-128": "26241d6d753a2541d86d224d29b4e885a6cc860b953ad02162415befbc026b2e",
+      "generated-2048": "632c1a9cf60807345e5f31872ae537ba683aabf34c58c331d9d9c6c4067463d2",
+      "selfhost": "4d0ef0b5336540f9375bd8cd157e5316ff9baf29cd4ca7b2bd96a3bef4f4e37b"
+    },
+    "chain_report": {
+      "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/report.json",
+      "sha256": "72e603bf4460d65f603077e94e9995527c28e3a5134580fe9e2b6222721901c5"
+    },
+    "pilot_runner_source": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-pilot.py",
+      "sha256": "c532cea7b28d829ded799106612ef94e079b4e863e28b82587fb095eda9b6723"
+    },
+    "rust_compiler_sources_sha256": "12f6e610a8c5b25bfc3a7498d27f0b256cb19b82f5ea67728ae821991f3da2b7",
+    "rust_helper_binary": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+      "sha256": "406f3a58114c7758c39683a7d485dd36ecedea7ce8ec801915f592db3f4ad7fd"
+    },
+    "rust_helper_source": {
+      "path": "/mnt/d/code/next-lang/.scratch-b1-deferred-benchmark-20261028/bench-selfhost-compile-rust.rs",
+      "sha256": "12cce63e4a707f5cb2ca7025f2e50cb2e5aec03e58c88396f22025f29087dffe"
+    },
+    "rust_reference_nlc": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/nlc",
+      "sha256": "42e743e8a51ac4abd536b90463047b4d02f78d9ed7a10e21b733c9de303da2a9"
+    },
+    "rust_rlib": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/deps/libnext_lang-ff9bf2564b5fb483.rlib",
+      "sha256": "66bb96af9174b1073b2d4b02bea54aad09eb1c48f0805aefe9314308df8d75bc"
+    },
+    "selfhost_package_sha256": "4d0ef0b5336540f9375bd8cd157e5316ff9baf29cd4ca7b2bd96a3bef4f4e37b",
+    "stage3_binary": {
+      "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+      "sha256": "e34e8ebcaee8fb37f151b7f6c08510dedefaea87e7e94b7861780f7d3233ac03"
+    },
+    "stage_chain_sources_sha256": "f5ac405ca8b3c3dba6ec83ca647c65d46a3fbe0776d8c80c3700d33849fec692"
+  },
+  "inputs_before": {
+    "benchmark_runner": {
+      "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/bench-selfhost-matrix.py",
+      "sha256": "4bfc15a685ebf086a54084275626da9f9b912c5d9fc2a21f1dadfb5e942949f6"
+    },
+    "case_packages": {
+      "generated-128": "26241d6d753a2541d86d224d29b4e885a6cc860b953ad02162415befbc026b2e",
+      "generated-2048": "632c1a9cf60807345e5f31872ae537ba683aabf34c58c331d9d9c6c4067463d2",
+      "selfhost": "4d0ef0b5336540f9375bd8cd157e5316ff9baf29cd4ca7b2bd96a3bef4f4e37b"
+    },
+    "chain_report": {
+      "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/report.json",
+      "sha256": "72e603bf4460d65f603077e94e9995527c28e3a5134580fe9e2b6222721901c5"
+    },
+    "pilot_runner_source": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-pilot.py",
+      "sha256": "c532cea7b28d829ded799106612ef94e079b4e863e28b82587fb095eda9b6723"
+    },
+    "rust_compiler_sources_sha256": "12f6e610a8c5b25bfc3a7498d27f0b256cb19b82f5ea67728ae821991f3da2b7",
+    "rust_helper_binary": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+      "sha256": "406f3a58114c7758c39683a7d485dd36ecedea7ce8ec801915f592db3f4ad7fd"
+    },
+    "rust_helper_source": {
+      "path": "/mnt/d/code/next-lang/.scratch-b1-deferred-benchmark-20261028/bench-selfhost-compile-rust.rs",
+      "sha256": "12cce63e4a707f5cb2ca7025f2e50cb2e5aec03e58c88396f22025f29087dffe"
+    },
+    "rust_reference_nlc": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/nlc",
+      "sha256": "42e743e8a51ac4abd536b90463047b4d02f78d9ed7a10e21b733c9de303da2a9"
+    },
+    "rust_rlib": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/deps/libnext_lang-ff9bf2564b5fb483.rlib",
+      "sha256": "66bb96af9174b1073b2d4b02bea54aad09eb1c48f0805aefe9314308df8d75bc"
+    },
+    "selfhost_package_sha256": "4d0ef0b5336540f9375bd8cd157e5316ff9baf29cd4ca7b2bd96a3bef4f4e37b",
+    "stage3_binary": {
+      "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-9qs1db0k/stage3",
+      "sha256": "e34e8ebcaee8fb37f151b7f6c08510dedefaea87e7e94b7861780f7d3233ac03"
+    },
+    "stage_chain_sources_sha256": "f5ac405ca8b3c3dba6ec83ca647c65d46a3fbe0776d8c80c3700d33849fec692"
+  },
+  "links_and_validation": [
+    {
+      "case": "selfhost",
+      "command": [
+        "clang",
+        "-O3",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/rust-stage0/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost/rust-stage0.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 15.338548,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost/rust-stage0.exe",
+        "sha256": "5e19a7c8b9b8aedf82cc02157ee1e3cdbbf84d46a9481cbdbce6f9daadedc35c"
+      },
+      "frontend": "rust-stage0",
+      "label": "link-selfhost-rust-stage0",
+      "stack_mode": "pointer",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-rust-stage0.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-rust-stage0.stdout",
+      "timed_out": false
+    },
+    {
+      "case": "selfhost",
+      "command": [
+        "clang",
+        "-O3",
+        "-DNLC_STACK_MODE_OFFSET=1",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost/stage3/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost/stage3.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 18.19603,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost/stage3.exe",
+        "sha256": "e34e8ebcaee8fb37f151b7f6c08510dedefaea87e7e94b7861780f7d3233ac03"
+      },
+      "frontend": "stage3",
+      "label": "link-selfhost-stage3",
+      "stack_mode": "offset",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-stage3.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-stage3.stdout",
+      "timed_out": false
+    },
+    {
+      "case": "generated-128",
+      "command": [
+        "clang",
+        "-O3",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/rust-stage0/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/rust-stage0.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.800016,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/rust-stage0.exe",
+        "sha256": "b550873fef263c39b8ff43e304e0fdb1639734a0e5363775e8a3adf6e1006ccb"
+      },
+      "frontend": "rust-stage0",
+      "label": "link-generated-128-rust-stage0",
+      "stack_mode": "pointer",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-128-rust-stage0.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-128-rust-stage0.stdout",
+      "timed_out": false
+    },
+    {
+      "actual_stdout": "9682\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/rust-stage0.exe"
+      ],
+      "duration_seconds": 0.003478,
+      "expected_stdout": "9682\n",
+      "label": "validate-generated-128-rust-stage0",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false
+    },
+    {
+      "case": "generated-128",
+      "command": [
+        "clang",
+        "-O3",
+        "-DNLC_STACK_MODE_OFFSET=1",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-128/stage3/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/stage3.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.591821,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/stage3.exe",
+        "sha256": "55265737ea501e58cca65bf102b837fffbc962096298ef2465e19b59e4e48583"
+      },
+      "frontend": "stage3",
+      "label": "link-generated-128-stage3",
+      "stack_mode": "offset",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-128-stage3.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-128-stage3.stdout",
+      "timed_out": false
+    },
+    {
+      "actual_stdout": "9682\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-128/stage3.exe"
+      ],
+      "duration_seconds": 0.004659,
+      "expected_stdout": "9682\n",
+      "label": "validate-generated-128-stage3",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false
+    },
+    {
+      "case": "generated-2048",
+      "command": [
+        "clang",
+        "-O3",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/rust-stage0/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/rust-stage0.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 6.828328,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/rust-stage0.exe",
+        "sha256": "3f58d5be8fe34a79f36dd66a1657887ea8859ee188b464fbb312baff134a59c4"
+      },
+      "frontend": "rust-stage0",
+      "label": "link-generated-2048-rust-stage0",
+      "stack_mode": "pointer",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-2048-rust-stage0.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-2048-rust-stage0.stdout",
+      "timed_out": false
+    },
+    {
+      "actual_stdout": "2123690\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/rust-stage0.exe"
+      ],
+      "duration_seconds": 0.0123,
+      "expected_stdout": "2123690\n",
+      "label": "validate-generated-2048-rust-stage0",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false
+    },
+    {
+      "case": "generated-2048",
+      "command": [
+        "clang",
+        "-O3",
+        "-DNLC_STACK_MODE_OFFSET=1",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/generated-2048/stage3/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/stage3.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 2.87789,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/stage3.exe",
+        "sha256": "a049e0ab8c62aa537d05c48a6dd2b3516908fe2f76a630f7cfff58a92ca89f79"
+      },
+      "frontend": "stage3",
+      "label": "link-generated-2048-stage3",
+      "stack_mode": "offset",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-2048-stage3.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-generated-2048-stage3.stdout",
+      "timed_out": false
+    },
+    {
+      "actual_stdout": "2123690\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/generated-2048/stage3.exe"
+      ],
+      "duration_seconds": 0.004915,
+      "expected_stdout": "2123690\n",
+      "label": "validate-generated-2048-stage3",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false
+    },
+    {
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost/rust-stage0.exe",
+        "build",
+        "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+        "-o",
+        "target/b1-performance-matrix/run-hppi6frb/ir/selfhost-probe/rust-stage0.ll",
+        "--runtime=c"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.101112,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "label": "probe-compile-rust-stage0",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/probe-compile-rust-stage0.stderr",
+      "stderr_preview": "",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/probe-compile-rust-stage0.stdout",
+      "timed_out": false
+    },
+    {
+      "case": "selfhost-probe-rust-stage0",
+      "command": [
+        "clang",
+        "-O3",
+        "-DNLC_STACK_MODE_OFFSET=1",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost-probe/rust-stage0.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost-probe/rust-stage0.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.640123,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost-probe/rust-stage0.exe",
+        "sha256": "55265737ea501e58cca65bf102b837fffbc962096298ef2465e19b59e4e48583"
+      },
+      "frontend": "stage3",
+      "label": "link-selfhost-probe-rust-stage0-stage3",
+      "stack_mode": "offset",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-probe-rust-stage0-stage3.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-probe-rust-stage0-stage3.stdout",
+      "timed_out": false,
+      "validation_frontend": "rust-stage0"
+    },
+    {
+      "actual_stdout": "9682\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost-probe/rust-stage0.exe"
+      ],
+      "duration_seconds": 0.003348,
+      "expected_stdout": "9682\n",
+      "label": "validate-selfhost-probe-rust-stage0",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false,
+      "validation_frontend": "rust-stage0"
+    },
+    {
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost/stage3.exe",
+        "build",
+        "target/b1-performance-matrix/run-hppi6frb/packages/generated-128",
+        "-o",
+        "target/b1-performance-matrix/run-hppi6frb/ir/selfhost-probe/stage3.ll",
+        "--runtime=c"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.073536,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "label": "probe-compile-stage3",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/probe-compile-stage3.stderr",
+      "stderr_preview": "",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/probe-compile-stage3.stdout",
+      "timed_out": false
+    },
+    {
+      "case": "selfhost-probe-stage3",
+      "command": [
+        "clang",
+        "-O3",
+        "-DNLC_STACK_MODE_OFFSET=1",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/ir/selfhost-probe/stage3.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost-probe/stage3.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.686795,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost-probe/stage3.exe",
+        "sha256": "55265737ea501e58cca65bf102b837fffbc962096298ef2465e19b59e4e48583"
+      },
+      "frontend": "stage3",
+      "label": "link-selfhost-probe-stage3-stage3",
+      "stack_mode": "offset",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-probe-stage3-stage3.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/link-selfhost-probe-stage3-stage3.stdout",
+      "timed_out": false,
+      "validation_frontend": "stage3"
+    },
+    {
+      "actual_stdout": "9682\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb/bin/selfhost-probe/stage3.exe"
+      ],
+      "duration_seconds": 0.003412,
+      "expected_stdout": "9682\n",
+      "label": "validate-selfhost-probe-stage3",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false,
+      "validation_frontend": "stage3"
+    }
+  ],
+  "measured_samples_per_frontend_per_case": 3,
+  "primary_wall_source": "pilot timed_command duration_seconds from time.monotonic, rounded to 0.001 s; Rust and Stage 3 use the same GNU time/timeout wrapper",
+  "repository_root": "/mnt/d/code/next-lang",
+  "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+  "status": "passed",
+  "threshold_stage3_over_rust": 3.0,
+  "warmups_per_frontend_per_case": 1,
+  "work_directory": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-hppi6frb"
+}
