@@ -48,14 +48,6 @@ static unsigned char *nl_test_var_metadata[NL_TEST_VAR_STORAGE_CAPACITY];
 static uint64_t nl_test_var_metadata_sizes[NL_TEST_VAR_STORAGE_CAPACITY];
 static size_t nl_test_var_count;
 
-#if defined(NLC_STACK_MODE_OFFSET) && defined(__linux__)
-typedef struct nl_poisoned_stack_mapping {
-    void *address;
-    size_t bytes;
-    struct nl_poisoned_stack_mapping *next;
-} nl_poisoned_stack_mapping;
-#endif
-
 const char *nl_runtime_unicode_version(void) {
     return nl_unicode_version;
 }
@@ -73,12 +65,12 @@ typedef struct {
     unsigned char *limit;
 #if defined(NLC_STACK_MODE_OFFSET)
     uint64_t top_offset;
+    /* Retired with the fixed stack; kept so the context layout matches core/context.nl until that
+       struct drops them too. */
     uint64_t growth_count;
     uint64_t relocation_count;
     uint64_t growth_nanoseconds;
-#if defined(__linux__)
-    nl_poisoned_stack_mapping *poisoned_mappings;
-#endif
+    void *poisoned_mappings;
 #endif
     uintptr_t native_stack_limit;
     uintptr_t native_stack_start;
@@ -130,6 +122,32 @@ static uint64_t nl_data_stack_reservation(uint64_t requested_bytes,
 #endif
     return requested_bytes;
 }
+
+#if defined(NLC_STACK_MODE_OFFSET)
+/* Default address range reserved for an offset data stack. It is only reserved (MAP_NORESERVE),
+   never committed up front; pages are touched as the stack grows. Override with
+   NLC_STACK_RESERVE_BYTES, e.g. under `ulimit -v`. */
+#define NL_OFFSET_STACK_DEFAULT_BYTES (UINT64_C(32) * 1024 * 1024 * 1024)
+
+static uint64_t nl_offset_stack_reservation(uint64_t computed_bytes) {
+#if defined(NLC_TEST_BUILD)
+    const char *test_override = getenv("NLC_TEST_DATA_STACK_BYTES");
+    if (test_override && *test_override) return computed_bytes;
+#endif
+    uint64_t bytes = NL_OFFSET_STACK_DEFAULT_BYTES;
+    const char *override = getenv("NLC_STACK_RESERVE_BYTES");
+    if (override && *override) {
+        errno = 0;
+        char *end = NULL;
+        unsigned long long value = strtoull(override, &end, 10);
+        if (errno || end == override || *end || value == 0) {
+            nl_stack_startup_failure("NLC_STACK_RESERVE_BYTES must be a positive byte count");
+        }
+        bytes = (uint64_t)value;
+    }
+    return bytes > computed_bytes ? bytes : computed_bytes;
+}
+#endif
 
 static uintptr_t nl_current_stack_pointer(void) {
 #if defined(__x86_64__)
@@ -192,10 +210,9 @@ void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_b
                                                  "could not determine the system page size");
     uint64_t bytes = nl_data_stack_reservation(requested_bytes, entry_name);
 #if defined(NLC_STACK_MODE_OFFSET)
-    const char *preallocated = getenv("NLC_STACK_PREALLOC");
-    if (!preallocated || strcmp(preallocated, "1") != 0) {
-        bytes = UINT64_C(256) * 1024;
-    }
+    /* The offset stack never moves: reserve the address range once (untouched pages cost nothing)
+       and fail cleanly when a program outgrows it. */
+    bytes = nl_offset_stack_reservation(bytes);
 #endif
     if (bytes == 0) {
         nl_stack_startup_failure_for(entry_name, requested_bytes,
@@ -217,6 +234,20 @@ void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_b
                              | MAP_NORESERVE
 #endif
                          , -1, 0);
+#if defined(NLC_STACK_MODE_OFFSET)
+    /* Under an address-space limit (ulimit -v, containers) the default range may not fit: halve it
+       until it does. A program that then outgrows the range fails with "data stack exhausted". */
+    while (mapping == MAP_FAILED && bytes > UINT64_C(256) * 1024 * 1024 && bytes > requested_bytes) {
+        bytes = (bytes / 2 / page_size) * page_size;
+        total = (size_t)bytes + 2 * (size_t)page_size;
+        mapping = mmap(NULL, total, PROT_NONE,
+                       MAP_PRIVATE | MAP_ANONYMOUS
+#ifdef MAP_NORESERVE
+                           | MAP_NORESERVE
+#endif
+                       , -1, 0);
+    }
+#endif
     if (mapping == MAP_FAILED) {
         nl_stack_startup_failure_for(entry_name, bytes,
                                      "could not reserve the requested address range");
@@ -334,88 +365,10 @@ void nl_context_set_top_offset(void *opaque, uint64_t top_offset) {
 }
 
 #if defined(__linux__)
-static uint64_t nl_monotonic_nanoseconds(void) {
-    struct timespec time;
-    if (clock_gettime(CLOCK_MONOTONIC, &time) != 0) return 0;
-    return (uint64_t)time.tv_sec * UINT64_C(1000000000) + (uint64_t)time.tv_nsec;
-}
-
 static void nl_stack_grow_offset(nl_data_stack_context *context, uint64_t needed_bytes,
                                  int32_t file_id, int32_t line, int32_t col) {
     if (needed_bytes <= context->reservation_bytes) return;
-    long page = sysconf(_SC_PAGESIZE);
-    if (page <= 0) nl_fail(18, file_id, line, col);
-    uint64_t page_size = (uint64_t)page;
-    uint64_t new_bytes = context->reservation_bytes;
-    while (new_bytes < needed_bytes) {
-        if (new_bytes > UINT64_MAX / 2) {
-            new_bytes = needed_bytes;
-            break;
-        }
-        new_bytes *= 2;
-    }
-    if (new_bytes > UINT64_MAX - (page_size - 1)) nl_fail(18, file_id, line, col);
-    new_bytes = ((new_bytes + page_size - 1) / page_size) * page_size;
-    if (new_bytes > SIZE_MAX - page_size) nl_fail(18, file_id, line, col);
-
-    size_t target_bytes = (size_t)new_bytes + (size_t)page_size;
-    const char *verify = getenv("NLC_STACK_VERIFY");
-    int poison_old_mapping = verify && strcmp(verify, "1") == 0;
-    nl_poisoned_stack_mapping *poison_record = NULL;
-    if (poison_old_mapping) {
-        /* NLC_STACK_VERIFY-only bookkeeping for retaining poisoned old mappings. */
-        poison_record = malloc(sizeof(*poison_record));
-        if (!poison_record) nl_fail(18, file_id, line, col);
-    }
-    void *target = mmap(NULL, target_bytes, PROT_NONE,
-                        MAP_PRIVATE | MAP_ANONYMOUS
-#ifdef MAP_NORESERVE
-                            | MAP_NORESERVE
-#endif
-                        , -1, 0);
-    if (target == MAP_FAILED) {
-        free(poison_record);
-        nl_fail(18, file_id, line, col);
-    }
-
-    uint64_t start = nl_monotonic_nanoseconds();
-    void *moved = mremap(context->mapping, (size_t)context->reservation_bytes,
-                         (size_t)new_bytes, MREMAP_MAYMOVE | MREMAP_FIXED, target);
-    uint64_t end = nl_monotonic_nanoseconds();
-    if (end >= start) context->growth_nanoseconds += end - start;
-    context->growth_count += 1;
-    if (moved == MAP_FAILED) {
-        munmap(target, target_bytes);
-        free(poison_record);
-        nl_fail(18, file_id, line, col);
-    }
-
-    unsigned char *old_base = context->base;
-    uint64_t old_bytes = context->reservation_bytes;
-    if (moved != old_base) context->relocation_count += 1;
-    munmap(old_base + old_bytes, (size_t)page_size);
-    if (poison_old_mapping) {
-        size_t old_mapping_bytes = (size_t)old_bytes + (size_t)page_size;
-        void *poison = mmap(old_base, old_mapping_bytes, PROT_NONE,
-                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED
-#ifdef MAP_NORESERVE
-                                | MAP_NORESERVE
-#endif
-                            , -1, 0);
-        if (poison == MAP_FAILED) {
-            free(poison_record);
-            nl_fail(18, file_id, line, col);
-        }
-        poison_record->address = poison;
-        poison_record->bytes = old_mapping_bytes;
-        poison_record->next = context->poisoned_mappings;
-        context->poisoned_mappings = poison_record;
-    }
-    context->mapping = moved;
-    context->mapping_bytes = target_bytes;
-    context->reservation_bytes = new_bytes;
-    context->base = (unsigned char *)moved;
-    context->limit = context->base + new_bytes;
+    nl_fail(18, file_id, line, col);
 }
 #endif
 
@@ -448,17 +401,6 @@ void nl_context_destroy(void *opaque) {
 #if defined(__linux__)
     if (nl_output_flush_all() != 0) nl_fail(20, -1, 0, 0);
 #if defined(NLC_STACK_MODE_OFFSET)
-    const char *stack_stats = getenv("NLC_STACK_STATS");
-    if (stack_stats && strcmp(stack_stats, "1") == 0) {
-        fprintf(stderr,
-                "nl offset stack entry '%s': reserved=%llu peak_used=%llu growths=%llu relocations=%llu growth_ns=%llu\n",
-                context->entry_name ? context->entry_name : "<unknown>",
-                (unsigned long long)context->reservation_bytes,
-                (unsigned long long)context->peak_used_bytes,
-                (unsigned long long)context->growth_count,
-                (unsigned long long)context->relocation_count,
-                (unsigned long long)context->growth_nanoseconds);
-    }
 #endif
 #if defined(NLC_TEST_BUILD)
     /* Test-only resident-page reporting; this allocation is outside program operations. */
@@ -483,16 +425,6 @@ void nl_context_destroy(void *opaque) {
             }
             free(residency);
         }
-    }
-#endif
-#if defined(NLC_STACK_MODE_OFFSET)
-    /* NLC_STACK_VERIFY-only records preserve poisoned old stack mappings. */
-    nl_poisoned_stack_mapping *poisoned = context->poisoned_mappings;
-    while (poisoned) {
-        nl_poisoned_stack_mapping *next = poisoned->next;
-        munmap(poisoned->address, poisoned->bytes);
-        free(poisoned);
-        poisoned = next;
     }
 #endif
     munmap(context->mapping, context->mapping_bytes);
