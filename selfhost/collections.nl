@@ -554,6 +554,7 @@ fn intern_collection_type_syntax(
         if argument_count != 1L || constant_count != 1L || child < 0L || tables.nodes[child].kind != NodeKind.TypeArgument {
             fail_at_message(env, files, compiler, file_index, syntax.start, "list type needs an element type and a constant capacity")
         }
+        if (compiler.facts[child].flags & FACT_RESOLVED_TYPE) == 0L { return -1L }
         let element_type = compiler.facts[child].ty
         child = compiler.child_next[child]
         let capacity_node = child

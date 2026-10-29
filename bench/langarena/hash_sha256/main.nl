@@ -1,6 +1,6 @@
 // LangArena Hash::SHA256: a simple 8-lane multiply-shift hash of a random buffer
 // (not the real SHA-256), run after changing one random byte per iteration.
-type Octet = int 0..=255
+type Octet = byte
 const MASK32: long = 4294967295L
 
 fn is_run_mode(env: Env) -> bool {

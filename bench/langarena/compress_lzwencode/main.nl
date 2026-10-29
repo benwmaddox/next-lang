@@ -3,7 +3,7 @@
 // dictionary, emitting the current code and inserting the longer phrase on a miss.
 // Phrases are Ascii keys, which hold bytes 0..127 only, so the dictionary is seeded
 // with those 128 single-byte phrases (the test input is pure ASCII).
-type Octet = int 0..=255
+type Octet = byte
 
 fn is_run_mode(env: Env) -> bool {
     match env.args().get(0L) {

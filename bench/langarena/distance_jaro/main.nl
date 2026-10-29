@@ -1,6 +1,6 @@
 // LangArena Distance::Jaro: Jaro similarity of random string pairs over "abcdefghij".
 // The score is a double (step F1: floats); the checksum sums score * 1000 truncated.
-type Octet = int 0..=255
+type Octet = byte
 
 struct Pair {
     first: Bytes max 54

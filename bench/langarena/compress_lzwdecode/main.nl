@@ -1,6 +1,6 @@
 // LangArena Compress::LZWDecode: decode LZW with 16-bit codes. Dictionary phrases are
 // (start, length) spans into one growing byte arena.
-type Octet = int 0..=255
+type Octet = byte
 
 struct Span {
     start: long

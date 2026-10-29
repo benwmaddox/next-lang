@@ -507,3 +507,27 @@ fn fail_unknown_struct_field(
     match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
 }
 
+
+// An alias whose target stayed unresolved after the type sweeps names a type that does not
+// exist, or is part of a cycle. Only plain names are reported here; targets that are
+// unsupported forms (maps, ranges) keep their "not supported yet" diagnostics.
+fn check_type_alias_targets(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+) {
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind != NodeKind.TypeAlias { continue }
+        let target = compiler.child_first[node]
+        if target < 0L || (compiler.facts[target].flags & FACT_RESOLVED_TYPE) != 0L { continue }
+        let syntax = tables.nodes[target]
+        if syntax.flags != 0L || syntax.meta0 != 1L || syntax.meta1 != 0L { continue }
+        let file_index = node_file_index(tables.nodes, files, target)
+        if known_non_scalar_type(source, tokens, files, file_index, syntax.token) { continue }
+        fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start,
+            "unknown type in alias '", tables.nodes[node].token, "'; declare the base type first")
+    }
+}

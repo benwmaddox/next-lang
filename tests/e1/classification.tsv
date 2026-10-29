@@ -854,3 +854,10 @@ build	tests/e3/b1_enum_call_field
 build	tests/e3/b1_enum_index_field
 build	tests/e3/b1_sum_parameter_geometry
 build	tests/e3/b1_scalar_field_projection
+build	tests/e3/b1_alias_collections
+build	tests/e3/b1_alias_reverse_chain
+build	tests/e3/b1_alias_cast_byte
+unsupported	tests/e3/b1_alias_range_unsupported
+unsupported	tests/e3/b1_range_field_unsupported
+diagnose	tests/e3/b1_alias_unknown_target
+diagnose	tests/e3/b1_alias_cycle

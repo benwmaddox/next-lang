@@ -1,6 +1,6 @@
 // LangArena Distance::NGram: 4-gram overlap of random string pairs over "abcdefghij".
 // The score is a double (step F1: floats); the checksum sums score * 1000 truncated.
-type Octet = int 0..=255
+type Octet = byte
 const GRAM: long = 4L
 
 struct Pair {
