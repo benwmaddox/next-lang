@@ -72,8 +72,7 @@ fn text_method_receiver_location(
     node: long,
 ) -> StorageLocation {
     let receiver = compiler.child_first[node]
-    aggregate_source_location(compiler,
-        aggregate_source_kind(tables, compiler, receiver), aggregate_source_id(tables, compiler, receiver))
+    aggregate_source_location_for_node(tables, compiler, receiver)
 }
 
 fn text_type_capacity_error(
@@ -607,8 +606,7 @@ fn emit_ascii_search(
     let receiver = compiler.child_first[node]
     let needle = compiler.child_next[receiver]
     let receiver_location = text_method_receiver_location(tables, compiler, node)
-    let needle_location = aggregate_source_location(compiler,
-        aggregate_source_kind(tables, compiler, needle), aggregate_source_id(tables, compiler, needle))
+    let needle_location = aggregate_source_location_for_node(tables, compiler, needle)
     let receiver_pointer = emit_location_pointer_materialization(compiler, ir, receiver_location)
     let needle_pointer = emit_location_pointer_materialization(compiler, ir, needle_location)
     ir_write_ascii(compiler, ir, "  %ascii.search.hay.length."); ir_write_number(compiler, ir, node)
@@ -946,8 +944,7 @@ fn emit_text_builder_method(
     }
 
     let source_ty = compiler.facts[argument].ty
-    let source_location = aggregate_source_location(compiler,
-        aggregate_source_kind(tables, compiler, argument), aggregate_source_id(tables, compiler, argument))
+    let source_location = aggregate_source_location_for_node(tables, compiler, argument)
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
     emit_text_source_length(compiler, ir, source_location, source_pointer, node, "builder.source")
     if receiver_kind == TYPE_KIND_TEXT {
@@ -1050,8 +1047,7 @@ fn emit_ascii_append_assignment(
         compiler_location(compiler, 3L, binding, 0L)
     } else { compiler_location(compiler, 1L, binding, 0L) }
     let receiver_pointer = emit_location_pointer_materialization(compiler, ir, receiver_location)
-    let source_location = aggregate_source_location(compiler,
-        aggregate_source_kind(tables, compiler, value), aggregate_source_id(tables, compiler, value))
+    let source_location = aggregate_source_location_for_node(tables, compiler, value)
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
     emit_text_source_length(compiler, ir, receiver_location, receiver_pointer, node, "builder.receiver")
     emit_text_source_length(compiler, ir, source_location, source_pointer, node, "builder.source")
@@ -1253,8 +1249,7 @@ fn emit_ascii_fit(
 ) {
     let value_node = compiler.child_first[node]
     let target_ty = sum_payload_record(compiler, compiler.facts[node].ty, 0L, 0L).ty
-    let source = aggregate_source_location(compiler,
-        aggregate_source_kind(tables, compiler, value_node), aggregate_source_id(tables, compiler, value_node))
+    let source = aggregate_source_location_for_node(tables, compiler, value_node)
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
     let destination = aggregate_destination_location(compiler, 0L, node)
     let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
@@ -1343,8 +1338,7 @@ fn emit_ascii_cast(
     target_ty: long,
 ) {
     let source_ty = compiler.facts[source_node].ty
-    let source_location = aggregate_source_location(compiler,
-        aggregate_source_kind(tables, compiler, source_node), aggregate_source_id(tables, compiler, source_node))
+    let source_location = aggregate_source_location_for_node(tables, compiler, source_node)
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
     emit_text_source_length(compiler, ir, source_location, source_pointer, node, "cast")
     let target_maximum = text_max_bytes(compiler, target_ty)
@@ -1473,8 +1467,7 @@ fn emit_text_method_receiver_metrics(
     let receiver = compiler.child_first[node]
     if receiver < 0L { compiler.ir_overflow = true; return }
     let type_id = compiler.facts[receiver].ty
-    let location = aggregate_source_location(compiler,
-        aggregate_source_kind(tables, compiler, receiver), aggregate_source_id(tables, compiler, receiver))
+    let location = aggregate_source_location_for_node(tables, compiler, receiver)
     let pointer = if text_read_view_binding(compiler, location) >= 0L { -1L }
         else { emit_location_pointer_materialization(compiler, ir, location) }
     emit_text_source_length(compiler, ir, location, pointer, node, "receiver")
@@ -1733,9 +1726,9 @@ fn emit_text_concat(
     let left_location = if text_concat_left_needs_snapshot(tables, compiler, node) {
         compiler_location(compiler, 0L, left, 0L)
     } else {
-        aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, left), aggregate_source_id(tables, compiler, left))
+        aggregate_source_location_for_node(tables, compiler, left)
     }
-    let right_location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, right), aggregate_source_id(tables, compiler, right))
+    let right_location = aggregate_source_location_for_node(tables, compiler, right)
     let destination = aggregate_destination_location(compiler, 0L, node)
     let left_pointer = emit_location_pointer_materialization(compiler, ir, left_location)
     let right_pointer = emit_location_pointer_materialization(compiler, ir, right_location)
@@ -1780,8 +1773,8 @@ fn emit_text_compare(
     let left_ty = compiler.facts[left].ty
     let right_ty = compiler.facts[right].ty
     let left_location = if text_compare_left_needs_snapshot(tables, compiler, node) { compiler_location(compiler, 0L, left, 0L) }
-        else { aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, left), aggregate_source_id(tables, compiler, left)) }
-    let right_location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, right), aggregate_source_id(tables, compiler, right))
+        else { aggregate_source_location_for_node(tables, compiler, left) }
+    let right_location = aggregate_source_location_for_node(tables, compiler, right)
     let left_pointer = emit_location_pointer_materialization(compiler, ir, left_location)
     let right_pointer = emit_location_pointer_materialization(compiler, ir, right_location)
     let left_data_offset = text_location_data_offset(compiler, left_ty, left_location)
