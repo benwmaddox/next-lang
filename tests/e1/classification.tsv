@@ -219,7 +219,7 @@ rejects	tests/run/shadow_enum_case
 rejects	tests/run/shadow_let_visible
 rejects	tests/run/shadow_loop_visible
 rejects	tests/run/shadow_match_binding_visible
-unsupported	tests/run/shadow_package_const
+build	tests/run/shadow_package_const
 build	tests/run/shadow_package_function
 build	tests/run/shadow_package_type
 build	tests/run/shadow_parameter_package_function
@@ -256,7 +256,7 @@ diagnose	tests/run/t04_write_plain_assignment
 unsupported	tests/run/t04_write_policy_mismatch
 unsupported	tests/run/t04_write_refined_mismatch
 unsupported	tests/run/t05_const_cast
-unsupported	tests/run/t05_const_cycle
+diagnose	tests/run/t05_const_cycle
 unsupported	tests/run/t05_const_cycle_call
 unsupported	tests/run/t05_const_effect
 unsupported	tests/run/t05_const_overflow
@@ -503,7 +503,7 @@ build	tests/run/noshadow_shadow_enum_case
 build	tests/run/noshadow_shadow_let_visible
 build	tests/run/noshadow_shadow_loop_visible
 build	tests/run/noshadow_shadow_match_binding_visible
-unsupported	tests/run/noshadow_shadow_package_const
+build	tests/run/noshadow_shadow_package_const
 build	tests/run/noshadow_shadow_package_function
 build	tests/run/noshadow_shadow_package_type
 build	tests/run/noshadow_shadow_parameter_package_function
@@ -784,12 +784,26 @@ diagnose	tests/e3/b1_consts_rem_zero
 diagnose	tests/e3/b1_consts_cycle
 diagnose	tests/e3/b1_consts_function_collision
 rejects	tests/e3/b1_consts_type_collision
-unsupported	tests/e3/b1_consts_unsupported_type
-unsupported	tests/e3/b1_consts_unsupported_capacity
+build	tests/e3/b1_consts_unsupported_type
+build	tests/e3/b1_consts_unsupported_capacity
 unsupported	tests/e3/b1_consts_unsupported_call
 unsupported	tests/e3/b1_consts_unsupported_control
 unsupported	tests/e3/b1_consts_unsupported_shift
 unsupported	tests/e3/b1_consts_unsupported_aggregate
+build	tests/e3/b1_int_consts_values
+diagnose	tests/e3/b1_int_consts_add_overflow
+diagnose	tests/e3/b1_int_consts_sub_overflow
+diagnose	tests/e3/b1_int_consts_mul_overflow
+diagnose	tests/e3/b1_int_consts_div_min_neg_one
+diagnose	tests/e3/b1_int_consts_div_zero
+diagnose	tests/e3/b1_int_consts_rem_zero
+diagnose	tests/e3/b1_int_consts_negate_min
+diagnose	tests/e3/b1_int_consts_literal_high
+diagnose	tests/e3/b1_int_consts_literal_low
+diagnose	tests/e3/b1_int_consts_long_suffix
+diagnose	tests/e3/b1_int_consts_int_to_long
+diagnose	tests/e3/b1_int_consts_long_to_int
+diagnose	tests/e3/b1_int_consts_runtime_index
 # B1 scalar constants end
 
 # B1 Bytes fields begin

@@ -1,0 +1,1 @@
+main.nl:2:20: error: constant 'VALUE' evaluation failed: overflow in unary negation; call chain: constant VALUE
