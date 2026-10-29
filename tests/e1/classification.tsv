@@ -839,3 +839,4 @@ build	tests/e3/b1_byte_fit
 build	tests/e3/b1_enum_call_field
 build	tests/e3/b1_enum_index_field
 build	tests/e3/b1_sum_parameter_geometry
+build	tests/e3/b1_scalar_field_projection

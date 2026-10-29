@@ -853,7 +853,15 @@ fn intern_package_names(
     for token in 0L..tokens.count() {
         compiler.token_name_ids.push(-1L).unwrap()
     }
-    for slot in 0L..INTERN_HASH_CAPACITY {
+    let doubled_token_count = tokens.count() * 2L
+    let desired_slots = if doubled_token_count > INTERN_HASH_CAPACITY { INTERN_HASH_CAPACITY } else { doubled_token_count }
+    var slot_count = 1L
+    for resize_step in 0L..INTERN_HASH_CAPACITY {
+        if slot_count >= desired_slots { break }
+        slot_count *= 2L
+    }
+    let slot_mask = slot_count - 1L
+    for slot in 0L..slot_count {
         compiler.intern_slots.push(NameSlot { hash: 0L, token: -1L, file: -1L, id: -1L }).unwrap()
     }
     var next_name_id = 0L
@@ -863,9 +871,9 @@ fn intern_package_names(
         for token in first..last {
             if tokens[token].kind != TokenKind.Ident { continue }
             let hash = token_name_hash(source, tokens, files, file_index, token)
-            var slot_index = hash % INTERN_HASH_CAPACITY
+            var slot_index = hash & slot_mask
             var inserted = false
-            for probe in 0L..INTERN_HASH_CAPACITY {
+            for probe in 0L..slot_count {
                 let slot = compiler.intern_slots[slot_index]
                 if slot.id < 0L {
                     compiler.intern_slots[slot_index] = NameSlot { hash, token, file: file_index, id: next_name_id }
@@ -879,7 +887,7 @@ fn intern_package_names(
                     inserted = true
                     break
                 }
-                slot_index = (slot_index + 1L) % INTERN_HASH_CAPACITY
+                slot_index = (slot_index + 1L) & slot_mask
             }
             if !inserted { fail_parse_limit(env, files[file_index].name, "identifier interning limit exceeded") }
         }
@@ -4551,13 +4559,23 @@ fn find_binding_in_scope(
     scope: long,
     name_id: long,
 ) -> long {
+    var root_scope = scope
+    var found_root = false
+    for scope_step in 0L..compiler.scopes.count() {
+        if root_scope < 0L || root_scope >= compiler.scopes.count() { return -1L }
+        let parent = compiler.scopes[root_scope].parent
+        if parent < 0L { found_root = true; break }
+        root_scope = parent
+    }
+    if !found_root { return -1L }
     var current_scope = scope
     for scope_step in 0L..compiler.scopes.count() + 1L {
-        if current_scope < 0L { break }
+        if current_scope < root_scope || current_scope >= compiler.scopes.count() { break }
         var binding = compiler.bindings.count()
         for binding_step in 0L..compiler.bindings.count() {
             if binding <= 0L { break }
             binding -= 1L
+            if compiler.bindings[binding].scope < root_scope { break }
             if compiler.bindings[binding].scope == current_scope && compiler.bindings[binding].name_id == name_id {
                 return binding
             }
@@ -4584,9 +4602,10 @@ fn add_local_binding(
     parameter: bool,
 ) -> long {
     let name_id = compiler.token_name_ids[name_token]
-    for prior in 0L..compiler.bindings.count() {
-        if compiler.bindings[prior].scope == scope && compiler.bindings[prior].name_id == name_id {
-            let previous = compiler.bindings[prior]
+    let previous_binding = find_binding_in_scope(compiler, scope, name_id)
+    if previous_binding >= 0L {
+        let previous = compiler.bindings[previous_binding]
+        if previous.scope == scope {
             let position = position_for_offset(file_index, files[file_index].base + tables.nodes[node].start, compiler)
             match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
             match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
@@ -4599,10 +4618,6 @@ fn add_local_binding(
             match env.err.write(str(position_for_offset(previous.file, files[previous.file].base + tables.nodes[previous.node].start, compiler).line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
             match env.err.write(b"); choose another name\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
         }
-    }
-    let visible_binding = find_binding_in_scope(compiler, scope, name_id)
-    if visible_binding >= 0L {
-        let previous = compiler.bindings[visible_binding]
         let previous_position = position_for_offset(previous.file, files[previous.file].base + tables.nodes[previous.node].start, compiler)
         fail_name_shadow_error(env, source, files, tokens, compiler, file_index, tables.nodes[node].start, name_token, "visible declaration", previous_position.line)
     }
@@ -10940,7 +10955,11 @@ recursive fn emit_expr_linear(
             } else {
                 emit_collection_index_address(files, tables, compiler, ir, current, file_index)
                 let ty = compiler.facts[current].ty
-                if is_aggregate_type(compiler, ty) { emit_collection_gather_index_value(tables, compiler, ir, current) }
+                if is_aggregate_type(compiler, ty) {
+                    if !collection_index_has_field_projection(tables, compiler, current) {
+                        emit_collection_gather_index_value(tables, compiler, ir, current)
+                    }
+                }
                 else if ty == TY_BYTE && (type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_BYTES || type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_ASCII) {
                     ir_write_ascii(compiler, ir, "  %text.index.byte."); ir_write_number(compiler, ir, current)
                     ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, current)

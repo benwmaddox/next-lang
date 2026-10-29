@@ -75,6 +75,45 @@ fn region_parent_node(tables: ParseTables, node: long) -> long {
     -1L
 }
 
+// The index-selected aggregate is only an address base when its direct
+// postorder parent is a Field path that emit_collection_field_path_address
+// can lower. Keep this predicate in sync with that helper's capability checks
+// so planning and emission agree about whether the gathered value is unused.
+fn collection_index_has_field_projection(
+    tables: ParseTables,
+    compiler: CompilerTables,
+    node: long,
+) -> bool {
+    if node < 0L || node + 1L >= tables.nodes.count() || tables.nodes[node].kind != NodeKind.Index { return false }
+    let first_field = node + 1L
+    if tables.nodes[first_field].kind != NodeKind.Field || compiler.child_first[first_field] != node { return false }
+
+    let collection = compiler.child_first[node]
+    let index = if collection >= 0L { compiler.child_next[collection] } else { -1L }
+    if collection < 0L || index < 0L { return false }
+    let collection_type = compiler.facts[collection].ty
+    let element_type = collection_element_type(compiler, collection_type)
+    let copies = collection_capacity(compiler, collection_type)
+    if compiler.facts[node].ty != element_type || !is_aggregate_type(compiler, compiler.facts[node].ty) ||
+        type_kind(compiler, element_type) != TYPE_KIND_STRUCT || copies < 0L ||
+        collection_element_base_offset(compiler, collection_type) < 0L { return false }
+
+    var current = node
+    var field_node = first_field
+    for path_step in 0L..MAX_TREE_NODES {
+        if field_node >= tables.nodes.count() || tables.nodes[field_node].kind != NodeKind.Field ||
+            compiler.child_first[field_node] != current { break }
+        let receiver_type = compiler.facts[current].ty
+        if type_kind(compiler, receiver_type) != TYPE_KIND_STRUCT { return false }
+        let record = type_record(compiler, receiver_type)
+        let field_number = compiler.facts[field_node].literal - record.field_start
+        if collection_field_lane_offset(compiler, receiver_type, copies, field_number) < 0L { return false }
+        current = field_node
+        field_node += 1L
+    }
+    true
+}
+
 fn region_node_needs_snapshot(tables: ParseTables, compiler: CompilerTables, node: long) -> bool {
     let syntax_kind = tables.nodes[node].kind
     if syntax_kind != NodeKind.Name && syntax_kind != NodeKind.Field { return false }
@@ -166,6 +205,10 @@ fn region_node_is_temporary(tables: ParseTables, compiler: CompilerTables, node:
         let cached_scope = compiler.region_temp_scope[node]
         if cached_scope != -3L { return cached_scope != -2L }
     }
+    if node >= 0L && node < tables.nodes.count() &&
+        tables.nodes[node].kind == NodeKind.Index && collection_index_has_field_projection(tables, compiler, node) {
+        return false
+    }
     let syntax_kind = tables.nodes[node].kind
     if syntax_kind == NodeKind.FunctionType || syntax_kind == NodeKind.FunctionTypeParameter ||
         syntax_kind == NodeKind.ParameterType || syntax_kind == NodeKind.ResultType ||
@@ -237,30 +280,6 @@ fn region_body_for_block(tables: ParseTables, compiler: CompilerTables, block: l
     -1L
 }
 
-fn region_scope_for_temporary(
-    tables: ParseTables,
-    body: long,
-    node: long,
-) -> long {
-    if tables.nodes[node].start < tables.nodes[body].start ||
-        tables.nodes[node].end > tables.nodes[body].end { return -1L }
-    let first = body - tables.nodes[body].subtree + 1L
-    var selected = -1L
-    var selected_size = 9223372036854775807L
-    for block_step in 0L..body - first + 1L {
-        let block = body - block_step
-        if tables.nodes[block].kind != NodeKind.Block ||
-            tables.nodes[block].start < tables.nodes[body].start ||
-            tables.nodes[block].end > tables.nodes[body].end { continue }
-        let block_first = block - tables.nodes[block].subtree + 1L
-        if node >= block_first && node <= block && tables.nodes[block].subtree < selected_size {
-            selected = block
-            selected_size = tables.nodes[block].subtree
-        }
-    }
-    selected
-}
-
 // -3 means not classified, -2 means a non-temporary, -1 means a temporary
 // outside a block scope, and a nonnegative value is its owning block.
 fn region_cache_body_temporary_scopes(
@@ -268,6 +287,11 @@ fn region_cache_body_temporary_scopes(
     compiler: write CompilerTables,
     body: long,
 ) {
+    // Function and test bodies are disjoint top-level subtrees. Their body
+    // Block is always non-temporary, so a cached body slot means this exact
+    // range has already completed classification and block assignment.
+    if body >= 0L && body < compiler.region_temp_scope.count() &&
+        compiler.region_temp_scope[body] != -3L { return }
     let first = body - tables.nodes[body].subtree + 1L
     for node in first..body + 1L {
         if node < 0L || node >= compiler.region_temp_scope.count() {
@@ -278,7 +302,26 @@ fn region_cache_body_temporary_scopes(
         if !region_node_is_temporary(tables, compiler, node) {
             compiler.region_temp_scope[node] = -2L
         } else {
-            compiler.region_temp_scope[node] = region_scope_for_temporary(tables, body, node)
+            compiler.region_temp_scope[node] = -1L
+        }
+    }
+    for block_step in 0L..body - first + 1L {
+        let block = body - block_step
+        if tables.nodes[block].kind != NodeKind.Block ||
+            tables.nodes[block].start < tables.nodes[body].start ||
+            tables.nodes[block].end > tables.nodes[body].end { continue }
+        let block_first = block - tables.nodes[block].subtree + 1L
+        for node in block_first..block + 1L {
+            if node < first || node > body { continue }
+            let node_scope = compiler.region_temp_scope[node]
+            if node_scope == -2L || node_scope == -3L ||
+                tables.nodes[node].start < tables.nodes[body].start ||
+                tables.nodes[node].end > tables.nodes[body].end { continue }
+            let selected_size = if node_scope < 0L { 9223372036854775807L }
+                else { tables.nodes[node_scope].subtree }
+            if tables.nodes[block].subtree < selected_size {
+                compiler.region_temp_scope[node] = block
+            }
         }
     }
 }
@@ -370,6 +413,16 @@ fn plan_function_regions(
     var largest_block = 0L
     let threshold = compiler.file_id_base
     let first = body - tables.nodes[body].subtree + 1L
+    var binding_first = -1L
+    var binding_end = -1L
+    for binding_id in 0L..compiler.bindings.count() {
+        let binding_scope = compiler.bindings[binding_id].scope
+        if binding_scope < 0L || binding_scope >= compiler.scopes.count() ||
+            compiler.scopes[binding_scope].function_id != function_id { continue }
+        if binding_first < 0L { binding_first = binding_id }
+        binding_end = binding_id + 1L
+    }
+    if binding_first < 0L { binding_first = 0L; binding_end = 0L }
     // Each block gets a local offset range. At run time that range starts at
     // the block's incoming top, so nested blocks follow their live parent
     // regions and sibling blocks can reuse the same space after a scope exit.
@@ -386,10 +439,11 @@ fn plan_function_regions(
         compiler.region_current_size = 0L
         for group in 0L..2L {
             let small_group = group == 0L
-            for binding_id in 0L..compiler.bindings.count() {
+            for binding_id in binding_first..binding_end {
                 region_consider_binding(compiler, function_id, block, binding_id, small_group, threshold)
             }
-            for node in first..body + 1L {
+            let block_first = block - tables.nodes[block].subtree + 1L
+            for node in block_first..block + 1L {
                 region_consider_temporary(tables, compiler, function_id, body, block, node, small_group, threshold)
             }
         }
