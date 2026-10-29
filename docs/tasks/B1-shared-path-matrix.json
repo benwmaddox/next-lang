@@ -1,0 +1,2235 @@
+{
+  "acceptance_result": "failure",
+  "benchmark_lock": "/home/ben/linuxbench/bench.lock",
+  "cases": {
+    "generated-128": {
+      "acceptance_result": "not_above_threshold",
+      "expected_checksum": 9682,
+      "expected_stdout": "9682\n",
+      "function_count": 128,
+      "links": {
+        "rust-stage0": {
+          "case": "generated-128",
+          "command": [
+            "clang",
+            "-O3",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/rust-stage0.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 0.916717,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/rust-stage0.exe",
+            "sha256": "b550873fef263c39b8ff43e304e0fdb1639734a0e5363775e8a3adf6e1006ccb"
+          },
+          "frontend": "rust-stage0",
+          "label": "link-generated-128-rust-stage0",
+          "stack_mode": "pointer",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-128-rust-stage0.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-128-rust-stage0.stdout",
+          "timed_out": false
+        },
+        "stage3": {
+          "case": "generated-128",
+          "command": [
+            "clang",
+            "-O3",
+            "-DNLC_STACK_MODE_OFFSET=1",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/stage3.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 0.681498,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/stage3.exe",
+            "sha256": "55265737ea501e58cca65bf102b837fffbc962096298ef2465e19b59e4e48583"
+          },
+          "frontend": "stage3",
+          "label": "link-generated-128-stage3",
+          "stack_mode": "offset",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-128-stage3.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-128-stage3.stdout",
+          "timed_out": false
+        }
+      },
+      "package": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+      "sample_order": [
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "stage3",
+          "rust-stage0"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ]
+      ],
+      "samples": {
+        "rust-stage0": [
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-0.ll"
+            ],
+            "cpu_seconds": 0.0,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.052,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-0.ll",
+              "sha256": "54cc90e6adc5809940e448800422214ca453af4bdf9b2e8bab080575a5e6bc26"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-0.ll",
+            "label": "generated-128-rust-stage0-sample-0",
+            "max_resident_set_kib": 8148,
+            "phase": "warmup",
+            "primary_wall_seconds": 0.052,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-0.stdout",
+            "system_cpu_seconds": 0.0,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.0,
+            "wall_seconds": 0.03,
+            "wrapper_and_rounding_difference_seconds": 0.022,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-0.ll"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-1.ll"
+            ],
+            "cpu_seconds": 0.0,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.046,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-1.ll",
+              "sha256": "54cc90e6adc5809940e448800422214ca453af4bdf9b2e8bab080575a5e6bc26"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-1.ll",
+            "label": "generated-128-rust-stage0-sample-1",
+            "max_resident_set_kib": 8148,
+            "phase": "measured",
+            "primary_wall_seconds": 0.046,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-1.stdout",
+            "system_cpu_seconds": 0.0,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.0,
+            "wall_seconds": 0.03,
+            "wrapper_and_rounding_difference_seconds": 0.016,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-1.ll"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-2.ll"
+            ],
+            "cpu_seconds": 0.01,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.042,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-2.ll",
+              "sha256": "54cc90e6adc5809940e448800422214ca453af4bdf9b2e8bab080575a5e6bc26"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-2.ll",
+            "label": "generated-128-rust-stage0-sample-2",
+            "max_resident_set_kib": 8152,
+            "phase": "measured",
+            "primary_wall_seconds": 0.042,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-2.stdout",
+            "system_cpu_seconds": 0.0,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.01,
+            "wall_seconds": 0.03,
+            "wrapper_and_rounding_difference_seconds": 0.012,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-2.ll"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-3.ll"
+            ],
+            "cpu_seconds": 0.01,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.056,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-3.ll",
+              "sha256": "54cc90e6adc5809940e448800422214ca453af4bdf9b2e8bab080575a5e6bc26"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-3.ll",
+            "label": "generated-128-rust-stage0-sample-3",
+            "max_resident_set_kib": 7972,
+            "phase": "measured",
+            "primary_wall_seconds": 0.056,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-3.stdout",
+            "system_cpu_seconds": 0.0,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.01,
+            "wall_seconds": 0.03,
+            "wrapper_and_rounding_difference_seconds": 0.026,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-rust-stage0-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-3.ll"
+            ]
+          }
+        ],
+        "stage3": [
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-0.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.0,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.049,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-0.ll",
+              "sha256": "e1841dbf81f1461d14a5d6b9e560e35cb5a4b42d7fadf0eca54dd4de169e60f9"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-0.ll",
+            "label": "generated-128-stage3-sample-0",
+            "max_resident_set_kib": 22176,
+            "phase": "warmup",
+            "primary_wall_seconds": 0.049,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-0.stdout",
+            "system_cpu_seconds": 0.0,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.0,
+            "wall_seconds": 0.03,
+            "wrapper_and_rounding_difference_seconds": 0.019,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-0.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-1.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.01,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.04,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-1.ll",
+              "sha256": "e1841dbf81f1461d14a5d6b9e560e35cb5a4b42d7fadf0eca54dd4de169e60f9"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-1.ll",
+            "label": "generated-128-stage3-sample-1",
+            "max_resident_set_kib": 22352,
+            "phase": "measured",
+            "primary_wall_seconds": 0.04,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-1.stdout",
+            "system_cpu_seconds": 0.01,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.0,
+            "wall_seconds": 0.02,
+            "wrapper_and_rounding_difference_seconds": 0.02,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-1.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-2.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.0,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.037,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-2.ll",
+              "sha256": "e1841dbf81f1461d14a5d6b9e560e35cb5a4b42d7fadf0eca54dd4de169e60f9"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-2.ll",
+            "label": "generated-128-stage3-sample-2",
+            "max_resident_set_kib": 22352,
+            "phase": "measured",
+            "primary_wall_seconds": 0.037,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-2.stdout",
+            "system_cpu_seconds": 0.0,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.0,
+            "wall_seconds": 0.02,
+            "wrapper_and_rounding_difference_seconds": 0.017,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-2.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-128",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-3.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.0,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.052,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-3.ll",
+              "sha256": "e1841dbf81f1461d14a5d6b9e560e35cb5a4b42d7fadf0eca54dd4de169e60f9"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-3.ll",
+            "label": "generated-128-stage3-sample-3",
+            "max_resident_set_kib": 22352,
+            "phase": "measured",
+            "primary_wall_seconds": 0.052,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-3.stdout",
+            "system_cpu_seconds": 0.0,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.0,
+            "wall_seconds": 0.03,
+            "wrapper_and_rounding_difference_seconds": 0.022,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-128-stage3-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-3.ll",
+              "--runtime=c"
+            ]
+          }
+        ]
+      },
+      "stage3_over_rust_median_ratio": 0.869565,
+      "timing": {
+        "rust-stage0": {
+          "best_wall_seconds": 0.042,
+          "gnu_time_wall_median_seconds": 0.03,
+          "median_wall_seconds": 0.046,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            0.046,
+            0.042,
+            0.056
+          ],
+          "spread_wall_seconds": 0.014,
+          "wrapper_and_rounding_difference_median_seconds": 0.016,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        },
+        "stage3": {
+          "best_wall_seconds": 0.037,
+          "gnu_time_wall_median_seconds": 0.02,
+          "median_wall_seconds": 0.04,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            0.04,
+            0.037,
+            0.052
+          ],
+          "spread_wall_seconds": 0.015,
+          "wrapper_and_rounding_difference_median_seconds": 0.02,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        }
+      },
+      "validation": [
+        {
+          "actual_stdout": "9682\n",
+          "command": [
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/rust-stage0.exe"
+          ],
+          "duration_seconds": 0.011337,
+          "expected_stdout": "9682\n",
+          "label": "validate-generated-128-rust-stage0",
+          "status": 0,
+          "stderr_preview": "",
+          "stdout_matches": true,
+          "timed_out": false
+        },
+        {
+          "actual_stdout": "9682\n",
+          "command": [
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/stage3.exe"
+          ],
+          "duration_seconds": 0.005344,
+          "expected_stdout": "9682\n",
+          "label": "validate-generated-128-stage3",
+          "status": 0,
+          "stderr_preview": "",
+          "stdout_matches": true,
+          "timed_out": false
+        }
+      ]
+    },
+    "generated-2048": {
+      "acceptance_result": "failure",
+      "expected_checksum": 2123690,
+      "expected_stdout": "2123690\n",
+      "function_count": 2048,
+      "links": {
+        "rust-stage0": {
+          "case": "generated-2048",
+          "command": [
+            "clang",
+            "-O3",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/rust-stage0.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 6.39394,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/rust-stage0.exe",
+            "sha256": "3f58d5be8fe34a79f36dd66a1657887ea8859ee188b464fbb312baff134a59c4"
+          },
+          "frontend": "rust-stage0",
+          "label": "link-generated-2048-rust-stage0",
+          "stack_mode": "pointer",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-2048-rust-stage0.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-2048-rust-stage0.stdout",
+          "timed_out": false
+        },
+        "stage3": {
+          "case": "generated-2048",
+          "command": [
+            "clang",
+            "-O3",
+            "-DNLC_STACK_MODE_OFFSET=1",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/stage3.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 2.629282,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/stage3.exe",
+            "sha256": "a049e0ab8c62aa537d05c48a6dd2b3516908fe2f76a630f7cfff58a92ca89f79"
+          },
+          "frontend": "stage3",
+          "label": "link-generated-2048-stage3",
+          "stack_mode": "offset",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-2048-stage3.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-2048-stage3.stdout",
+          "timed_out": false
+        }
+      },
+      "package": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+      "sample_order": [
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "stage3",
+          "rust-stage0"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ]
+      ],
+      "samples": {
+        "rust-stage0": [
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-0.ll"
+            ],
+            "cpu_seconds": 0.13,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.201,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-0.ll",
+              "sha256": "b847cc8bd3dd6963ff60aadee7581af4c44ce92bf6ca930db48a7efaa4cdf3cf"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-0.ll",
+            "label": "generated-2048-rust-stage0-sample-0",
+            "max_resident_set_kib": 60408,
+            "phase": "warmup",
+            "primary_wall_seconds": 0.201,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-0.stdout",
+            "system_cpu_seconds": 0.01,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.12,
+            "wall_seconds": 0.18,
+            "wrapper_and_rounding_difference_seconds": 0.021,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-0.ll"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-1.ll"
+            ],
+            "cpu_seconds": 0.13,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.204,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-1.ll",
+              "sha256": "b847cc8bd3dd6963ff60aadee7581af4c44ce92bf6ca930db48a7efaa4cdf3cf"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-1.ll",
+            "label": "generated-2048-rust-stage0-sample-1",
+            "max_resident_set_kib": 60408,
+            "phase": "measured",
+            "primary_wall_seconds": 0.204,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-1.stdout",
+            "system_cpu_seconds": 0.02,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.11,
+            "wall_seconds": 0.19,
+            "wrapper_and_rounding_difference_seconds": 0.014,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-1.ll"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-2.ll"
+            ],
+            "cpu_seconds": 0.13,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.264,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-2.ll",
+              "sha256": "b847cc8bd3dd6963ff60aadee7581af4c44ce92bf6ca930db48a7efaa4cdf3cf"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-2.ll",
+            "label": "generated-2048-rust-stage0-sample-2",
+            "max_resident_set_kib": 60408,
+            "phase": "measured",
+            "primary_wall_seconds": 0.264,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-2.stdout",
+            "system_cpu_seconds": 0.04,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.09,
+            "wall_seconds": 0.25,
+            "wrapper_and_rounding_difference_seconds": 0.014,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-2.ll"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-3.ll"
+            ],
+            "cpu_seconds": 0.13,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.21,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-3.ll",
+              "sha256": "b847cc8bd3dd6963ff60aadee7581af4c44ce92bf6ca930db48a7efaa4cdf3cf"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-3.ll",
+            "label": "generated-2048-rust-stage0-sample-3",
+            "max_resident_set_kib": 60408,
+            "phase": "measured",
+            "primary_wall_seconds": 0.21,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-3.stdout",
+            "system_cpu_seconds": 0.02,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.11,
+            "wall_seconds": 0.19,
+            "wrapper_and_rounding_difference_seconds": 0.02,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-rust-stage0-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-3.ll"
+            ]
+          }
+        ],
+        "stage3": [
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-0.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.2,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.26,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-0.ll",
+              "sha256": "b60a040aa8fc98bf8c7bf66089af3edfb6c0fab5533a50c2b89cb33f0582d8d2"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-0.ll",
+            "label": "generated-2048-stage3-sample-0",
+            "max_resident_set_kib": 44176,
+            "phase": "warmup",
+            "primary_wall_seconds": 0.26,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-0.stdout",
+            "system_cpu_seconds": 0.01,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.19,
+            "wall_seconds": 0.24,
+            "wrapper_and_rounding_difference_seconds": 0.02,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-0.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-1.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.21,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.277,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-1.ll",
+              "sha256": "b60a040aa8fc98bf8c7bf66089af3edfb6c0fab5533a50c2b89cb33f0582d8d2"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-1.ll",
+            "label": "generated-2048-stage3-sample-1",
+            "max_resident_set_kib": 44176,
+            "phase": "measured",
+            "primary_wall_seconds": 0.277,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-1.stdout",
+            "system_cpu_seconds": 0.03,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.18,
+            "wall_seconds": 0.26,
+            "wrapper_and_rounding_difference_seconds": 0.017,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-1.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-2.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.2,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.269,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-2.ll",
+              "sha256": "b60a040aa8fc98bf8c7bf66089af3edfb6c0fab5533a50c2b89cb33f0582d8d2"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-2.ll",
+            "label": "generated-2048-stage3-sample-2",
+            "max_resident_set_kib": 44176,
+            "phase": "measured",
+            "primary_wall_seconds": 0.269,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-2.stdout",
+            "system_cpu_seconds": 0.01,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.19,
+            "wall_seconds": 0.25,
+            "wrapper_and_rounding_difference_seconds": 0.019,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-2.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "generated-2048",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-3.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.2,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 0.271,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-3.ll",
+              "sha256": "b60a040aa8fc98bf8c7bf66089af3edfb6c0fab5533a50c2b89cb33f0582d8d2"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-3.ll",
+            "label": "generated-2048-stage3-sample-3",
+            "max_resident_set_kib": 44000,
+            "phase": "measured",
+            "primary_wall_seconds": 0.271,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-3.stdout",
+            "system_cpu_seconds": 0.01,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.19,
+            "wall_seconds": 0.24,
+            "wrapper_and_rounding_difference_seconds": 0.031,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/generated-2048-stage3-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "target/b1-performance-matrix/run-rysdz1w_/packages/generated-2048",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-3.ll",
+              "--runtime=c"
+            ]
+          }
+        ]
+      },
+      "stage3_over_rust_median_ratio": 1.290476,
+      "timing": {
+        "rust-stage0": {
+          "best_wall_seconds": 0.204,
+          "gnu_time_wall_median_seconds": 0.19,
+          "median_wall_seconds": 0.21,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            0.204,
+            0.264,
+            0.21
+          ],
+          "spread_wall_seconds": 0.06,
+          "wrapper_and_rounding_difference_median_seconds": 0.014,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        },
+        "stage3": {
+          "best_wall_seconds": 0.269,
+          "gnu_time_wall_median_seconds": 0.25,
+          "median_wall_seconds": 0.271,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            0.277,
+            0.269,
+            0.271
+          ],
+          "spread_wall_seconds": 0.008,
+          "wrapper_and_rounding_difference_median_seconds": 0.019,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        }
+      },
+      "validation": [
+        {
+          "actual_stdout": "2123690\n",
+          "command": [
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/rust-stage0.exe"
+          ],
+          "duration_seconds": 0.006895,
+          "expected_stdout": "2123690\n",
+          "label": "validate-generated-2048-rust-stage0",
+          "status": 0,
+          "stderr_preview": "",
+          "stdout_matches": true,
+          "timed_out": false
+        },
+        {
+          "actual_stdout": "2123690\n",
+          "command": [
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/stage3.exe"
+          ],
+          "duration_seconds": 0.00816,
+          "expected_stdout": "2123690\n",
+          "label": "validate-generated-2048-stage3",
+          "status": 0,
+          "stderr_preview": "",
+          "stdout_matches": true,
+          "timed_out": false
+        }
+      ]
+    },
+    "selfhost": {
+      "acceptance_result": "not_above_threshold",
+      "expected_checksum": null,
+      "expected_stdout": null,
+      "function_count": null,
+      "links": {
+        "rust-stage0": {
+          "case": "selfhost",
+          "command": [
+            "clang",
+            "-O3",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost/rust-stage0.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 15.50112,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost/rust-stage0.exe",
+            "sha256": "fd1b3c0937fd736d7f07dab36958d777dee16b08e5d5dc913f984b68cefcdf67"
+          },
+          "frontend": "rust-stage0",
+          "label": "link-selfhost-rust-stage0",
+          "stack_mode": "pointer",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-rust-stage0.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-rust-stage0.stdout",
+          "timed_out": false
+        },
+        "stage3": {
+          "case": "selfhost",
+          "command": [
+            "clang",
+            "-O3",
+            "-DNLC_STACK_MODE_OFFSET=1",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-1.ll",
+            "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+            "-o",
+            "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost/stage3.exe"
+          ],
+          "cwd": "/mnt/d/code/next-lang",
+          "duration_seconds": 18.020105,
+          "environment": {
+            "LANG": "C",
+            "LC_ALL": "C"
+          },
+          "executable": {
+            "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost/stage3.exe",
+            "sha256": "92087dee4aefc520a5b2d9dcd7aed5505b7ad289bc8ef86f63caf89e9847c1ce"
+          },
+          "frontend": "stage3",
+          "label": "link-selfhost-stage3",
+          "stack_mode": "offset",
+          "status": 0,
+          "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-stage3.stderr",
+          "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+          "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-stage3.stdout",
+          "timed_out": false
+        }
+      },
+      "package": "/mnt/d/code/next-lang/selfhost",
+      "sample_order": [
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ],
+        [
+          "stage3",
+          "rust-stage0"
+        ],
+        [
+          "rust-stage0",
+          "stage3"
+        ]
+      ],
+      "samples": {
+        "rust-stage0": [
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-0.ll"
+            ],
+            "cpu_seconds": 1.78,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.938,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-0.ll",
+              "sha256": "845e030b9a36fd3b94f41605e0829d748b64b4123dd7cb53a23ac2cdf3cdf38f"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-0.ll",
+            "label": "selfhost-rust-stage0-sample-0",
+            "max_resident_set_kib": 269500,
+            "phase": "warmup",
+            "primary_wall_seconds": 1.938,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-0.stdout",
+            "system_cpu_seconds": 0.14,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 1.64,
+            "wall_seconds": 1.91,
+            "wrapper_and_rounding_difference_seconds": 0.028,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-0.ll"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-1.ll"
+            ],
+            "cpu_seconds": 1.72,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.859,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-1.ll",
+              "sha256": "845e030b9a36fd3b94f41605e0829d748b64b4123dd7cb53a23ac2cdf3cdf38f"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-1.ll",
+            "label": "selfhost-rust-stage0-sample-1",
+            "max_resident_set_kib": 269500,
+            "phase": "measured",
+            "primary_wall_seconds": 1.859,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-1.stdout",
+            "system_cpu_seconds": 0.14,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 1.58,
+            "wall_seconds": 1.84,
+            "wrapper_and_rounding_difference_seconds": 0.019,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-1.ll"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-2.ll"
+            ],
+            "cpu_seconds": 1.73,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.875,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-2.ll",
+              "sha256": "845e030b9a36fd3b94f41605e0829d748b64b4123dd7cb53a23ac2cdf3cdf38f"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-2.ll",
+            "label": "selfhost-rust-stage0-sample-2",
+            "max_resident_set_kib": 269500,
+            "phase": "measured",
+            "primary_wall_seconds": 1.875,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-2.stdout",
+            "system_cpu_seconds": 0.18,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 1.55,
+            "wall_seconds": 1.86,
+            "wrapper_and_rounding_difference_seconds": 0.015,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-2.ll"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-3.ll"
+            ],
+            "cpu_seconds": 1.72,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.891,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C",
+              "NLC_OPT_LEVEL": "3",
+              "NLC_STACK_MODE": "pointer"
+            },
+            "frontend": "rust-stage0",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-3.ll",
+              "sha256": "845e030b9a36fd3b94f41605e0829d748b64b4123dd7cb53a23ac2cdf3cdf38f"
+            },
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-3.ll",
+            "label": "selfhost-rust-stage0-sample-3",
+            "max_resident_set_kib": 269680,
+            "phase": "measured",
+            "primary_wall_seconds": 1.891,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-3.stdout",
+            "system_cpu_seconds": 0.13,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 1.59,
+            "wall_seconds": 1.87,
+            "wrapper_and_rounding_difference_seconds": 0.021,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-rust-stage0-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+              "selfhost",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-3.ll"
+            ]
+          }
+        ],
+        "stage3": [
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-0.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.88,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.255,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-0.ll",
+              "sha256": "5cbd391413a5ea484a3dc511dd86593e2cec565d583a748c040e720e81cbbdb7"
+            },
+            "ir_matches_chain": true,
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-0.ll",
+            "label": "selfhost-stage3-sample-0",
+            "max_resident_set_kib": 187264,
+            "phase": "warmup",
+            "primary_wall_seconds": 1.255,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 0,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-0.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-0.stdout",
+            "system_cpu_seconds": 0.07,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.81,
+            "wall_seconds": 1.24,
+            "wrapper_and_rounding_difference_seconds": 0.015,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-0.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-0.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-1.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.93,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.328,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-1.ll",
+              "sha256": "5cbd391413a5ea484a3dc511dd86593e2cec565d583a748c040e720e81cbbdb7"
+            },
+            "ir_matches_chain": true,
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-1.ll",
+            "label": "selfhost-stage3-sample-1",
+            "max_resident_set_kib": 187264,
+            "phase": "measured",
+            "primary_wall_seconds": 1.328,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 1,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-1.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-1.stdout",
+            "system_cpu_seconds": 0.08,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.85,
+            "wall_seconds": 1.3,
+            "wrapper_and_rounding_difference_seconds": 0.028,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-1.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-1.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-2.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.91,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.272,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-2.ll",
+              "sha256": "5cbd391413a5ea484a3dc511dd86593e2cec565d583a748c040e720e81cbbdb7"
+            },
+            "ir_matches_chain": true,
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-2.ll",
+            "label": "selfhost-stage3-sample-2",
+            "max_resident_set_kib": 187264,
+            "phase": "measured",
+            "primary_wall_seconds": 1.272,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 2,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-2.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-2.stdout",
+            "system_cpu_seconds": 0.08,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.83,
+            "wall_seconds": 1.25,
+            "wrapper_and_rounding_difference_seconds": 0.022,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-2.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-2.ll",
+              "--runtime=c"
+            ]
+          },
+          {
+            "case": "selfhost",
+            "command": [
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-3.ll",
+              "--runtime=c"
+            ],
+            "cpu_seconds": 0.89,
+            "cwd": "/mnt/d/code/next-lang",
+            "duration_seconds": 1.321,
+            "environment": {
+              "LANG": "C",
+              "LC_ALL": "C"
+            },
+            "frontend": "stage3",
+            "ir": {
+              "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-3.ll",
+              "sha256": "5cbd391413a5ea484a3dc511dd86593e2cec565d583a748c040e720e81cbbdb7"
+            },
+            "ir_matches_chain": true,
+            "ir_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-3.ll",
+            "label": "selfhost-stage3-sample-3",
+            "max_resident_set_kib": 187264,
+            "phase": "measured",
+            "primary_wall_seconds": 1.321,
+            "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+            "sample_index": 3,
+            "status": 0,
+            "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-3.stderr",
+            "stderr_preview": "",
+            "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-3.stdout",
+            "system_cpu_seconds": 0.07,
+            "timed_out": false,
+            "timeout_deadline_seconds": 600,
+            "user_cpu_seconds": 0.82,
+            "wall_seconds": 1.3,
+            "wrapper_and_rounding_difference_seconds": 0.021,
+            "wrapper_command": [
+              "/usr/bin/time",
+              "-f",
+              "NLC_TIME=%e,%U,%S,%M",
+              "-o",
+              "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/selfhost-stage3-sample-3.time",
+              "/usr/bin/timeout",
+              "-k",
+              "5s",
+              "600s",
+              "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+              "build",
+              "selfhost",
+              "-o",
+              "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-3.ll",
+              "--runtime=c"
+            ]
+          }
+        ]
+      },
+      "stage3_over_rust_median_ratio": 0.704533,
+      "timing": {
+        "rust-stage0": {
+          "best_wall_seconds": 1.859,
+          "gnu_time_wall_median_seconds": 1.86,
+          "median_wall_seconds": 1.875,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            1.859,
+            1.875,
+            1.891
+          ],
+          "spread_wall_seconds": 0.032,
+          "wrapper_and_rounding_difference_median_seconds": 0.019,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        },
+        "stage3": {
+          "best_wall_seconds": 1.272,
+          "gnu_time_wall_median_seconds": 1.3,
+          "median_wall_seconds": 1.321,
+          "sample_count": 3,
+          "samples_wall_seconds": [
+            1.328,
+            1.272,
+            1.321
+          ],
+          "spread_wall_seconds": 0.056,
+          "wrapper_and_rounding_difference_median_seconds": 0.022,
+          "wrapper_and_rounding_difference_note": "primary wall minus GNU time %e; the latter is rounded to 0.01 s, so this is not an exact wrapper-overhead measurement"
+        }
+      },
+      "validation": []
+    }
+  },
+  "chain_report": {
+    "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/report.json",
+    "sha256": "fa84d4f5e049779d7beffcd5fa3c8f0ea5eb3c91fe98b2364cb58f97dd43ca51"
+  },
+  "comparison_modes": {
+    "rust-stage0": {
+      "implementation": "Rust frontend API from the fresh helper linked against the specified release rlib",
+      "runtime": "C",
+      "stack_mode": "pointer (NLC_STACK_MODE=pointer)"
+    },
+    "stage3": {
+      "implementation": "O3 self-hosted compiler from the passing stage-chain report",
+      "runtime": "C (--runtime=c)",
+      "stack_mode": "offset (Stage 3 emitter mode)"
+    }
+  },
+  "cpu_affinity": [
+    0
+  ],
+  "expected_stage3_binary_sha256": "92087dee4aefc520a5b2d9dcd7aed5505b7ad289bc8ef86f63caf89e9847c1ce",
+  "expected_stage3_selfhost_ir_sha256": "5cbd391413a5ea484a3dc511dd86593e2cec565d583a748c040e720e81cbbdb7",
+  "input_fingerprints_unchanged": true,
+  "inputs_after": {
+    "benchmark_runner": {
+      "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/bench-selfhost-matrix.py",
+      "sha256": "8dd1415692e1169033204cc7aa7fc8661f2249fef50164e22fe6e09f9aea3f99"
+    },
+    "case_packages": {
+      "generated-128": "6b4d650e91e4388911aa59d8a9b654935baf9ec148baed3c18d7df43cf19099c",
+      "generated-2048": "8929e151b9f0d2adbc972cbb93b692d6a9e598e14e4233056444c3c3ba91e12c",
+      "selfhost": "cafb3342bee6e1dd7dd733d7c667925bcb0c752ad6cbaaaf78bc4f188c162a54"
+    },
+    "chain_report": {
+      "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/report.json",
+      "sha256": "fa84d4f5e049779d7beffcd5fa3c8f0ea5eb3c91fe98b2364cb58f97dd43ca51"
+    },
+    "pilot_runner_source": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-pilot.py",
+      "sha256": "c532cea7b28d829ded799106612ef94e079b4e863e28b82587fb095eda9b6723"
+    },
+    "rust_compiler_sources_sha256": "12f6e610a8c5b25bfc3a7498d27f0b256cb19b82f5ea67728ae821991f3da2b7",
+    "rust_helper_binary": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+      "sha256": "406f3a58114c7758c39683a7d485dd36ecedea7ce8ec801915f592db3f4ad7fd"
+    },
+    "rust_helper_source": {
+      "path": "/mnt/d/code/next-lang/.scratch-b1-deferred-benchmark-20261028/bench-selfhost-compile-rust.rs",
+      "sha256": "12cce63e4a707f5cb2ca7025f2e50cb2e5aec03e58c88396f22025f29087dffe"
+    },
+    "rust_reference_nlc": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/nlc",
+      "sha256": "42e743e8a51ac4abd536b90463047b4d02f78d9ed7a10e21b733c9de303da2a9"
+    },
+    "rust_rlib": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/deps/libnext_lang-ff9bf2564b5fb483.rlib",
+      "sha256": "66bb96af9174b1073b2d4b02bea54aad09eb1c48f0805aefe9314308df8d75bc"
+    },
+    "selfhost_package_sha256": "cafb3342bee6e1dd7dd733d7c667925bcb0c752ad6cbaaaf78bc4f188c162a54",
+    "stage3_binary": {
+      "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+      "sha256": "92087dee4aefc520a5b2d9dcd7aed5505b7ad289bc8ef86f63caf89e9847c1ce"
+    },
+    "stage_chain_sources_sha256": "c80fc250a2fe1e5347e61c7d0c0e4624afa3e313353d023a82e36e2e8e6b6c70"
+  },
+  "inputs_before": {
+    "benchmark_runner": {
+      "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/bench-selfhost-matrix.py",
+      "sha256": "8dd1415692e1169033204cc7aa7fc8661f2249fef50164e22fe6e09f9aea3f99"
+    },
+    "case_packages": {
+      "generated-128": "6b4d650e91e4388911aa59d8a9b654935baf9ec148baed3c18d7df43cf19099c",
+      "generated-2048": "8929e151b9f0d2adbc972cbb93b692d6a9e598e14e4233056444c3c3ba91e12c",
+      "selfhost": "cafb3342bee6e1dd7dd733d7c667925bcb0c752ad6cbaaaf78bc4f188c162a54"
+    },
+    "chain_report": {
+      "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/report.json",
+      "sha256": "fa84d4f5e049779d7beffcd5fa3c8f0ea5eb3c91fe98b2364cb58f97dd43ca51"
+    },
+    "pilot_runner_source": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-pilot.py",
+      "sha256": "c532cea7b28d829ded799106612ef94e079b4e863e28b82587fb095eda9b6723"
+    },
+    "rust_compiler_sources_sha256": "12f6e610a8c5b25bfc3a7498d27f0b256cb19b82f5ea67728ae821991f3da2b7",
+    "rust_helper_binary": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+      "sha256": "406f3a58114c7758c39683a7d485dd36ecedea7ce8ec801915f592db3f4ad7fd"
+    },
+    "rust_helper_source": {
+      "path": "/mnt/d/code/next-lang/.scratch-b1-deferred-benchmark-20261028/bench-selfhost-compile-rust.rs",
+      "sha256": "12cce63e4a707f5cb2ca7025f2e50cb2e5aec03e58c88396f22025f29087dffe"
+    },
+    "rust_reference_nlc": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/nlc",
+      "sha256": "42e743e8a51ac4abd536b90463047b4d02f78d9ed7a10e21b733c9de303da2a9"
+    },
+    "rust_rlib": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/deps/libnext_lang-ff9bf2564b5fb483.rlib",
+      "sha256": "66bb96af9174b1073b2d4b02bea54aad09eb1c48f0805aefe9314308df8d75bc"
+    },
+    "selfhost_package_sha256": "cafb3342bee6e1dd7dd733d7c667925bcb0c752ad6cbaaaf78bc4f188c162a54",
+    "stage3_binary": {
+      "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-9m83m4b2/stage3",
+      "sha256": "92087dee4aefc520a5b2d9dcd7aed5505b7ad289bc8ef86f63caf89e9847c1ce"
+    },
+    "stage_chain_sources_sha256": "c80fc250a2fe1e5347e61c7d0c0e4624afa3e313353d023a82e36e2e8e6b6c70"
+  },
+  "links_and_validation": [
+    {
+      "case": "selfhost",
+      "command": [
+        "clang",
+        "-O3",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/rust-stage0/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost/rust-stage0.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 15.50112,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost/rust-stage0.exe",
+        "sha256": "fd1b3c0937fd736d7f07dab36958d777dee16b08e5d5dc913f984b68cefcdf67"
+      },
+      "frontend": "rust-stage0",
+      "label": "link-selfhost-rust-stage0",
+      "stack_mode": "pointer",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-rust-stage0.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-rust-stage0.stdout",
+      "timed_out": false
+    },
+    {
+      "case": "selfhost",
+      "command": [
+        "clang",
+        "-O3",
+        "-DNLC_STACK_MODE_OFFSET=1",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost/stage3/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost/stage3.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 18.020105,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost/stage3.exe",
+        "sha256": "92087dee4aefc520a5b2d9dcd7aed5505b7ad289bc8ef86f63caf89e9847c1ce"
+      },
+      "frontend": "stage3",
+      "label": "link-selfhost-stage3",
+      "stack_mode": "offset",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-stage3.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-stage3.stdout",
+      "timed_out": false
+    },
+    {
+      "case": "generated-128",
+      "command": [
+        "clang",
+        "-O3",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/rust-stage0/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/rust-stage0.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.916717,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/rust-stage0.exe",
+        "sha256": "b550873fef263c39b8ff43e304e0fdb1639734a0e5363775e8a3adf6e1006ccb"
+      },
+      "frontend": "rust-stage0",
+      "label": "link-generated-128-rust-stage0",
+      "stack_mode": "pointer",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-128-rust-stage0.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-128-rust-stage0.stdout",
+      "timed_out": false
+    },
+    {
+      "actual_stdout": "9682\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/rust-stage0.exe"
+      ],
+      "duration_seconds": 0.011337,
+      "expected_stdout": "9682\n",
+      "label": "validate-generated-128-rust-stage0",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false
+    },
+    {
+      "case": "generated-128",
+      "command": [
+        "clang",
+        "-O3",
+        "-DNLC_STACK_MODE_OFFSET=1",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-128/stage3/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/stage3.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.681498,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/stage3.exe",
+        "sha256": "55265737ea501e58cca65bf102b837fffbc962096298ef2465e19b59e4e48583"
+      },
+      "frontend": "stage3",
+      "label": "link-generated-128-stage3",
+      "stack_mode": "offset",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-128-stage3.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-128-stage3.stdout",
+      "timed_out": false
+    },
+    {
+      "actual_stdout": "9682\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-128/stage3.exe"
+      ],
+      "duration_seconds": 0.005344,
+      "expected_stdout": "9682\n",
+      "label": "validate-generated-128-stage3",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false
+    },
+    {
+      "case": "generated-2048",
+      "command": [
+        "clang",
+        "-O3",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/rust-stage0/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/rust-stage0.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 6.39394,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/rust-stage0.exe",
+        "sha256": "3f58d5be8fe34a79f36dd66a1657887ea8859ee188b464fbb312baff134a59c4"
+      },
+      "frontend": "rust-stage0",
+      "label": "link-generated-2048-rust-stage0",
+      "stack_mode": "pointer",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-2048-rust-stage0.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-2048-rust-stage0.stdout",
+      "timed_out": false
+    },
+    {
+      "actual_stdout": "2123690\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/rust-stage0.exe"
+      ],
+      "duration_seconds": 0.006895,
+      "expected_stdout": "2123690\n",
+      "label": "validate-generated-2048-rust-stage0",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false
+    },
+    {
+      "case": "generated-2048",
+      "command": [
+        "clang",
+        "-O3",
+        "-DNLC_STACK_MODE_OFFSET=1",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/generated-2048/stage3/sample-1.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/stage3.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 2.629282,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/stage3.exe",
+        "sha256": "a049e0ab8c62aa537d05c48a6dd2b3516908fe2f76a630f7cfff58a92ca89f79"
+      },
+      "frontend": "stage3",
+      "label": "link-generated-2048-stage3",
+      "stack_mode": "offset",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-2048-stage3.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-generated-2048-stage3.stdout",
+      "timed_out": false
+    },
+    {
+      "actual_stdout": "2123690\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/generated-2048/stage3.exe"
+      ],
+      "duration_seconds": 0.00816,
+      "expected_stdout": "2123690\n",
+      "label": "validate-generated-2048-stage3",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false
+    },
+    {
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost/rust-stage0.exe",
+        "build",
+        "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+        "-o",
+        "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost-probe/rust-stage0.ll",
+        "--runtime=c"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.025134,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "label": "probe-compile-rust-stage0",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/probe-compile-rust-stage0.stderr",
+      "stderr_preview": "",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/probe-compile-rust-stage0.stdout",
+      "timed_out": false
+    },
+    {
+      "case": "selfhost-probe-rust-stage0",
+      "command": [
+        "clang",
+        "-O3",
+        "-DNLC_STACK_MODE_OFFSET=1",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost-probe/rust-stage0.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost-probe/rust-stage0.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.612748,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost-probe/rust-stage0.exe",
+        "sha256": "55265737ea501e58cca65bf102b837fffbc962096298ef2465e19b59e4e48583"
+      },
+      "frontend": "stage3",
+      "label": "link-selfhost-probe-rust-stage0-stage3",
+      "stack_mode": "offset",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-probe-rust-stage0-stage3.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-probe-rust-stage0-stage3.stdout",
+      "timed_out": false,
+      "validation_frontend": "rust-stage0"
+    },
+    {
+      "actual_stdout": "9682\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost-probe/rust-stage0.exe"
+      ],
+      "duration_seconds": 0.00455,
+      "expected_stdout": "9682\n",
+      "label": "validate-selfhost-probe-rust-stage0",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false,
+      "validation_frontend": "rust-stage0"
+    },
+    {
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost/stage3.exe",
+        "build",
+        "target/b1-performance-matrix/run-rysdz1w_/packages/generated-128",
+        "-o",
+        "target/b1-performance-matrix/run-rysdz1w_/ir/selfhost-probe/stage3.ll",
+        "--runtime=c"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.030778,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "label": "probe-compile-stage3",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/probe-compile-stage3.stderr",
+      "stderr_preview": "",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/probe-compile-stage3.stdout",
+      "timed_out": false
+    },
+    {
+      "case": "selfhost-probe-stage3",
+      "command": [
+        "clang",
+        "-O3",
+        "-DNLC_STACK_MODE_OFFSET=1",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/ir/selfhost-probe/stage3.ll",
+        "/mnt/d/code/next-lang/runtime/nl_runtime.c",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost-probe/stage3.exe"
+      ],
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 0.642924,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "executable": {
+        "path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost-probe/stage3.exe",
+        "sha256": "55265737ea501e58cca65bf102b837fffbc962096298ef2465e19b59e4e48583"
+      },
+      "frontend": "stage3",
+      "label": "link-selfhost-probe-stage3-stage3",
+      "stack_mode": "offset",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-probe-stage3-stage3.stderr",
+      "stderr_preview": "warning: overriding the module target triple with x86_64-pc-linux-gnu [-Woverride-module]\n1 warning generated.\n",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/link-selfhost-probe-stage3-stage3.stdout",
+      "timed_out": false,
+      "validation_frontend": "stage3"
+    },
+    {
+      "actual_stdout": "9682\n",
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_/bin/selfhost-probe/stage3.exe"
+      ],
+      "duration_seconds": 0.003828,
+      "expected_stdout": "9682\n",
+      "label": "validate-selfhost-probe-stage3",
+      "status": 0,
+      "stderr_preview": "",
+      "stdout_matches": true,
+      "timed_out": false,
+      "validation_frontend": "stage3"
+    }
+  ],
+  "measured_samples_per_frontend_per_case": 3,
+  "primary_wall_source": "pilot timed_command duration_seconds from time.monotonic, rounded to 0.001 s; Rust and Stage 3 use the same GNU time/timeout wrapper",
+  "repository_root": "/mnt/d/code/next-lang",
+  "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+  "status": "observed_gate_failure",
+  "threshold_stage3_over_rust": 1.1,
+  "warmups_per_frontend_per_case": 1,
+  "work_directory": "/mnt/d/code/next-lang/target/b1-performance-matrix/run-rysdz1w_"
+}

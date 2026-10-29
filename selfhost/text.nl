@@ -362,27 +362,38 @@ fn emit_text_literal_value(
 ) {
     let syntax = tables.nodes[node]
     let kind = type_kind(compiler, compiler.facts[node].ty)
-    var literal: Bytes max 16777217 = Bytes.empty()
-    if syntax.kind == NodeKind.BytesLiteral {
-        literal = decode_string_token(source, tokens, files[file_index].base, syntax.extra, true)
+    let token = if syntax.kind == NodeKind.BytesLiteral { syntax.extra } else { syntax.token }
+    let raw_bytes = syntax.kind == NodeKind.BytesLiteral
+    var literal_byte_count = 0L
+    var points = 0L
+    if !compiler.core_mode && kind == TYPE_KIND_TEXT {
+        let literal = decode_string_token(source, tokens, files[file_index].base, token, raw_bytes)
+        literal_byte_count = literal.count()
+        points = decoded_text_codepoints(literal)
     } else {
-        literal = decode_string_token(source, tokens, files[file_index].base, syntax.token, false)
+        literal_byte_count = decoded_string_token_byte_length(
+            source,
+            tokens,
+            files[file_index].base,
+            token,
+            raw_bytes,
+        )
+        if literal_byte_count < 0L { literal_byte_count = 0L }
     }
     if compiler.core_mode {
         ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, " = getelementptr ["); ir_write_number(compiler, ir, literal.count() + 1L)
+        ir_write_ascii(compiler, ir, " = getelementptr ["); ir_write_number(compiler, ir, literal_byte_count + 1L)
         ir_write_ascii(compiler, ir, " x i8], ptr "); emit_text_literal_global_reference(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i64 0, i64 0\n")
         return
     }
     let data_offset = text_data_offset(compiler, compiler.facts[node].ty)
-    let points = if kind == TYPE_KIND_TEXT { decoded_text_codepoints(literal) } else { 0L }
     let destination = aggregate_destination_location(compiler, 0L, node)
     let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
     if kind == TYPE_KIND_TEXT {
         ir_write_ascii(compiler, ir, "  %text.literal.byte.length.addr."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
-        ir_write_ascii(compiler, ir, ", i64 0\n  store i64 "); ir_write_number(compiler, ir, literal.count())
+        ir_write_ascii(compiler, ir, ", i64 0\n  store i64 "); ir_write_number(compiler, ir, literal_byte_count)
         ir_write_ascii(compiler, ir, ", ptr %text.literal.byte.length.addr."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %text.literal.point.length.addr."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
@@ -391,11 +402,11 @@ fn emit_text_literal_value(
     } else {
         ir_write_ascii(compiler, ir, "  %text.literal.length.addr."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
-        ir_write_ascii(compiler, ir, ", i64 0\n  store i64 "); ir_write_number(compiler, ir, literal.count())
+        ir_write_ascii(compiler, ir, ", i64 0\n  store i64 "); ir_write_number(compiler, ir, literal_byte_count)
         ir_write_ascii(compiler, ir, ", ptr %text.literal.length.addr."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
     }
     ir_write_ascii(compiler, ir, "  %text.literal.source.data."); ir_write_number(compiler, ir, node)
-    ir_write_ascii(compiler, ir, " = getelementptr ["); ir_write_number(compiler, ir, literal.count() + 1L)
+    ir_write_ascii(compiler, ir, " = getelementptr ["); ir_write_number(compiler, ir, literal_byte_count + 1L)
     ir_write_ascii(compiler, ir, " x i8], ptr "); emit_text_literal_global_reference(compiler, ir, node)
     ir_write_ascii(compiler, ir, ", i64 0, i64 0\n  %text.literal.destination.data."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
@@ -405,13 +416,13 @@ fn emit_text_literal_value(
     ir_write_ascii(compiler, ir, ":\n  %text.literal.copy."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, " = call ptr @memmove(ptr %text.literal.destination.data."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, ", ptr %text.literal.source.data."); ir_write_number(compiler, ir, node)
-    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, literal.count()); ir_write_ascii(compiler, ir, ")\n  br label %text.literal.done."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, literal_byte_count); ir_write_ascii(compiler, ir, ")\n  br label %text.literal.done."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, "\ntext.literal.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
     if is_test && kind == TYPE_KIND_TEXT {
         ir_write_ascii(compiler, ir, "  %text.literal.assert.data."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
         ir_write_ascii(compiler, ir, ", i64 16\n  call void @nl_core_nl_text_assert_valid(ptr %nl.ctx, ptr %text.literal.assert.data.")
-        ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, literal.count()); ir_push_byte(compiler, ir, 41); ir_push_byte(compiler, ir, 10)
+        ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, literal_byte_count); ir_push_byte(compiler, ir, 41); ir_push_byte(compiler, ir, 10)
     }
 }
 
