@@ -1,4 +1,17 @@
-const SELFHOST_COMPILER: &str = include_str!("../../selfhost/compiler.nl");
+// The compiler is split across selfhost/compiler_*.nl; the audit reads them in name order.
+fn selfhost_compiler_source() -> String {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../selfhost");
+    let mut paths: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            let name = path.file_name().unwrap().to_string_lossy();
+            name.starts_with("compiler_") && name.ends_with(".nl")
+        })
+        .collect();
+    paths.sort();
+    paths.iter().map(|path| std::fs::read_to_string(path).unwrap()).collect()
+}
 
 #[test]
 fn type_table_access_and_struct_classification_stay_behind_the_interface() {
@@ -10,7 +23,7 @@ fn type_table_access_and_struct_classification_stay_behind_the_interface() {
     let mut begin_count = 0;
     let mut end_count = 0;
 
-    for (line_number, line) in SELFHOST_COMPILER.lines().enumerate() {
+    for (line_number, line) in selfhost_compiler_source().lines().enumerate() {
         if line.contains("// TYPE MODULE BEGIN") {
             assert!(
                 !in_type_module,

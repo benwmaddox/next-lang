@@ -1,0 +1,1 @@
+main.nl:1:20: error: expected int, found long; cast explicitly with (int)value
