@@ -1449,7 +1449,6 @@ fn compile_selfhost_package(
     check_struct_defaults(env, source, files, tokens, tables, config, compiler)
     check_package_bodies(env, source, files, tokens, tables, config, compiler)
     check_deferred_large_value_gate(env, source, files, tokens, tables, compiler)
-    check_nested_collections_eligibility(env, source, files, tokens, tables, compiler)
     add_default_call_graph_edges(tables, compiler)
     check_call_cycles(env, source, files, tokens, tables, compiler)
     check_native_frame_budget(env, source, files, tokens, tables, compiler, entry, want_test_build)

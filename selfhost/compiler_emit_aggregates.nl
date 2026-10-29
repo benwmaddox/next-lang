@@ -262,7 +262,7 @@ recursive fn emit_late_place_address(
     if tables.nodes[node].kind == NodeKind.Index {
         let collection = compiler.child_first[node]
         let index_node = if collection >= 0L { compiler.child_next[collection] } else { -1L }
-        if collection >= 0L && index_node >= 0L && tables.nodes[collection].kind == NodeKind.Field {
+        if collection >= 0L && index_node >= 0L && (tables.nodes[collection].kind == NodeKind.Field || tables.nodes[collection].kind == NodeKind.Index) {
             let collection_address = emit_late_place_address(tables, compiler, ir, collection)
             let base = compiler_location(compiler, 2L, collection_address, 0L)
             let pointer = emit_location_pointer_materialization(compiler, ir, base)

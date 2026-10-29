@@ -1234,7 +1234,7 @@ recursive fn emit_expr_linear(
                 emit_collection_index_address(files, tables, compiler, ir, current, file_index)
                 let ty = compiler.facts[current].ty
                 if is_aggregate_type(compiler, ty) {
-                    if !collection_index_has_field_projection(tables, compiler, current) {
+                    if !collection_index_has_field_projection(tables, compiler, current) && !region_node_is_collection_method_receiver(tables, compiler, current) {
                         emit_collection_gather_index_value(tables, compiler, ir, current)
                     }
                 }

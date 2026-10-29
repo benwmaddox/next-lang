@@ -1229,7 +1229,7 @@ fn collection_value_location(tables: ParseTables, compiler: CompilerTables, node
         if binding >= 0L && compiler.bindings[binding].parameter {
             compiler_location(compiler, 3L, binding, 0L)
         } else { compiler_location(compiler, 1L, binding, 0L) }
-    } else if tables.nodes[node].kind == NodeKind.Field {
+    } else if tables.nodes[node].kind == NodeKind.Field || (tables.nodes[node].kind == NodeKind.Index && region_node_is_collection_method_receiver(tables, compiler, node)) {
         compiler_location(compiler, 2L, node, 0L)
     } else { compiler_location(compiler, 0L, node, 0L) }
 }
@@ -1254,7 +1254,7 @@ fn emit_collection_index_address(
     let base_offset = if is_text_bytes { text_data_offset(compiler, collection_ty) } else { collection_element_base_offset(compiler, collection_ty) }
     if capacity < 0L || stride < 0L || base_offset < 0L { compiler.ir_overflow = true; return }
     var location = collection_value_location(tables, compiler, receiver)
-    if tables.nodes[receiver].kind == NodeKind.Field {
+    if tables.nodes[receiver].kind == NodeKind.Field || tables.nodes[receiver].kind == NodeKind.Index {
         let address_id = emit_late_place_address(tables, compiler, ir, receiver)
         location = compiler_location(compiler, 2L, address_id, 0L)
     }
@@ -1279,7 +1279,7 @@ fn emit_collection_index_address(
         ir_write_ascii(compiler, ir, "\n  %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
         emit_location_pointer_reference(compiler, ir, location, pointer_serial)
         ir_write_ascii(compiler, ir, ", i64 %coll.index.bytes."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
-    } else if is_aggregate_type(compiler, element) { () }
+    } else if is_aggregate_type(compiler, element) && !region_node_is_collection_method_receiver(tables, compiler, node) { () }
     else {
         ir_write_ascii(compiler, ir, "  %coll.index.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, index); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.index.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.index.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.index.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
     }
@@ -1584,6 +1584,56 @@ fn emit_collection_literal_element(
     let _ = address
 }
 
+// Fill an array of plain records: copy one finished record into every slot with a loop, so the
+// generated code does not grow with the array's capacity.
+fn emit_collection_fill_slots(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    serial: long,
+    destination: StorageLocation,
+    destination_pointer: long,
+    source: StorageLocation,
+    source_pointer: long,
+    base_offset: long,
+    slot_size: long,
+    capacity: long,
+) {
+    if capacity <= 0L { return }
+    ir_write_ascii(compiler, ir, "  br label %coll.slots.start."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, "\ncoll.slots.start."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ":\n  br label %coll.slots.cond."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, "\ncoll.slots.cond."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ":\n  %coll.slots.index."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = phi i64 [ 0, %coll.slots.start."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " ], [ %coll.slots.next."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", %coll.slots.body."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " ]\n  %coll.slots.more."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.slots.index."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity)
+    ir_write_ascii(compiler, ir, "\n  br i1 %coll.slots.more."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", label %coll.slots.body."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", label %coll.slots.done."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, "\ncoll.slots.body."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ":\n  %coll.slots.offset."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = mul i64 %coll.slots.index."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, slot_size)
+    ir_write_ascii(compiler, ir, "\n  %coll.slots.at."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = add i64 %coll.slots.offset."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset)
+    ir_write_ascii(compiler, ir, "\n  %coll.slots.dest."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
+    ir_write_ascii(compiler, ir, ", i64 %coll.slots.at."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, "\n  %coll.slots.copy."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.slots.dest."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, source, source_pointer)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, slot_size)
+    ir_write_ascii(compiler, ir, ")\n  %coll.slots.next."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = add i64 %coll.slots.index."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", 1\n  br label %coll.slots.cond."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, "\ncoll.slots.done."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ":\n")
+}
+
 fn emit_collection_fill_array(
     tables: ParseTables,
     compiler: write CompilerTables,
@@ -1606,9 +1656,7 @@ fn emit_collection_fill_array(
         let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[value_node].binding } else { value_node }
         let source = aggregate_source_location(compiler, source_kind, source_id)
         let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
-        for lane in 0L..capacity {
-            emit_collection_store_element_fields(compiler, ir, element, value_type_size(compiler, element), lane, -1L, base_offset, 0L, destination, source, destination_pointer, source_pointer)
-        }
+        emit_collection_fill_slots(compiler, ir, next_location_serial(ir), destination, destination_pointer, source, source_pointer, base_offset, value_type_size(compiler, element), capacity)
         return
     }
     let stride = value_type_size(compiler, element)
@@ -1654,10 +1702,7 @@ fn emit_collection_default_array_aggregate(
     emit_prepare_location_descriptor(compiler, ir, source, true, top_node)
     emit_location_descriptor_argument(compiler, ir, source, true, top_node)
     ir_write_ascii(compiler, ir, ", ptr null, i64 0)\n")
-    for lane in 0L..capacity {
-        emit_collection_store_element_fields(compiler, ir, element, value_type_size(compiler, element), lane, -1L,
-            base_offset, 0L, destination, source, destination_pointer, -1L)
-    }
+    emit_collection_fill_slots(compiler, ir, next_location_serial(ir), destination, destination_pointer, source, -1L, base_offset, value_type_size(compiler, element), capacity)
 }
 
 fn emit_collection_zero_storage(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, node: long, type_id: long, live_count: long) {
