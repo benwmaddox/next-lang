@@ -90,7 +90,7 @@ fn emit_aggregate_copy_to_place(
         let source_id = aggregate_source_id(tables, compiler, source_node)
         let source = aggregate_source_location(compiler, source_kind, source_id)
         let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
-        emit_collection_store_element_fields(compiler, ir, type_id, destination.copies, 0L,
+        emit_collection_store_element_fields(compiler, ir, type_id, destination.index_stride, 0L,
             destination.index_node, destination.byte_offset, 0L, base, source, destination_pointer, source_pointer)
     } else {
         let source_kind = aggregate_source_kind(tables, compiler, source_node)
@@ -262,7 +262,7 @@ recursive fn emit_late_place_address(
     if tables.nodes[node].kind == NodeKind.Index {
         let collection = compiler.child_first[node]
         let index_node = if collection >= 0L { compiler.child_next[collection] } else { -1L }
-        if collection >= 0L && index_node >= 0L && tables.nodes[collection].kind == NodeKind.Field {
+        if collection >= 0L && index_node >= 0L && (tables.nodes[collection].kind == NodeKind.Field || tables.nodes[collection].kind == NodeKind.Index) {
             let collection_address = emit_late_place_address(tables, compiler, ir, collection)
             let base = compiler_location(compiler, 2L, collection_address, 0L)
             let pointer = emit_location_pointer_materialization(compiler, ir, base)

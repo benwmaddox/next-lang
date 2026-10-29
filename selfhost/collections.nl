@@ -21,6 +21,12 @@ fn collection_text_leaf(kind: long) -> bool {
     kind == TYPE_KIND_BYTES || kind == TYPE_KIND_ASCII || kind == TYPE_KIND_TEXT
 }
 
+// A value copied, compared or printed through its type's helpers when it sits inside an element:
+// text, and a nested array or list (an inline value like any other).
+fn collection_helper_leaf(kind: long) -> bool {
+    collection_text_leaf(kind) || kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind)
+}
+
 fn collection_kind_is_list(kind: long) -> bool {
     kind == TYPE_KIND_LIST || kind == TYPE_KIND_QUEUE
 }
@@ -770,8 +776,16 @@ fn checked_layout_size_align(value: long, align: long) -> long {
     if remainder == 0L { value } else { checked_layout_size_add(value, align - remainder) }
 }
 
+// The size of `copies` values of a type stored one after another. Every value is one plain slot:
+// a struct is its fields in order, an array or list is its elements in order (a list after its
+// header of count, and for a queue head), so a group is just the slot size times the copies.
 recursive fn type_group_size(compiler: CompilerTables, type_id: long, copies: long) -> long {
     if type_id < 0L || copies < 0L { return -1L }
+    if copies != 1L {
+        let single = type_group_size(compiler, type_id, 1L)
+        if single < 0L { return single }
+        return checked_size_product(copies, single)
+    }
     let kind = type_kind(compiler, type_id)
     let record = type_record(compiler, type_id)
     if kind == TYPE_KIND_STRUCT {
@@ -779,7 +793,7 @@ recursive fn type_group_size(compiler: CompilerTables, type_id: long, copies: lo
         var alignment = 1L
         for field_offset in 0L..record.field_count {
             let field = compiler.struct_fields[record.field_start + field_offset]
-            let field_size = type_group_size(compiler, field.ty, copies)
+            let field_size = type_group_size(compiler, field.ty, 1L)
             let field_align = value_type_align(compiler, field.ty)
             if field_size < 0L { return field_size }
             if field_align < 0L { return -1L }
@@ -791,42 +805,34 @@ recursive fn type_group_size(compiler: CompilerTables, type_id: long, copies: lo
         }
         checked_layout_size_align(offset, alignment)
     } else if kind == TYPE_KIND_ARRAY {
-        let repeated = checked_size_product(copies, record.field_count)
-        if repeated < 0L { repeated } else { type_group_size(compiler, record.field_start, repeated) }
+        let element_size = type_group_size(compiler, record.field_start, 1L)
+        if element_size < 0L { element_size } else { checked_size_product(record.field_count, element_size) }
     } else if collection_kind_is_list(kind) {
-        let counts_size = checked_size_product(copies, if kind == TYPE_KIND_QUEUE { 16L } else { 8L })
-        let repeated = checked_size_product(copies, record.field_count)
+        let header_size = if kind == TYPE_KIND_QUEUE { 16L } else { 8L }
         let element_align = value_type_align(compiler, record.field_start)
-        let element_size = type_group_size(compiler, record.field_start, repeated)
-        if counts_size == -2L || repeated == -2L || element_size == -2L { -2L }
-        else if counts_size < 0L || repeated < 0L || element_align < 0L || element_size < 0L { -1L }
+        let element_size = type_group_size(compiler, record.field_start, 1L)
+        let payload_size = if element_size < 0L { element_size } else { checked_size_product(record.field_count, element_size) }
+        if payload_size == -2L || element_size == -2L { -2L }
+        else if element_align < 0L || element_size < 0L || payload_size < 0L { -1L }
         else {
-            let element_offset = checked_layout_size_align(counts_size, element_align)
+            let element_offset = checked_layout_size_align(header_size, element_align)
             if element_offset < 0L { return element_offset }
             let alignment = if element_align > 8L { element_align } else { 8L }
-            checked_layout_size_align(checked_layout_size_add(element_offset, element_size), alignment)
+            checked_layout_size_align(checked_layout_size_add(element_offset, payload_size), alignment)
         }
     } else {
         let size = value_type_size(compiler, type_id)
-        if size < 0L { -1L } else { checked_size_product(size, copies) }
+        if size < 0L { -1L } else { size }
     }
 }
 
+// Where a field sits inside its struct. `copies` is kept for the callers that still pass it; with
+// plain records it is always 1 and has no effect.
 fn collection_field_lane_offset(compiler: CompilerTables, struct_type: long, copies: long, wanted_field: long) -> long {
     if type_kind(compiler, struct_type) != TYPE_KIND_STRUCT || copies < 0L { return -1L }
     let record = type_record(compiler, struct_type)
     if wanted_field < 0L || wanted_field >= record.field_count { return -1L }
-    var offset = 0L
-    for field_offset in 0L..wanted_field {
-        let field = compiler.struct_fields[record.field_start + field_offset]
-        let field_align = value_type_align(compiler, field.ty)
-        let field_size = type_group_size(compiler, field.ty, copies)
-        if field_align < 0L || field_size < 0L { return -1L }
-        offset = size_align_saturated(offset, field_align)
-        offset = size_add_saturated(offset, field_size)
-    }
-    let target = compiler.struct_fields[record.field_start + wanted_field]
-    size_align_saturated(offset, value_type_align(compiler, target.ty))
+    compiler.struct_fields[record.field_start + wanted_field].offset
 }
 
 fn collection_element_base_offset(compiler: CompilerTables, type_id: long) -> long {
@@ -856,7 +862,7 @@ fn emit_collection_text_helper_call(
     right_name: Ascii max 32,
     right_serial: long,
 ) {
-    if !collection_text_leaf(type_kind(compiler, type_id)) || !has_type_helper(compiler, type_id, operation) {
+    if !collection_helper_leaf(type_kind(compiler, type_id)) || !has_type_helper(compiler, type_id, operation) {
         compiler.ir_overflow = true
         return
     }
@@ -920,7 +926,7 @@ recursive fn emit_collection_copy_element_fields(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     type_id: long,
-    copies: long,
+    slot_size: long,
     path_offset: long,
     row_offset: long,
     collection_type: long,
@@ -929,41 +935,18 @@ recursive fn emit_collection_copy_element_fields(
         let record = type_record(compiler, type_id)
         for field_number in 0L..record.field_count {
             let field = compiler.struct_fields[record.field_start + field_number]
-            let lane_offset = collection_field_lane_offset(compiler, type_id, copies, field_number)
+            let lane_offset = collection_field_lane_offset(compiler, type_id, 1L, field_number)
             if lane_offset < 0L { compiler.ir_overflow = true; return }
-            emit_collection_copy_element_fields(compiler, ir, field.ty, copies, path_offset + lane_offset,
+            emit_collection_copy_element_fields(compiler, ir, field.ty, slot_size, path_offset + lane_offset,
                 row_offset + field.offset, collection_type)
         }
-    } else if is_c_runtime_path_type(compiler, type_id) {
-        let element_type = collection_element_type(compiler, type_id)
-        let byte_size = value_type_size(compiler, element_type)
-        let payload_stride = checked_size_product(collection_capacity(compiler, type_id), byte_size)
-        if copies < 0L || byte_size < 0L || payload_stride < 0L { compiler.ir_overflow = true; return }
-        let source_count = emit_collection_dynamic_address(compiler, ir, "source", "nl.source", collection_type, path_offset, 8L)
-        let destination_count = emit_collection_dynamic_address(compiler, ir, "destination", "nl.dest", collection_type, path_offset, 8L)
-        let source_payload = emit_collection_dynamic_address(compiler, ir, "source", "nl.source", collection_type,
-            path_offset + copies * 8L, payload_stride)
-        let destination_payload = emit_collection_dynamic_address(compiler, ir, "destination", "nl.dest", collection_type,
-            path_offset + copies * 8L, payload_stride)
-        let serial = next_location_serial(ir)
-        ir_write_ascii(compiler, ir, "  %coll.copy.path.count."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = load i64, ptr %coll.ptr."); ir_write_number(compiler, ir, source_count); ir_write_ascii(compiler, ir, ", align 1\n  store i64 %coll.copy.path.count.")
-        ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.ptr."); ir_write_number(compiler, ir, destination_count); ir_write_ascii(compiler, ir, ", align 1\n")
-        ir_write_ascii(compiler, ir, "  %coll.copy.path.bytes."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = mul i64 %coll.copy.path.count."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, byte_size); ir_push_byte(compiler, ir, 10)
-        ir_write_ascii(compiler, ir, "  %coll.copy.path.payload."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.ptr."); ir_write_number(compiler, ir, destination_payload)
-        ir_write_ascii(compiler, ir, ", ptr %coll.ptr."); ir_write_number(compiler, ir, source_payload)
-        ir_write_ascii(compiler, ir, ", i64 %coll.copy.path.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ")\n")
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
-        compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
         let storage = collection_storage_type(type_id)
         if size < 0L { compiler.ir_overflow = true; return }
-        let source = emit_collection_dynamic_address(compiler, ir, "source", "nl.source", collection_type, path_offset, size)
-        let destination = emit_collection_dynamic_address(compiler, ir, "destination", "nl.dest", collection_type, path_offset, size)
-        if collection_text_leaf(type_kind(compiler, type_id)) {
+        let source = emit_collection_dynamic_address(compiler, ir, "source", "nl.source", collection_type, path_offset, slot_size)
+        let destination = emit_collection_dynamic_address(compiler, ir, "destination", "nl.dest", collection_type, path_offset, slot_size)
+        if collection_helper_leaf(type_kind(compiler, type_id)) {
             emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.ptr", destination, "coll.ptr", source)
         } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.copy.sum."); ir_write_number(compiler, ir, source)
@@ -985,7 +968,7 @@ recursive fn emit_collection_equal_element_fields(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     type_id: long,
-    copies: long,
+    slot_size: long,
     path_offset: long,
     collection_type: long,
 ) {
@@ -993,20 +976,18 @@ recursive fn emit_collection_equal_element_fields(
         let record = type_record(compiler, type_id)
         for field_number in 0L..record.field_count {
             let field = compiler.struct_fields[record.field_start + field_number]
-            let lane_offset = collection_field_lane_offset(compiler, type_id, copies, field_number)
+            let lane_offset = collection_field_lane_offset(compiler, type_id, 1L, field_number)
             if lane_offset < 0L { compiler.ir_overflow = true; return }
-            emit_collection_equal_element_fields(compiler, ir, field.ty, copies, path_offset + lane_offset, collection_type)
+            emit_collection_equal_element_fields(compiler, ir, field.ty, slot_size, path_offset + lane_offset, collection_type)
         }
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
-        compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
         let storage = collection_storage_type(type_id)
         if size < 0L { compiler.ir_overflow = true; return }
-        let left = emit_collection_dynamic_address(compiler, ir, "left", "nl.left", collection_type, path_offset, size)
-        let right = emit_collection_dynamic_address(compiler, ir, "right", "nl.right", collection_type, path_offset, size)
+        let left = emit_collection_dynamic_address(compiler, ir, "left", "nl.left", collection_type, path_offset, slot_size)
+        let right = emit_collection_dynamic_address(compiler, ir, "right", "nl.right", collection_type, path_offset, slot_size)
         let serial = next_location_serial(ir)
-        if collection_text_leaf(type_kind(compiler, type_id)) {
+        if collection_helper_leaf(type_kind(compiler, type_id)) {
             emit_collection_text_helper_call(compiler, ir, type_id, HELPER_EQUAL, "coll.eq.text", serial, "coll.ptr", left, "coll.ptr", right)
             ir_write_ascii(compiler, ir, "  br i1 %coll.eq.text."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", label %coll.eq.field.ok."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", label %coll.eq.false."); ir_write_number(compiler, ir, collection_type); ir_push_byte(compiler, ir, 10)
             ir_write_ascii(compiler, ir, "coll.eq.field.ok."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ":\n")
@@ -1023,7 +1004,7 @@ recursive fn emit_collection_gather_element_fields(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     type_id: long,
-    copies: long,
+    slot_size: long,
     path_offset: long,
     row_offset: long,
     collection_type: long,
@@ -1032,21 +1013,19 @@ recursive fn emit_collection_gather_element_fields(
         let record = type_record(compiler, type_id)
         for field_number in 0L..record.field_count {
             let field = compiler.struct_fields[record.field_start + field_number]
-            let lane_offset = collection_field_lane_offset(compiler, type_id, copies, field_number)
+            let lane_offset = collection_field_lane_offset(compiler, type_id, 1L, field_number)
             if lane_offset < 0L { compiler.ir_overflow = true; return }
-            emit_collection_gather_element_fields(compiler, ir, field.ty, copies, path_offset + lane_offset,
+            emit_collection_gather_element_fields(compiler, ir, field.ty, slot_size, path_offset + lane_offset,
                 row_offset + field.offset, collection_type)
         }
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
-        compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
         let storage = collection_storage_type(type_id)
         if size < 0L { compiler.ir_overflow = true; return }
-        let source = emit_collection_dynamic_address(compiler, ir, "value", "nl.value", collection_type, path_offset, size)
+        let source = emit_collection_dynamic_address(compiler, ir, "value", "nl.value", collection_type, path_offset, slot_size)
         let serial = next_location_serial(ir)
         ir_write_ascii(compiler, ir, "  %coll.row.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %coll.print.element."); ir_write_number(compiler, ir, collection_type); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, row_offset); ir_push_byte(compiler, ir, 10)
-        if collection_text_leaf(type_kind(compiler, type_id)) {
+        if collection_helper_leaf(type_kind(compiler, type_id)) {
             emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.row.ptr", serial, "coll.ptr", source)
         } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.row.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.row.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.ptr."); ir_write_number(compiler, ir, source); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
@@ -1119,7 +1098,7 @@ fn emit_collection_copy_helpers(compiler: write CompilerTables, ir: grow Bytes m
         ir_write_ascii(compiler, ir, "\ncoll.copy.body."); ir_write_number(compiler, ir, type_id)
         ir_write_ascii(compiler, ir, ":\n")
         if is_aggregate_type(compiler, element) {
-            emit_collection_copy_element_fields(compiler, ir, element, capacity, base_offset, 0L, type_id)
+            emit_collection_copy_element_fields(compiler, ir, element, value_type_size(compiler, element), base_offset, 0L, type_id)
         } else {
             let stride = value_type_size(compiler, element)
             let storage = collection_storage_type(element)
@@ -1159,7 +1138,7 @@ fn emit_collection_equal_helpers(compiler: write CompilerTables, ir: grow Bytes 
         if collection_kind_is_list(collection_kind) { ir_write_ascii(compiler, ir, "%coll.eq.left.count."); ir_write_number(compiler, ir, type_id) }
         else { ir_write_number(compiler, ir, capacity) }
         ir_write_ascii(compiler, ir, "\n  br i1 %coll.more."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %coll.eq.body."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %coll.eq.true."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, "\ncoll.eq.body."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n")
-        if is_aggregate_type(compiler, element) { emit_collection_equal_element_fields(compiler, ir, element, capacity, base_offset, type_id) }
+        if is_aggregate_type(compiler, element) { emit_collection_equal_element_fields(compiler, ir, element, value_type_size(compiler, element), base_offset, type_id) }
         else {
             let stride = value_type_size(compiler, element)
             let storage = collection_storage_type(element)
@@ -1229,7 +1208,7 @@ fn emit_collection_print_helpers(compiler: write CompilerTables, ir: grow Bytes 
         emit_collection_print_text(compiler, ir, "separator", 2L)
         ir_write_ascii(compiler, ir, "  br label %coll.print.item."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, "\ncoll.print.item."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n")
         if is_aggregate_type(compiler, element) {
-            emit_collection_gather_element_fields(compiler, ir, element, capacity, base_offset, 0L, type_id)
+            emit_collection_gather_element_fields(compiler, ir, element, value_type_size(compiler, element), base_offset, 0L, type_id)
             ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_symbol(compiler, ir, element, HELPER_PRINT); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr %coll.print.element."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ")\n")
         } else {
             let address = emit_collection_dynamic_address(compiler, ir, "value", "nl.value", type_id, base_offset, stride)
@@ -1250,7 +1229,7 @@ fn collection_value_location(tables: ParseTables, compiler: CompilerTables, node
         if binding >= 0L && compiler.bindings[binding].parameter {
             compiler_location(compiler, 3L, binding, 0L)
         } else { compiler_location(compiler, 1L, binding, 0L) }
-    } else if tables.nodes[node].kind == NodeKind.Field {
+    } else if tables.nodes[node].kind == NodeKind.Field || (tables.nodes[node].kind == NodeKind.Index && region_node_is_collection_method_receiver(tables, compiler, node)) {
         compiler_location(compiler, 2L, node, 0L)
     } else { compiler_location(compiler, 0L, node, 0L) }
 }
@@ -1275,7 +1254,7 @@ fn emit_collection_index_address(
     let base_offset = if is_text_bytes { text_data_offset(compiler, collection_ty) } else { collection_element_base_offset(compiler, collection_ty) }
     if capacity < 0L || stride < 0L || base_offset < 0L { compiler.ir_overflow = true; return }
     var location = collection_value_location(tables, compiler, receiver)
-    if tables.nodes[receiver].kind == NodeKind.Field {
+    if tables.nodes[receiver].kind == NodeKind.Field || tables.nodes[receiver].kind == NodeKind.Index {
         let address_id = emit_late_place_address(tables, compiler, ir, receiver)
         location = compiler_location(compiler, 2L, address_id, 0L)
     }
@@ -1300,7 +1279,7 @@ fn emit_collection_index_address(
         ir_write_ascii(compiler, ir, "\n  %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
         emit_location_pointer_reference(compiler, ir, location, pointer_serial)
         ir_write_ascii(compiler, ir, ", i64 %coll.index.bytes."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
-    } else if is_aggregate_type(compiler, element) { () }
+    } else if is_aggregate_type(compiler, element) && !region_node_is_collection_method_receiver(tables, compiler, node) { () }
     else {
         ir_write_ascii(compiler, ir, "  %coll.index.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, index); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.index.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.index.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.index.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
     }
@@ -1310,7 +1289,7 @@ recursive fn emit_collection_store_element_fields(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     type_id: long,
-    copies: long,
+    slot_size: long,
     lane: long,
     lane_node: long,
     destination_offset: long,
@@ -1324,14 +1303,12 @@ recursive fn emit_collection_store_element_fields(
         let record = type_record(compiler, type_id)
         for field_number in 0L..record.field_count {
             let field = compiler.struct_fields[record.field_start + field_number]
-            let lane_offset = collection_field_lane_offset(compiler, type_id, copies, field_number)
+            let lane_offset = collection_field_lane_offset(compiler, type_id, 1L, field_number)
             if lane_offset < 0L { compiler.ir_overflow = true; return }
-            emit_collection_store_element_fields(compiler, ir, field.ty, copies, lane,
+            emit_collection_store_element_fields(compiler, ir, field.ty, slot_size, lane,
                 lane_node, destination_offset + lane_offset, source_offset + field.offset,
                 destination_location, source_location, destination_pointer, source_pointer)
         }
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
-        compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
         let storage = collection_storage_type(type_id)
@@ -1340,7 +1317,7 @@ recursive fn emit_collection_store_element_fields(
         var dynamic_offset = -1L
         if lane_node != -1L {
             let lane_bytes = next_location_serial(ir)
-            ir_write_ascii(compiler, ir, "  %coll.literal.lane.bytes."); ir_write_number(compiler, ir, lane_bytes); ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_index(compiler, ir, lane_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, size); ir_push_byte(compiler, ir, 10)
+            ir_write_ascii(compiler, ir, "  %coll.literal.lane.bytes."); ir_write_number(compiler, ir, lane_bytes); ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_index(compiler, ir, lane_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, slot_size); ir_push_byte(compiler, ir, 10)
             ir_write_ascii(compiler, ir, "  %coll.literal.dynamic.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, destination_offset); ir_write_ascii(compiler, ir, ", %coll.literal.lane.bytes."); ir_write_number(compiler, ir, lane_bytes); ir_push_byte(compiler, ir, 10)
             dynamic_offset = serial
         }
@@ -1348,12 +1325,12 @@ recursive fn emit_collection_store_element_fields(
         emit_location_pointer_reference(compiler, ir, destination_location, destination_pointer)
         ir_write_ascii(compiler, ir, ", i64 ")
         if dynamic_offset >= 0L { ir_write_ascii(compiler, ir, "%coll.literal.dynamic.offset."); ir_write_number(compiler, ir, dynamic_offset) }
-        else { ir_write_number(compiler, ir, destination_offset + lane * size) }
+        else { ir_write_number(compiler, ir, destination_offset + lane * slot_size) }
         ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.literal.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
         emit_location_pointer_reference(compiler, ir, source_location, source_pointer)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, source_offset); ir_push_byte(compiler, ir, 10)
-        if collection_text_leaf(type_kind(compiler, type_id)) {
+        if collection_helper_leaf(type_kind(compiler, type_id)) {
             emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.literal.dest", serial, "coll.literal.src", serial)
         } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.literal.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.literal.dest."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.literal.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
@@ -1384,7 +1361,7 @@ recursive fn emit_collection_store_dynamic_fields(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     type_id: long,
-    copies: long,
+    slot_size: long,
     path_offset: long,
     row_offset: long,
     destination_location: StorageLocation,
@@ -1398,24 +1375,22 @@ recursive fn emit_collection_store_dynamic_fields(
         let record = type_record(compiler, type_id)
         for field_number in 0L..record.field_count {
             let field = compiler.struct_fields[record.field_start + field_number]
-            let lane_offset = collection_field_lane_offset(compiler, type_id, copies, field_number)
+            let lane_offset = collection_field_lane_offset(compiler, type_id, 1L, field_number)
             if lane_offset < 0L { compiler.ir_overflow = true; return }
-            emit_collection_store_dynamic_fields(compiler, ir, field.ty, copies, path_offset + lane_offset,
+            emit_collection_store_dynamic_fields(compiler, ir, field.ty, slot_size, path_offset + lane_offset,
                 row_offset + field.offset, destination_location, destination_pointer, source_location,
                 source_pointer, lane_kind, lane_node)
         }
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
-        compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
         let storage = collection_storage_type(type_id)
         let serial = next_location_serial(ir)
         if size < 0L { compiler.ir_overflow = true; return }
-        ir_write_ascii(compiler, ir, "  %coll.dynamic.lane.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_value(compiler, ir, lane_kind, lane_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, size); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %coll.dynamic.lane.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_value(compiler, ir, lane_kind, lane_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, slot_size); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.dynamic.lane.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, path_offset); ir_write_ascii(compiler, ir, ", %coll.dynamic.lane.bytes."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.dynamic.lane.dest."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination_location, destination_pointer); ir_write_ascii(compiler, ir, ", i64 %coll.dynamic.lane.offset."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.dynamic.lane.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, source_location, source_pointer); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, row_offset); ir_push_byte(compiler, ir, 10)
-        if collection_text_leaf(type_kind(compiler, type_id)) {
+        if collection_helper_leaf(type_kind(compiler, type_id)) {
             emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.dynamic.lane.dest", serial, "coll.dynamic.lane.src", serial)
         } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.dynamic.lane.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.dynamic.lane.dest."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.dynamic.lane.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
@@ -1429,7 +1404,7 @@ recursive fn emit_collection_move_dynamic_fields(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     type_id: long,
-    copies: long,
+    slot_size: long,
     path_offset: long,
     location: StorageLocation,
     pointer_serial: long,
@@ -1442,25 +1417,23 @@ recursive fn emit_collection_move_dynamic_fields(
         let record = type_record(compiler, type_id)
         for field_number in 0L..record.field_count {
             let field = compiler.struct_fields[record.field_start + field_number]
-            let lane_offset = collection_field_lane_offset(compiler, type_id, copies, field_number)
+            let lane_offset = collection_field_lane_offset(compiler, type_id, 1L, field_number)
             if lane_offset < 0L { compiler.ir_overflow = true; return }
-            emit_collection_move_dynamic_fields(compiler, ir, field.ty, copies, path_offset + lane_offset,
+            emit_collection_move_dynamic_fields(compiler, ir, field.ty, slot_size, path_offset + lane_offset,
                 location, pointer_serial, source_lane_kind, source_lane_node, destination_lane_kind, destination_lane_node)
         }
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
-        compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
         let storage = collection_storage_type(type_id)
         let serial = next_location_serial(ir)
         if size < 0L { compiler.ir_overflow = true; return }
-        ir_write_ascii(compiler, ir, "  %coll.move.src.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_value(compiler, ir, source_lane_kind, source_lane_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, size); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %coll.move.src.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_value(compiler, ir, source_lane_kind, source_lane_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, slot_size); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.move.src.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, path_offset); ir_write_ascii(compiler, ir, ", %coll.move.src.bytes."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
-        ir_write_ascii(compiler, ir, "  %coll.move.dst.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_value(compiler, ir, destination_lane_kind, destination_lane_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, size); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %coll.move.dst.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_value(compiler, ir, destination_lane_kind, destination_lane_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, slot_size); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.move.dst.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, path_offset); ir_write_ascii(compiler, ir, ", %coll.move.dst.bytes."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.move.src.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.move.src.offset."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.move.dst.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.move.dst.offset."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
-        if collection_text_leaf(type_kind(compiler, type_id)) {
+        if collection_helper_leaf(type_kind(compiler, type_id)) {
             emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.move.dst.ptr", serial, "coll.move.src.ptr", serial)
         } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.move.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.move.dst.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.move.src.ptr."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
@@ -1474,7 +1447,7 @@ recursive fn emit_collection_gather_dynamic_fields(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     type_id: long,
-    copies: long,
+    slot_size: long,
     path_offset: long,
     row_offset: long,
     source_location: StorageLocation,
@@ -1488,68 +1461,22 @@ recursive fn emit_collection_gather_dynamic_fields(
         let record = type_record(compiler, type_id)
         for field_number in 0L..record.field_count {
             let field = compiler.struct_fields[record.field_start + field_number]
-            let lane_offset = collection_field_lane_offset(compiler, type_id, copies, field_number)
+            let lane_offset = collection_field_lane_offset(compiler, type_id, 1L, field_number)
             if lane_offset < 0L { compiler.ir_overflow = true; return }
-            emit_collection_gather_dynamic_fields(compiler, ir, field.ty, copies, path_offset + lane_offset,
+            emit_collection_gather_dynamic_fields(compiler, ir, field.ty, slot_size, path_offset + lane_offset,
                 row_offset + field.offset, source_location, source_pointer, source_lane_kind, source_lane_node,
                 destination_location, destination_pointer)
         }
-    } else if is_c_runtime_path_type(compiler, type_id) {
-        let element_type = collection_element_type(compiler, type_id)
-        let byte_size = value_type_size(compiler, element_type)
-        let payload_stride = checked_size_product(collection_capacity(compiler, type_id), byte_size)
-        let destination_data_offset = collection_element_base_offset(compiler, type_id)
-        if copies < 0L || byte_size < 0L || payload_stride < 0L || destination_data_offset < 0L {
-            compiler.ir_overflow = true
-            return
-        }
-        let serial = next_location_serial(ir)
-        ir_write_ascii(compiler, ir, "  %coll.gather.path.count.index."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_value(compiler, ir, source_lane_kind, source_lane_node)
-        ir_write_ascii(compiler, ir, ", 8\n  %coll.gather.path.count.offset."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, path_offset)
-        ir_write_ascii(compiler, ir, ", %coll.gather.path.count.index."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, "\n  %coll.gather.path.count.src."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, source_location, source_pointer)
-        ir_write_ascii(compiler, ir, ", i64 %coll.gather.path.count.offset."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, "\n  %coll.gather.path.count."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = load i64, ptr %coll.gather.path.count.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", align 1\n")
-        ir_write_ascii(compiler, ir, "  %coll.gather.path.count.dst."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination_location, destination_pointer)
-        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, row_offset); ir_push_byte(compiler, ir, 10)
-        ir_write_ascii(compiler, ir, "  store i64 %coll.gather.path.count."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, ", ptr %coll.gather.path.count.dst."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", align 1\n")
-        ir_write_ascii(compiler, ir, "  %coll.gather.path.payload.index."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_value(compiler, ir, source_lane_kind, source_lane_node)
-        ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, payload_stride)
-        ir_write_ascii(compiler, ir, "\n  %coll.gather.path.payload.offset."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, path_offset + copies * 8L)
-        ir_write_ascii(compiler, ir, ", %coll.gather.path.payload.index."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, "\n  %coll.gather.path.payload.src."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, source_location, source_pointer)
-        ir_write_ascii(compiler, ir, ", i64 %coll.gather.path.payload.offset."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, "\n  %coll.gather.path.payload.dst."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination_location, destination_pointer)
-        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, row_offset + destination_data_offset); ir_push_byte(compiler, ir, 10)
-        ir_write_ascii(compiler, ir, "  %coll.gather.path.bytes."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = mul i64 %coll.gather.path.count."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, byte_size); ir_push_byte(compiler, ir, 10)
-        ir_write_ascii(compiler, ir, "  %coll.gather.path.copy."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.gather.path.payload.dst."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, ", ptr %coll.gather.path.payload.src."); ir_write_number(compiler, ir, serial)
-        ir_write_ascii(compiler, ir, ", i64 %coll.gather.path.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ")\n")
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
-        compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
         let storage = collection_storage_type(type_id)
         let serial = next_location_serial(ir)
         if size < 0L { compiler.ir_overflow = true; return }
-        ir_write_ascii(compiler, ir, "  %coll.gather.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_value(compiler, ir, source_lane_kind, source_lane_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, size); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %coll.gather.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = mul i64 "); emit_collection_lane_value(compiler, ir, source_lane_kind, source_lane_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, slot_size); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.gather.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, path_offset); ir_write_ascii(compiler, ir, ", %coll.gather.bytes."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.gather.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, source_location, source_pointer); ir_write_ascii(compiler, ir, ", i64 %coll.gather.offset."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.gather.dst."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination_location, destination_pointer); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, row_offset); ir_push_byte(compiler, ir, 10)
-        if collection_text_leaf(type_kind(compiler, type_id)) {
+        if collection_helper_leaf(type_kind(compiler, type_id)) {
             emit_collection_text_helper_call(compiler, ir, type_id, HELPER_COPY, "", 0L, "coll.gather.dst", serial, "coll.gather.src", serial)
         } else if is_sum_type(compiler, type_id) {
             ir_write_ascii(compiler, ir, "  %coll.gather.sum."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.gather.dst."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %coll.gather.src."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
@@ -1584,7 +1511,7 @@ fn emit_collection_gather_view_value(
         compiler.ir_overflow = true
         return
     }
-    emit_collection_gather_dynamic_fields(compiler, ir, element_type, capacity, base_offset, 0L,
+    emit_collection_gather_dynamic_fields(compiler, ir, element_type, value_type_size(compiler, element_type), base_offset, 0L,
         source, source_pointer, 7L, loop_node, destination, destination_pointer)
 }
 
@@ -1612,7 +1539,7 @@ fn emit_collection_gather_index_value(
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
     let destination = aggregate_destination_location(compiler, 0L, node)
     let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
-    emit_collection_gather_dynamic_fields(compiler, ir, element_type, capacity, base_offset, 0L,
+    emit_collection_gather_dynamic_fields(compiler, ir, element_type, value_type_size(compiler, element_type), base_offset, 0L,
         source, source_pointer, 2L, index_node, destination, destination_pointer)
 }
 
@@ -1638,7 +1565,7 @@ fn emit_collection_literal_element(
         let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
         let path_offset = collection_element_base_offset(compiler, type_id)
         if copies < 0L || path_offset < 0L { compiler.ir_overflow = true; return }
-        emit_collection_store_element_fields(compiler, ir, element, copies, lane, -1L, path_offset, 0L, destination, source, destination_pointer, source_pointer)
+        emit_collection_store_element_fields(compiler, ir, element, value_type_size(compiler, element), lane, -1L, path_offset, 0L, destination, source, destination_pointer, source_pointer)
         return
     }
     let stride = value_type_size(compiler, element)
@@ -1655,6 +1582,56 @@ fn emit_collection_literal_element(
         ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(element)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_node); ir_write_ascii(compiler, ir, ", ptr %coll.literal.addr."); ir_write_number(compiler, ir, collection_node); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, lane); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
     }
     let _ = address
+}
+
+// Fill an array of plain records: copy one finished record into every slot with a loop, so the
+// generated code does not grow with the array's capacity.
+fn emit_collection_fill_slots(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    serial: long,
+    destination: StorageLocation,
+    destination_pointer: long,
+    source: StorageLocation,
+    source_pointer: long,
+    base_offset: long,
+    slot_size: long,
+    capacity: long,
+) {
+    if capacity <= 0L { return }
+    ir_write_ascii(compiler, ir, "  br label %coll.slots.start."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, "\ncoll.slots.start."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ":\n  br label %coll.slots.cond."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, "\ncoll.slots.cond."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ":\n  %coll.slots.index."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = phi i64 [ 0, %coll.slots.start."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " ], [ %coll.slots.next."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", %coll.slots.body."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " ]\n  %coll.slots.more."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.slots.index."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity)
+    ir_write_ascii(compiler, ir, "\n  br i1 %coll.slots.more."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", label %coll.slots.body."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", label %coll.slots.done."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, "\ncoll.slots.body."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ":\n  %coll.slots.offset."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = mul i64 %coll.slots.index."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, slot_size)
+    ir_write_ascii(compiler, ir, "\n  %coll.slots.at."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = add i64 %coll.slots.offset."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset)
+    ir_write_ascii(compiler, ir, "\n  %coll.slots.dest."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
+    ir_write_ascii(compiler, ir, ", i64 %coll.slots.at."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, "\n  %coll.slots.copy."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.slots.dest."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, source, source_pointer)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, slot_size)
+    ir_write_ascii(compiler, ir, ")\n  %coll.slots.next."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, " = add i64 %coll.slots.index."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ", 1\n  br label %coll.slots.cond."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, "\ncoll.slots.done."); ir_write_number(compiler, ir, serial)
+    ir_write_ascii(compiler, ir, ":\n")
 }
 
 fn emit_collection_fill_array(
@@ -1679,9 +1656,7 @@ fn emit_collection_fill_array(
         let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[value_node].binding } else { value_node }
         let source = aggregate_source_location(compiler, source_kind, source_id)
         let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
-        for lane in 0L..capacity {
-            emit_collection_store_element_fields(compiler, ir, element, capacity, lane, -1L, base_offset, 0L, destination, source, destination_pointer, source_pointer)
-        }
+        emit_collection_fill_slots(compiler, ir, next_location_serial(ir), destination, destination_pointer, source, source_pointer, base_offset, value_type_size(compiler, element), capacity)
         return
     }
     let stride = value_type_size(compiler, element)
@@ -1727,10 +1702,7 @@ fn emit_collection_default_array_aggregate(
     emit_prepare_location_descriptor(compiler, ir, source, true, top_node)
     emit_location_descriptor_argument(compiler, ir, source, true, top_node)
     ir_write_ascii(compiler, ir, ", ptr null, i64 0)\n")
-    for lane in 0L..capacity {
-        emit_collection_store_element_fields(compiler, ir, element, capacity, lane, -1L,
-            base_offset, 0L, destination, source, destination_pointer, -1L)
-    }
+    emit_collection_fill_slots(compiler, ir, next_location_serial(ir), destination, destination_pointer, source, -1L, base_offset, value_type_size(compiler, element), capacity)
 }
 
 fn emit_collection_zero_storage(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, node: long, type_id: long, live_count: long) {
@@ -1852,7 +1824,7 @@ fn emit_collection_method(
             let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[value_argument].binding } else { value_argument }
             let source_location = aggregate_source_location(compiler, source_kind, source_id)
             let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
-            emit_collection_store_dynamic_fields(compiler, ir, element, capacity, base_offset, 0L,
+            emit_collection_store_dynamic_fields(compiler, ir, element, stride, base_offset, 0L,
                 location, pointer_serial, source_location, source_pointer, 1L, node)
         } else if element == TY_BOOL {
             ir_write_ascii(compiler, ir, "  %coll.push.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i8\n  store i8 %coll.push.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %coll.push.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
@@ -1875,7 +1847,7 @@ fn emit_collection_method(
         ir_write_ascii(compiler, ir, "  %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1\n  %coll.insert.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", 0\n  %coll.insert.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ugt i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %coll.insert.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = or i1 %coll.insert.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.insert.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  br i1 %coll.insert.invalid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.valid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_fail", "nlc_fail"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 16, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncoll.insert.valid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity); ir_write_ascii(compiler, ir, "\n  br i1 %coll.insert.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.full."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = phi i64 [ %coll.insert.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.insert.valid."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ], [ %coll.insert.prev."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.insert.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ]\n  %coll.insert.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ugt i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, "\n  br i1 %coll.insert.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.insert.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.from."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sub i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  %coll.insert.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.insert.from."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.insert.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.insert.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.insert.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.insert.to.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.insert.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.insert.from.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.insert.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %coll.insert.to.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.insert.to.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         let storage = collection_storage_type(element)
         if is_aggregate_type(compiler, element) {
-            emit_collection_move_dynamic_fields(compiler, ir, element, capacity, base_offset,
+            emit_collection_move_dynamic_fields(compiler, ir, element, stride, base_offset,
                 location, pointer_serial, 3L, node, 4L, node)
         } else {
             ir_write_ascii(compiler, ir, "  %coll.insert.moved."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, ", ptr %coll.insert.from.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n  store "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, " %coll.insert.moved."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %coll.insert.to.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
@@ -1888,7 +1860,7 @@ fn emit_collection_method(
             let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[value_argument].binding } else { value_argument }
             let source_location = aggregate_source_location(compiler, source_kind, source_id)
             let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
-            emit_collection_store_dynamic_fields(compiler, ir, element, capacity, base_offset, 0L,
+            emit_collection_store_dynamic_fields(compiler, ir, element, stride, base_offset, 0L,
                 location, pointer_serial, source_location, source_pointer, 2L, argument)
         } else if element == TY_BOOL { ir_write_ascii(compiler, ir, "  %coll.insert.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i1 "); ir_write_value_ref(compiler, ir, value_argument); ir_write_ascii(compiler, ir, " to i8\n  store i8 %coll.insert.bool."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %coll.insert.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10) }
         else { ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(element)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, value_argument); ir_write_ascii(compiler, ir, ", ptr %coll.insert.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10) }
@@ -1907,7 +1879,7 @@ fn emit_collection_method(
         let destination = aggregate_destination_location(compiler, 0L, node)
         let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
         if is_aggregate_type(compiler, element) {
-            emit_collection_gather_dynamic_fields(compiler, ir, element, capacity, base_offset, payload.offset,
+            emit_collection_gather_dynamic_fields(compiler, ir, element, stride, base_offset, payload.offset,
                 location, pointer_serial, 8L, node, destination, destination_pointer)
         } else {
             let storage = collection_storage_type(element)
@@ -1932,7 +1904,7 @@ fn emit_collection_method(
         if is_aggregate_type(compiler, element) {
             let result_location = aggregate_destination_location(compiler, 0L, node)
             let result_pointer = emit_location_pointer_materialization(compiler, ir, result_location)
-            emit_collection_gather_dynamic_fields(compiler, ir, element, capacity, base_offset, 0L,
+            emit_collection_gather_dynamic_fields(compiler, ir, element, stride, base_offset, 0L,
                 location, pointer_serial, 2L, argument, result_location, result_pointer)
         } else {
             emit_collection_method_index_address(compiler, ir, node, location, pointer_serial, argument, base_offset, stride)
@@ -1941,7 +1913,7 @@ fn emit_collection_method(
         }
         ir_write_ascii(compiler, ir, "  br label %coll.remove.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.remove.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.remove.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = phi i64 [ "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", %coll.remove.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ], [ %coll.remove.next."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.remove.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " ]\n  %coll.remove.source.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.remove.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  %coll.remove.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.remove.source.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %coll.remove.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  br i1 %coll.remove.more."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.remove.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.remove.finish."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.remove.shift.body."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.remove.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.remove.source.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.remove.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.remove.from.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.remove.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.remove.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.remove.to.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.remove.to.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.remove.from.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.remove.from.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %coll.remove.to.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.remove.to.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         if is_aggregate_type(compiler, element) {
-            emit_collection_move_dynamic_fields(compiler, ir, element, capacity, base_offset,
+            emit_collection_move_dynamic_fields(compiler, ir, element, stride, base_offset,
                 location, pointer_serial, 5L, node, 6L, node)
         } else {
             let storage = collection_storage_type(element)

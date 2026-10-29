@@ -166,7 +166,7 @@ fn mark_struct_helpers(
                     let element = type_record(compiler, child_ty)
                     for field_offset in 0L..element.field_count {
                         let field_ty = compiler.struct_fields[element.field_start + field_offset].ty
-                        if collection_text_leaf(type_kind(compiler, field_ty)) {
+                        if collection_helper_leaf(type_kind(compiler, field_ty)) {
                             // Collection operations can copy, compare, or
                             // print a direct text leaf even when no whole-
                             // collection helper is otherwise requested.
@@ -176,7 +176,7 @@ fn mark_struct_helpers(
                         }
                     }
                 }
-                if collection_text_leaf(type_kind(compiler, child_ty)) {
+                if collection_helper_leaf(type_kind(compiler, child_ty)) {
                     register_type_helper(compiler, child_ty, HELPER_COPY)
                     register_type_helper(compiler, child_ty, HELPER_EQUAL)
                     register_type_helper(compiler, child_ty, HELPER_PRINT)
@@ -1449,7 +1449,6 @@ fn compile_selfhost_package(
     check_struct_defaults(env, source, files, tokens, tables, config, compiler)
     check_package_bodies(env, source, files, tokens, tables, config, compiler)
     check_deferred_large_value_gate(env, source, files, tokens, tables, compiler)
-    check_nested_collections_eligibility(env, source, files, tokens, tables, compiler)
     add_default_call_graph_edges(tables, compiler)
     check_call_cycles(env, source, files, tokens, tables, compiler)
     check_native_frame_budget(env, source, files, tokens, tables, compiler, entry, want_test_build)

@@ -841,7 +841,7 @@ fn emit_optional_call_invoke(
                 let argument_type = compiler.facts[argument].ty
                 prepare_text_parameter_descriptor(compiler, ir, argument_type, argument_location, argument)
             } else {
-                emit_prepare_location_descriptor(compiler, ir, argument_location, true, argument)
+                emit_prepare_location_descriptor(compiler, ir, argument_location, descriptor_geometry(compiler, parameter.ty), argument)
             }
         }
         argument = compiler.child_next[argument]
@@ -884,7 +884,8 @@ fn emit_optional_call_invoke(
                     let argument_type = compiler.facts[argument].ty
                     emit_text_parameter_descriptor(compiler, ir, argument_type, argument_location, argument)
                 } else {
-                    emit_location_descriptor_argument(compiler, ir, argument_location, true, argument)
+                    emit_location_descriptor_argument(compiler, ir, argument_location, descriptor_geometry(compiler, parameter.ty), argument)
+                    emit_plain_geometry_tail(compiler, ir, parameter.ty)
                 }
             } else {
                 ir_write_ascii(compiler, ir, llvm_type_name(parameter.ty)); ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, argument)
@@ -1233,7 +1234,7 @@ recursive fn emit_expr_linear(
                 emit_collection_index_address(files, tables, compiler, ir, current, file_index)
                 let ty = compiler.facts[current].ty
                 if is_aggregate_type(compiler, ty) {
-                    if !collection_index_has_field_projection(tables, compiler, current) {
+                    if !collection_index_has_field_projection(tables, compiler, current) && !region_node_is_collection_method_receiver(tables, compiler, current) {
                         emit_collection_gather_index_value(tables, compiler, ir, current)
                     }
                 }
@@ -1674,7 +1675,7 @@ recursive fn emit_expr_linear(
                             if parameter.ty != TY_UNIT {
                                 if (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
                                     let location = place_storage_location(tables, compiler, prepared_argument)
-                                    let geometry = is_aggregate_type(compiler, parameter.ty)
+                                    let geometry = descriptor_geometry(compiler, parameter.ty)
                                     emit_prepare_location_descriptor(compiler, ir, location, geometry, prepared_argument)
                                 } else if is_aggregate_type(compiler, parameter.ty) {
                                     if parameter_uses_text_read_view(compiler, parameter) {
@@ -1689,7 +1690,7 @@ recursive fn emit_expr_linear(
                                         } else {
                                             direct_call_argument_source_location(tables, compiler, prepared_argument)
                                         }
-                                        emit_prepare_location_descriptor(compiler, ir, location, true, prepared_argument)
+                                        emit_prepare_location_descriptor(compiler, ir, location, descriptor_geometry(compiler, parameter.ty), prepared_argument)
                                     }
                                 } else { () }
                             }
@@ -1728,7 +1729,8 @@ recursive fn emit_expr_linear(
                         if param_ty != TY_UNIT {
                             if wrote_argument { ir_write_ascii(compiler, ir, ", ") }
                             if (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
-                                emit_location_descriptor_argument(compiler, ir, place_storage_location(tables, compiler, arg), is_aggregate_type(compiler, param_ty), arg)
+                                emit_location_descriptor_argument(compiler, ir, place_storage_location(tables, compiler, arg), descriptor_geometry(compiler, param_ty), arg)
+                                emit_plain_geometry_tail(compiler, ir, param_ty)
                             } else if is_aggregate_type(compiler, param_ty) {
                                 if parameter_uses_text_read_view(compiler, parameter) {
                                     let use_snapshot = direct_call_text_view_needs_snapshot(tables, compiler, current, arg)
@@ -1739,7 +1741,8 @@ recursive fn emit_expr_linear(
                                     } else {
                                         direct_call_argument_source_location(tables, compiler, arg)
                                     }
-                                    emit_location_descriptor_argument(compiler, ir, location, true, arg)
+                                    emit_location_descriptor_argument(compiler, ir, location, descriptor_geometry(compiler, param_ty), arg)
+                                    emit_plain_geometry_tail(compiler, ir, param_ty)
                                 }
                             } else {
                                 ir_write_ascii(compiler, ir, llvm_type_name(param_ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, arg)

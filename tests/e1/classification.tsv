@@ -266,8 +266,8 @@ unsupported	tests/run/t05_constants
 unsupported	tests/run/t06_bad_default
 rejects	tests/run/t06_core
 unsupported	tests/run/t06_discard_capacity
-unsupported	tests/run/t06_layout
-unsupported	tests/run/t06_oversized_nested
+build	tests/run/t06_layout
+build	tests/run/t06_oversized_nested
 unsupported	tests/run/t07_assign_pool
 unsupported	tests/run/t07_collect_remove
 unsupported	tests/run/t07_const
@@ -278,7 +278,7 @@ unsupported	tests/run/t07_local_id_return
 unsupported	tests/run/t07_local_option_return
 unsupported	tests/run/t07_loop_id_escape
 unsupported	tests/run/t07_nested_list
-unsupported	tests/run/t07_nested_types
+build	tests/run/t07_nested_types
 unsupported	tests/run/t07_nested_view_remove
 unsupported	tests/run/t07_owner_escape_struct
 unsupported	tests/run/t07_owner_mismatch
@@ -811,7 +811,7 @@ build	tests/e3/b1_bytes_fields_records
 build	tests/e3/b1_bytes_fields_unsupported_bytes_element
 build	tests/e3/b1_bytes_fields_unsupported_ascii_field
 build	tests/e3/b1_bytes_fields_unsupported_text_field
-unsupported	tests/e3/b1_bytes_fields_unsupported_nested
+build	tests/e3/b1_bytes_fields_unsupported_nested
 build	tests/e3/b1_bytes_fields_unsupported_sum_payload
 diagnose	tests/e3/b1_bytes_fields_invalid_write
 # B1 Bytes fields end
@@ -881,6 +881,7 @@ build	tests/e3/b1_array_consts_text_unsupported
 build	tests/e3/b1_queue_basic
 build	tests/e3/b1_queue_full
 build	tests/e3/b1_queue_wrap
+build	tests/e3/b1_nested_collections
 build	tests/e3/b1_queue_write_param
 unsupported	tests/e3/b1_queue_bool_unsupported
 build	tests/e3/b1_text_list_basic
