@@ -1003,6 +1003,8 @@ recursive fn emit_expr_linear(
                 let case_tag = compiler.facts[current].literal
                 if (compiler.facts[current].flags & FACT_CONSTANT_VALUE) != 0L {
                     ()
+                } else if (compiler.facts[current].flags & FACT_CONSTANT_ARRAY) != 0L {
+                    emit_array_constant_value(compiler, ir, current, file_index)
                 } else if (compiler.facts[current].flags & FACT_CONSTANT_TEXT) != 0L {
                     let text_literal = compiler.facts[current].literal
                     emit_text_literal_value(source, files, tokens, tables, compiler, ir, current, text_literal, file_index, is_test || compiler.test_build)
@@ -3057,3 +3059,22 @@ fn emit_cast_range_check(
     ir_write_ascii(compiler, ir, ", %cast.above."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
     emit_runtime_failure(files, tables, compiler, ir, node, file_index, 10L)
 }
+
+// A use of an array constant: copy the constant's image (see emit_array_constant_global) into the
+// temporary that holds this use's value.
+fn emit_array_constant_value(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    file_index: long,
+) {
+    let declaration = compiler.facts[node].literal
+    let size = value_type_size(compiler, compiler.facts[node].ty)
+    let destination = aggregate_destination_location(compiler, 0L, node)
+    let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
+    ir_write_ascii(compiler, ir, "  %const.array.copy."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = call ptr @memmove(ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
+    ir_write_ascii(compiler, ir, ", ptr @.nl.const."); ir_write_number(compiler, ir, declaration)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
+}
+

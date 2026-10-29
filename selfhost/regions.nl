@@ -119,7 +119,7 @@ fn region_node_needs_snapshot(tables: ParseTables, compiler: CompilerTables, nod
     if syntax_kind != NodeKind.Name && syntax_kind != NodeKind.Field { return false }
     let ty = compiler.facts[node].ty
     if !is_aggregate_type(compiler, ty) { return false }
-    if (compiler.facts[node].flags & FACT_CONSTANT_TEXT) != 0L { return true }
+    if (compiler.facts[node].flags & (FACT_CONSTANT_TEXT | FACT_CONSTANT_ARRAY)) != 0L { return true }
     if is_sum_type(compiler, ty) && compiler.facts[node].binding < 0L { return true }
     if syntax_kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[node].binding) { return true }
     let parent = region_parent_node(tables, node)

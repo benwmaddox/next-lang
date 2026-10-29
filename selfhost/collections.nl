@@ -1223,7 +1223,7 @@ fn emit_collection_print_helpers(compiler: write CompilerTables, ir: grow Bytes 
 fn collection_value_location(tables: ParseTables, compiler: CompilerTables, node: long) -> StorageLocation {
     if tables.nodes[node].kind == NodeKind.Name {
         let binding = compiler.facts[node].binding
-        if binding < 0L && (compiler.facts[node].flags & FACT_CONSTANT_TEXT) != 0L { return compiler_location(compiler, 0L, node, 0L) }
+        if binding < 0L && (compiler.facts[node].flags & (FACT_CONSTANT_TEXT | FACT_CONSTANT_ARRAY)) != 0L { return compiler_location(compiler, 0L, node, 0L) }
         if binding >= 0L && compiler.bindings[binding].parameter {
             compiler_location(compiler, 3L, binding, 0L)
         } else { compiler_location(compiler, 1L, binding, 0L) }

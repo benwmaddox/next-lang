@@ -123,6 +123,7 @@ fn main(env: Env) {
         intern_written_type_instances(env, source, tokens, files, tables, compiler)
         check_type_alias_targets(env, source, tokens, files, tables, compiler)
         register_text_constants(env, source, tokens, files, tables, compiler)
+        register_array_constants(env, source, tokens, files, tables, compiler)
         mark_range_aliases(tables, compiler)
         size_package_types(source, files, tokens, tables, compiler)
         check_package_name_shadows(env, source, files, tokens, tables, compiler)

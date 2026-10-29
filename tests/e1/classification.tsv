@@ -876,3 +876,5 @@ build	tests/e3/b1_text_consts_loop
 diagnose	tests/e3/b1_text_const_too_long
 diagnose	tests/e3/b1_bytes_const_too_long
 build	tests/e3/b1_clamp_byte_push
+build	tests/e3/b1_array_consts_ints
+unsupported	tests/e3/b1_array_consts_text_unsupported

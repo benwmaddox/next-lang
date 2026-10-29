@@ -469,3 +469,52 @@ fn register_text_constants(
         }
     }
 }
+
+// A constant of fixed array type whose elements are int, long or byte literals.
+// register_array_constants checks the shape; emit_file_globals writes the array image as an IR
+// global and a use copies it into the use's own temporary (emit_array_constant_value).
+fn register_array_constants(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+) {
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind != NodeKind.Const { continue }
+        if (compiler.facts[node].flags & FACT_CONSTANT_EVALUATED) != 0L { continue }
+        let type_node = compiler.child_first[node]
+        if type_node < 0L || (compiler.facts[type_node].flags & FACT_RESOLVED_TYPE) == 0L { continue }
+        let declared = compiler.facts[type_node].ty
+        if type_kind(compiler, declared) != TYPE_KIND_ARRAY { continue }
+        let element = collection_element_type(compiler, declared)
+        // Arrays of text wait for text in collections (their element layout is not implemented).
+        if element != TY_INT && element != TY_LONG && element != TY_BYTE { continue }
+        let initializer = node_last_child(tables, compiler, node)
+        if initializer < 0L || initializer == type_node || tables.nodes[initializer].kind != NodeKind.ArrayLiteral { continue }
+        let file_index = node_file_index(tables.nodes, files, node)
+        let capacity = collection_capacity(compiler, declared)
+        var item = compiler.child_first[initializer]
+        var count = 0L
+        var supported = true
+        for step in 0L..capacity + 1L {
+            if item < 0L { break }
+            let literal_kind = tables.nodes[item].kind
+            if literal_kind != NodeKind.Integer { supported = false }
+            else {
+                let _checked = literal_value(env, source, tokens, files, compiler, tables, file_index, item, element)
+            }
+            count += 1L
+            item = compiler.child_next[item]
+        }
+        if !supported || count != capacity { continue }
+        compiler.facts[node] = NodeFact {
+            ty: declared,
+            flags: FACT_CONSTANT_DECLARED | FACT_CONSTANT_EVALUATED | FACT_CONSTANT_ARRAY,
+            binding: -1L,
+            function: -1L,
+            literal: node,
+        }
+    }
+}

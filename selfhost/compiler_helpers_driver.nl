@@ -984,6 +984,11 @@ fn emit_file_globals(
             ir_write_ascii(compiler, ir, "\\00\", align 1\n")
         }
     }
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind == NodeKind.Const && (compiler.facts[node].flags & FACT_CONSTANT_ARRAY) != 0L {
+            emit_array_constant_global(source, tokens, files, tables, compiler, ir, node)
+        }
+    }
     let first_file_id = compiler_file_id_base(compiler)
     emit_file_table_global(files, compiler, ir, first_file_id)
     let main_name: Bytes max 4096 = b"main"
@@ -1510,3 +1515,32 @@ fn compile_selfhost_package(
 // order points are pinned by the E1 checker-order fixtures and comparison
 // harness.
 
+
+// The image of an array constant: the array exactly as a variable of that type would hold it, so a
+// use can copy it into place. Integer elements are little-endian.
+fn emit_array_constant_global(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    declaration: long,
+) {
+    let declared = compiler.facts[declaration].ty
+    let element = collection_element_type(compiler, declared)
+    let stride = value_type_size(compiler, element)
+    let capacity = collection_capacity(compiler, declared)
+    var item = compiler.child_first[node_last_child(tables, compiler, declaration)]
+    ir_write_ascii(compiler, ir, "@.nl.const."); ir_write_number(compiler, ir, declaration)
+    ir_write_ascii(compiler, ir, " = private unnamed_addr constant ["); ir_write_number(compiler, ir, value_type_size(compiler, declared))
+    ir_write_ascii(compiler, ir, " x i8] c\"")
+    for index in 0L..capacity {
+            let magnitude = tables.literals[tables.nodes[item].extra]
+            let raw = magnitude.limb1 * 4294967296L + magnitude.limb0
+            let value = if (tables.nodes[item].flags & FLAG_NEGATIVE) != 0L { 0L - raw } else { raw }
+            for shift in 0L..stride { ir_write_escaped_byte(compiler, ir, ((int)((value >> (shift * 8L)) & 255L)).fit<byte>().unwrap()) }
+        item = compiler.child_next[item]
+    }
+    ir_write_ascii(compiler, ir, "\", align 8\n")
+}
