@@ -150,8 +150,9 @@ fn check_format_text_builtin(
             let name = if kind == FORMAT_TEXT_STR { "str" }
                 else if kind == FORMAT_TEXT_HEX { "str_hex" }
                 else { "str_bin" }
+            let found_type = type_name_or_fallback(argument_type)
             fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start,
-                name + " needs int, long, or byte; found " + type_name_or_fallback(argument_type))
+                name + " needs int, long, or byte; found " + found_type)
         }
         let radix = if kind == FORMAT_TEXT_HEX { 16L } else if kind == FORMAT_TEXT_BIN { 2L } else { 10L }
         let maximum = format_text_number_maximum(tables, compiler, argument, argument_type, radix)
@@ -160,16 +161,18 @@ fn check_format_text_builtin(
         result_type = intern_text_type(compiler, TYPE_KIND_ASCII, maximum, 0L, file_index, node, -1L, -1L)
     } else if kind == FORMAT_TEXT_ASCII_UPPER {
         if type_kind(compiler, argument_type) != TYPE_KIND_ASCII {
+            let found_type = type_name_or_fallback(argument_type)
             fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start,
-                "ascii_upper needs Ascii; found " + type_name_or_fallback(argument_type))
+                "ascii_upper needs Ascii; found " + found_type)
         }
         result_type = argument_type
     } else if kind == FORMAT_TEXT_PAD || kind == FORMAT_TEXT_PAD_RIGHT {
         let argument_kind = type_kind(compiler, argument_type)
         if argument_kind != TYPE_KIND_ASCII && argument_kind != TYPE_KIND_TEXT {
             let name = if kind == FORMAT_TEXT_PAD { "pad" } else { "pad_right" }
+            let found_type = type_name_or_fallback(argument_type)
             fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start,
-                name + " needs an Ascii or Text value; found " + type_name_or_fallback(argument_type))
+                name + " needs an Ascii or Text value; found " + found_type)
         }
         let width_node = compiler.child_next[argument]
         let width_maximum = format_text_width_maximum(env, files, tables, compiler, file_index, node, width_node)
@@ -198,8 +201,9 @@ fn check_format_text_builtin(
         }
     } else if kind == FORMAT_TEXT_PAD_ZERO {
         if !format_text_numeric_type(argument_type) {
+            let found_type = type_name_or_fallback(argument_type)
             fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start,
-                "pad_zero needs int, long, or byte; found " + type_name_or_fallback(argument_type))
+                "pad_zero needs int, long, or byte; found " + found_type)
         }
         let width_node = compiler.child_next[argument]
         let width_maximum = format_text_width_maximum(env, files, tables, compiler, file_index, node, width_node)

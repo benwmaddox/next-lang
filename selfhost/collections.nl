@@ -640,7 +640,8 @@ recursive fn type_contains_collection(compiler: CompilerTables, type_id: long, d
     } else if kind == TYPE_KIND_OPTION || kind == TYPE_KIND_RESULT {
         for tag in 0L..sum_case_count(compiler, type_id) {
             for part in 0L..sum_case_payload_count(compiler, type_id, tag) {
-                if type_contains_collection(compiler, sum_case_payload_type(compiler, type_id, tag, part), depth + 1L) { return true }
+                let payload_type = sum_case_payload_type(compiler, type_id, tag, part)
+                if type_contains_collection(compiler, payload_type, depth + 1L) { return true }
             }
         }
     } else { () }
@@ -650,7 +651,8 @@ recursive fn type_contains_collection(compiler: CompilerTables, type_id: long, d
 fn collection_has_nested_elements(compiler: CompilerTables, type_id: long) -> bool {
     let kind = type_kind(compiler, type_id)
     if kind != TYPE_KIND_ARRAY && kind != TYPE_KIND_LIST { return false }
-    type_contains_collection(compiler, collection_element_type(compiler, type_id), 0L)
+    let element_type = collection_element_type(compiler, type_id)
+    type_contains_collection(compiler, element_type, 0L)
 }
 
 recursive fn type_contains_bytes(compiler: CompilerTables, type_id: long, depth: long) -> bool {
@@ -664,7 +666,8 @@ recursive fn type_contains_bytes(compiler: CompilerTables, type_id: long, depth:
             if type_contains_bytes(compiler, compiler.struct_fields[record.field_start + field_offset].ty, depth + 1L) { return true }
         }
     } else if kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST {
-        return type_contains_bytes(compiler, collection_element_type(compiler, type_id), depth + 1L)
+        let element_type = collection_element_type(compiler, type_id)
+        return type_contains_bytes(compiler, element_type, depth + 1L)
     } else if kind == TYPE_KIND_ENUM {
         let record = type_record(compiler, type_id)
         for case_offset in 0L..record.field_count {
@@ -676,7 +679,8 @@ recursive fn type_contains_bytes(compiler: CompilerTables, type_id: long, depth:
     } else if kind == TYPE_KIND_OPTION || kind == TYPE_KIND_RESULT {
         for tag in 0L..sum_case_count(compiler, type_id) {
             for part in 0L..sum_case_payload_count(compiler, type_id, tag) {
-                if type_contains_bytes(compiler, sum_case_payload_type(compiler, type_id, tag, part), depth + 1L) { return true }
+                let payload_type = sum_case_payload_type(compiler, type_id, tag, part)
+                if type_contains_bytes(compiler, payload_type, depth + 1L) { return true }
             }
         }
     } else { () }
@@ -806,7 +810,8 @@ fn collection_element_base_offset(compiler: CompilerTables, type_id: long) -> lo
     if kind == TYPE_KIND_ASCII || kind == TYPE_KIND_BYTES { text_data_offset(compiler, type_id) }
     else if kind == TYPE_KIND_ARRAY { 0L }
     else if kind == TYPE_KIND_LIST {
-        size_align_saturated(8L, value_type_align(compiler, collection_element_type(compiler, type_id)))
+        let element_type = collection_element_type(compiler, type_id)
+        size_align_saturated(8L, value_type_align(compiler, element_type))
     } else { -1L }
 }
 
@@ -906,7 +911,8 @@ recursive fn emit_collection_copy_element_fields(
                 row_offset + field.offset, collection_type)
         }
     } else if is_c_runtime_path_type(compiler, type_id) {
-        let byte_size = value_type_size(compiler, collection_element_type(compiler, type_id))
+        let element_type = collection_element_type(compiler, type_id)
+        let byte_size = value_type_size(compiler, element_type)
         let payload_stride = checked_size_product(collection_capacity(compiler, type_id), byte_size)
         if copies < 0L || byte_size < 0L || payload_stride < 0L { compiler.ir_overflow = true; return }
         let source_count = emit_collection_dynamic_address(compiler, ir, "source", "nl.source", collection_type, path_offset, 8L)
@@ -1464,7 +1470,8 @@ recursive fn emit_collection_gather_dynamic_fields(
                 destination_location, destination_pointer)
         }
     } else if is_c_runtime_path_type(compiler, type_id) {
-        let byte_size = value_type_size(compiler, collection_element_type(compiler, type_id))
+        let element_type = collection_element_type(compiler, type_id)
+        let byte_size = value_type_size(compiler, element_type)
         let payload_stride = checked_size_product(collection_capacity(compiler, type_id), byte_size)
         let destination_data_offset = collection_element_base_offset(compiler, type_id)
         if copies < 0L || byte_size < 0L || payload_stride < 0L || destination_data_offset < 0L {

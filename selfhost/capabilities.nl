@@ -468,9 +468,11 @@ fn c_runtime_writable_output_location(
         ir_write_ascii(compiler, ir, ", i64 %c.write.bytes.offset."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
         return native_location(2L, address_id, 0L)
     }
-    if binding >= 0L && type_kind(compiler, type_id) == TYPE_KIND_LIST &&
-        is_c_runtime_dir_entry_type(compiler, collection_element_type(compiler, type_id)) {
-        return compiler_location(compiler, 3L, binding, 0L)
+    if binding >= 0L && type_kind(compiler, type_id) == TYPE_KIND_LIST {
+        let element_type = collection_element_type(compiler, type_id)
+        if is_c_runtime_dir_entry_type(compiler, element_type) {
+            return compiler_location(compiler, 3L, binding, 0L)
+        }
     }
     let location = place_storage_location(tables, compiler, node)
     if type_kind(compiler, type_id) == TYPE_KIND_BYTES {

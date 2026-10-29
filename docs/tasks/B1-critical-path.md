@@ -8,18 +8,13 @@ source requirements; it does not claim language parity is already reached.
 
 ## Current checkpoint (2026-10-28)
 
-The C-runtime/offset Stage2-to-Stage3 chain passes at O1 and O3. Stage2 and
-Stage3 LLVM IR artifacts and binaries are byte-identical at each level. The
-actual Stage3 C-runtime golden checks pass at O1/O3, and the required
-staged-tree suite passed in 839 seconds for commit `23a7e64`. The Stage3 corpus run was
-invoked with selectors covering 791 registered plus 256 generated cases, but
-timed out after 180 seconds in the 3,200-enum scaling precheck; package
-comparisons never began. A separate Stage3 own-source pilot timed out at its
-30-second deadline, exceeding the 3x gate by a lower bound of at least 16x
-versus Rust Stage0. Small/large comparisons and corpus package coverage remain
-incomplete, so B1 is not accepted. See the
-[Stage-chain checkpoint report](B1-stage-chain-report.md) and [raw pilot
-record](B1-stage-chain-pilot.json).
+The Stage2-to-Stage3 chain passes at O1 and O3. The required staged suite
+passed in 806 seconds for commit `27256a3`, and actual Stage3 C-runtime golden
+checks passed at O1/O3. The latest Stage3 corpus completed with 16 mismatches
+that baseline checks reproduced before the working-data cleanup;
+the current O3 own-source pilot measured 13.4813x Rust Stage0 time and exceeded
+the 3x gate. B1 is not accepted. See the [working-data copy report](B1-working-data-copies.md)
+for corpus details and the [raw pilot record](B1-working-data-pilot.json).
 
 Memory baseline clarified by Ben, 2026-10-28: a reusable job instance may have
 optional StasisLang-style static storage that persists across its runs. Most
@@ -153,7 +148,7 @@ and 76 recursive declarations.
    streaming writers need not precede B1 unless an actual source dependency appears.
    The Stage3 C-runtime golden and Stage2 smoke-parse checks pass at O1/O3; the
    core I/O port remains deferred.
-6. **B1 stage chain (O1/O3 identity passed; corpus blocked, own-source timing fails).** Use Stage0 to build the seed compiler;
+6. **B1 stage chain (O1/O3 identity passed; corpus mismatches, own-source timing fails).** Use Stage0 to build the seed compiler;
    use that compiler to emit stage 2, then stage 2 to emit stage 3. Require exact
    stage-2/stage-3 LLVM IR and binary identity, plus compiler corpus correctness.
    LLVM/clang remains the backend and links the existing C runtime. The bootstrap harness may invoke clang
@@ -163,11 +158,10 @@ and 76 recursive declarations.
    driver is a separate product milestone if the harness can already link with
    clang directly. A required linker/core runtime gap re-enters this queue as a
    demonstrated blocker, rather than being assumed solved. The Stage2/Stage3
-   chain passed at O1 and O3. The Stage3 corpus attempt passed its struct IR
-   bounds, then timed out on the 3,200-enum scaling precheck at 180 seconds;
-   package comparisons and cache work never began. The own-source Stage3
-   timing pilot separately failed the 3x gate by lower bound. The complete
-   staged-tree suite passed for commit `23a7e64`.
+   chain passed at O1 and O3. An earlier Stage3 corpus attempt timed out before
+   package comparisons; the latest completed its scaling checks and selected
+   package run with 16 mismatches. The required staged-tree suite passed for
+   commit `27256a3`; see the current checkpoint and working-data report.
 7. **Benchmark the self-built compiler (own-source failure observed; full benchmark pending).** Pin toolchain, flags, source revision,
    and corpus; verify outputs before timing. Measure IR generation and end-to-end
    builds separately, cold and warm runs, peak RSS, data/native-stack measures,
@@ -186,21 +180,22 @@ and 76 recursive declarations.
    pointer mode against the self-built compiler's offset mode and report that
    representation difference explicitly; it does not waive the 3x gate or
    authorize Stage0 changes. The O1/O3 chain totals (398.79/402.39 seconds) are
-   pipeline diagnostics, not Rust comparisons or benchmark acceptance. An
-   isolated own-source Stage3/Rust pilot used one sample, no warmups, CPU 0,
-   O3, and C runtime. The Rust frontend API emitted IR in 1.80 seconds; Stage3
-   timed out at 30 seconds, a computed 16.6667x lower bound (at least 16x at
-   the reported precision). This is a per-case gate failure, not a full
-   benchmark. Exact commands and raw measurements are in
-   [the pilot record](B1-stage-chain-pilot.json); small and large cases remain
-   to be measured.
-8. **Improve measured bottlenecks (pending).** Prioritize checker/emitter scaling,
+   pipeline diagnostics, not Rust comparisons or benchmark acceptance. The
+   latest isolated own-source Stage3/Rust pilot used one sample, no warmups,
+   CPU 0, O3, and C runtime. Stage3 completed IR generation at 13.4813x Rust
+   Stage0 time, exceeding the per-case gate. This is not a full benchmark;
+   small and large cases remain to be measured. Exact commands and raw
+   measurements are in the [working-data report](B1-working-data-copies.md)
+   and [pilot record](B1-working-data-pilot.json).
+8. **Improve measured bottlenecks (further profiling).** Prioritize checker/emitter scaling,
    bootstrap memory, generated IR size, LLVM/link time, or runtime costs according
-   to the profile. A five-sample GDB trace currently shows repeated
-   `CompilerTables` copies on the own-source compile path. Each optimization
-   needs correctness coverage and before/after data. The requested snapshot
-   design discussion is deferred until this work is complete; no semantics,
-   hoisting, or purity rules change here.
+   to the profile. A five-sample GDB trace on an earlier source revision showed
+   repeated `CompilerTables` copies on the own-source compile path; the current
+   census found no whole-file call sites for the audited working-data helpers.
+   Each optimization needs correctness coverage and before/after data. The
+   source lookup hoists preserve emitted-program argument semantics. Further
+   profiling continues; the scope of the compile-error rule remains open
+   separately.
 
 ## Explicitly deferred until evidence requires them
 

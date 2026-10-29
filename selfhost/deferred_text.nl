@@ -71,8 +71,9 @@ recursive fn deferred_text_type_contains_collection(
     } else if kind == TYPE_KIND_OPTION || kind == TYPE_KIND_RESULT {
         for tag in 0L..sum_case_count(compiler, type_id) {
             for part in 0L..sum_case_payload_count(compiler, type_id, tag) {
+                let payload_type = sum_case_payload_type(compiler, type_id, tag, part)
                 let found = deferred_text_type_contains_collection(
-                    compiler, sum_case_payload_type(compiler, type_id, tag, part),
+                    compiler, payload_type,
                     under_collection, depth + 1L, states)
                 if found > 0L { states[state_index] = 3; return 1L }
                 if found < 0L { unresolved = true }

@@ -125,7 +125,8 @@ fn main(env: Env) {
         check_package_name_shadows(env, source, files, tokens, tables, compiler)
         check_package_eligibility(env, source, files, tokens, tables, compiler)
         var ir: Bytes max IR_BUFFER_CAPACITY = Bytes.empty() // E3a1 begin
-        compile_selfhost_package(env, source, files, tokens, tables, config, compiler, ir, want_test_build, embedded_core_hash()) // E3a1 end
+        let core_hash = embedded_core_hash()
+        compile_selfhost_package(env, source, files, tokens, tables, config, compiler, ir, want_test_build, core_hash) // E3a1 end
         if compiler.internal_emit_error_kind >= 0L {
             let file_index = compiler.internal_emit_error_file
             let node = compiler.internal_emit_error_node

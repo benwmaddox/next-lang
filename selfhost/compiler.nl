@@ -1306,7 +1306,8 @@ fn struct_type_index(compiler: CompilerTables, type_id: long) -> long {
 }
 
 fn struct_record(compiler: CompilerTables, struct_index: long) -> TypeRecord {
-    type_record(compiler, struct_type_id(compiler, struct_index))
+    let type_id = struct_type_id(compiler, struct_index)
+    type_record(compiler, type_id)
 }
 
 fn struct_type_count(compiler: CompilerTables) -> long {
@@ -1323,7 +1324,8 @@ fn enum_type_id(compiler: CompilerTables, enum_index: long) -> long {
 }
 
 fn enum_record(compiler: CompilerTables, enum_index: long) -> TypeRecord {
-    type_record(compiler, enum_type_id(compiler, enum_index))
+    let type_id = enum_type_id(compiler, enum_index)
+    type_record(compiler, type_id)
 }
 
 fn enum_type_count(compiler: CompilerTables) -> long {
@@ -2855,11 +2857,14 @@ fn unsupported_category_for_node(
             else if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE }
             else if generic_type_kind(source, tokens, files, tables, file_index, node) != 0L { 0L }
             else if sum_type_syntax_shape(source, tokens, files, tables, file_index, node) { 0L }
-            else if is_aggregate_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
-            else if is_c_runtime_capability_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
-            else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
-            else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
-            else { 0L }
+            else {
+                let resolved_type = resolve_value_type(source, tokens, files, tables, compiler, file_index, node)
+                if is_aggregate_type(compiler, resolved_type) { 0L }
+                else if is_c_runtime_capability_type(compiler, resolved_type) { 0L }
+                else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
+                else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
+                else { 0L }
+            }
         },
         NodeKind.ResultType => {
             if is_core_addr_type(source, tokens, files, tables, compiler, file_index, node) { 0L }
@@ -2868,11 +2873,14 @@ fn unsupported_category_for_node(
             else if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE }
             else if generic_type_kind(source, tokens, files, tables, file_index, node) != 0L { 0L }
             else if sum_type_syntax_shape(source, tokens, files, tables, file_index, node) { 0L }
-            else if is_aggregate_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
-            else if is_c_runtime_capability_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
-            else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
-            else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
-            else { 0L }
+            else {
+                let resolved_type = resolve_value_type(source, tokens, files, tables, compiler, file_index, node)
+                if is_aggregate_type(compiler, resolved_type) { 0L }
+                else if is_c_runtime_capability_type(compiler, resolved_type) { 0L }
+                else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
+                else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
+                else { 0L }
+            }
         },
         NodeKind.Annotation => {
             if is_core_addr_type(source, tokens, files, tables, compiler, file_index, node) { 0L }
@@ -2880,11 +2888,14 @@ fn unsupported_category_for_node(
             else if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE }
             else if generic_type_kind(source, tokens, files, tables, file_index, node) != 0L { 0L }
             else if sum_type_syntax_shape(source, tokens, files, tables, file_index, node) { 0L }
-            else if is_aggregate_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
-            else if is_c_runtime_capability_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
-            else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
-            else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
-            else { 0L }
+            else {
+                let resolved_type = resolve_value_type(source, tokens, files, tables, compiler, file_index, node)
+                if is_aggregate_type(compiler, resolved_type) { 0L }
+                else if is_c_runtime_capability_type(compiler, resolved_type) { 0L }
+                else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
+                else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
+                else { 0L }
+            }
         },
         NodeKind.Function => {
             if !is_top_level_function(tables, compiler, node) || value.aux > 0L { UNSUPPORTED_NODE }
@@ -5878,7 +5889,8 @@ fn fail_assignment_error(
     if binding.loop_counter { match env.err.write(b"loop counter '") { ok(_) => (), err(_) => env.exit(3) } }
     else if binding.parameter { match env.err.write(b"read parameter '") { ok(_) => (), err(_) => env.exit(3) } }
     else { match env.err.write(b"immutable 'let' binding '") { ok(_) => (), err(_) => env.exit(3) } }
-    match write_token_raw(env.err, source, tokens, files[binding.file].base, binding_name_token(binding)) { ok(_) => (), err(_) => env.exit(3) }
+    let name_token = binding_name_token(binding)
+    match write_token_raw(env.err, source, tokens, files[binding.file].base, name_token) { ok(_) => (), err(_) => env.exit(3) }
     if binding.loop_counter { match env.err.write("'; loop counters are immutable") { ok(_) => (), err(_) => env.exit(3) } }
     else if binding.parameter { match env.err.write("'; pass it as 'write' to allow mutation") { ok(_) => (), err(_) => env.exit(3) } }
     else { match env.err.write("'; declare it with 'var'") { ok(_) => (), err(_) => env.exit(3) } }
@@ -6019,8 +6031,9 @@ fn body_child_expected(
         core_sys_argument_type(core_sys_operation(source, tokens, files, file_index, tables.nodes[parent].token), child_index)
     } else if kind == NodeKind.MethodCall && frame.child0 >= 0L &&
         (type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_ARRAY || type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_LIST) {
+        let collection_receiver_kind = type_kind(compiler, compiler.facts[frame.child0].ty)
         let method = collection_method_kind(source, tokens, files, file_index, tables.nodes[parent].token,
-            type_kind(compiler, compiler.facts[frame.child0].ty))
+            collection_receiver_kind)
         if method == COLLECTION_METHOD_PUSH && child_index == 0L { collection_element_type(compiler, compiler.facts[frame.child0].ty) }
         else if method == COLLECTION_METHOD_INSERT && child_index == 0L { TY_LONG }
         else if method == COLLECTION_METHOD_INSERT && child_index == 1L { collection_element_type(compiler, compiler.facts[frame.child0].ty) }
@@ -7601,7 +7614,8 @@ fn check_one_body(
                         argument = compiler.child_next[argument]
                     }
                     if argument < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "list mutation is missing its element") }
-                    require_type(env, files, compiler, file_index, argument, collection_element_type(compiler, receiver_ty), compiler.facts[argument].ty, tables)
+                    let element_type = collection_element_type(compiler, receiver_ty)
+                    require_type(env, files, compiler, file_index, argument, element_type, compiler.facts[argument].ty, tables)
                     let full_ty = builtin_full_type_id(compiler)
                     if full_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "internal capacity error type is unavailable") }
                     operation_result_type = intern_sum_type(compiler, TYPE_KIND_RESULT, TY_UNIT, full_ty, file_index, node, -1L, -1L)
@@ -8027,7 +8041,9 @@ fn check_package_bodies(
         let scope = create_scope(env, files, compiler, -1L, function_id, function.node, function.file)
         for parameter_index in 0L..function.param_count {
             let parameter = compiler.parameters[function.param_start + parameter_index]
-            let _ = add_local_binding(env, source, files, tokens, tables, compiler, function.file, parameter.node, parameter_name_token(parameter), scope, parameter.ty, (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L, false, true)
+            let parameter_token = parameter_name_token(parameter)
+            let parameter_mode_flags = parameter_mode(parameter)
+            let _ = add_local_binding(env, source, files, tokens, tables, compiler, function.file, parameter.node, parameter_token, scope, parameter.ty, (parameter_mode_flags & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L, false, true)
         }
         check_one_body(env, source, files, tokens, tables, config, compiler, function.body, function.file, function_id, function.result_ty, false, scope)
     }
@@ -8808,7 +8824,8 @@ recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTable
         if type_kind(compiler, receiver_type) != TYPE_KIND_STRUCT || field_index < 0L { return compiler_location(compiler, 2L, node, 0L) }
         let field = compiler.struct_fields[field_index]
         let field_offset = if base.copies > 1L && base.index_node != -1L {
-            collection_field_lane_offset(compiler, receiver_type, base.copies, field_index - type_record(compiler, receiver_type).field_start)
+            let field_start = type_record(compiler, receiver_type).field_start
+            collection_field_lane_offset(compiler, receiver_type, base.copies, field_index - field_start)
         } else { field.offset }
         let stride = if base.index_node != -1L && (!is_aggregate_type(compiler, field.ty) || type_kind(compiler, field.ty) == TYPE_KIND_BYTES) { value_type_size(compiler, field.ty) } else { 0L }
         StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + field_offset, copies: base.copies, index: base.index, index_node: base.index_node, index_stride: stride }
@@ -9446,6 +9463,16 @@ fn aggregate_source_id(tables: ParseTables, compiler: CompilerTables, node: long
     if tables.nodes[node].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[node].binding) { node }
     else if tables.nodes[node].kind == NodeKind.Name && compiler.facts[node].binding >= 0L { compiler.facts[node].binding }
     else { node }
+}
+
+fn aggregate_source_location_for_node(
+    tables: ParseTables,
+    compiler: CompilerTables,
+    node: long,
+) -> StorageLocation {
+    let kind = aggregate_source_kind(tables, compiler, node)
+    let source_id = aggregate_source_id(tables, compiler, node)
+    aggregate_source_location(compiler, kind, source_id)
 }
 
 fn emit_store_scalar(
@@ -10361,7 +10388,7 @@ fn emit_option_result_method(
     let receiver = compiler.child_first[node]
     let receiver_ty = compiler.facts[receiver].ty
     let receiver_kind = type_kind(compiler, receiver_ty)
-    let receiver_source = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, receiver), aggregate_source_id(tables, compiler, receiver))
+    let receiver_source = aggregate_source_location_for_node(tables, compiler, receiver)
     let tag_address = enum_temporary_address(node, MAX_TREE_NODES + 5L)
     emit_layout_address(compiler, ir, tag_address, compiler_location(compiler, receiver_source.anchor_kind, receiver_source.anchor_node, 0L))
     ir_write_ascii(compiler, ir, "  %method.tag."); ir_write_number(compiler, ir, node)
@@ -10467,7 +10494,7 @@ fn emit_optional_call_invoke(
         if parameter.ty != TY_UNIT && is_aggregate_type(compiler, parameter.ty) {
             let use_snapshot = direct_call_argument_needs_snapshot(tables, compiler, node, argument)
             let argument_location = if use_snapshot { aggregate_destination_location(compiler, 0L, argument) }
-                else { aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, argument), aggregate_source_id(tables, compiler, argument)) }
+                else { aggregate_source_location_for_node(tables, compiler, argument) }
             if parameter_uses_text_read_view(compiler, parameter) {
                 let argument_type = compiler.facts[argument].ty
                 prepare_text_parameter_descriptor(compiler, ir, argument_type, argument_location, argument)
@@ -10510,7 +10537,7 @@ fn emit_optional_call_invoke(
             if is_aggregate_type(compiler, parameter.ty) {
                 let use_snapshot = direct_call_argument_needs_snapshot(tables, compiler, node, argument)
                 let argument_location = if use_snapshot { aggregate_destination_location(compiler, 0L, argument) }
-                    else { aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, argument), aggregate_source_id(tables, compiler, argument)) }
+                    else { aggregate_source_location_for_node(tables, compiler, argument) }
                 if parameter_uses_text_read_view(compiler, parameter) {
                     let argument_type = compiler.facts[argument].ty
                     emit_text_parameter_descriptor(compiler, ir, argument_type, argument_location, argument)
@@ -10550,7 +10577,7 @@ fn emit_optional_call_start(
     let receiver = compiler.child_first[node]
     let receiver_type = compiler.facts[receiver].ty
     let receiver_payload = sum_payload_record(compiler, receiver_type, 0L, 0L)
-    let receiver_source = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, receiver), aggregate_source_id(tables, compiler, receiver))
+    let receiver_source = aggregate_source_location_for_node(tables, compiler, receiver)
     let tag_address = enum_temporary_address(node, MAX_TREE_NODES * 80L + 3L)
     emit_layout_address(compiler, ir, tag_address, receiver_source)
     ir_write_ascii(compiler, ir, "  %optional.call.tag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i32, ptr %addr."); ir_write_number(compiler, ir, tag_address)
@@ -10577,7 +10604,7 @@ fn emit_optional_call_start(
             let target = compiler.functions[target_id]
             let receiver_parameter = compiler.parameters[target.param_start]
             if receiver_parameter.ty != TY_UNIT {
-                let payload_receiver_source = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, receiver), aggregate_source_id(tables, compiler, receiver))
+                let payload_receiver_source = aggregate_source_location_for_node(tables, compiler, receiver)
                 let source_payload = optional_payload_location(payload_receiver_source, receiver_payload.offset)
                 if is_aggregate_type(compiler, receiver_parameter.ty) {
                     let receiver_storage_ty = if parameter_uses_text_read_view(compiler, receiver_parameter) { receiver_payload.ty }
@@ -11015,7 +11042,7 @@ recursive fn emit_expr_linear(
             let operand = frame.child0
             let operand_ty = compiler.facts[operand].ty
             let operand_kind = type_kind(compiler, operand_ty)
-            let operand_source = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, operand), aggregate_source_id(tables, compiler, operand))
+            let operand_source = aggregate_source_location_for_node(tables, compiler, operand)
             let tag_address = enum_temporary_address(current, MAX_TREE_NODES + 8L)
             emit_layout_address(compiler, ir, tag_address, compiler_location(compiler, operand_source.anchor_kind, operand_source.anchor_node, 0L))
             ir_write_ascii(compiler, ir, "  %try.tag."); ir_write_number(compiler, ir, current)
@@ -11049,7 +11076,7 @@ recursive fn emit_expr_linear(
         } else if kind == NodeKind.Binary && frame.phase == 40L {
             let left = frame.child0
             let option_ty = compiler.facts[left].ty
-            let left_source = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, left), aggregate_source_id(tables, compiler, left))
+            let left_source = aggregate_source_location_for_node(tables, compiler, left)
             let tag_address = enum_temporary_address(current, MAX_TREE_NODES + 2L)
             emit_layout_address(compiler, ir, tag_address, compiler_location(compiler, left_source.anchor_kind, left_source.anchor_node, 0L))
             ir_write_ascii(compiler, ir, "  %coalesce.tag."); ir_write_number(compiler, ir, current)
@@ -11124,8 +11151,8 @@ recursive fn emit_expr_linear(
             } else if (op == 8L || op == 9L) && is_aggregate_type(compiler, compiler.facts[left].ty) {
                 let ty = compiler.facts[left].ty
                 let left_location = if tables.nodes[left].kind == NodeKind.Name || tables.nodes[left].kind == NodeKind.Field { compiler_location(compiler, 0L, left, 0L) }
-                    else { aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, left), aggregate_source_id(tables, compiler, left)) }
-                let right_location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, right), aggregate_source_id(tables, compiler, right))
+                    else { aggregate_source_location_for_node(tables, compiler, left) }
+                let right_location = aggregate_source_location_for_node(tables, compiler, right)
                 let left_pointer = emit_location_pointer_materialization(compiler, ir, left_location)
                 let right_pointer = emit_location_pointer_materialization(compiler, ir, right_location)
                 ir_write_ascii(compiler, ir, "  %eq.value."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = call i1 ")
@@ -11246,7 +11273,7 @@ recursive fn emit_expr_linear(
                 } else if is_print {
                     let arg_ty = compiler.facts[first_arg].ty
                     if is_aggregate_type(compiler, arg_ty) {
-                        let location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, first_arg), aggregate_source_id(tables, compiler, first_arg))
+                        let location = aggregate_source_location_for_node(tables, compiler, first_arg)
                         let pointer = emit_location_pointer_materialization(compiler, ir, location)
                         ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, arg_ty, HELPER_PRINT, location, pointer); ir_write_ascii(compiler, ir, "\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_newline", "nlc_print_newline"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n")
                     } else {
@@ -11347,8 +11374,8 @@ recursive fn emit_expr_linear(
                                 emit_location_descriptor_argument(compiler, ir, place_storage_location(tables, compiler, arg), is_aggregate_type(compiler, param_ty), arg)
                             } else if is_aggregate_type(compiler, param_ty) {
                                 if parameter_uses_text_read_view(compiler, parameter) {
-                                    emit_text_parameter_argument(tables, compiler, ir, arg,
-                                        direct_call_text_view_needs_snapshot(tables, compiler, current, arg))
+                                    let use_snapshot = direct_call_text_view_needs_snapshot(tables, compiler, current, arg)
+                                    emit_text_parameter_argument(tables, compiler, ir, arg, use_snapshot)
                                 } else {
                                     let location = if direct_call_argument_needs_snapshot(tables, compiler, current, arg) {
                                         aggregate_destination_location(compiler, 0L, arg)
@@ -11851,11 +11878,9 @@ fn emit_expect_after_expression(
             let left_location = if region_node_needs_snapshot(tables, compiler, left_node) {
                 compiler_location(compiler, 0L, left_node, 0L)
             } else {
-                aggregate_source_location(compiler,
-                    aggregate_source_kind(tables, compiler, left_node),
-                    aggregate_source_id(tables, compiler, left_node))
+                aggregate_source_location_for_node(tables, compiler, left_node)
             }
-            let right_location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, right_node), aggregate_source_id(tables, compiler, right_node))
+            let right_location = aggregate_source_location_for_node(tables, compiler, right_node)
             let left_pointer = emit_location_pointer_materialization(compiler, ir, left_location)
             let right_pointer = emit_location_pointer_materialization(compiler, ir, right_location)
             ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, "nl_expect_fail_header", "nlc_expect_fail_header"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.expect."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 "); ir_write_number(compiler, ir, length - 1L); ir_write_ascii(compiler, ir, ")\n")
@@ -13345,7 +13370,8 @@ fn emit_struct_fill_helpers(
 ) {
     var any_defaults = false
     for type_index in 0L..struct_type_count(compiler) {
-        if has_type_helper(compiler, struct_type_id(compiler, type_index), HELPER_FILL) { any_defaults = true }
+        let type_id = struct_type_id(compiler, type_index)
+        if has_type_helper(compiler, type_id, HELPER_FILL) { any_defaults = true }
     }
     if !any_defaults { return }
     emit_contains_index_helper(compiler, ir)
@@ -13378,11 +13404,13 @@ fn emit_struct_default_helpers(
 ) {
     for field_index in 0L..compiler.struct_fields.count() {
         let field = compiler.struct_fields[field_index]
-        if field.default_node < 0L || !has_type_helper(compiler, struct_type_id(compiler, field.owner), HELPER_DEFAULT) { continue }
+        if field.default_node < 0L { continue }
+        let field_type_id = struct_type_id(compiler, field.owner)
+        if !has_type_helper(compiler, field_type_id, HELPER_DEFAULT) { continue }
         let function_id = -100000L - field_index
         let expression = field.default_node
         let default_file = struct_record(compiler, field.owner).file
-        ir_write_ascii(compiler, ir, "define internal void "); emit_default_field_helper_symbol(compiler, ir, struct_type_id(compiler, field.owner), field_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_hidden_descriptor_parameter(compiler, ir); ir_write_ascii(compiler, ir, ") {\nentry:\n  %nl.region.end = add i64 %nl.top, 0\n")
+        ir_write_ascii(compiler, ir, "define internal void "); emit_default_field_helper_symbol(compiler, ir, field_type_id, field_index); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, "); emit_hidden_descriptor_parameter(compiler, ir); ir_write_ascii(compiler, ir, ") {\nentry:\n  %nl.region.end = add i64 %nl.top, 0\n")
         let first = expression - tables.nodes[expression].subtree
         for node in first..expression + 1L {
             if tables.nodes[node].kind == NodeKind.If && compiler.facts[node].ty != TY_UNIT && compiler.facts[node].ty != TY_NEVER && !is_aggregate_type(compiler, compiler.facts[node].ty) {
