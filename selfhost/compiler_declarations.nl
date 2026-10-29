@@ -118,6 +118,38 @@ fn is_builtin_fill_call(
     find_function_by_name(compiler, name_id) < 0L && find_binding_in_scope(compiler, scope, name_id) < 0L
 }
 
+const NUMERIC_BUILTIN_NONE: long = 0L
+const NUMERIC_BUILTIN_MIN: long = 1L
+const NUMERIC_BUILTIN_MAX: long = 2L
+const NUMERIC_BUILTIN_ABS: long = 3L
+const NUMERIC_BUILTIN_CLAMP: long = 4L
+// Added to the kind of a clamp that is computed as an int and narrowed to a byte.
+const NUMERIC_BUILTIN_NARROW_TO_BYTE: long = 100L
+
+// min, max, abs and clamp are compiler built-ins that lower to inline LLVM intrinsics.
+// A user function or local with the same name wins. scope < 0 skips the local lookup (the
+// support scan runs before bindings exist).
+fn numeric_builtin_kind(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: CompilerTables,
+    file_index: long,
+    token: long,
+    scope: long,
+) -> long {
+    let kind = if token_is_word_at(source, tokens, files, file_index, token, "min") { NUMERIC_BUILTIN_MIN }
+        else if token_is_word_at(source, tokens, files, file_index, token, "max") { NUMERIC_BUILTIN_MAX }
+        else if token_is_word_at(source, tokens, files, file_index, token, "abs") { NUMERIC_BUILTIN_ABS }
+        else if token_is_word_at(source, tokens, files, file_index, token, "clamp") { NUMERIC_BUILTIN_CLAMP }
+        else { NUMERIC_BUILTIN_NONE }
+    if kind == NUMERIC_BUILTIN_NONE { return NUMERIC_BUILTIN_NONE }
+    let name_id = compiler.token_name_ids[token]
+    if find_function_by_name(compiler, name_id) >= 0L { return NUMERIC_BUILTIN_NONE }
+    if scope >= 0L && find_binding_in_scope(compiler, scope, name_id) >= 0L { return NUMERIC_BUILTIN_NONE }
+    kind
+}
+
 fn check_entry_signature(
     env: Env,
     source: Bytes max SOURCE_BUFFER_CAPACITY,

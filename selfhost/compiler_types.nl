@@ -72,9 +72,19 @@ fn sum_case_tag_for_name(
     } else { -1L }
 }
 
+// value_type_by_name[name] is the struct or enum type with that name, -1 if there is none and
+// -2 if the name is declared more than once (a lookup then finds nothing).
+fn index_value_type_name(compiler: write CompilerTables, record: TypeRecord, type_id: long) {
+    let kind = type_record_kind(record)
+    if (kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_ENUM) && record.name_id >= 0L && record.name_id < compiler.value_type_by_name.count() {
+        compiler.value_type_by_name[record.name_id] = if compiler.value_type_by_name[record.name_id] == -1L { type_id } else { -2L }
+    }
+}
+
 fn append_type_record(compiler: write CompilerTables, record: TypeRecord) -> long {
     let type_id = compiler.type_records.count()
     compiler.type_records.push(record).unwrap()
+    index_value_type_name(compiler, record, type_id)
     if type_record_kind(record) == TYPE_KIND_ENUM {
         compiler.enum_type_ids.push(type_id).unwrap()
         if record.name_id >= 0L && record.name_id < compiler.enum_type_by_name.count() {
@@ -182,15 +192,9 @@ fn enum_case_owner_type_id(compiler: CompilerTables, case_index: long) -> long {
 }
 
 fn value_type_matches(compiler: CompilerTables, name_id: long) -> long {
-    var found = -1L
-    for type_id in 0L..compiler.type_records.count() {
-        let kind = type_record_kind(compiler.type_records[type_id])
-        if (kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_ENUM) && compiler.type_records[type_id].name_id == name_id {
-            if found >= 0L { return -1L }
-            found = type_id
-        }
-    }
-    found
+    if name_id < 0L || name_id >= compiler.value_type_by_name.count() { return -1L }
+    let found = compiler.value_type_by_name[name_id]
+    if found >= 0L { found } else { -1L }
 }
 
 fn value_type_for_node(compiler: CompilerTables, node: long) -> long {
@@ -201,17 +205,29 @@ fn value_type_for_node(compiler: CompilerTables, node: long) -> long {
     -1L
 }
 
+// The case a bare name refers to when exactly one enum declares it: its case index, -1 when no
+// enum has the case and -2 when several enums do. Answered from enum_case_by_name.
 fn user_case_matches(compiler: CompilerTables, name_id: long) -> long {
-    var found = -1L
-    for enum_index in 0L..enum_type_count(compiler) {
-        let type_id = enum_type_id(compiler, enum_index)
-        let case_index = enum_case_matches(compiler, type_id, name_id)
-        if case_index >= 0L {
-            if found >= 0L { return -2L }
-            found = case_index
-        }
-    }
-    found
+    if name_id < 0L || name_id >= compiler.enum_case_by_name.count() { return -1L }
+    compiler.enum_case_by_name[name_id]
+}
+
+// Records an appended enum case in enum_case_by_name: the first case with a name is kept, and a
+// second enum declaring the same name makes it ambiguous (-2). Repeats inside one enum keep the first.
+fn index_enum_case_at(compiler: write CompilerTables, case_index: long) {
+    if case_index < 0L || case_index >= compiler.enum_cases.count() { return }
+    let name_id = compiler.enum_cases[case_index].name_id
+    if name_id < 0L || name_id >= compiler.enum_case_by_name.count() { return }
+    let existing = compiler.enum_case_by_name[name_id]
+    if existing == -1L { compiler.enum_case_by_name[name_id] = case_index }
+    else if existing >= 0L && compiler.enum_cases[existing].owner != compiler.enum_cases[case_index].owner {
+        compiler.enum_case_by_name[name_id] = -2L
+    } else { () }
+}
+
+fn index_last_enum_case(compiler: write CompilerTables) {
+    let last_case = compiler.enum_cases.count() - 1L
+    index_enum_case_at(compiler, last_case)
 }
 
 fn type_kind(compiler: CompilerTables, type_id: long) -> long {
@@ -670,6 +686,7 @@ fn index_package_enums(
                             payload_count: compiler.enum_payloads.count() - payload_start,
                             tag: compiler.enum_cases.count() - case_start,
                         }).unwrap()
+                        index_last_enum_case(compiler)
                     }
                     case_node = compiler.child_next[case_node]
                 }
@@ -702,6 +719,7 @@ fn append_builtin_io_type(
         ok(_) => (),
         err(_) => fail_parse_limit(env, files[0].name, "C-runtime built-in type table capacity exceeded"),
     }
+    index_value_type_name(compiler, record, type_id)
     if type_record_kind(record) == TYPE_KIND_ENUM {
         match compiler.enum_type_ids.push(type_id) {
             ok(_) => (),
@@ -750,6 +768,7 @@ fn intern_builtin_io_enum_case(
         ok(_) => (),
         err(_) => fail_parse_limit(env, files[0].name, "C-runtime enum case table capacity exceeded"),
     }
+    index_last_enum_case(compiler)
 }
 
 fn intern_builtin_io_types(
@@ -916,6 +935,7 @@ fn intern_builtin_full(
         payload_count: 0L,
         tag: 0L,
     }).unwrap()
+    index_last_enum_case(compiler)
     let _ = append_type_record(compiler, TypeRecord {
         kind_state: TYPE_KIND_ENUM * 16L + 2L,
         name_id,
@@ -981,6 +1001,9 @@ fn intern_builtin_text_types(
         let case_start = compiler.enum_cases.count()
         compiler.enum_cases.push(EnumCaseRecord { owner: enum_index, name_id: invalid_utf8_name, name_token: invalid_utf8_token, node: -2L, payload_start: compiler.enum_payloads.count(), payload_count: 0L, tag: 0L }).unwrap()
         compiler.enum_cases.push(EnumCaseRecord { owner: enum_index, name_id: non_ascii_name, name_token: non_ascii_token, node: -2L, payload_start: compiler.enum_payloads.count(), payload_count: 0L, tag: 1L }).unwrap()
+        let builtin_case_start = compiler.enum_cases.count() - 2L
+        index_enum_case_at(compiler, builtin_case_start)
+        index_last_enum_case(compiler)
         let _text_error_type = append_type_record(compiler, TypeRecord {
             kind_state: TYPE_KIND_ENUM * 16L + 2L,
             name_id: text_error_name,
@@ -1344,3 +1367,94 @@ fn check_deferred_large_value_gate(
 // E3a1 end
 // TYPE MODULE END
 
+
+// Range aliases (type Slot = long 0..=512) are supported only as cast targets so far: a cast
+// checks the range at run time and the value then has the plain base type. range_alias_names
+// marks every alias whose chain ends in a written range, so uses elsewhere can be refused.
+fn mark_range_aliases(tables: ParseTables, compiler: write CompilerTables) {
+    for pass in 0L..MAX_TYPE_ALIAS_PASSES {
+        var changed = false
+        for node in 0L..tables.nodes.count() {
+            if tables.nodes[node].kind != NodeKind.TypeAlias { continue }
+            let name_id = compiler.token_name_ids[tables.nodes[node].token]
+            if name_id < 0L || compiler.range_alias_names[name_id] { continue }
+            let target = compiler.child_first[node]
+            if target < 0L { continue }
+            let syntax = tables.nodes[target]
+            if (syntax.flags & FLAG_RANGE) != 0L || type_node_uses_range_alias(compiler, syntax) {
+                compiler.range_alias_names[name_id] = true
+                changed = true
+            }
+        }
+        if !changed { break }
+    }
+}
+
+// A plain written name that is a range alias.
+fn type_node_uses_range_alias(compiler: CompilerTables, syntax: Node) -> bool {
+    if syntax.flags != 0L || syntax.meta0 != 1L || syntax.meta1 != 0L || syntax.token < 0L { return false }
+    let name_id = compiler.token_name_ids[syntax.token]
+    name_id >= 0L && name_id < compiler.range_alias_names.count() && compiler.range_alias_names[name_id]
+}
+
+// The type node that carries the written range for this type (itself, or the target of the
+// alias chain it names), or -1 when the type has no range.
+fn written_type_range_node(tables: ParseTables, compiler: CompilerTables, type_node: long) -> long {
+    var node = type_node
+    for step in 0L..MAX_TYPE_ALIAS_PASSES {
+        let syntax = tables.nodes[node]
+        if (syntax.flags & FLAG_RANGE) != 0L { return node }
+        if !type_node_uses_range_alias(compiler, syntax) { return -1L }
+        let name_id = compiler.token_name_ids[syntax.token]
+        var next = -1L
+        for candidate in 0L..tables.nodes.count() {
+            if tables.nodes[candidate].kind == NodeKind.TypeAlias && compiler.token_name_ids[tables.nodes[candidate].token] == name_id {
+                next = compiler.child_first[candidate]
+                break
+            }
+        }
+        if next < 0L { return -1L }
+        node = next
+    }
+    -1L
+}
+
+// A written bound of a range type: which is 0 for the lower bound, 1 for the upper bound. The
+// magnitudes are 128-bit; supported ranges fit a signed 64-bit value (see range_node_supported).
+fn range_bound_value(tables: ParseTables, range_node: long, which: long) -> long {
+    let base = tables.nodes[range_node].anchor + which * 2L
+    let magnitude = tables.literals[tables.extra[base]]
+    let value = magnitude.limb1 * 4294967296L + magnitude.limb0
+    let bound = if tables.extra[base + 1L] != 0L { 0L - value } else { value }
+    if which == 1L && (tables.nodes[range_node].flags & FLAG_RANGE_INCLUSIVE) == 0L { bound - 1L } else { bound }
+}
+
+// Whether a written range is one the compiler handles: int or long base, no wrap or clamp
+// policy, bounds that fit the base type, lower bound not above the upper bound.
+fn range_node_supported(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    file_index: long,
+    range_node: long,
+) -> bool {
+    let syntax = tables.nodes[range_node]
+    if (syntax.flags & (FLAG_POLICY_WRAP | FLAG_POLICY_CLAMP)) != 0L { return false }
+    if syntax.meta0 != 1L || syntax.meta1 != 0L { return false }
+    let is_int = token_is_word_at(source, tokens, files, file_index, syntax.token, "int")
+    if !is_int && !token_is_word_at(source, tokens, files, file_index, syntax.token, "long") { return false }
+    for which in 0L..2L {
+        let magnitude = tables.literals[tables.extra[syntax.anchor + which * 2L]]
+        if magnitude.limb2 != 0L || magnitude.limb3 != 0L || magnitude.limb1 > 2147483647L { return false }
+        if is_int && (magnitude.limb1 != 0L || magnitude.limb0 > 2147483647L) { return false }
+    }
+    range_bound_value(tables, range_node, 0L) <= range_bound_value(tables, range_node, 1L)
+}
+
+// The helper masks only gain flags, so an unchanged total means nothing was registered.
+fn type_helper_mask_sum(compiler: CompilerTables) -> long {
+    var total = 0L
+    for type_id in 0L..type_count(compiler) { total += type_helper_mask(compiler, type_id) }
+    total
+}

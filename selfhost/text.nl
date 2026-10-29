@@ -357,24 +357,28 @@ fn emit_text_literal_value(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     node: long,
+    literal_node: long,
     file_index: long,
     is_test: bool,
 ) {
-    let syntax = tables.nodes[node]
+    // literal_node is the node whose text is copied: node itself for a literal, or the initializer
+    // of a text constant that node names.
+    let syntax = tables.nodes[literal_node]
+    let literal_file = node_file_index(tables.nodes, files, literal_node)
     let kind = type_kind(compiler, compiler.facts[node].ty)
     let token = if syntax.kind == NodeKind.BytesLiteral { syntax.extra } else { syntax.token }
     let raw_bytes = syntax.kind == NodeKind.BytesLiteral
     var literal_byte_count = 0L
     var points = 0L
     if !compiler.core_mode && kind == TYPE_KIND_TEXT {
-        let literal = decode_string_token(source, tokens, files[file_index].base, token, raw_bytes)
+        let literal = decode_string_token(source, tokens, files[literal_file].base, token, raw_bytes)
         literal_byte_count = literal.count()
         points = decoded_text_codepoints(literal)
     } else {
         literal_byte_count = decoded_string_token_byte_length(
             source,
             tokens,
-            files[file_index].base,
+            files[literal_file].base,
             token,
             raw_bytes,
         )
@@ -383,7 +387,7 @@ fn emit_text_literal_value(
     if compiler.core_mode {
         ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = getelementptr ["); ir_write_number(compiler, ir, literal_byte_count + 1L)
-        ir_write_ascii(compiler, ir, " x i8], ptr "); emit_text_literal_global_reference(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " x i8], ptr "); emit_text_literal_global_reference(compiler, ir, literal_node)
         ir_write_ascii(compiler, ir, ", i64 0, i64 0\n")
         return
     }
@@ -407,7 +411,7 @@ fn emit_text_literal_value(
     }
     ir_write_ascii(compiler, ir, "  %text.literal.source.data."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, " = getelementptr ["); ir_write_number(compiler, ir, literal_byte_count + 1L)
-    ir_write_ascii(compiler, ir, " x i8], ptr "); emit_text_literal_global_reference(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " x i8], ptr "); emit_text_literal_global_reference(compiler, ir, literal_node)
     ir_write_ascii(compiler, ir, ", i64 0, i64 0\n  %text.literal.destination.data."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
     ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, data_offset)

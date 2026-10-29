@@ -240,7 +240,7 @@ diagnose	tests/run/t04_missing_field
 unsupported	tests/run/t04_narrowing
 diagnose	tests/run/t04_nested_let_write
 diagnose	tests/run/t04_nested_required
-unsupported	tests/run/t04_range_cast_failure
+build	tests/run/t04_range_cast_failure
 diagnose	tests/run/t04_recursive_struct
 unsupported	tests/run/t04_stale_assignment
 unsupported	tests/run/t04_stale_branch_join
@@ -385,9 +385,9 @@ unsupported	tests/run/t16_view_indirect_write
 unsupported	tests/run/t16_view_remove
 diagnose	tests/run/t16_view_shift
 unsupported	tests/run/t17_worked_reservation
-unsupported	tests/run/t18_abs_min
+build	tests/run/t18_abs_min
 diagnose	tests/run/t18_bad_radix
-unsupported	tests/run/t18_clamp_bounds
+diagnose	tests/run/t18_clamp_bounds
 build	tests/run/t18_logsum_alignment
 diagnose	tests/run/t18_unbounded_width
 unsupported	tests/run/t19_const_depth
@@ -764,7 +764,7 @@ build	tests/e3/b1_names_shared
 expected	tests/e3/b1_names_call_resolution
 rejects	tests/e3/b1_names_duplicate_case_shadow
 build	tests/e3/b1_names_duplicate_case_pattern
-unsupported	tests/e3/b1_names_builtin_call_deferred
+diagnose	tests/e3/b1_names_builtin_call_deferred
 build	tests/e3/b1_names_nested_arm_scope
 # B1 name scopes end
 
@@ -789,7 +789,7 @@ build	tests/e3/b1_consts_unsupported_capacity
 unsupported	tests/e3/b1_consts_unsupported_call
 unsupported	tests/e3/b1_consts_unsupported_control
 unsupported	tests/e3/b1_consts_unsupported_shift
-unsupported	tests/e3/b1_consts_unsupported_aggregate
+build	tests/e3/b1_consts_unsupported_aggregate
 build	tests/e3/b1_int_consts_values
 diagnose	tests/e3/b1_int_consts_add_overflow
 diagnose	tests/e3/b1_int_consts_sub_overflow
@@ -861,3 +861,18 @@ unsupported	tests/e3/b1_alias_range_unsupported
 unsupported	tests/e3/b1_range_field_unsupported
 diagnose	tests/e3/b1_alias_unknown_target
 diagnose	tests/e3/b1_alias_cycle
+build	tests/e3/b1_numeric_builtins_values
+build	tests/e3/b1_numeric_builtins_literals
+build	tests/e3/b1_numeric_builtins_abs_min
+diagnose	tests/e3/b1_numeric_builtins_clamp_bad
+build	tests/e3/b1_range_cast_alias
+build	tests/e3/b1_range_cast_fail_high
+build	tests/e3/b1_range_cast_fail_low
+build	tests/e3/b1_range_cast_fail_exclusive
+unsupported	tests/e3/b1_range_let_unsupported
+unsupported	tests/e3/b1_range_param_unsupported
+build	tests/e3/b1_text_consts
+build	tests/e3/b1_text_consts_loop
+diagnose	tests/e3/b1_text_const_too_long
+diagnose	tests/e3/b1_bytes_const_too_long
+build	tests/e3/b1_clamp_byte_push
