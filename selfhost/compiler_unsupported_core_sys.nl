@@ -228,18 +228,10 @@ fn unsupported_category_for_node(
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tables: ParseTables,
     compiler: CompilerTables,
-    deferred_text_states: list<byte, TYPE_TABLE_CAPACITY * 2L>,
     node: long,
     file_index: long,
 ) -> long {
     let value = tables.nodes[node]
-    if value.kind == NodeKind.FieldType || value.kind == NodeKind.PayloadType ||
-        value.kind == NodeKind.ParameterType || value.kind == NodeKind.ResultType ||
-        value.kind == NodeKind.Annotation {
-        if syntax_has_deferred_text_collection(source, tokens, files, tables, compiler, deferred_text_states, file_index, node) {
-            return UNSUPPORTED_TEXT_COLLECTION
-        }
-    }
     // Range types are only handled as the target of a type alias that is itself used only in casts:
     // anywhere else the range would be dropped silently, so refuse it.
     if is_type_node(value.kind) {
@@ -555,8 +547,6 @@ fn report_unsupported(
         match env.err.write(b"value types larger than 4096 bytes") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_NESTED_COLLECTIONS {
         match env.err.write(b"nested collections") { ok(_) => (), err(_) => env.exit(3) }
-    } else if hit.category == UNSUPPORTED_TEXT_COLLECTION {
-        match env.err.write(b"text in collections") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_CONDITIONAL_BUILDER_LOOP {
         match env.err.write(b"conditional builder growth inside loops") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_FRAME_BUDGET {
@@ -587,12 +577,10 @@ fn check_package_eligibility(
         }
     }
     check_const_bytes_diagnostic(env, source, files, tokens, tables, compiler)
-    var deferred_text_states: list<byte, TYPE_TABLE_CAPACITY * 2L> = list {}
-    populate_deferred_text_collection_states(compiler, deferred_text_states)
     var hit = UnsupportedHit { found: false, file: 0L, node: -1L, offset: 0L, category: 0L, token: -1L }
     for node in 0L..tables.nodes.count() {
         let file_index = node_file_index(tables.nodes, files, node)
-        let category = unsupported_category_for_node(source, tokens, files, tables, compiler, deferred_text_states, node, file_index)
+        let category = unsupported_category_for_node(source, tokens, files, tables, compiler, node, file_index)
         if category == 0L { continue }
         let start = if category == UNSUPPORTED_OPERATOR { tables.nodes[node].anchor } else { tables.nodes[node].start }
         let is_earlier = !hit.found || file_index < hit.file || (file_index == hit.file && (start < hit.offset || (start == hit.offset && (tables.nodes[node].end > tables.nodes[hit.node].end || (tables.nodes[node].end == tables.nodes[hit.node].end && node > hit.node)))))
@@ -672,7 +660,7 @@ fn check_text_builder_method(
     }
     if argument < 0L { fail_at_message(env, files, compiler, file_index, tables.nodes[node].anchor, "text builder method is missing its value") }
     let argument_type = compiler.facts[argument].ty
-    let valid_argument = if is_push { argument_type == TY_BYTE }
+    let valid_argument = if is_push { argument_type == TY_BYTE || argument_type == TY_INT }
         else if receiver_kind == TYPE_KIND_ASCII { type_kind(compiler, argument_type) == TYPE_KIND_ASCII }
         else if receiver_kind == TYPE_KIND_TEXT { type_kind(compiler, argument_type) == TYPE_KIND_TEXT || type_kind(compiler, argument_type) == TYPE_KIND_ASCII }
         else { type_kind(compiler, argument_type) == TYPE_KIND_BYTES }

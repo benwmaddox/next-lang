@@ -66,12 +66,21 @@ fn text_method_needs_receiver_metrics_capture(
     false
 }
 
+// Where the receiver of a text method call lives. A text field reached through an indexed collection
+// element (items[i].name) or a parameter field needs its address computed first, like the collection
+// methods do.
 fn text_method_receiver_location(
     tables: ParseTables,
-    compiler: CompilerTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
     node: long,
 ) -> StorageLocation {
     let receiver = compiler.child_first[node]
+    if tables.nodes[receiver].kind == NodeKind.Field {
+        let address_id = MAX_TREE_NODES * 1024L + next_location_serial(ir) * MAX_TREE_NODES + receiver
+        if emit_collection_field_path_address(tables, compiler, ir, receiver, address_id) { return compiler_location(compiler, 2L, address_id, 0L) }
+        if emit_parameter_field_path_address(tables, compiler, ir, receiver, address_id) { return compiler_location(compiler, 2L, address_id, 0L) }
+    }
     aggregate_source_location_for_node(tables, compiler, receiver)
 }
 
@@ -325,7 +334,7 @@ fn emit_text_bytes_view(
     ir_write_ascii(compiler, ir, "\ntext.bytes.init."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
     let receiver = compiler.child_first[node]
     let receiver_ty = compiler.facts[receiver].ty
-    let source = text_method_receiver_location(tables, compiler, node)
+    let source = text_method_receiver_location(tables, compiler, ir, node)
     let destination = aggregate_destination_location(compiler, 0L, node)
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
     let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
@@ -575,7 +584,7 @@ fn emit_ascii_search(
     ir_write_ascii(compiler, ir, "\nascii.search.init."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
     let receiver = compiler.child_first[node]
     let needle = compiler.child_next[receiver]
-    let receiver_location = text_method_receiver_location(tables, compiler, node)
+    let receiver_location = text_method_receiver_location(tables, compiler, ir, node)
     let needle_location = aggregate_source_location_for_node(tables, compiler, needle)
     let receiver_pointer = emit_location_pointer_materialization(compiler, ir, receiver_location)
     let needle_pointer = emit_location_pointer_materialization(compiler, ir, needle_location)
@@ -679,7 +688,7 @@ fn emit_text_slice(
     let receiver_ty = compiler.facts[receiver].ty
     let receiver_kind = type_kind(compiler, receiver_ty)
     let is_text = receiver_kind == TYPE_KIND_TEXT
-    let source_location = text_method_receiver_location(tables, compiler, node)
+    let source_location = text_method_receiver_location(tables, compiler, ir, node)
     let destination_location = aggregate_destination_location(compiler, 0L, node)
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
     let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination_location)
@@ -836,7 +845,7 @@ fn emit_text_method_call(
     let kind = type_kind(compiler, ty)
     let method = text_method_kind(source, tokens, files, file_index, tables.nodes[node].token, kind)
     if method == TEXT_METHOD_LEN || method == TEXT_METHOD_BYTE_LEN {
-        let location = text_method_receiver_location(tables, compiler, node)
+        let location = text_method_receiver_location(tables, compiler, ir, node)
         let pointer = emit_location_pointer_materialization(compiler, ir, location)
         if method == TEXT_METHOD_LEN && kind == TYPE_KIND_TEXT {
             emit_text_source_points(compiler, ir, ty, location, pointer, node, "method")
@@ -1061,7 +1070,7 @@ fn emit_text_conversion(
     let receiver_ty = compiler.facts[receiver].ty
     let receiver_kind = type_kind(compiler, receiver_ty)
     let result_ty = compiler.facts[node].ty
-    let source = text_method_receiver_location(tables, compiler, node)
+    let source = text_method_receiver_location(tables, compiler, ir, node)
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
     let destination = aggregate_destination_location(compiler, 0L, node)
     let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)

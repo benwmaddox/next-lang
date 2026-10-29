@@ -652,7 +652,9 @@ fn require_type(
     actual: long,
     tables: ParseTables,
 ) {
+    // A byte widens to an int wherever an int is expected, as in stage 0 (both are 32-bit values in IR).
     if actual == TY_NEVER || actual == expected || text_width_fits(compiler, actual, expected) { return }
+    if expected == TY_INT && actual == TY_BYTE { return }
     let offset = tables.nodes[node].start
     fail_type_mismatch(env, files, compiler, file_index, offset, expected, actual)
 }

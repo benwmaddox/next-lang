@@ -470,7 +470,7 @@ fn register_text_constants(
     }
 }
 
-// A constant of fixed array type whose elements are int, long or byte literals.
+// A constant of fixed array type whose elements are int, long or byte literals, or Ascii max N text literals.
 // register_array_constants checks the shape; emit_file_globals writes the array image as an IR
 // global and a use copies it into the use's own temporary (emit_array_constant_value).
 fn register_array_constants(
@@ -489,8 +489,8 @@ fn register_array_constants(
         let declared = compiler.facts[type_node].ty
         if type_kind(compiler, declared) != TYPE_KIND_ARRAY { continue }
         let element = collection_element_type(compiler, declared)
-        // Arrays of text wait for text in collections (their element layout is not implemented).
-        if element != TY_INT && element != TY_LONG && element != TY_BYTE { continue }
+        let element_kind = type_kind(compiler, element)
+        if element != TY_INT && element != TY_LONG && element != TY_BYTE && element_kind != TYPE_KIND_ASCII { continue }
         let initializer = node_last_child(tables, compiler, node)
         if initializer < 0L || initializer == type_node || tables.nodes[initializer].kind != NodeKind.ArrayLiteral { continue }
         let file_index = node_file_index(tables.nodes, files, node)
@@ -501,7 +501,15 @@ fn register_array_constants(
         for step in 0L..capacity + 1L {
             if item < 0L { break }
             let literal_kind = tables.nodes[item].kind
-            if literal_kind != NodeKind.Integer { supported = false }
+            if element_kind == TYPE_KIND_ASCII {
+                if literal_kind != NodeKind.ByteString { supported = false }
+                else {
+                    let literal_length = decode_string_token(source, tokens, files[file_index].base, tables.nodes[item].token, false).count()
+                    if literal_length > text_max_bytes(compiler, element) {
+                        fail_text_literal_too_long(env, files, compiler, file_index, tables.nodes[item].start, false, literal_length, text_max_bytes(compiler, element))
+                    }
+                }
+            } else if literal_kind != NodeKind.Integer { supported = false }
             else {
                 let _checked = literal_value(env, source, tokens, files, compiler, tables, file_index, item, element)
             }

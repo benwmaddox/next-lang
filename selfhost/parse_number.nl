@@ -122,7 +122,7 @@ fn emit_parse_number_method(
     let data_offset = text_data_offset(compiler, receiver_type)
     if target_bits < 0L || data_offset < 0L { compiler.ir_overflow = true; return }
 
-    let source_location = text_method_receiver_location(tables, compiler, node)
+    let source_location = text_method_receiver_location(tables, compiler, ir, node)
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
     let destination = aggregate_destination_location(compiler, 0L, node)
     let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)

@@ -166,15 +166,20 @@ fn mark_struct_helpers(
                     let element = type_record(compiler, child_ty)
                     for field_offset in 0L..element.field_count {
                         let field_ty = compiler.struct_fields[element.field_start + field_offset].ty
-                        if type_kind(compiler, field_ty) == TYPE_KIND_BYTES {
+                        if collection_text_leaf(type_kind(compiler, field_ty)) {
                             // Collection operations can copy, compare, or
-                            // print a direct Bytes leaf even when no whole-
+                            // print a direct text leaf even when no whole-
                             // collection helper is otherwise requested.
                             register_type_helper(compiler, field_ty, HELPER_COPY)
                             register_type_helper(compiler, field_ty, HELPER_EQUAL)
                             register_type_helper(compiler, field_ty, HELPER_PRINT)
                         }
                     }
+                }
+                if collection_text_leaf(type_kind(compiler, child_ty)) {
+                    register_type_helper(compiler, child_ty, HELPER_COPY)
+                    register_type_helper(compiler, child_ty, HELPER_EQUAL)
+                    register_type_helper(compiler, child_ty, HELPER_PRINT)
                 }
                 if is_aggregate_type(compiler, child_ty) {
                     if has_type_helper(compiler, type_id, HELPER_COPY) { register_type_helper(compiler, child_ty, HELPER_COPY) }
@@ -1536,10 +1541,20 @@ fn emit_array_constant_global(
     ir_write_ascii(compiler, ir, " = private unnamed_addr constant ["); ir_write_number(compiler, ir, value_type_size(compiler, declared))
     ir_write_ascii(compiler, ir, " x i8] c\"")
     for index in 0L..capacity {
+        if type_kind(compiler, element) == TYPE_KIND_ASCII {
+            // [length: i64][bytes][zero padding up to the element size], as a variable would hold it
+            let literal = decode_string_token(source, tokens, files[node_file_index(tables.nodes, files, declaration)].base, tables.nodes[item].token, false)
+            let data_offset = text_data_offset(compiler, element)
+            for shift in 0L..8L { ir_write_hex_escaped(compiler, ir, (literal.count() >> (shift * 8L)) & 255L) }
+            for gap in 8L..data_offset { ir_write_hex_escaped(compiler, ir, 0L) }
+            for position in 0L..literal.count() { ir_write_hex_escaped(compiler, ir, literal[position].to_long()) }
+            for pad in data_offset + literal.count()..stride { ir_write_hex_escaped(compiler, ir, 0L) }
+        } else {
             let magnitude = tables.literals[tables.nodes[item].extra]
             let raw = magnitude.limb1 * 4294967296L + magnitude.limb0
             let value = if (tables.nodes[item].flags & FLAG_NEGATIVE) != 0L { 0L - raw } else { raw }
-            for shift in 0L..stride { ir_write_escaped_byte(compiler, ir, ((int)((value >> (shift * 8L)) & 255L)).fit<byte>().unwrap()) }
+            for shift in 0L..stride { ir_write_hex_escaped(compiler, ir, (value >> (shift * 8L)) & 255L) }
+        }
         item = compiler.child_next[item]
     }
     ir_write_ascii(compiler, ir, "\", align 8\n")

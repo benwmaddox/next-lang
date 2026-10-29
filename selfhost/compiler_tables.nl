@@ -142,7 +142,6 @@ const UNSUPPORTED_LARGE_VALUE: long = 9L
 const UNSUPPORTED_FRAME_BUDGET: long = 10L
 const UNSUPPORTED_RESULT_MAIN: long = 11L
 const UNSUPPORTED_NESTED_COLLECTIONS: long = 12L
-const UNSUPPORTED_TEXT_COLLECTION: long = 13L
 const UNSUPPORTED_QUEUE_ELEMENT: long = 15L
 const UNSUPPORTED_QUEUE_USE: long = 16L
 const UNSUPPORTED_CONDITIONAL_BUILDER_LOOP: long = 14L
@@ -912,12 +911,24 @@ fn intern_package_names(
     }
     for name_id in 0L..next_name_id {
         compiler.enum_type_by_name.push(-1L).unwrap()
-        compiler.value_type_by_name.push(-1L).unwrap()
-        compiler.constant_by_name.push(-1L).unwrap()
-        compiler.enum_case_by_name.push(-1L).unwrap()
+        match compiler.value_type_by_name.push(-1L) {
+            ok(_) => (),
+            err(_) => fail_tool(env, "compiler name table capacity exceeded"),
+        }
+        match compiler.constant_by_name.push(-1L) {
+            ok(_) => (),
+            err(_) => fail_tool(env, "compiler name table capacity exceeded"),
+        }
+        match compiler.enum_case_by_name.push(-1L) {
+            ok(_) => (),
+            err(_) => fail_tool(env, "compiler name table capacity exceeded"),
+        }
         compiler.enum_case_name_counts.push(0L).unwrap()
         compiler.reserved_names.push(false).unwrap()
-        compiler.range_alias_names.push(false).unwrap()
+        match compiler.range_alias_names.push(false) {
+            ok(_) => (),
+            err(_) => fail_tool(env, "compiler name table capacity exceeded"),
+        }
         match compiler.function_name_present.push(false) {
             ok(_) => (),
             err(_) => fail_tool(env, "compiler function name map capacity exceeded"),
