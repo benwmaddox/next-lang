@@ -1,0 +1,3 @@
+[package]
+name = "b1-ascii-match-bounds"
+capabilities = ["out"]

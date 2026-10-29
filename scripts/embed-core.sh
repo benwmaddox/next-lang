@@ -74,10 +74,9 @@ for file_index, (_, data) in enumerate(payloads):
     lines.append(f"    if file == {file_index}L {{")
     for chunk_index, chunk in enumerate(chunks):
         encoded = "".join(f"\\x{byte:02x}" for byte in chunk)
-        lines.append(f'        if chunk == {chunk_index}L {{ b"{encoded}" }} else')
-    lines.append("        { b\"\" }")
-    lines.append("    } else")
-lines.append('    { b"" }')
+        lines.append(f'        if chunk == {chunk_index}L {{ return b"{encoded}" }}')
+    lines.append("    }")
+lines.append('    return b""')
 lines.append("}")
 
 content = "\n".join(lines) + "\n"

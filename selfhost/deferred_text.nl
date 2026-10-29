@@ -118,22 +118,6 @@ fn syntax_has_deferred_text_collection(
     type_id >= 0L && type_has_deferred_text_collection(compiler, type_id, states)
 }
 
-fn deferred_text_assignment(op: long, target_type: long, compiler: CompilerTables) -> bool {
+fn is_ascii_append_assignment(op: long, target_type: long, compiler: CompilerTables) -> bool {
     op == 1L && type_kind(compiler, target_type) == TYPE_KIND_ASCII
-}
-
-fn deferred_text_builder_method(
-    source: Bytes max SOURCE_BUFFER_CAPACITY,
-    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
-    files: list<SourceFile, MAX_SOURCE_FILES>,
-    file_index: long,
-    method_token: long,
-    receiver_type: long,
-    compiler: CompilerTables,
-) -> bool {
-    if receiver_type < 0L || method_token < 0L { return false }
-    let kind = type_kind(compiler, receiver_type)
-    let is_text = deferred_text_kind(kind)
-    (is_text && token_is_word_at(source, tokens, files, file_index, method_token, "try_append")) ||
-        (kind == TYPE_KIND_BYTES && token_is_word_at(source, tokens, files, file_index, method_token, "push"))
 }

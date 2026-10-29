@@ -1,0 +1,3 @@
+[package]
+name = "b1-io-files"
+capabilities = ["env", "fs", "out"]

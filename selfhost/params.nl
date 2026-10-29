@@ -4,6 +4,25 @@ fn binding_is_write_parameter(compiler: CompilerTables, binding: long) -> bool {
     binding >= 0L && binding < compiler.bindings.count() && compiler.bindings[binding].parameter && compiler.bindings[binding].mutable
 }
 
+fn binding_parameter_mode(compiler: CompilerTables, binding: long) -> long {
+    if binding < 0L || binding >= compiler.bindings.count() || !compiler.bindings[binding].parameter { return 0L }
+    let scope = compiler.bindings[binding].scope
+    if scope < 0L || scope >= compiler.scopes.count() { return 0L }
+    let function_id = compiler.scopes[scope].function_id
+    if function_id < 0L || function_id >= compiler.functions.count() { return 0L }
+    let function = compiler.functions[function_id]
+    let parameter_node = compiler.bindings[binding].node
+    for parameter_index: long in function.param_start..function.param_start + function.param_count {
+        let parameter = compiler.parameters[parameter_index]
+        if parameter.node == parameter_node { return parameter_mode(parameter) }
+    }
+    0L
+}
+
+fn binding_is_grow_parameter(compiler: CompilerTables, binding: long) -> bool {
+    (binding_parameter_mode(compiler, binding) & FLAG_MODE_GROW) != 0L
+}
+
 fn emit_location_index_value(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, location: StorageLocation) {
     if location.index_node >= 0L {
         ir_write_value_ref(compiler, ir, location.index_node)
@@ -168,7 +187,7 @@ fn direct_call_argument_is_write(tables: ParseTables, compiler: CompilerTables, 
         argument = compiler.child_next[argument]
     }
     argument == wanted && argument_index < function.param_count &&
-        (parameter_mode(compiler.parameters[function.param_start + argument_index]) & FLAG_MODE_WRITE) != 0L
+        (parameter_mode(compiler.parameters[function.param_start + argument_index]) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L
 }
 
 fn direct_call_argument_uses_text_view(tables: ParseTables, compiler: CompilerTables, call: long, wanted: long) -> bool {

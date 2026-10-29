@@ -1,5 +1,10 @@
 # T19: recursive functions (self-hosting step S0, part 1)
 
+Historical Stage0 contract. For the self-hosted compiler, Ben superseded the
+budget and live-region restrictions on 2026-10-28: see
+[B1-recursion.md](B1-recursion.md). Keep frozen Stage0 behavior and its fixtures;
+do not copy this historical machinery into B1.
+
 Depends on T12. Same rules. Read DESIGN.md "How the compiler places values" (the Recursion bullet), "The native stack", and docs/PLAN.md "Self-hosting track" (S0 was added 2026-10-24 so S1, the self-hosted lexer and parser, can start as soon as M3 lands).
 
 - **`recursive fn name(...)`** marks a function that may take part in a call cycle. A cycle is allowed only when every function in it is marked; otherwise T01's error stays, now naming the unmarked functions and suggesting `recursive`. Cycles through function values (T11) count: a function value's possible targets are part of the cycle check.

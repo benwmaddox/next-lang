@@ -1,1 +1,0 @@
-main.nl:4:48: error: recursive call's large result destination 'Big' keeps a data-stack region alive across the cycle; return a small value or end the region before recursing

@@ -13,7 +13,7 @@ fn usage(env: Env, parse_command: bool) -> never {
 }
 
 fn usage_build(env: Env) -> never { // E3a1 begin
-    match env.err.write(b"usage: nlc run selfhost -- build <package> -o <file.ll> [--test] [--test-region-threshold=<bytes>] [--runtime=core]\n") {
+    match env.err.write(b"usage: nlc run selfhost -- build <package> -o <file.ll> [--test] [--test-region-threshold=<bytes>] [--runtime=core|c]\n") {
         ok(_) => env.exit(3),
         err(_) => env.exit(3),
     } // E3a1 end
@@ -43,6 +43,7 @@ fn main(env: Env) {
     var want_binary = false
     var want_test_build = false
     var runtime_seen = false // E3a1 begin
+    var c_runtime = false
     var test_region_threshold = -1L // E3a1 end
     if is_build {
         let output_flag = match arguments.get(2L) { some(value) => value, none => usage_build(env) }
@@ -56,6 +57,10 @@ fn main(env: Env) {
             } else if argument_equals(flag, "--runtime=core") {
                 if runtime_seen { usage_build(env) }
                 runtime_seen = true
+            } else if argument_equals(flag, "--runtime=c") {
+                if runtime_seen { usage_build(env) }
+                runtime_seen = true
+                c_runtime = true
             } else if test_region_threshold_argument(flag) >= 0L {
                 if test_region_threshold >= 0L { usage_build(env) }
                 test_region_threshold = test_region_threshold_argument(flag)
@@ -99,15 +104,19 @@ fn main(env: Env) {
     if is_build {
         let output_path = match arguments.get(3L) { some(value) => value, none => usage_build(env) }
         let config = load_manifest(env, package)
+        if c_runtime && config.step_budget_main >= 0L {
+            fail_tool(env, "the C runtime does not support step_budget.main")
+        }
         var compiler = empty_compiler_tables() // E3a1 begin
+        compiler.c_runtime = c_runtime
         compiler.file_id_base = if test_region_threshold < 0L { 4096L } else { test_region_threshold } // E3a1 end
         compiler.step_budget_main = config.step_budget_main
-        seed_builtin_types(compiler.type_records)
-        add_compiler_links(tables, compiler)
+        seed_builtin_types(env, compiler.type_records)
+        add_compiler_links(env, tables, compiler)
         intern_package_names(env, source, files, tokens, tables, compiler)
         build_line_start_index(env, source, files, compiler)
         register_scalar_constants(env, source, tokens, files, tables, compiler)
-        index_package_enums(source, files, tokens, tables, compiler)
+        index_package_enums(env, source, files, tokens, tables, compiler)
         intern_builtin_full(source, files, tokens, compiler)
         index_package_structs(source, files, tokens, tables, compiler)
         intern_builtin_text_types(source, files, tokens, compiler)

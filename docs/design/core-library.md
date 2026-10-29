@@ -2,6 +2,11 @@
 
 Design note for E1c (docs/PLAN.md, Order of work item 5). 2026-10-25, before any implementation.
 
+The native-stack recursion proposal below is historical. Ben chose ordinary
+OS-stack recursion for B1 on 2026-10-28, with OS process termination on stack
+exhaustion and controlled handling deferred; see
+[B1-recursion.md](../tasks/B1-recursion.md).
+
 This revision incorporates the peer review docs/reviews/sol-core-library-r1.md.
 
 Citations of current behaviour are to commit 6a74a81. `runtime/nl_runtime.c` and `compiler/src/emit.rs` are unchanged in the working tree, so their line numbers hold there too. `compiler/src/driver.rs` has uncommitted edits, so its line numbers are from `git show 6a74a81:compiler/src/driver.rs`. `nlc link-ir` and `nlc test-ir` don't exist yet: they are described as the E1 spec defines them (docs/tasks/E1-selfhost-end-to-end-slice.md:29-66).

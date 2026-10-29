@@ -1,0 +1,1 @@
+main.nl:7:15: error: grow argument needs a Text builder with exactly 4 bytes and 1 code points reserved; found Ascii max 1

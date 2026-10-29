@@ -51,6 +51,10 @@ Proposed observable rules:
 - A named struct or array parameter is a caller-backed view. Field or element
   writes are visible to the caller, and the parameter binding cannot be
   redirected to another object.
+- Caller-backed text parameters are live views too. If `text` is `"a"` and
+  `replace(text)` changes it to `"zz"`, `show(text, replace(text))` sees `"zz"`.
+  Request an explicit copy when the old contents are needed. Scalar arguments
+  and already-materialized value temporaries retain their evaluated values.
 - Functions return scalars or `void`. A named-struct result uses a caller-owned
   output parameter; named structs and arrays of named structs are not returned
   by value.

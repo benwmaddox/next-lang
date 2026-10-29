@@ -1,0 +1,3 @@
+# Deferred decimal-formatting proof
+
+Rust Stage0 builds and runs this test package. The selfhost checker currently rejects the proven `Ascii += str(...)` append at `main.nl:59` because it cannot establish that the produced text fits the declared maximum. This is a bounded proof limitation, not an unsupported language construct. `expected.selfhost.stderr` records the exact O1 and O3 checker diagnostic; the Rust `expected.*` files remain unchanged.

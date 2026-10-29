@@ -153,14 +153,21 @@ Relocation pins (each callee forces a stack move, then reads and writes through 
 
 ## Evaluation of arguments and operands
 
-The target is stage 0's reference semantics for `write` and E2's evaluation-point snapshots for reads.
+The current target (Ben, 2026-10-28) is live caller-backed parameters. This
+supersedes E2's implicit snapshot default for those arguments; ordinary scalar
+and materialized value expressions keep their evaluation-time values.
 
 - **Indexes are captured once.** An index or field path in an argument or operand is evaluated, and bounds-checked, once, where the argument is evaluated. Later effects don't re-evaluate it: in `f(xs[i], { i = 5; 0 })` the reference is to the old `xs[i]`.
 - **`write` and `grow` arguments are references.** The callee sees the place's contents when it runs, after every later argument has been evaluated. In `f(xs[0], { xs[0] = 9; 0 })` with a `write int` first parameter, the callee sees 9, as stage 0's element pointer gives. The self-hosted compiler passes a descriptor, so it gets this by construction. Where it gathers (the fallback above), it gathers after the last argument is evaluated, just before the call.
-- **Read arguments and operands are snapshots taken where they are evaluated** (E2's rule). The emitter may skip the copy only when no operand evaluated after it, up to the value's use, can change it. E2's skip rule assumed calls can't change a caller's locals, which no longer holds. From E3a2 the threats are assignment, compound assignment, a mutating method (`push`, `insert`, `remove`, `clear`, later `try_append`, `+=`, `Bytes.push`), and any call that passes a `write` or `grow` argument. So in `f(s, mutate(s))`, with `f`'s first parameter read and `mutate` taking `write`, `f` sees the old `s`.
+- **Caller-backed arguments are live views.** In `f(s, mutate(s))`, a caller-backed first parameter sees the updated storage. Capture its location/index once, then refresh addresses and text metrics after later arguments execute. Code needing the old contents explicitly copies them. Scalar arguments and materialized value operands remain values; concat/comparison operands are a separate contract.
 - **The overlap check doesn't cover these cases.** A block or call argument is not a place, so `places_overlap` never sees it. That is why evaluation order, not exclusivity, decides them.
 
-**The stage-0 audit (E2i).** Stage 0's `emit_call_argument` gathers a struct element passed `write` (`emit_gather_collection_element`) inside the argument loop, before later arguments are evaluated, and scatters it back after the call. So `g(units[0], { units[0].hp = 9; 0 })` with a `write Unit` first parameter probably shows the callee the old `hp`, and the scatter then overwrites the 9. Its large-value read path passes the place's pointer or offset without a snapshot, so a later `mutate(big)` may be visible to the callee. Both contradict the rules above. E2i writes fixtures for each, at both optimisation levels, and runs them through stage 0. A mismatch is a stage-0 fix: gather after the last argument; snapshot a large read argument when a later operand may change it. These fixtures are classed `unsupported` for the self-hosted compiler until E3a2.
+**Historical stage-0 audit (E2i).** Earlier work requested snapshots for reads
+and gathering after later arguments for writes. The live-view decision replaces
+the read-copy requirement. Stage0 is frozen: preserve its observed baselines,
+and pin intentional target differences separately rather than changing Rust to
+force agreement. Legacy aggregate lowering still needs review against the new
+rule; it does not change the chosen semantics.
 
 Fixtures (E2i for stage 0, run through the self-hosted compiler from E3a2):
 

@@ -277,6 +277,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--reference", required=True, type=Path)
     parser.add_argument(
+        "--compiler",
+        type=Path,
+        help="use this existing self-hosted compiler instead of building one from Stage0",
+    )
+    parser.add_argument(
         "--no-reference-cache",
         action="store_true",
         help="run stage-zero nlc afresh instead of reading cached reference results",
@@ -287,6 +292,12 @@ def main() -> int:
     reference = args.reference.resolve()
     if not reference.is_file() or not os.access(reference, os.X_OK):
         print(f"reference nlc is not executable: {reference}", file=sys.stderr)
+        return 2
+    compiler = args.compiler.resolve() if args.compiler is not None else None
+    if compiler is not None and (
+        not compiler.is_file() or not os.access(compiler, os.X_OK)
+    ):
+        print(f"self-host compiler is not an executable file: {compiler}", file=sys.stderr)
         return 2
 
     env = os.environ.copy()
@@ -334,23 +345,26 @@ def main() -> int:
 
     work = Path(tempfile.mkdtemp(prefix=".selfhost-build-compare-", dir=root))
     try:
-        cached_build = subprocess.run(
-            [sys.executable, str(root / "scripts/build-selfhost-cached.py"), "--reference", str(reference)],
-            cwd=root,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            text=True,
-        )
-        if cached_build.returncode != 0:
-            sys.stderr.write(cached_build.stderr)
-            print("could not build the stage-zero selfhost compiler", file=sys.stderr)
-            return 1
-        stage0 = Path(cached_build.stdout.strip())
-        if not stage0.is_file():
-            print(f"cached stage-zero selfhost compiler is missing: {stage0}", file=sys.stderr)
-            return 1
+        if compiler is None:
+            cached_build = subprocess.run(
+                [sys.executable, str(root / "scripts/build-selfhost-cached.py"), "--reference", str(reference)],
+                cwd=root,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                text=True,
+            )
+            if cached_build.returncode != 0:
+                sys.stderr.write(cached_build.stderr)
+                print("could not build the stage-zero selfhost compiler", file=sys.stderr)
+                return 1
+            stage0 = Path(cached_build.stdout.strip())
+            if not stage0.is_file():
+                print(f"cached stage-zero selfhost compiler is missing: {stage0}", file=sys.stderr)
+                return 1
+        else:
+            stage0 = compiler
 
         ir_bound_sizes = check_struct_helper_ir_bound(stage0, root, env, work)
         print(
