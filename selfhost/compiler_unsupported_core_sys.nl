@@ -351,7 +351,8 @@ fn unsupported_category_for_node(
             let declared = compiler.facts[node].ty
             if declared == TY_INT || declared == TY_LONG || declared == TY_BYTE { 0L }
             else if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L &&
-                (type_kind(compiler, declared) == TYPE_KIND_ASCII || type_kind(compiler, declared) == TYPE_KIND_BYTES) { 0L }
+                (type_kind(compiler, declared) == TYPE_KIND_ASCII || type_kind(compiler, declared) == TYPE_KIND_BYTES ||
+                    type_kind(compiler, declared) == TYPE_KIND_ARRAY) { 0L }
             else { UNSUPPORTED_NODE }
         },
         NodeKind.TypeArgument => 0L,

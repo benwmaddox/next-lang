@@ -808,14 +808,14 @@ fn check_one_body(
                 let binding = find_binding_in_scope(compiler, frame.scope, compiler.token_name_ids[syntax.token])
                 if binding < 0L {
                     let constant = find_constant_declaration(tables, compiler, compiler.token_name_ids[syntax.token])
-                    if constant >= 0L && (compiler.facts[constant].flags & FACT_CONSTANT_TEXT) != 0L {
+                    if constant >= 0L && (compiler.facts[constant].flags & (FACT_CONSTANT_TEXT | FACT_CONSTANT_ARRAY)) != 0L {
                         let constant_ty = compiler.facts[constant].ty
                         if frame.expected >= 0L && frame.expected != constant_ty {
                             require_type(env, files, compiler, file_index, node, frame.expected, constant_ty, tables)
                         }
                         compiler.facts[node] = NodeFact {
                             ty: constant_ty,
-                            flags: FACT_FALLS_THROUGH | FACT_CONSTANT_TEXT,
+                            flags: FACT_FALLS_THROUGH | (compiler.facts[constant].flags & (FACT_CONSTANT_TEXT | FACT_CONSTANT_ARRAY)),
                             binding: -1L,
                             function: -1L,
                             literal: compiler.facts[constant].literal,
