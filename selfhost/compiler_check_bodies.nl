@@ -439,7 +439,7 @@ fn check_one_body(
             if kind == NodeKind.ArrayLiteral {
                 let collection_ty = frame.expected
                 let collection_kind = type_kind(compiler, collection_ty)
-                if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST && collection_kind != TYPE_KIND_BYTES {
+                if collection_kind != TYPE_KIND_ARRAY && !collection_kind_is_list(collection_kind) && collection_kind != TYPE_KIND_BYTES {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "cannot infer whether this literal is an array or list; add a T[N] or list<T, N> annotation")
                 }
                 let element_count = count_children(tables, compiler, node)
@@ -447,13 +447,21 @@ fn check_one_body(
                 if collection_kind == TYPE_KIND_ARRAY && element_count != capacity {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "array literal has the wrong number of elements for its array type")
                 }
-                if collection_kind == TYPE_KIND_LIST && element_count > capacity {
+                if collection_kind_is_list(collection_kind) && element_count > capacity {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "list literal exceeds its capacity")
                 }
                 frame.result_ty = collection_ty
                 frame.cursor = compiler.child_first[node]
                 frame.phase = 1L
                 compiler.work[frame_index] = frame
+                continue
+            }
+            if kind == NodeKind.QueueLiteral {
+                if type_kind(compiler, frame.expected) != TYPE_KIND_QUEUE {
+                    fail_at_message(env, files, compiler, file_index, syntax.start, "cannot infer the capacity for 'queue {}'; add a queue<T, N> type annotation")
+                }
+                compiler.facts[node] = NodeFact { ty: frame.expected, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+                match compiler.work.pop() { some(_) => (), none() => () }
                 continue
             }
             if kind == NodeKind.ListLiteral {
@@ -892,6 +900,9 @@ fn check_one_body(
         if kind == NodeKind.ForEach && frame.phase == 80L {
             let collection_type = compiler.facts[frame.child0].ty
             let collection_kind = type_kind(compiler, collection_type)
+            if collection_kind == TYPE_KIND_QUEUE {
+                report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: frame.child0, offset: tables.nodes[frame.child0].start, category: UNSUPPORTED_QUEUE_USE, token: tables.nodes[frame.child0].token })
+            }
             if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST &&
                 collection_kind != TYPE_KIND_ASCII && collection_kind != TYPE_KIND_BYTES {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "for-each loops require an array, list, Ascii, or Bytes")
@@ -1093,7 +1104,7 @@ fn check_one_body(
             let ty = if frame.child1 >= 0L { frame.child1 } else { value_fact.ty }
             require_type(env, files, compiler, file_index, value, ty, value_fact.ty, tables)
             let binding = add_local_binding(env, source, files, tokens, tables, compiler, file_index, node, syntax.token, frame.scope, ty, (syntax.flags & FLAG_MUTABLE) != 0L, false, false)
-            if type_kind(compiler, ty) == TYPE_KIND_LIST {
+            if collection_kind_is_list(type_kind(compiler, ty)) {
                 if tables.nodes[value].kind == NodeKind.ListLiteral || (tables.nodes[value].kind == NodeKind.Call && (tables.nodes[value].flags & FLAG_SYNTHETIC) != 0L) {
                     set_binding_collection_count(compiler, binding, 0L)
                 } else { () }
@@ -1111,6 +1122,9 @@ fn check_one_body(
             let index = frame.child1
             let collection_ty = if receiver >= 0L { compiler.facts[receiver].ty } else { -1L }
             let collection_kind = type_kind(compiler, collection_ty)
+            if collection_kind == TYPE_KIND_QUEUE {
+                report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node, offset: syntax.start, category: UNSUPPORTED_QUEUE_USE, token: syntax.token })
+            }
             if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST && collection_kind != TYPE_KIND_BYTES && collection_kind != TYPE_KIND_ASCII {
                 fail_at_message(env, files, compiler, file_index, syntax.start, "this value cannot be indexed; use an array, list, Bytes, or Ascii")
             }
@@ -1235,7 +1249,7 @@ fn check_one_body(
                 if !is_numeric_type(target_fact.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "compound assignment requires int or long") }
                 require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables)
             }
-            if type_kind(compiler, target_fact.ty) == TYPE_KIND_LIST && binding < compiler.bindings.count() {
+            if collection_kind_is_list(type_kind(compiler, target_fact.ty)) && binding < compiler.bindings.count() {
                 set_binding_collection_count(compiler, binding, -1L)
             } else if deferred_text_kind(type_kind(compiler, target_fact.ty)) && op != 0L && !is_ascii_append_assignment(op, target_fact.ty, compiler) && binding < compiler.bindings.count() {
                 set_binding_collection_count(compiler, binding, -1L)
@@ -1501,9 +1515,15 @@ fn check_one_body(
                     require_type(env, files, compiler, file_index, node, frame.expected, method_result_ty, tables)
                 }
                 compiler.facts[node] = NodeFact { ty: method_result_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: TEXT_METHOD_EMPTY }
-            } else if receiver_kind == TYPE_KIND_ARRAY || receiver_kind == TYPE_KIND_LIST {
+            } else if receiver_kind == TYPE_KIND_ARRAY || collection_kind_is_list(receiver_kind) {
                 let method = collection_method_kind(source, tokens, files, file_index, syntax.token, receiver_kind)
                 if method == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching array or list method is available on this value") }
+                if receiver_kind == TYPE_KIND_QUEUE && method != COLLECTION_METHOD_COUNT {
+                    let queue_element = collection_element_type(compiler, receiver_ty)
+                    if queue_element != TY_INT && queue_element != TY_LONG {
+                        report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node, offset: syntax.start, category: UNSUPPORTED_QUEUE_ELEMENT, token: syntax.token })
+                    }
+                }
                 let actual_count = count_children(tables, compiler, node) - 1L
                 let wanted_count = if method == COLLECTION_METHOD_PUSH || method == COLLECTION_METHOD_REMOVE { 1L }
                     else if method == COLLECTION_METHOD_INSERT { 2L } else { 0L }
@@ -1520,6 +1540,8 @@ fn check_one_body(
                         fail_at_message(env, files, compiler, file_index, syntax.start, "cannot call a list method while a collection view is live; move the operation after the loop")
                     }
                     operation_result_type = collection_element_type(compiler, receiver_ty)
+                } else if method == COLLECTION_METHOD_PEEK {
+                    operation_result_type = intern_sum_type(compiler, TYPE_KIND_OPTION, collection_element_type(compiler, receiver_ty), -1L, file_index, node, -1L, -1L)
                 } else if method == COLLECTION_METHOD_POP {
                     let receiver_binding = compiler.facts[receiver].binding
                     if receiver_binding < 0L || !compiler.bindings[receiver_binding].mutable { fail_at_message(env, files, compiler, file_index, syntax.start, "list mutation requires a writable local, parameter, or field place") }

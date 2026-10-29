@@ -414,7 +414,7 @@ fn body_child_expected(
     } else if kind == NodeKind.MethodCall && is_core_sys_receiver(source, tokens, files, tables, compiler, parent, file_index) {
         core_sys_argument_type(core_sys_operation(source, tokens, files, file_index, tables.nodes[parent].token), child_index)
     } else if kind == NodeKind.MethodCall && frame.child0 >= 0L &&
-        (type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_ARRAY || type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_LIST) {
+        (type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, compiler.facts[frame.child0].ty))) {
         let collection_receiver_kind = type_kind(compiler, compiler.facts[frame.child0].ty)
         let method = collection_method_kind(source, tokens, files, file_index, tables.nodes[parent].token,
             collection_receiver_kind)

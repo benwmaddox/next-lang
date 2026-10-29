@@ -706,7 +706,7 @@ recursive fn emit_dynamic_group_size_for_descriptor(
         ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, alignment - 1L); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.desc.group.size."); ir_write_number(compiler, ir, rounded); ir_write_ascii(compiler, ir, " = and i64 %coll.desc.final.add."); ir_write_number(compiler, ir, rounded); ir_write_ascii(compiler, ir, ", -"); ir_write_number(compiler, ir, alignment); ir_push_byte(compiler, ir, 10)
         rounded
-    } else if kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST {
+    } else if kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) {
         // E3a2 forbids a collection-bearing struct as a collection element,
         // so descriptors that reach this branch have the standalone geometry
         // (one copy). Its inline collection storage has a static exact size.

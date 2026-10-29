@@ -26,7 +26,7 @@ recursive fn deferred_text_type_contains_collection(
         return 0L
     }
     var unresolved = false
-    if kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST {
+    if kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) {
         let element_type = collection_element_type(compiler, type_id)
         if !under_collection && type_kind(compiler, element_type) == TYPE_KIND_STRUCT {
             // A collection of records may carry bounded Bytes in its direct

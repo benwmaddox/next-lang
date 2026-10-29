@@ -259,7 +259,7 @@ fn set_type_helper_mask(compiler: write CompilerTables, type_id: long, mask: lon
 fn is_aggregate_type(compiler: CompilerTables, type_id: long) -> bool {
     let kind = type_kind(compiler, type_id)
     kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_ENUM || kind == TYPE_KIND_OPTION || kind == TYPE_KIND_RESULT ||
-        kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST || kind == TYPE_KIND_ASCII || kind == TYPE_KIND_TEXT || kind == TYPE_KIND_BYTES
+        kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) || kind == TYPE_KIND_ASCII || kind == TYPE_KIND_TEXT || kind == TYPE_KIND_BYTES
 }
 
 fn set_type_state(compiler: write CompilerTables, type_id: long, state: long) {
@@ -1122,7 +1122,7 @@ fn size_package_types(
     for root_type in 0L..type_count(compiler) {
         let root_kind = type_kind(compiler, root_type)
         if root_kind != TYPE_KIND_STRUCT && !is_sum_type(compiler, root_type) &&
-            root_kind != TYPE_KIND_ARRAY && root_kind != TYPE_KIND_LIST { continue }
+            root_kind != TYPE_KIND_ARRAY && !collection_kind_is_list(root_kind) { continue }
         if type_state(compiler, root_type) != 0L { continue }
         set_type_state(compiler, root_type, 1L)
         compiler.type_walk.push(initial_type_walk_frame(compiler, root_type)).unwrap()
@@ -1132,7 +1132,7 @@ fn size_package_types(
             var frame = compiler.type_walk[frame_index]
             let type_info = type_record(compiler, frame.type_index)
             let frame_kind = type_kind(compiler, frame.type_index)
-            if frame_kind == TYPE_KIND_ARRAY || frame_kind == TYPE_KIND_LIST {
+            if frame_kind == TYPE_KIND_ARRAY || collection_kind_is_list(frame_kind) {
                 if frame_kind == TYPE_KIND_ARRAY && type_info.field_count == 0L {
                     // A zero-length array has no element storage. Preserve the
                     // Stage0 layout even when the unused element layout would
@@ -1151,7 +1151,7 @@ fn size_package_types(
                         let _ = compiler.type_walk.pop()
                         continue
                     }
-                    if (element_kind == TYPE_KIND_STRUCT || is_sum_type(compiler, element_ty) || element_kind == TYPE_KIND_ARRAY || element_kind == TYPE_KIND_LIST) && type_state(compiler, element_ty) == 0L {
+                    if (element_kind == TYPE_KIND_STRUCT || is_sum_type(compiler, element_ty) || element_kind == TYPE_KIND_ARRAY || collection_kind_is_list(element_kind)) && type_state(compiler, element_ty) == 0L {
                         set_type_state(compiler, element_ty, 1L)
                         compiler.type_walk.push(initial_type_walk_frame(compiler, element_ty)).unwrap()
                         continue
@@ -1161,8 +1161,7 @@ fn size_package_types(
                     continue
                 }
                 let size = type_group_size(compiler, frame.type_index, 1L)
-                let alignment = if frame_kind == TYPE_KIND_LIST && element_align < 8L { 8L }
-                    else if frame_kind == TYPE_KIND_LIST { element_align }
+                let alignment = if collection_kind_is_list(frame_kind) && element_align < 8L { 8L }
                     else { element_align }
                 if size == -2L {
                     set_type_layout(compiler, frame.type_index, -1L, alignment, TYPE_STATE_LAYOUT_OVERFLOW)
@@ -1194,7 +1193,7 @@ fn size_package_types(
                         continue
                     }
                     let child_kind = type_kind(compiler, ty)
-                    if (child_kind == TYPE_KIND_STRUCT || is_sum_type(compiler, ty) || child_kind == TYPE_KIND_ARRAY || child_kind == TYPE_KIND_LIST) && type_state(compiler, ty) == 0L {
+                    if (child_kind == TYPE_KIND_STRUCT || is_sum_type(compiler, ty) || child_kind == TYPE_KIND_ARRAY || collection_kind_is_list(child_kind)) && type_state(compiler, ty) == 0L {
                         set_type_state(compiler, ty, 1L)
                         compiler.type_walk.push(initial_type_walk_frame(compiler, ty)).unwrap()
                         continue
@@ -1268,7 +1267,7 @@ fn size_package_types(
                         let _ = compiler.type_walk.pop()
                         continue
                     }
-                    if (type_kind(compiler, ty) == TYPE_KIND_STRUCT || is_sum_type(compiler, ty) || type_kind(compiler, ty) == TYPE_KIND_ARRAY || type_kind(compiler, ty) == TYPE_KIND_LIST) && type_state(compiler, ty) == 0L {
+                    if (type_kind(compiler, ty) == TYPE_KIND_STRUCT || is_sum_type(compiler, ty) || type_kind(compiler, ty) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, ty))) && type_state(compiler, ty) == 0L {
                         set_type_state(compiler, ty, 1L)
                         compiler.type_walk.push(initial_type_walk_frame(compiler, ty)).unwrap()
                         continue

@@ -173,7 +173,7 @@ fn region_node_is_collection_method_receiver(
     let syntax_kind = tables.nodes[node].kind
     if syntax_kind != NodeKind.Name && syntax_kind != NodeKind.Field && syntax_kind != NodeKind.Index { return false }
     let kind = type_kind(compiler, compiler.facts[node].ty)
-    if kind != TYPE_KIND_ARRAY && kind != TYPE_KIND_LIST { return false }
+    if kind != TYPE_KIND_ARRAY && !collection_kind_is_list(kind) { return false }
     for parent in 0L..tables.nodes.count() {
         if compiler.child_first[parent] == node {
             if tables.nodes[parent].kind == NodeKind.MethodCall {

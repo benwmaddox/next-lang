@@ -11,6 +11,13 @@ const COLLECTION_METHOD_INSERT: long = 1004L
 const COLLECTION_METHOD_REMOVE: long = 1005L
 const COLLECTION_METHOD_CLEAR: long = 1006L
 const COLLECTION_METHOD_POP: long = 1007L
+const COLLECTION_METHOD_PEEK: long = 1008L
+
+// List-like collections share layout, copying and zero-initialisation: a count word, then the
+// elements. A queue also keeps the index of its oldest element and uses the elements as a ring.
+fn collection_kind_is_list(kind: long) -> bool {
+    kind == TYPE_KIND_LIST || kind == TYPE_KIND_QUEUE
+}
 
 fn collection_method_kind(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -27,6 +34,10 @@ fn collection_method_kind(
     else if receiver_kind == TYPE_KIND_LIST && token_is_word_at(source, tokens, files, file_index, method_token, "remove") { COLLECTION_METHOD_REMOVE }
     else if receiver_kind == TYPE_KIND_LIST && token_is_word_at(source, tokens, files, file_index, method_token, "clear") { COLLECTION_METHOD_CLEAR }
     else if receiver_kind == TYPE_KIND_LIST && token_is_word_at(source, tokens, files, file_index, method_token, "pop") { COLLECTION_METHOD_POP }
+    else if receiver_kind == TYPE_KIND_QUEUE && token_is_word_at(source, tokens, files, file_index, method_token, "count") { COLLECTION_METHOD_COUNT }
+    else if receiver_kind == TYPE_KIND_QUEUE && token_is_word_at(source, tokens, files, file_index, method_token, "push") { COLLECTION_METHOD_PUSH }
+    else if receiver_kind == TYPE_KIND_QUEUE && token_is_word_at(source, tokens, files, file_index, method_token, "pop") { COLLECTION_METHOD_POP }
+    else if receiver_kind == TYPE_KIND_QUEUE && token_is_word_at(source, tokens, files, file_index, method_token, "peek") { COLLECTION_METHOD_PEEK }
     else { 0L }
 }
 
@@ -423,7 +434,7 @@ fn invalidate_collection_counts_for_write_call(
             let binding = compiler.facts[argument].binding
             if binding >= 0L && binding < compiler.bindings.count() &&
                 compiler.bindings[binding].ty == compiler.facts[argument].ty &&
-                (type_kind(compiler, compiler.bindings[binding].ty) == TYPE_KIND_LIST ||
+                (collection_kind_is_list(type_kind(compiler, compiler.bindings[binding].ty)) ||
                     deferred_text_kind(type_kind(compiler, compiler.bindings[binding].ty))) {
                 set_binding_collection_count(compiler, binding, -1L)
             }
@@ -526,6 +537,8 @@ fn collection_type_syntax_kind(
 ) -> long {
     if syntax.token >= 0L && token_is_word_at(source, tokens, files, file_index, syntax.token, "list") {
         TYPE_KIND_LIST
+    } else if syntax.token >= 0L && token_is_word_at(source, tokens, files, file_index, syntax.token, "queue") {
+        TYPE_KIND_QUEUE
     } else { 0L }
 }
 
@@ -543,7 +556,8 @@ fn intern_collection_type_syntax(
     let argument_count = syntax.meta1 & 2097151L
     let constant_count = (syntax.meta1 >> 21L) & 2097151L
     let array_count = (syntax.meta1 >> 42L) & 2097151L
-    let is_list = collection_type_syntax_kind(source, tokens, files, file_index, syntax) == TYPE_KIND_LIST
+    let written_kind = collection_type_syntax_kind(source, tokens, files, file_index, syntax)
+    let is_list = collection_kind_is_list(written_kind)
     if !is_list && array_count == 0L {
         return intern_text_type_syntax(env, source, tokens, files, tables, compiler, file_index, node)
     }
@@ -552,6 +566,9 @@ fn intern_collection_type_syntax(
     var child = compiler.child_first[node]
     if is_list {
         if argument_count != 1L || constant_count != 1L || child < 0L || tables.nodes[child].kind != NodeKind.TypeArgument {
+            if written_kind == TYPE_KIND_QUEUE {
+                fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "unknown type '", syntax.token, "'; declare it with enum")
+            }
             fail_at_message(env, files, compiler, file_index, syntax.start, "list type needs an element type and a constant capacity")
         }
         if (compiler.facts[child].flags & FACT_RESOLVED_TYPE) == 0L { return -1L }
@@ -567,7 +584,7 @@ fn intern_collection_type_syntax(
         if !capacity_value.valid { collection_capacity_overflow_error(env, files, compiler, file_index, syntax.start) }
         if capacity_value.value < 0L { collection_capacity_error(env, files, compiler, file_index, tables.nodes[capacity_node].start, true, true) }
         let list_name_id = compiler.token_name_ids[syntax.token]
-        type_id = intern_collection_type(compiler, TYPE_KIND_LIST, element_type, capacity_value.value, file_index, node, list_name_id, syntax.token)
+        type_id = intern_collection_type(compiler, written_kind, element_type, capacity_value.value, file_index, node, list_name_id, syntax.token)
         child = if capacity_node >= 0L { compiler.child_next[capacity_node] } else { -1L }
     } else {
         type_id = intern_text_type_syntax(env, source, tokens, files, tables, compiler, file_index, node)
@@ -609,14 +626,14 @@ fn intern_collection_type_syntax(
 
 fn collection_element_type(compiler: CompilerTables, type_id: long) -> long {
     if type_kind(compiler, type_id) == TYPE_KIND_ASCII || type_kind(compiler, type_id) == TYPE_KIND_BYTES { TY_BYTE }
-    else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || type_kind(compiler, type_id) == TYPE_KIND_LIST {
+    else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
         type_record(compiler, type_id).field_start
     } else { -1L }
 }
 
 fn collection_capacity(compiler: CompilerTables, type_id: long) -> long {
     if type_kind(compiler, type_id) == TYPE_KIND_ASCII || type_kind(compiler, type_id) == TYPE_KIND_BYTES { text_max_bytes(compiler, type_id) }
-    else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || type_kind(compiler, type_id) == TYPE_KIND_LIST {
+    else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
         type_record(compiler, type_id).field_count
     } else { -1L }
 }
@@ -624,7 +641,7 @@ fn collection_capacity(compiler: CompilerTables, type_id: long) -> long {
 recursive fn type_contains_collection(compiler: CompilerTables, type_id: long, depth: long) -> bool {
     if depth > 256L || type_id < 0L || type_id >= type_count(compiler) { return false }
     let kind = type_kind(compiler, type_id)
-    if kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST { return true }
+    if kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) { return true }
     if kind == TYPE_KIND_STRUCT {
         let record = type_record(compiler, type_id)
         for field_offset in 0L..record.field_count {
@@ -651,7 +668,7 @@ recursive fn type_contains_collection(compiler: CompilerTables, type_id: long, d
 
 fn collection_has_nested_elements(compiler: CompilerTables, type_id: long) -> bool {
     let kind = type_kind(compiler, type_id)
-    if kind != TYPE_KIND_ARRAY && kind != TYPE_KIND_LIST { return false }
+    if kind != TYPE_KIND_ARRAY && !collection_kind_is_list(kind) { return false }
     let element_type = collection_element_type(compiler, type_id)
     type_contains_collection(compiler, element_type, 0L)
 }
@@ -666,7 +683,7 @@ recursive fn type_contains_bytes(compiler: CompilerTables, type_id: long, depth:
         for field_offset in 0L..record.field_count {
             if type_contains_bytes(compiler, compiler.struct_fields[record.field_start + field_offset].ty, depth + 1L) { return true }
         }
-    } else if kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST {
+    } else if kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) {
         let element_type = collection_element_type(compiler, type_id)
         return type_contains_bytes(compiler, element_type, depth + 1L)
     } else if kind == TYPE_KIND_ENUM {
@@ -770,8 +787,8 @@ recursive fn type_group_size(compiler: CompilerTables, type_id: long, copies: lo
     } else if kind == TYPE_KIND_ARRAY {
         let repeated = checked_size_product(copies, record.field_count)
         if repeated < 0L { repeated } else { type_group_size(compiler, record.field_start, repeated) }
-    } else if kind == TYPE_KIND_LIST {
-        let counts_size = checked_size_product(copies, 8L)
+    } else if collection_kind_is_list(kind) {
+        let counts_size = checked_size_product(copies, if kind == TYPE_KIND_QUEUE { 16L } else { 8L })
         let repeated = checked_size_product(copies, record.field_count)
         let element_align = value_type_align(compiler, record.field_start)
         let element_size = type_group_size(compiler, record.field_start, repeated)
@@ -810,9 +827,9 @@ fn collection_element_base_offset(compiler: CompilerTables, type_id: long) -> lo
     let kind = type_kind(compiler, type_id)
     if kind == TYPE_KIND_ASCII || kind == TYPE_KIND_BYTES { text_data_offset(compiler, type_id) }
     else if kind == TYPE_KIND_ARRAY { 0L }
-    else if kind == TYPE_KIND_LIST {
+    else if collection_kind_is_list(kind) {
         let element_type = collection_element_type(compiler, type_id)
-        size_align_saturated(8L, value_type_align(compiler, element_type))
+        size_align_saturated(if kind == TYPE_KIND_QUEUE { 16L } else { 8L }, value_type_align(compiler, element_type))
     } else { -1L }
 }
 
@@ -932,7 +949,7 @@ recursive fn emit_collection_copy_element_fields(
         ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.ptr."); ir_write_number(compiler, ir, destination_payload)
         ir_write_ascii(compiler, ir, ", ptr %coll.ptr."); ir_write_number(compiler, ir, source_payload)
         ir_write_ascii(compiler, ir, ", i64 %coll.copy.path.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ")\n")
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || type_kind(compiler, type_id) == TYPE_KIND_LIST {
+    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
         compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
@@ -974,7 +991,7 @@ recursive fn emit_collection_equal_element_fields(
             if lane_offset < 0L { compiler.ir_overflow = true; return }
             emit_collection_equal_element_fields(compiler, ir, field.ty, copies, path_offset + lane_offset, collection_type)
         }
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || type_kind(compiler, type_id) == TYPE_KIND_LIST {
+    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
         compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
@@ -1014,7 +1031,7 @@ recursive fn emit_collection_gather_element_fields(
             emit_collection_gather_element_fields(compiler, ir, field.ty, copies, path_offset + lane_offset,
                 row_offset + field.offset, collection_type)
         }
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || type_kind(compiler, type_id) == TYPE_KIND_LIST {
+    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
         compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
@@ -1056,7 +1073,7 @@ fn emit_collection_copy_helpers(compiler: write CompilerTables, ir: grow Bytes m
             ir_write_ascii(compiler, ir, "  ret void\n}\n\n")
             continue
         }
-        if collection_kind == TYPE_KIND_LIST {
+        if collection_kind_is_list(collection_kind) {
             ir_write_ascii(compiler, ir, "  %coll.copy.count."); ir_write_number(compiler, ir, type_id)
             ir_write_ascii(compiler, ir, " = load i64, ptr %nl.source, align 1\n")
             if bulk_copy {
@@ -1079,7 +1096,7 @@ fn emit_collection_copy_helpers(compiler: write CompilerTables, ir: grow Bytes m
         ir_write_ascii(compiler, ir, "\ncoll.copy.cond."); ir_write_number(compiler, ir, type_id)
         ir_write_ascii(compiler, ir, ":\n  %coll.index."); ir_write_number(compiler, ir, type_id)
         ir_write_ascii(compiler, ir, " = phi i64 [ 0, %")
-        if collection_kind == TYPE_KIND_LIST && bulk_copy {
+        if collection_kind_is_list(collection_kind) && bulk_copy {
             ir_write_ascii(compiler, ir, "coll.copy.start."); ir_write_number(compiler, ir, type_id)
         } else { ir_write_ascii(compiler, ir, "entry") }
         ir_write_ascii(compiler, ir, " ], [ %coll.next."); ir_write_number(compiler, ir, type_id)
@@ -1087,7 +1104,7 @@ fn emit_collection_copy_helpers(compiler: write CompilerTables, ir: grow Bytes m
         ir_write_ascii(compiler, ir, " ]\n  %coll.more."); ir_write_number(compiler, ir, type_id)
         ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.index."); ir_write_number(compiler, ir, type_id)
         ir_write_ascii(compiler, ir, ", ")
-        if collection_kind == TYPE_KIND_LIST {
+        if collection_kind_is_list(collection_kind) {
             ir_write_ascii(compiler, ir, "%coll.copy.count."); ir_write_number(compiler, ir, type_id)
         } else { ir_write_number(compiler, ir, capacity) }
         ir_write_ascii(compiler, ir, "\n  br i1 %coll.more."); ir_write_number(compiler, ir, type_id)
@@ -1129,11 +1146,11 @@ fn emit_collection_equal_helpers(compiler: write CompilerTables, ir: grow Bytes 
         if capacity < 0L || base_offset < 0L { compiler.ir_overflow = true; continue }
         ir_write_ascii(compiler, ir, "define internal i1 "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_EQUAL)
         ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr %nl.left, ptr %nl.right) {\nentry:\n")
-        if collection_kind == TYPE_KIND_LIST {
+        if collection_kind_is_list(collection_kind) {
             ir_write_ascii(compiler, ir, "  %coll.eq.left.count."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = load i64, ptr %nl.left, align 1\n  %coll.eq.right.count."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = load i64, ptr %nl.right, align 1\n  %coll.eq.same.count."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = icmp eq i64 %coll.eq.left.count."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", %coll.eq.right.count."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, "\n  br i1 %coll.eq.same.count."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %coll.eq.loop."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %coll.eq.false."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, "\n")
         } else { ir_write_ascii(compiler, ir, "  br label %coll.eq.loop."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, "\n") }
         ir_write_ascii(compiler, ir, "coll.eq.loop."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n  %coll.index."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = phi i64 [ 0, %entry ], [ %coll.next."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", %coll.eq.increment."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " ]\n  %coll.more."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.index."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", ")
-        if collection_kind == TYPE_KIND_LIST { ir_write_ascii(compiler, ir, "%coll.eq.left.count."); ir_write_number(compiler, ir, type_id) }
+        if collection_kind_is_list(collection_kind) { ir_write_ascii(compiler, ir, "%coll.eq.left.count."); ir_write_number(compiler, ir, type_id) }
         else { ir_write_number(compiler, ir, capacity) }
         ir_write_ascii(compiler, ir, "\n  br i1 %coll.more."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %coll.eq.body."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %coll.eq.true."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, "\ncoll.eq.body."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n")
         if is_aggregate_type(compiler, element) { emit_collection_equal_element_fields(compiler, ir, element, capacity, base_offset, type_id) }
@@ -1153,7 +1170,7 @@ fn emit_collection_print_globals(compiler: write CompilerTables, ir: grow Bytes 
     var needed = false
     for type_id in 0L..type_count(compiler) {
         let kind = type_kind(compiler, type_id)
-        if (kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST) && has_type_helper(compiler, type_id, HELPER_PRINT) { needed = true }
+        if (kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind)) && has_type_helper(compiler, type_id, HELPER_PRINT) { needed = true }
     }
     if !needed { return }
     ir_write_global_string(compiler, ir, "@.nl.collection.open = private unnamed_addr constant [", b"[")
@@ -1189,7 +1206,7 @@ fn emit_collection_print_helpers(compiler: write CompilerTables, ir: grow Bytes 
         if capacity < 0L || base_offset < 0L || (!is_aggregate_type(compiler, element) && stride < 0L) { compiler.ir_overflow = true; continue }
         ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_PRINT)
         ir_write_ascii(compiler, ir, "(ptr %nl.ctx, "); emit_location_argument(compiler, ir, compiler_location(compiler, 8L, 0L, 0L)); ir_write_ascii(compiler, ir, ") {\nentry:\n")
-        if collection_kind == TYPE_KIND_LIST {
+        if collection_kind_is_list(collection_kind) {
             ir_write_ascii(compiler, ir, "  %coll.print.count."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = load i64, ptr %nl.value, align 1\n")
         }
         if type_kind(compiler, element) == TYPE_KIND_STRUCT || is_sum_type(compiler, element) {
@@ -1200,7 +1217,7 @@ fn emit_collection_print_helpers(compiler: write CompilerTables, ir: grow Bytes 
         }
         emit_collection_print_text(compiler, ir, "open", 1L)
         ir_write_ascii(compiler, ir, "  br label %coll.print.cond."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, "\ncoll.print.cond."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n  %coll.index."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = phi i64 [ 0, %entry ], [ %coll.next."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", %coll.print.increment."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " ]\n  %coll.more."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.index."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", ")
-        if collection_kind == TYPE_KIND_LIST { ir_write_ascii(compiler, ir, "%coll.print.count."); ir_write_number(compiler, ir, type_id) }
+        if collection_kind_is_list(collection_kind) { ir_write_ascii(compiler, ir, "%coll.print.count."); ir_write_number(compiler, ir, type_id) }
         else { ir_write_number(compiler, ir, capacity) }
         ir_write_ascii(compiler, ir, "\n  br i1 %coll.more."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %coll.print.body."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %coll.print.done."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, "\ncoll.print.body."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n  %coll.print.first."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = icmp eq i64 %coll.index."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", 0\n  br i1 %coll.print.first."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %coll.print.item."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ", label %coll.print.separator."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, "\ncoll.print.separator."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, ":\n")
         emit_collection_print_text(compiler, ir, "separator", 2L)
@@ -1265,7 +1282,7 @@ fn emit_collection_index_address(
         ir_write_ascii(compiler, ir, ", align 1\n  %coll.index.high."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, index)
         ir_write_ascii(compiler, ir, ", %text.index.length."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
-    } else if kind == TYPE_KIND_LIST {
+    } else if collection_kind_is_list(kind) {
         ir_write_ascii(compiler, ir, "  %coll.index.count.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 0\n  %coll.index.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr %coll.index.count.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n  %coll.index.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, index); ir_write_ascii(compiler, ir, ", %coll.index.count."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
     } else {
         ir_write_ascii(compiler, ir, "  %coll.index.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, index); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity); ir_write_ascii(compiler, ir, "\n")
@@ -1307,7 +1324,7 @@ recursive fn emit_collection_store_element_fields(
                 lane_node, destination_offset + lane_offset, source_offset + field.offset,
                 destination_location, source_location, destination_pointer, source_pointer)
         }
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || type_kind(compiler, type_id) == TYPE_KIND_LIST {
+    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
         compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
@@ -1381,7 +1398,7 @@ recursive fn emit_collection_store_dynamic_fields(
                 row_offset + field.offset, destination_location, destination_pointer, source_location,
                 source_pointer, lane_kind, lane_node)
         }
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || type_kind(compiler, type_id) == TYPE_KIND_LIST {
+    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
         compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
@@ -1424,7 +1441,7 @@ recursive fn emit_collection_move_dynamic_fields(
             emit_collection_move_dynamic_fields(compiler, ir, field.ty, copies, path_offset + lane_offset,
                 location, pointer_serial, source_lane_kind, source_lane_node, destination_lane_kind, destination_lane_node)
         }
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || type_kind(compiler, type_id) == TYPE_KIND_LIST {
+    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
         compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
@@ -1515,7 +1532,7 @@ recursive fn emit_collection_gather_dynamic_fields(
         ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %coll.gather.path.payload.dst."); ir_write_number(compiler, ir, serial)
         ir_write_ascii(compiler, ir, ", ptr %coll.gather.path.payload.src."); ir_write_number(compiler, ir, serial)
         ir_write_ascii(compiler, ir, ", i64 %coll.gather.path.bytes."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ")\n")
-    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || type_kind(compiler, type_id) == TYPE_KIND_LIST {
+    } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
         compiler.ir_overflow = true
     } else {
         let size = value_type_size(compiler, type_id)
@@ -1712,10 +1729,13 @@ fn emit_collection_default_array_aggregate(
 
 fn emit_collection_zero_storage(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, node: long, type_id: long, live_count: long) {
     let element = collection_element_type(compiler, type_id)
-    if type_kind(compiler, type_id) == TYPE_KIND_LIST {
+    if collection_kind_is_list(type_kind(compiler, type_id)) {
         let location = aggregate_destination_location(compiler, 0L, node)
         let serial = emit_location_pointer_materialization(compiler, ir, location)
         ir_write_ascii(compiler, ir, "  %coll.zero.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial); ir_write_ascii(compiler, ir, ", i64 0\n  store i64 "); ir_write_number(compiler, ir, live_count); ir_write_ascii(compiler, ir, ", ptr %coll.zero.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+        if type_kind(compiler, type_id) == TYPE_KIND_QUEUE {
+            ir_write_ascii(compiler, ir, "  %coll.zero.head."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial); ir_write_ascii(compiler, ir, ", i64 8\n  store i64 0, ptr %coll.zero.head."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+        }
         return
     }
     if is_aggregate_type(compiler, element) {
@@ -1804,6 +1824,10 @@ fn emit_collection_method(
     }
     if method == COLLECTION_METHOD_CLEAR {
         ir_write_ascii(compiler, ir, "  store i64 0, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1\n")
+        return
+    }
+    if kind == TYPE_KIND_QUEUE {
+        emit_queue_method(compiler, ir, node, method, location, pointer_serial, argument, element, capacity, stride, base_offset)
         return
     }
     if method == COLLECTION_METHOD_PUSH {
@@ -1922,4 +1946,113 @@ fn emit_collection_method(
     }
     let _ = kind
     compiler.ir_overflow = true
+}
+
+// push, pop and peek on a queue of int or long. The elements form a ring: the oldest is at index
+// `head` and the next free slot is (head + count) modulo the capacity. A queue value is
+// [count: i64][head: i64][elements...].
+fn emit_queue_slot_pointer(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    location: StorageLocation,
+    pointer_serial: long,
+    stride: long,
+    base_offset: long,
+    index_name: Ascii max 24,
+) {
+    ir_write_ascii(compiler, ir, "  %q.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %")
+    ir_write_ascii(compiler, ir, index_name); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %q.offset."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = add i64 %q.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset)
+    ir_write_ascii(compiler, ir, "\n  %q.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
+    emit_location_pointer_reference(compiler, ir, location, pointer_serial)
+    ir_write_ascii(compiler, ir, ", i64 %q.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
+}
+
+fn emit_queue_head_load(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    location: StorageLocation,
+    pointer_serial: long,
+) {
+    ir_write_ascii(compiler, ir, "  %q.head.addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
+    emit_location_pointer_reference(compiler, ir, location, pointer_serial)
+    ir_write_ascii(compiler, ir, ", i64 8\n  %q.head."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr %q.head.addr.")
+    ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+}
+
+fn emit_queue_method(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    method: long,
+    location: StorageLocation,
+    pointer_serial: long,
+    argument: long,
+    element: long,
+    capacity: long,
+    stride: long,
+    base_offset: long,
+) {
+    let storage = llvm_type_name(element)
+    ir_write_ascii(compiler, ir, "  %q.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr ")
+    emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+    if method == COLLECTION_METHOD_PUSH {
+        ir_write_ascii(compiler, ir, "  %q.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ult i64 %q.count."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity); ir_write_ascii(compiler, ir, "\n  br i1 %q.room."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", label %q.push.add."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %q.push.full."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "\nq.push.add."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+        emit_queue_head_load(compiler, ir, node, location, pointer_serial)
+        ir_write_ascii(compiler, ir, "  %q.end."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %q.head."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", %q.count."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "\n  %q.wrap."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp uge i64 %q.end."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity)
+        ir_write_ascii(compiler, ir, "\n  %q.minus."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sub i64 %q.end."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity)
+        ir_write_ascii(compiler, ir, "\n  %q.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = select i1 %q.wrap."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 %q.minus."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 %q.end."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
+        emit_queue_slot_pointer(compiler, ir, node, location, pointer_serial, stride, base_offset, "q.index")
+        ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, argument)
+        ir_write_ascii(compiler, ir, ", ptr %q.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir)
+        ir_write_ascii(compiler, ir, "\n  %q.next."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %q.count."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", 1\n  store i64 %q.next."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr ")
+        emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+        emit_collection_capacity_result_tag(compiler, ir, node, 0L)
+        ir_write_ascii(compiler, ir, "  br label %q.push.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nq.push.full."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+        emit_collection_capacity_result_tag(compiler, ir, node, 1L)
+        ir_write_ascii(compiler, ir, "  br label %q.push.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nq.push.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+        return
+    }
+    // pop and peek: an Option holding the oldest element; pop also advances the head.
+    let result_type = compiler.facts[node].ty
+    let payload = sum_payload_record(compiler, result_type, 0L, 0L)
+    ir_write_ascii(compiler, ir, "  %q.empty."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq i64 %q.count."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", 0\n  br i1 %q.empty."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %q.take.none."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", label %q.take.some."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nq.take.some."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+    emit_queue_head_load(compiler, ir, node, location, pointer_serial)
+    emit_queue_slot_pointer(compiler, ir, node, location, pointer_serial, stride, base_offset, "q.head")
+    let address = enum_temporary_address(node, MAX_TREE_NODES * 3L + 2L)
+    emit_layout_address(compiler, ir, address, storage_location_with_offset(aggregate_destination_location(compiler, 0L, node), payload.offset))
+    ir_write_ascii(compiler, ir, "  %q.value."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage)
+    ir_write_ascii(compiler, ir, ", ptr %q.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir)
+    ir_write_ascii(compiler, ir, "\n  store "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, " %q.value."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+    if method == COLLECTION_METHOD_POP {
+        ir_write_ascii(compiler, ir, "  %q.advance."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %q.head."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", 1\n  %q.wrapped."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp uge i64 %q.advance."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity)
+        ir_write_ascii(compiler, ir, "\n  %q.new.head."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = select i1 %q.wrapped."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 0, i64 %q.advance."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "\n  store i64 %q.new.head."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %q.head.addr."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir)
+        ir_write_ascii(compiler, ir, "\n  %q.remaining."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sub i64 %q.count."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", 1\n  store i64 %q.remaining."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr ")
+        emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+    }
+    emit_sum_tag_store(compiler, ir, node, 0L)
+    ir_write_ascii(compiler, ir, "  br label %q.take.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nq.take.none."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+    emit_sum_tag_store(compiler, ir, node, 1L)
+    ir_write_ascii(compiler, ir, "  br label %q.take.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nq.take.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
 }

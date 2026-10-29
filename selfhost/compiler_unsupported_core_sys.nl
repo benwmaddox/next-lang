@@ -295,6 +295,7 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "starts_with") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "validate_utf8") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "to_text") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "peek") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "to_ascii") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "try_append") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "push") ||
@@ -333,7 +334,7 @@ fn unsupported_category_for_node(
         NodeKind.PoolLiteral => UNSUPPORTED_NODE,
         NodeKind.MapLiteral => UNSUPPORTED_NODE,
         NodeKind.SetLiteral => UNSUPPORTED_NODE,
-        NodeKind.QueueLiteral => UNSUPPORTED_NODE,
+        NodeKind.QueueLiteral => 0L,
         NodeKind.RingLiteral => UNSUPPORTED_NODE,
         NodeKind.GridIndex => UNSUPPORTED_NODE,
         NodeKind.ToLong => 0L,
@@ -540,6 +541,10 @@ fn report_unsupported(
         match env.err.write(b" operator") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_ASSIGNMENT {
         match env.err.write(b"the >>= operator") { ok(_) => (), err(_) => env.exit(3) }
+    } else if hit.category == UNSUPPORTED_QUEUE_USE {
+        match env.err.write(b"iterating or indexing a queue") { ok(_) => (), err(_) => env.exit(3) }
+    } else if hit.category == UNSUPPORTED_QUEUE_ELEMENT {
+        match env.err.write(b"queues of element types other than int and long") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_CALLEE {
         match env.err.write(b"calls to built-in functions") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_CASE {
