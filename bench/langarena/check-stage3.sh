@@ -1,6 +1,7 @@
 #!/bin/bash
 # Build each bench/langarena package with a self-hosted compiler (--runtime=c, clang) and compare its
 # test-mode checksum with LangArena's. Usage: check-stage3.sh <stage3 compiler> [package ...]  (run in WSL/Linux)
+cd "$(dirname "$0")/../.."
 S3=$1; shift
 mkdir -p target/langarena-stage3
 pkgs=${@:-$(ls bench/langarena | while read p; do [ -f bench/langarena/$p/name ] && echo $p; done)}
