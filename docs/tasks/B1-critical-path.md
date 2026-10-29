@@ -8,14 +8,32 @@ source requirements; it does not claim language parity is already reached.
 
 ## Current checkpoint (2026-10-29)
 
-The indexed sum-parameter geometry fix is on commit `5067d85`. Its required
-staged suite passed in 758 seconds, and the actual Stage3 corpus passed at O1/O3
-with 792 registered and 256 seeded cases and zero mismatches. Stage2/Stage3
-chains and eight C-runtime golden runs passed at O1/O3. The 25.4-second O3
-self-source emission is a chain measurement, not a matched-input Rust
-comparison; the 3x performance gate remains open. The compile-error scope
-question remains open separately; no snapshot policy or enforcement changed.
-See the [sum-parameter geometry report](B1-sum-parameter-geometry.md).
+Source commit `4744334` is pushed as PR #15. The staged-tree selfhost suite
+passed in 754 seconds, and the Stage3 corpus passed at O1/O3 with 792
+registered plus 256 seeded cases and zero mismatches. Stage2/Stage3 chains
+passed at O1 and O3 with identical IR and binaries.
+
+The current user goal is at most 1.1x Rust Stage0. The warm O3 C-runtime
+IR-generation matrix used three measured samples after one warm-up on CPU 0.
+Median wall times were: selfhost 1.895 s Rust Stage0 vs 3.752 s Stage3
+(1.979947x); generated-128 0.046 s vs 0.093 s (2.021739x); generated-2048
+0.219 s vs 0.413 s (1.885845x). All three cases exceed 1.1x; the updated
+performance goal is unmet. The byte-exact matrix retains its historical 3x
+threshold and `status: passed`; that status is not a pass under the new goal.
+PR #15 is a correctness and incremental-optimization milestone, not achievement
+of the updated speed goal. Rust Stage0 used pointer mode and Stage3 offset mode;
+this records the current implementations, not a permanent arena constraint.
+The core data-stack idiom remains the model: preserve stack allocation, scoped
+lifetimes, and bulk reclamation. Alternate arena address strategies are
+implementation choices within it; heap, GC, and ownership redesigns are out of
+scope.
+Cold-start, end-to-end compile/link, and broader stack benchmarks remain
+pending. See the
+[byte-output checkpoint](B1-byte-output-checkpoint.md) and the
+[raw final matrix](B1-byte-output-matrix.json).
+
+Copy-syntax and snapshot/enforcement work remain deferred; no language rule or
+enforcement change was made.
 
 Memory baseline clarified by Ben, 2026-10-28: a reusable job instance may have
 optional StasisLang-style static storage that persists across its runs. Most
@@ -86,10 +104,10 @@ name. Source commit `8dbcce0` passed the full staged suite in 694 seconds,
 including all 755 registered and 256 generated packages at O1/O3. The
 [scalar report](B1-scalar-constants-report.md) records focused tests, the
 immediate-operand regression fixes, and final acceptance.
-At the current checkpoint, Stage3 package comparisons have not begun because
-the enum scaling precheck timed out, and the own-source pilot exceeds the 3x
-gate by timeout lower bound. Full corpus and small/large benchmark coverage
-remain outstanding; B1 is not accepted. See the current checkpoint above.
+That paragraph described an earlier checkpoint: the enum scaling precheck had
+timed out and the one-pair own-source pilot was still the only timing evidence.
+Both are superseded by the current full-corpus pass and warm matrix above; cold,
+end-to-end, and stack benchmarks remain pending.
 
 ## Completed prerequisite: Bytes fields in struct collections
 
@@ -129,7 +147,8 @@ and 76 recursive declarations.
    [B1-recursion.md](B1-recursion.md): ordinary calls and arena scopes, with OS
    process termination on native-stack exhaustion. Controlled diagnostics are
    deferred; the removed prototype's budgets and live-region ban are superseded.
-   Full compiler-corpus correctness remains pending.
+   Full Stage3 corpus correctness now passes at O1/O3; see the current
+   checkpoint above.
 4. **Compiler-used builders (implemented checkpoint).** Keep the smallest working subset and
    simplify the broader proposal as needed. Follow [B1-builders.md](B1-builders.md):
    source-used builder descriptors/mutators first. Defer call-output append
@@ -137,9 +156,10 @@ and 76 recursive declarations.
    Use the existing prep as an oracle, not as authorization
    for bundled `take`/move tracking or unrelated optimizations. Equal maxima,
    explicit capacity-result handling, relocation-safe access, and rollback of
-   one failed append remain required. Full Stage3 package comparisons are
-   blocked by the enum scaling timeout. The required staged-tree suite passed
-   for commit `23a7e64`.
+   one failed append remain required. The earlier enum-scaling blocker is
+   resolved: current Stage3 comparisons pass for 792 registered plus 256
+   seeded cases at O1/O3. The suite result for commit `23a7e64` is a historical
+   milestone; see the current checkpoint for the latest staged-tree result.
 5. **E3f1 capability/I/O requirements (implemented C-runtime checkpoint).** `Env`, arguments,
    `Out.write`, and Fs listing/join/read/write support are required. The package
    grants fs/out/env. Deterministic source ordering from `list_with_extension`
@@ -149,7 +169,7 @@ and 76 recursive declarations.
    streaming writers need not precede B1 unless an actual source dependency appears.
    The Stage3 C-runtime golden and Stage2 smoke-parse checks pass at O1/O3; the
    core I/O port remains deferred.
-6. **B1 stage chain (O1/O3 identity passed; corpus mismatches, own-source timing fails).** Use Stage0 to build the seed compiler;
+6. **B1 stage chain (O1/O3 identity and full corpus passed).** Use Stage0 to build the seed compiler;
    use that compiler to emit stage 2, then stage 2 to emit stage 3. Require exact
    stage-2/stage-3 LLVM IR and binary identity, plus compiler corpus correctness.
    LLVM/clang remains the backend and links the existing C runtime. The bootstrap harness may invoke clang
@@ -158,45 +178,53 @@ and 76 recursive declarations.
    diagnose progress but must be labeled as a bridge. E3g's in-language process
    driver is a separate product milestone if the harness can already link with
    clang directly. A required linker/core runtime gap re-enters this queue as a
-   demonstrated blocker, rather than being assumed solved. The Stage2/Stage3
-   chain passed at O1 and O3. An earlier Stage3 corpus attempt timed out before
-   package comparisons; the latest completed its scaling checks and selected
-   package run with 16 mismatches. The required staged-tree suite passed for
-   commit `27256a3`; see the current checkpoint and working-data report.
-7. **Benchmark the self-built compiler (own-source failure observed; full benchmark pending).** Pin toolchain, flags, source revision,
-   and corpus; verify outputs before timing. Measure IR generation and end-to-end
+   demonstrated blocker, rather than being assumed solved. The current Stage2/
+   Stage3 chains passed at O1/O3 with identical IR and binaries, and the full
+   Stage3 corpus has zero mismatches. Earlier timeout and mismatch reports are
+   historical. The required suite for `27256a3` is also a historical milestone;
+   see the current checkpoint for commit `4744334` and its validation.
+7. **Benchmark the self-built compiler (current warm IR cases exceed 1.1x; full benchmark pending).**
+   Pin toolchain, flags, source revision, and corpus; verify outputs before
+   timing. Measure IR generation and end-to-end
    builds separately, cold and warm runs, peak RSS, data/native-stack measures,
    and output sizes. Include the compiler compiling its own source, small/large
    generated packages, and representative real packages. Preserve raw samples,
    best/median/spread, and exact commands; distinguish static reservations from
    resident memory. Keep runtime benchmarks as separate regression evidence.
-   Ben's acceptance gate (2026-10-28): more than **3x the Rust-implemented
-   Stage0 `nlc` compile time is a failure**. Compare the same inputs and
-   equivalent work with matching optimization/runtime/link settings. Report
-   per-case ratios; do not average away a failing case or hide compiler time
-   behind shared link time. The Rust-built language compiler is not this
-   baseline.
-   Rust Stage0 rejects this compiler source in offset mode (large
-   `CompilerTables` is outside its supported slice). Use its normal supported
-   pointer mode against the self-built compiler's offset mode and report that
-   representation difference explicitly; it does not waive the 3x gate or
-   authorize Stage0 changes. The O1/O3 chain totals (398.79/402.39 seconds) are
-   pipeline diagnostics, not Rust comparisons or benchmark acceptance. The
-   latest isolated own-source Stage3/Rust pilot used one sample, no warmups,
-   CPU 0, O3, and C runtime. Stage3 completed IR generation at 13.4813x Rust
-   Stage0 time, exceeding the per-case gate. This is not a full benchmark;
-   small and large cases remain to be measured. Exact commands and raw
-   measurements are in the [working-data report](B1-working-data-copies.md)
-   and [pilot record](B1-working-data-pilot.json).
+   Ben's current goal (updated 2026-10-29) is for Stage3 to compile each case
+   within **1.1x the Rust-implemented Stage0 `nlc` time**. The previous 3x gate
+   was the goal on 2026-10-28; older reports and the raw matrix retain that
+   historical threshold and must not be reinterpreted as passing the new goal.
+   Compare the same inputs and equivalent work with matching optimization,
+   runtime, and link settings. Report per-case ratios; do not average away a
+   failing case or hide compiler time behind shared link time. The Rust-built
+   language compiler is not this baseline.
+   The current matrix compares Rust Stage0 in pointer mode with Stage3 in
+   offset mode because those are the measured implementations. Record this
+   representation difference; it does not make offset mode permanent or rule
+   out another correct, faster arena strategy. Do not modify the Stage0
+   baseline. The warm O3 C-runtime IR-generation medians are selfhost 1.895 s
+   vs 3.752 s (1.979947x), generated-128 0.046 s vs 0.093 s (2.021739x), and
+   generated-2048 0.219 s vs 0.413 s (1.885845x). Each used three measured
+   samples after one warm-up on CPU 0; all three exceed the current 1.1x goal.
+   This is not full benchmark acceptance: cold-start, end-to-end compile/link,
+   and broader stack benchmarks remain pending. Earlier one-sample timing
+   results are historical; the matrix was run against the prior 3x threshold.
+   See the [byte-output checkpoint](B1-byte-output-checkpoint.md) and
+   [raw final matrix](B1-byte-output-matrix.json).
 8. **Improve measured bottlenecks (further profiling).** Prioritize checker/emitter scaling,
    bootstrap memory, generated IR size, LLVM/link time, or runtime costs according
    to the profile. A five-sample GDB trace on an earlier source revision showed
    repeated `CompilerTables` copies on the own-source compile path; the current
    census found no whole-file call sites for the audited working-data helpers.
-   Each optimization needs correctness coverage and before/after data. The
-   source lookup hoists preserve emitted-program argument semantics. Further
-   profiling continues; the scope of the compile-error rule remains open
-   separately.
+   Treat selfhost compilation as a stress workload for shared compiler paths.
+   Direct scalar field projection through indexed collections (for example,
+   `rows[i].field`) is a candidate for general lowering improvement, not a
+   selfhost-specific path. Benchmark varied inputs and preserve correctness;
+   no language change is required. Each optimization needs before/after data.
+   Source lookup hoists preserve emitted-program argument semantics. Further
+   profiling continues; compile-error and copy-syntax enforcement remain
+   deferred, not an open prerequisite for this work.
 
 ## Explicitly deferred until evidence requires them
 
