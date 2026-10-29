@@ -2160,7 +2160,7 @@ recursive fn emit_expr_linear(
                 if is_aggregate_type(compiler, ty) {
                     let source_kind = aggregate_source_kind(tables, compiler, value)
                     let source_node = aggregate_source_id(tables, compiler, value)
-                    let destination = if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index { compiler_location(compiler, 2L, target, 0L) } else if binding_is_write_parameter(compiler, binding) && is_sum_type(compiler, ty) { place_storage_location(tables, compiler, target) } else if binding_is_write_parameter(compiler, binding) { compiler_location(compiler, 3L, binding, 0L) } else { aggregate_destination_location(compiler, 1L, binding) }
+                    let destination = assignment_destination(tables, compiler, ir, target, ty, binding)
                     emit_aggregate_copy(compiler, ir, ty, destination, aggregate_source_location(compiler, source_kind, source_node))
                 } else if ty == TY_BOOL {
                     if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index || binding_is_write_parameter(compiler, binding) || binding_is_view(compiler, binding) { emit_store_scalar_to_place(tables, compiler, ir, target, ty, value) }
@@ -2553,7 +2553,7 @@ recursive fn emit_function_body(
             let op = tables.nodes[child].flags
             if op == 0L {
                 if is_aggregate_type(compiler, ty) {
-                    let destination = if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index { compiler_location(compiler, 2L, target, 0L) } else if binding_is_write_parameter(compiler, binding) && is_sum_type(compiler, ty) { place_storage_location(tables, compiler, target) } else if binding_is_write_parameter(compiler, binding) { compiler_location(compiler, 3L, binding, 0L) } else { aggregate_destination_location(compiler, 1L, binding) }
+                    let destination = assignment_destination(tables, compiler, ir, target, ty, binding)
                     emit_aggregate_copy_to_place(tables, compiler, ir, ty, target, value, destination)
                 } else if ty == TY_BOOL {
                     if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index || binding_is_write_parameter(compiler, binding) || binding_is_view(compiler, binding) { emit_store_scalar_to_place(tables, compiler, ir, target, ty, value) }
@@ -3078,3 +3078,28 @@ fn emit_array_constant_value(
     ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
 }
 
+
+// Where an aggregate assignment writes: the target's own address for fields and indexed elements,
+// recomputed after the right-hand side for a text element of a collection (the right-hand side may
+// have moved the stack), or the local or write parameter itself.
+fn assignment_destination(
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    target: long,
+    ty: long,
+    binding: long,
+) -> StorageLocation {
+    if tables.nodes[target].kind == NodeKind.Index && collection_text_leaf(type_kind(compiler, ty)) {
+        let late_address = emit_late_place_address(tables, compiler, ir, target)
+        compiler_location(compiler, 2L, late_address, 0L)
+    } else if tables.nodes[target].kind == NodeKind.Field || tables.nodes[target].kind == NodeKind.Index {
+        compiler_location(compiler, 2L, target, 0L)
+    } else if binding_is_write_parameter(compiler, binding) && is_sum_type(compiler, ty) {
+        place_storage_location(tables, compiler, target)
+    } else if binding_is_write_parameter(compiler, binding) {
+        compiler_location(compiler, 3L, binding, 0L)
+    } else {
+        aggregate_destination_location(compiler, 1L, binding)
+    }
+}

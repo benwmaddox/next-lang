@@ -279,6 +279,31 @@ recursive fn emit_late_place_address(
             return address_id
         }
     }
+    if tables.nodes[node].kind == NodeKind.Index {
+        // An element of a list or array of text lives in one contiguous run, so its address is the
+        // collection's base plus index * element size.
+        let text_collection = compiler.child_first[node]
+        let text_index = if text_collection >= 0L { compiler.child_next[text_collection] } else { -1L }
+        if text_collection >= 0L && text_index >= 0L && tables.nodes[text_collection].kind == NodeKind.Name {
+            let text_collection_type = compiler.facts[text_collection].ty
+            let text_element = collection_element_type(compiler, text_collection_type)
+            if collection_text_leaf(type_kind(compiler, text_element)) {
+                let text_stride = value_type_size(compiler, text_element)
+                let text_base_offset = collection_element_base_offset(compiler, text_collection_type)
+                if text_stride < 0L || text_base_offset < 0L { compiler.ir_overflow = true; return address_id }
+                let text_base = collection_value_location(tables, compiler, text_collection)
+                let text_pointer = emit_location_pointer_materialization(compiler, ir, text_base)
+                ir_write_ascii(compiler, ir, "  %late.text.index."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 ")
+                ir_write_value_ref(compiler, ir, text_index); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, text_stride)
+                ir_write_ascii(compiler, ir, "\n  %late.text.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 %late.text.index.")
+                ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, text_base_offset)
+                ir_write_ascii(compiler, ir, "\n  %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
+                emit_location_pointer_reference(compiler, ir, text_base, text_pointer)
+                ir_write_ascii(compiler, ir, ", i64 %late.text.offset."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
+                return address_id
+            }
+        }
+    }
     let location = place_storage_location(tables, compiler, node)
     if location.copies != 1L { compiler.ir_overflow = true; return address_id }
     let base = StorageLocation {

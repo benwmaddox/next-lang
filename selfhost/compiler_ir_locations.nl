@@ -171,6 +171,13 @@ fn ir_write_escaped_byte(compiler: write CompilerTables, ir: grow Bytes max IR_B
     }
 }
 
+// A byte written as a backslash and two hex digits, which LLVM accepts for any byte value.
+fn ir_write_hex_escaped(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, byte_value: long) {
+    ir_push_byte(compiler, ir, 92)
+    ir_push_byte(compiler, ir, ir_hex_digit(byte_value / 16L, false))
+    ir_push_byte(compiler, ir, ir_hex_digit(byte_value % 16L, false))
+}
+
 fn ir_write_global_string(
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
@@ -426,7 +433,7 @@ recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTable
             let field_start = type_record(compiler, receiver_type).field_start
             collection_field_lane_offset(compiler, receiver_type, base.copies, field_index - field_start)
         } else { field.offset }
-        let stride = if base.index_node != -1L && (!is_aggregate_type(compiler, field.ty) || type_kind(compiler, field.ty) == TYPE_KIND_BYTES) { value_type_size(compiler, field.ty) } else { 0L }
+        let stride = if base.index_node != -1L && (!is_aggregate_type(compiler, field.ty) || collection_text_leaf(type_kind(compiler, field.ty))) { value_type_size(compiler, field.ty) } else { 0L }
         StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + field_offset, copies: base.copies, index: base.index, index_node: base.index_node, index_stride: stride }
     } else if kind == NodeKind.Index {
         let receiver = compiler.child_first[node]
@@ -657,7 +664,7 @@ recursive fn emit_collection_field_path_address(
     let pointer = emit_location_pointer_materialization(compiler, ir, location)
     let field_type = compiler.facts[node].ty
     let stride = if is_aggregate_type(compiler, field_type) &&
-        type_kind(compiler, field_type) != TYPE_KIND_BYTES && !is_sum_type(compiler, field_type) {
+        !collection_text_leaf(type_kind(compiler, field_type)) && !is_sum_type(compiler, field_type) {
         0L
     } else { value_type_size(compiler, field_type) }
     if stride > 0L {
@@ -792,7 +799,7 @@ fn emit_parameter_field_path_address(
         let base = collection_value_location(tables, compiler, collection)
         let pointer_location = compiler_location(compiler, base.anchor_kind, base.anchor_node, base.byte_offset)
         let pointer = emit_location_pointer_materialization(compiler, ir, pointer_location)
-        if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES || is_sum_type(compiler, field_type)) && field_type != TY_UNIT {
+        if (!is_aggregate_type(compiler, field_type) || collection_text_leaf(type_kind(compiler, field_type)) || is_sum_type(compiler, field_type)) && field_type != TY_UNIT {
             let stride = value_type_size(compiler, field_type)
             ir_write_ascii(compiler, ir, "  %coll.view.index.bytes."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 %for.each.current."); ir_write_number(compiler, ir, loop_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
             ir_write_ascii(compiler, ir, "  %coll.view.index.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, byte_offset); ir_write_ascii(compiler, ir, ", %coll.view.index.bytes."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
@@ -800,7 +807,7 @@ fn emit_parameter_field_path_address(
         ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
         emit_location_pointer_reference(compiler, ir, pointer_location, pointer)
         ir_write_ascii(compiler, ir, ", i64 ")
-        if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES || is_sum_type(compiler, field_type)) && field_type != TY_UNIT { ir_write_ascii(compiler, ir, "%coll.view.index.offset."); ir_write_number(compiler, ir, address_id) }
+        if (!is_aggregate_type(compiler, field_type) || collection_text_leaf(type_kind(compiler, field_type)) || is_sum_type(compiler, field_type)) && field_type != TY_UNIT { ir_write_ascii(compiler, ir, "%coll.view.index.offset."); ir_write_number(compiler, ir, address_id) }
         else { ir_write_number(compiler, ir, byte_offset) }
         ir_push_byte(compiler, ir, 10)
         compiler.type_walk.clear()
@@ -826,7 +833,7 @@ fn emit_parameter_field_path_address(
         total_serial = sum
         field_type = compiler.facts[field_node].ty
     }
-    if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES || is_sum_type(compiler, field_type)) && field_type != TY_UNIT {
+    if (!is_aggregate_type(compiler, field_type) || collection_text_leaf(type_kind(compiler, field_type)) || is_sum_type(compiler, field_type)) && field_type != TY_UNIT {
         let stride = value_type_size(compiler, field_type)
         let index_serial = next_location_serial(ir)
         ir_write_ascii(compiler, ir, "  %coll.desc.element.index."); ir_write_number(compiler, ir, index_serial); ir_write_ascii(compiler, ir, " = mul i64 %arg.index."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)

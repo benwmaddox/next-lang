@@ -380,9 +380,9 @@ unsupported	tests/run/t16_text_output
 build	tests/run/t16_text_slice_bounds
 diagnose	tests/run/t16_text_write_ascii
 diagnose	tests/run/t16_text_write_byte_limit
-unsupported	tests/run/t16_view_field_write
+diagnose	tests/run/t16_view_field_write
 unsupported	tests/run/t16_view_indirect_write
-unsupported	tests/run/t16_view_remove
+diagnose	tests/run/t16_view_remove
 diagnose	tests/run/t16_view_shift
 unsupported	tests/run/t17_worked_reservation
 build	tests/run/t18_abs_min
@@ -753,8 +753,8 @@ build	tests/e3/e3c_values_conversions
 build	tests/e3/e3c_parse_valid
 build	tests/e3/e3c_parse_invalid
 diagnose	tests/e3/e3c_parse_bad_radix
-unsupported	tests/e3/e3c_deferred_enum_text
-unsupported	tests/e3/e3c_deferred_option_text
+build	tests/e3/e3c_deferred_enum_text
+build	tests/e3/e3c_deferred_option_text
 diagnose	tests/e3/e3c_deferred_result_type
 build	tests/e3/e3c_receiver_order
 # E3c end
@@ -808,11 +808,11 @@ diagnose	tests/e3/b1_int_consts_runtime_index
 
 # B1 Bytes fields begin
 build	tests/e3/b1_bytes_fields_records
-unsupported	tests/e3/b1_bytes_fields_unsupported_bytes_element
-unsupported	tests/e3/b1_bytes_fields_unsupported_ascii_field
-unsupported	tests/e3/b1_bytes_fields_unsupported_text_field
+build	tests/e3/b1_bytes_fields_unsupported_bytes_element
+build	tests/e3/b1_bytes_fields_unsupported_ascii_field
+build	tests/e3/b1_bytes_fields_unsupported_text_field
 unsupported	tests/e3/b1_bytes_fields_unsupported_nested
-unsupported	tests/e3/b1_bytes_fields_unsupported_sum_payload
+build	tests/e3/b1_bytes_fields_unsupported_sum_payload
 diagnose	tests/e3/b1_bytes_fields_invalid_write
 # B1 Bytes fields end
 
@@ -877,9 +877,21 @@ diagnose	tests/e3/b1_text_const_too_long
 diagnose	tests/e3/b1_bytes_const_too_long
 build	tests/e3/b1_clamp_byte_push
 build	tests/e3/b1_array_consts_ints
-unsupported	tests/e3/b1_array_consts_text_unsupported
+build	tests/e3/b1_array_consts_text_unsupported
 build	tests/e3/b1_queue_basic
 build	tests/e3/b1_queue_full
 build	tests/e3/b1_queue_wrap
 build	tests/e3/b1_queue_write_param
 unsupported	tests/e3/b1_queue_bool_unsupported
+build	tests/e3/b1_text_list_basic
+build	tests/e3/b1_text_struct_list
+build	tests/e3/b1_text_array_local
+build	tests/e3/b1_text_list_assign
+build	tests/e3/b1_text_list_foreach
+build	tests/e3/b1_text_struct_foreach_match
+build	tests/e3/b1_text_list_param
+build	tests/e3/b1_text_struct_update
+build	tests/e3/b1_bytes_push_int
+build	tests/e3/b1_byte_widens_to_int
+build	tests/e3/b1_text_array_const
+diagnose	tests/e3/b1_view_text_field_write

@@ -430,7 +430,8 @@ fn body_child_expected(
         let receiver_type = compiler.facts[frame.child0].ty
         let receiver_kind = type_kind(compiler, receiver_type)
         let method = text_method_kind(source, tokens, files, file_index, tables.nodes[parent].token, receiver_kind)
-        if method == TEXT_METHOD_PUSH && child_index == 0L { TY_BYTE }
+        // push takes a byte or any int (stage 0 truncates an int to its low 8 bits); only a literal is typed as a byte
+        if method == TEXT_METHOD_PUSH && child_index == 0L { if tables.nodes[child].kind == NodeKind.Integer { TY_BYTE } else { -1L } }
         else if method == TEXT_METHOD_SLICE { TY_LONG }
         else if (method == TEXT_METHOD_CONTAINS || method == TEXT_METHOD_STARTS_WITH) && child_index == 0L { compiler.facts[frame.child0].ty }
         else { -1L }

@@ -1197,7 +1197,9 @@ fn check_one_body(
             let binding = target_fact.binding
             if binding < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "assignment target must be a writable local, field, or collection element") }
             if !compiler.bindings[binding].mutable { fail_assignment_error(env, source, files, tokens, tables, compiler, file_index, node, binding) }
-            if active_view_overlaps_place(tables, compiler, frame.scope, target) {
+            // A text field cannot be replaced through a loop view (stage 0 refuses it too); scalar fields can.
+            let text_through_view = tables.nodes[target].kind == NodeKind.Field && binding_is_view(compiler, binding) && collection_text_leaf(type_kind(compiler, target_fact.ty))
+            if text_through_view || active_view_overlaps_place(tables, compiler, frame.scope, target) {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[target].start, "cannot replace or modify storage that contains a live collection view")
             }
             let op = syntax.flags
@@ -1537,7 +1539,7 @@ fn check_one_body(
                 } else if method == COLLECTION_METHOD_REMOVE {
                     if argument < 0L || compiler.facts[argument].ty != TY_LONG { fail_at_message(env, files, compiler, file_index, if argument >= 0L { tables.nodes[argument].start } else { syntax.start }, "collection indexes are long; cast an int index with .to_long()") }
                     if active_view_overlaps_place(tables, compiler, frame.scope, receiver) {
-                        fail_at_message(env, files, compiler, file_index, syntax.start, "cannot call a list method while a collection view is live; move the operation after the loop")
+                        fail_view_live_method(env, source, files, tokens, compiler, file_index, syntax.anchor, receiver_ty, syntax.token)
                     }
                     operation_result_type = collection_element_type(compiler, receiver_ty)
                 } else if method == COLLECTION_METHOD_PEEK {
@@ -1546,14 +1548,14 @@ fn check_one_body(
                     let receiver_binding = compiler.facts[receiver].binding
                     if receiver_binding < 0L || !compiler.bindings[receiver_binding].mutable { fail_at_message(env, files, compiler, file_index, syntax.start, "list mutation requires a writable local, parameter, or field place") }
                     if active_view_overlaps_place(tables, compiler, frame.scope, receiver) {
-                        fail_at_message(env, files, compiler, file_index, syntax.start, "cannot call a list method while a collection view is live; move the operation after the loop")
+                        fail_view_live_method(env, source, files, tokens, compiler, file_index, syntax.anchor, receiver_ty, syntax.token)
                     }
                     operation_result_type = intern_sum_type(compiler, TYPE_KIND_OPTION, collection_element_type(compiler, receiver_ty), -1L, file_index, node, -1L, -1L)
                 } else if method == COLLECTION_METHOD_PUSH || method == COLLECTION_METHOD_INSERT {
                     let receiver_binding = compiler.facts[receiver].binding
                     if receiver_binding < 0L || !compiler.bindings[receiver_binding].mutable { fail_at_message(env, files, compiler, file_index, syntax.start, "list mutation requires a writable local, parameter, or field place") }
                     if method == COLLECTION_METHOD_INSERT && active_view_overlaps_place(tables, compiler, frame.scope, receiver) {
-                        fail_at_message(env, files, compiler, file_index, syntax.start, "cannot call a list method while a collection view is live; move the operation after the loop")
+                        fail_view_live_method(env, source, files, tokens, compiler, file_index, syntax.anchor, receiver_ty, syntax.token)
                     }
                     if method == COLLECTION_METHOD_INSERT {
                         if argument < 0L || compiler.facts[argument].ty != TY_LONG { fail_at_message(env, files, compiler, file_index, if argument >= 0L { tables.nodes[argument].start } else { syntax.start }, "collection indexes are long; cast an int index with .to_long()") }
@@ -1569,7 +1571,7 @@ fn check_one_body(
                     let receiver_binding = compiler.facts[receiver].binding
                     if receiver_binding < 0L || !compiler.bindings[receiver_binding].mutable { fail_at_message(env, files, compiler, file_index, syntax.start, "list mutation requires a writable local, parameter, or field place") }
                     if active_view_overlaps_place(tables, compiler, frame.scope, receiver) {
-                        fail_at_message(env, files, compiler, file_index, syntax.start, "cannot call a list method while a collection view is live; move the operation after the loop")
+                        fail_view_live_method(env, source, files, tokens, compiler, file_index, syntax.anchor, receiver_ty, syntax.token)
                     }
                 } else { fail_at_message(env, files, compiler, file_index, syntax.start, "unsupported collection method") }
                 if frame.expected >= 0L && frame.expected != operation_result_type { require_type(env, files, compiler, file_index, node, frame.expected, operation_result_type, tables) }
@@ -1786,9 +1788,13 @@ fn check_one_body(
                 compiler.facts[node] = NodeFact { ty: value.ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
             }
         } else if kind == NodeKind.Binary {
-            let left = compiler.facts[frame.child0]
-            let right = compiler.facts[frame.child1]
+            var left = compiler.facts[frame.child0]
+            var right = compiler.facts[frame.child1]
             let op = syntax.flags
+            // A byte next to an int is an int (two bytes are not: byte arithmetic needs a cast).
+            if left.ty == TY_BYTE && right.ty == TY_INT { left.ty = TY_INT }
+            else if left.ty == TY_INT && right.ty == TY_BYTE { right.ty = TY_INT }
+            else { () }
             var ty = -1L
             if op == 14L || op == 15L {
                 require_type(env, files, compiler, file_index, frame.child0, TY_BOOL, left.ty, tables)

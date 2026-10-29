@@ -564,3 +564,64 @@ fn fail_text_literal_too_long(
     match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
 }
+
+// A collection type spelled as written in source, for diagnostics: list<Row, 2>, queue<int, 4>,
+// Ascii max 8, Row, long.
+recursive fn write_collection_type_spelling(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: CompilerTables,
+    type_id: long,
+    depth: long,
+) {
+    let kind = type_kind(compiler, type_id)
+    if (kind == TYPE_KIND_LIST || kind == TYPE_KIND_QUEUE) && depth < 8L {
+        if kind == TYPE_KIND_LIST {
+            match env.err.write(b"list<") { ok(_) => (), err(_) => env.exit(3) }
+        } else {
+            match env.err.write(b"queue<") { ok(_) => (), err(_) => env.exit(3) }
+        }
+        write_collection_type_spelling(env, source, files, tokens, compiler, collection_element_type(compiler, type_id), depth + 1L)
+        match env.err.write(b", ") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(str(collection_capacity(compiler, type_id)).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b">") { ok(_) => (), err(_) => env.exit(3) }
+    } else if kind == TYPE_KIND_ASCII || kind == TYPE_KIND_BYTES {
+        if kind == TYPE_KIND_ASCII {
+            match env.err.write(b"Ascii max ") { ok(_) => (), err(_) => env.exit(3) }
+        } else {
+            match env.err.write(b"Bytes max ") { ok(_) => (), err(_) => env.exit(3) }
+        }
+        match env.err.write(str(text_max_bytes(compiler, type_id)).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    } else {
+        write_type_name(env, source, files, tokens, compiler, type_id)
+    }
+}
+
+fn fail_view_live_method(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: CompilerTables,
+    file_index: long,
+    offset: long,
+    receiver_type: long,
+    method_token: long,
+) -> never {
+    let file = files[file_index]
+    let position = position_for_offset(file_index, file.base + offset, compiler)
+    match env.err.write(file.name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: cannot call '") { ok(_) => (), err(_) => env.exit(3) }
+    write_collection_type_spelling(env, source, files, tokens, compiler, receiver_type, 0L)
+    match env.err.write(b".") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, file.base, method_token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"' while a collection view is live; move the operation after the loop") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
