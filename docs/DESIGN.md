@@ -175,6 +175,16 @@ policy remains under feature-by-feature review; this adds no blanket ban and
 changes no current compiler support. The no-GC/no-borrow-checker constraint
 stands.
 
+**Caller-backed argument evaluation (2026-10-28):** A caller-backed parameter
+is a live view, not an implicit snapshot. Capture its location and indexes once;
+after evaluating later arguments, derive its current arena address and text
+length/point metrics. If `replace(text)` changes `"a"` to `"zz"`,
+`show(text, replace(text))` sees `"zz"`. Use an explicit copy for old contents.
+Scalars and materialized value temporaries keep their evaluated values. This
+supersedes the older E2 snapshot default for caller-backed arguments; migration
+of legacy lowering paths is deferred where it is not needed for self-hosting,
+not a new compatibility rule.
+
 No per-object heap, ownership headers, reference counts, or general allocator are part of the default. More elaborate mechanisms below are extensions that need a concrete need and a safety or measured-performance defense.
 
 At startup, `main` defines jobs, counts/triggers, and HTTP/mailboxes. The host gives `main` an allowed CPU/core/available-RAM grant, possibly a subset of the host's resources; `main` chooses job counts and settings only within that grant. Per-job resource subdivision and CPU affinity are optional policy, not required by this baseline. A full bounded-mailbox send returns a full status for the caller to handle; it does not wait, drop, or retry implicitly.
@@ -511,8 +521,8 @@ The compiler gives every function a **stack contract**, computed from its body a
   The bounds add up, and each helper's result bound is part of its contract. `ascii_upper` changes only the letters a to z, so its result has exactly its input's length, and `": "` and `str`'s digits are ASCII too, so `line`'s result is `Ascii`. 500 rows × at most 80 bytes is 40,000 bytes, `render`'s declared maximum.
 
   The same example with `name: Text max 60` shows what `Ascii` saves. Text maxima count code points of up to 4 bytes, so `out`'s region would be 160,000 bytes. And a full Unicode `upper` can lengthen text (`ß` becomes `SS`, so 60 of them become 120); its contract says so (at most 3 times the input's code points), which would make `line` need `Text max 200` and the region 400,000 bytes.
-- **Recursion** (opt-in, on functions marked `recursive`, decided 2026-10-24): a recursive cycle may not keep a region alive across its recursive call (neither a builder nor a large fixed value), so each level frees what it placed before recursing; the compiler refuses the function otherwise and names the value. Every recursive call checks the native stack against a byte budget (one compare); passing it fails the job.
-- **The native stack** (the ordinary call stack that holds return addresses, locals and small arrays): each job has its own, reserved from its entry point's worst case. Without recursion that worst case is known at build time, because every function's frame size is (LLVM reports it, from the optimised code actually built) and the deepest call chain is in the call graph. With recursion it's that plus the recursion budget. Before a foreign call it checks for a fixed margin (64 KB by default, configurable per binding), since C's use is unknown. The native reservation and its touched pages count in admission and in the waiting-jobs measurement.
+- **Recursion** (revised by Ben, 2026-10-28): support ordinary direct recursive calls for self-hosting, retaining the existing `recursive` marker for bootstrap compatibility. Each call has its own arena scope; caller storage remains live until its scope ends. The former ban on live regions across recursive calls and the recursion-budget proposal are superseded. No GC or borrow checker is required.
+- **The native stack** holds return addresses, scalar locals and small arrays. For B1 it uses the OS process stack. Ben accepted process termination by the OS if that stack is exhausted; there is no controlled stack-overflow diagnostic, job recovery, or language-level recursion budget in this milestone. Controlled handling and a future multi-job native-stack policy are deferred. This policy is separate from movable arena growth and any future arena cap.
 
 ### Loops can't quietly fill a stack
 
@@ -986,7 +996,7 @@ The largest risk is scope: a general-purpose language is how Hobthrush ended up 
 
 **Decided (2026-10-24)**
 
-- Recursion is opt-in: only functions marked `recursive` may call themselves, directly or through a cycle. A recursive cycle can't keep any region alive across its recursive call (a growing value or a large fixed one, also through indirect cycles), and its native stack use is checked against a byte budget; going past it fails the job. Everything else stays recursion-free, so stack assignment stays simple.
+- Recursion was revised on 2026-10-28 for self-hosting: ordinary direct calls, existing explicit markers for bootstrap compatibility, ordinary per-call arena scopes, and OS process termination on native-stack exhaustion. The former recursion budgets and live-region prohibition no longer apply. Generic and indirect recursion remain outside the B1 subset.
 - Three types for text and bytes: `Text` (always valid UTF-8, lengths in code points), `Ascii` (ASCII only, one byte per character, the compact form) and `Bytes`.
 - `Text` is valid UTF-8 by construction, so it's checked once, where bytes become `Text` (a `Bytes`-to-`Text` conversion, `validate_utf8`, a file read into `Text`, a foreign value arriving), and never again (2026-10-25, Ben): operations on `Text` trust the invariant. Building `Text` from `Text` or `Ascii` pieces sums their code-point counts instead of re-reading the bytes; finding a code-point position counts lead bytes (those that aren't `10xxxxxx` continuation bytes) instead of decoding with validation; printing, comparing, copying and writing `Text` check nothing. Every way to make a `Text` either can't produce invalid bytes (literals refuse `\xNN` above 0x7F, slices can't split a character, `upper` keeps validity) or validates at that boundary.
 - The 3 s build is an aspiration for small changes to small and medium programs (up to roughly 50,000 lines), not a guarantee for every program or change.

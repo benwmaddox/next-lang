@@ -56,7 +56,7 @@ fn display_name(path: Path) -> Bytes max 4096 {
     }
     match value.validate_utf8() {
         ok(_) => value,
-        err(_) => b"<source>",
+        err(_) => return b"<source>",
     }
 }
 
@@ -123,11 +123,12 @@ fn write_lex_diagnostic(
     out.write(b": error: ")?
     if problem.kind == LexProblemKind.UnexpectedCharacter {
         out.write(b"unexpected character '")?
-        if problem.byte < 128 {
+        let byte_value = problem.byte.to_long()
+        if byte_value < 128L {
             var character: Bytes max 2 = Bytes.empty()
             character.push(problem.byte).unwrap()
             out.write(character)?
-        } else if problem.byte < 192 {
+        } else if byte_value < 192L {
             var character: Bytes max 2 = Bytes.empty()
             character.push(194).unwrap()
             character.push(problem.byte).unwrap()
@@ -135,7 +136,7 @@ fn write_lex_diagnostic(
         } else {
             var character: Bytes max 2 = Bytes.empty()
             character.push(195).unwrap()
-            character.push(problem.byte - 64).unwrap()
+            character.push(fit_byte_or_zero((int)(byte_value - 64L))).unwrap()
             out.write(character)?
         }
         out.write(b"'; remove it or use a supported operator")?

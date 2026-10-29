@@ -1,0 +1,3 @@
+[package]
+name = "d1-builder-ops"
+capabilities = ["out"]

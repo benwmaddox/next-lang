@@ -338,19 +338,29 @@ fn dump_json_source(out: Out, buffer: grow Bytes max OUTPUT_BUFFER_BYTES, source
     ok(())
 }
 
+// Call sites prove 0..255; the none arm is a defensive unreachable fallback.
+fn fit_byte_or_zero(value: int) -> byte {
+    match value.fit<byte>() {
+        some(byte_value) => byte_value,
+        none => 0,
+    }
+}
+
 fn append_unicode_byte_value(value: grow Bytes max FILE_SOURCE_CAPACITY, byte_value: byte) {
     if byte_value < 128 {
         value.push(byte_value).unwrap()
     } else {
-        value.push(192 + byte_value / 64).unwrap()
-        value.push(128 + byte_value % 64).unwrap()
+        let number = (int)byte_value
+        value.push(fit_byte_or_zero(192 + number / 64)).unwrap()
+        value.push(fit_byte_or_zero(128 + number % 64)).unwrap()
     }
 }
 
 fn decoded_hex_byte(value: byte) -> byte {
-    if value >= 48 && value <= 57 { value - 48 }
-    else if value >= 65 && value <= 70 { value - 55 }
-    else if value >= 97 && value <= 102 { value - 87 }
+    let number = (int)value
+    if value >= 48 && value <= 57 { fit_byte_or_zero(number - 48) }
+    else if value >= 65 && value <= 70 { fit_byte_or_zero(number - 55) }
+    else if value >= 97 && value <= 102 { fit_byte_or_zero(number - 87) }
     else { 0 }
 }
 
@@ -1016,7 +1026,7 @@ fn output_binary_tree(
             wire_u32(out, buffer, line)?
             wire_u32(out, buffer, col)?
             if token.kind != TokenKind.Eof {
-                for offset in token.start..token.start + token.length {
+                for offset: long in token.start..token.start + token.length {
                     if source[file.base + offset] == 10 { line += 1L; col = 1L }
                     else { col += 1L }
                 }

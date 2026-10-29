@@ -1,0 +1,3 @@
+FAIL recursive stack budget fails as a runtime failure
+  test 'recursive stack budget fails as a runtime failure' ended with a runtime failure (exit code 70)
+0 passed, 1 failed

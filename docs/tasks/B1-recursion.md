@@ -1,97 +1,82 @@
-# B1 prerequisite: source-used recursion and native-stack checks
+# B1 prerequisite: ordinary direct recursion
 
-Status: deferred by Ben, 2026-10-28, pending further language design.
-The unmerged compiler/runtime/linker prototype and its added fixtures were
-removed. Existing recursion gates remain in place. The notes below record the
-previous proposal; they are not authorization to resume its implementation.
+Status: reopened by Ben, 2026-10-28. The previous unmerged prototype was removed.
+This plan replaces its recursion budgets, measured-frame linker pass, and ban on
+live arena regions across a recursive call. Implementation has not landed.
 
-Ben's direction is to keep syntax and rules close to StasisLang and require a
-specific justification for Rust-derived approaches. Resolve these questions
-before selecting a replacement recursion design:
+## Chosen behavior
 
-- DESIGN describes the recursion budget as additional to the nonrecursive
-  requirement, while the existing C runtime caps whole-job native stack use.
-- T19 derives the default from the process stack, while DESIGN gives each job
-  its own mapped native stack. Choose an explicit, understandable default.
-- The current rule permits a small recursive local but rejects a slightly
-  larger one when storage placement creates a data-stack region. Decide whether
-  this size-dependent restriction is acceptable or needs a simpler model.
+Support concrete direct recursive calls used by the compiler. Retain the
+existing `recursive fn` marker for frozen Stage0 bootstrap compatibility;
+every function participating in a cycle must be marked. Generic functions,
+function values/indirect calls, and language-level const-function evaluation
+remain outside this slice.
 
-Prefer ordinary caller-provided workspace where useful; do not introduce
-lifetime parameters or a general ownership system without a defended need.
-Use Ben's clarified memory baseline: optional StasisLang-style static storage
-that persists across runs of a reusable job instance, with most work in per-run
-stack arenas that may move/grow up to a cap and are reclaimed in bulk. A future
-recursion proposal must fit that model before adding another memory mechanism.
-The compiler's own-source probe remains blocked on recursion. Continue
-independent self-hosting prerequisites without claiming B1 completion.
+Ben explicitly chose the ordinary OS process stack for B1. Native-stack
+exhaustion may terminate the compiler process through the OS. There is no
+controlled diagnostic, job recovery, measured-frame patching, recursion budget,
+or depth counter. Controlled stack-overflow handling is deferred. Do not
+relabel arbitrary segmentation faults as stack exhaustion.
 
-## Trigger and scope
+The existing v2 link header keeps `nlc.recursion none` to select linking
+without measured recursion-target records. Under this policy it does not
+assert that the LLVM call graph is acyclic. This supersedes E1's stronger
+acyclic assumption; the frozen link driver simply invokes clang without a
+recursion probe. The final stage chain invokes clang directly.
 
-After direct Bytes fields are supported, the own-source probe stops at
-`collections.nl:107:1: generic or recursive functions`. The declaration is
-`recursive fn evaluate_collection_capacity`, not a generic function. The current
-source has 76 recursive declarations, including the parser, checker, scalar
-constant evaluator, and collection walkers.
+The movable arena is separate. Each activation uses ordinary per-call and
+per-block scopes. Caller-owned values remain live below the callee's incoming
+top, and the callee restores that top on return. There is no size-dependent
+prohibition on holding an arena value across recursion, no GC, and no borrow
+checker. Arena caps and job exceptions remain deferred.
 
-Support direct calls among concrete, explicitly recursive functions used by the
-compiler. Keep generic functions, function values/indirect calls, recursive
-language-level const calls, and unrelated features gated. The historical
-[T19 contract](T19-recursion.md), including its binding corrections, governs
-native stack safety and regions; this is a source-closed subset of that work.
+## Minimal implementation
 
-## Architecture and required bridge
+1. In `selfhost/compiler.nl`, admit the parsed `FLAG_RECURSIVE` on concrete
+   top-level functions while retaining generic-function gates. The flag is
+   already stored on the syntax node; no new function-record field is needed.
+2. Keep the existing iterative cycle search, starting from unmarked functions.
+   Every invalid cycle has an unmarked member; a search from that member can
+   find a path back to it. Preserve default-initializer cycle checking and
+   deterministic errors for unmarked self, mutual, and overlapping cycles.
+3. Make native-frame path estimates explicitly unknown for marked functions
+   and propagate that state to callers. Stop traversal at marked functions;
+   after cycle validation the remaining graph is acyclic. Preserve the current
+   finite 1 MiB admission check for entries/tests with finite paths. A marked
+   function without an actual cycle is conservatively unknown too. Do not
+   pretend a recursive path has a finite byte bound by reading zero/stale
+   values at a back edge. Keep this analysis separate from arena sizing.
+4. Reuse `selfhost/regions.nl` scope reservation/restoration and the descriptor
+   ABI in `selfhost/params.nl`. Fix only demonstrated integration defects.
+   Calls already pass the current arena top; large values use arena offsets,
+   and hidden results belong to the caller. No new region ownership rules,
+   context ABI, stack mapping, or signal runtime are planned.
 
-- Separate the recursive flag from the generic-function gate. Preserve it in
-  function metadata; validate direct-call cycles so every cycle member is marked,
-  and keep unmarked/default-initializer cycle errors. Make frame-path analysis
-  SCC-aware instead of assuming a DAG or giving a back edge zero cost.
-- Enforce no callee-created data-stack region live across a call back into its
-  cycle, including hidden result destinations and temporaries. Borrowed caller
-  structures through read/write/grow parameters may remain live. Audit the
-  compiler's actual recursive helpers and refactor caller-owned workspace if
-  needed; do not disable this rule to fit the source.
-- Check actual remaining native stack before the callee frame is allocated.
-  Required space includes its measured optimized frame, deepest nonrecursive
-  descendants, helper/reporting and alignment costs, and the specified 64 KiB
-  foreign-call margin. Respect the actual usable stack limit and manifest cap;
-  `selfhost/package.toml` currently sets `recursion_budget = 7800KiB`.
-- Use final clang object-code frame sizes at O1 and O3. No guessed frame costs.
-  Inspect existing `check_call_cycles`, `compute_frame_slot_paths`, the Stage0
-  two-pass `.stack_sizes` protocol, and runtime check before editing.
-
-Frozen Stage0 `link-ir` rejects recursion target metadata. The comparison and
-relocation harnesses currently use that linker, so recursion fixtures need an
-external measured-frame patch/link path that invokes clang directly. It must
-validate metadata, measure the final optimized object, patch guarded call sizes,
-and link with equivalent options. Keep ordinary nonrecursive validation intact.
-This also prepares the stage-chain harness without requiring the product's
-future in-language process driver.
-
-`nl_recursion_check` exists in the C runtime, but the current core path lacks an
-equivalent emitted check. Supply and verify the core/native-limit implementation
-and context setup too; patching an integer placeholder alone is insufficient.
-Audit context offsets, versions, fixtures, and deterministic oracles if the ABI
-changes. Do not modify frozen Stage0 or rely on Rust checking/emission/linking
-after the bootstrap seed to claim B1.
+No full strongly connected component framework is needed for these checks.
+No frozen Rust edits or new `.unwrap()` failure paths are authorized by this
+plan. Implementation is Luna/max; Sol coordinates, debugs, and reviews.
 
 ## Acceptance and validation
 
-- Direct and mutual recursion execute correctly; unmarked cycles receive real
-  diagnostics naming the functions. Generic and indirect forms remain gated.
-- A caller-owned borrowed structure survives recursion. Per-level large local
-  regions, mutual-cycle live regions, hidden result slots, and temporary copies
-  are rejected according to T19 rather than exceeding data-stack admission.
-- Deep and lowered-budget recursion fail with `recursion budget exhausted` at
-  the call's location, correct run/test failure status, and no segfault. Cover
-  large optimized frames and foreign/helper headroom at O1/O3.
-- Preserve raw measured-frame evidence and patched metadata for deterministic
-  tests. Validate the core checker and budget cap independently of the C runtime.
-- Fresh own-source probe advances to the next specific gate; no stage-chain or
-  self-hosting claim until stages 2/3 and corpus correctness pass.
-- Run exact failing commands, focused O1/O3 comparison/relocation with the new
-  measured linker, related ABI/budget checks, formatting/diff checks, and the
-  installed full staged suite. Keep old fixtures/oracles intact; add new ones.
+- Marked self and mutual recursion work. Unmarked self/mixed/overlapping
+  cycles retain real errors. A marked function without a cycle is valid.
+- Caller-owned read/write/grow values survive recursive growth and forced
+  relocation. Per-level large arena values remain independent across calls.
+  Hidden aggregate results, nested returns, and `?` exits restore the right top.
+- Existing acyclic native-frame admission fixtures retain their behavior.
+  Keep mixed generic/indirect/budget fixtures gated rather than promoting
+  whole packages that contain unsupported forms.
+- Preserve frozen Stage0 baselines. Where its historical live-region rule
+  rejects an intended B1 example, use an explicitly reviewed target-output
+  fixture, with the difference documented.
+- Run fresh seed construction, focused O1/O3 comparison and forced relocation,
+  existing cycle/frame tests, diff checks, and the full staged pre-commit suite.
+  Probe the compiler's own source and report the next actual gate.
 
-Implementation remains Luna/max. Sol resolves architecture, debugging, review,
-and evidence before PR/merge. Compiler benchmarking follows the B1 stage chain.
+Use `scripts/build-selfhost-cached.py --reference <frozen-nlc>`,
+`scripts/compare-selfhost-build.py --reference <frozen-nlc> --only <fixture-glob>`,
+and `scripts/check-selfhost-relocation.py --reference <frozen-nlc> --only <fixture-glob>`
+with `NLC_LONG_TESTS=1`. After the seed, the final B1 stage chain uses clang
+directly with the existing C runtime, without Rust checking, emission, or linking.
+Require stage-2/stage-3 IR and binary identity and compiler-corpus correctness
+before calling the compiler self-hosted or publishing self-built benchmarks.

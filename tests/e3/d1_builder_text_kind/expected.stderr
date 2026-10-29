@@ -1,0 +1,1 @@
+main.nl:4:29: error: Text.try_append needs Text or Ascii; found Bytes max 1

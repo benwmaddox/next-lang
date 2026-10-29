@@ -1,0 +1,6 @@
+read=file-bytes
+entries=
+file=a.data
+file=input.data
+file=output.data
+file=z.data

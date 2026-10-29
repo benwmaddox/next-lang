@@ -24,6 +24,10 @@ from test_harness import add_filter_arguments, changed_paths, filter_label, read
 
 
 TIMEOUT_SECONDS = 180
+NATIVE_STACK_EXHAUSTION_CASES = (
+    "tests/run/t19_deep_default",
+    "tests/test/t19_recursion_budget",
+)
 STATS = re.compile(
     rb"^nl offset stack entry '.*': initial=([0-9]+) reserved=([0-9]+) "
     rb"peak_used=([0-9]+) growths=([0-9]+) relocations=([0-9]+) growth_ns=([0-9]+)$"
@@ -240,6 +244,12 @@ def check_package(
         moved_env["NLC_STACK_STATS"] = "1"
         moved_result = run_program(moved_exe, cwd, moved_env, test_index)
         stats = compare_run(ordinary_result, moved_result, package, level, test_index)
+        if package == "tests/e3/d1_builder_relocation" and test_index is None and stats[4] < 3:
+            raise CheckError(
+                f"{package} at O{level}: expected relocations during setup, after the "
+                f"builders were populated, and while evaluating the append argument; "
+                f"found {stats[4]} relocations"
+            )
         if stats[4] > 0:
             package_relocated = True
 
@@ -253,6 +263,7 @@ def check_package(
     ) or package in (
         "tests/e3/e3b_relocation",
         "tests/e3/b1_bytes_fields_records",
+        "tests/e3/d1_builder_relocation",
     )
     if directed_relocation and not package_relocated:
         raise CheckError(f"directed relocation fixture {package} never relocated at O{level}")
@@ -314,13 +325,26 @@ def main() -> int:
         raise CheckError(f"classification table mismatch: missing={missing}, extra={extra}")
     build_packages = [package for package, kind in classifications.items() if kind in ("build", "expected")]
     changed = changed_paths(root, args.changed)
-    packages = select_packages(
+    selected_packages = select_packages(
         build_packages,
         classifications,
         args.only,
         args.package_class,
         changed,
     )
+    excluded_native_stack = [
+        package for package in selected_packages if package in NATIVE_STACK_EXHAUSTION_CASES
+    ]
+    packages = [
+        package for package in selected_packages if package not in NATIVE_STACK_EXHAUSTION_CASES
+    ]
+    if excluded_native_stack:
+        print(
+            "relocation check excludes deliberate native-stack exhaustion cases "
+            "(OS termination cannot emit final stack stats): "
+            + ", ".join(excluded_native_stack),
+            flush=True,
+        )
 
     work = Path(tempfile.mkdtemp(prefix=".selfhost-relocation-", dir=root))
     generated_path = root / "tests/run/t20_probe/a.txt"

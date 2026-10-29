@@ -786,7 +786,7 @@ recursive fn parse_program(
         if next.kind != TokenKind.Newline && next.kind != TokenKind.Semicolon && next.kind != TokenKind.Eof {
             return err(cursor_error(tables, tokens, ParseProblemKind.ExpectedSeparator))
         }
-        cursor_skip_separators(tables, tokens)
+        let _ = cursor_skip_separators(tables, tokens)
     }
     append_node(
         tables,
@@ -831,7 +831,7 @@ recursive fn parse_enum_decl(
                     if cursor_peek(tables, tokens, 0L).kind == TokenKind.RParen { break }
                 }
             }
-            cursor_expect(tables, tokens, TokenKind.RParen, ParseProblemKind.ExpectedEnumPayloadClose)?
+            let _ = cursor_expect(tables, tokens, TokenKind.RParen, ParseProblemKind.ExpectedEnumPayloadClose)?
         }
         let case_end = tables.state.last_end
         append_node(tables, NodeKind.EnumCase, case_first, case_token.token, case_token.start, case_end, case_token.start, 0L, -1L, payload_count)?
@@ -874,7 +874,7 @@ recursive fn parse_struct_decl(
         let field_first = tables.nodes.count()
         parse_type(source, tokens, tables, NodeKind.FieldType)?
         if cursor_take(tables, tokens, TokenKind.Eq) {
-            parse_expression(source, tokens, tables, 0L)?
+            let _ = parse_expression(source, tokens, tables, 0L)?
         }
         let field_end = tables.state.last_end
         append_node(tables, NodeKind.StructField, field_first, field.token, field.start, field_end, field.start, 0L, -1L, 0L)?
@@ -1020,7 +1020,7 @@ recursive fn parse_function_decl(
     cursor_skip_newlines(tables, tokens)
     if cursor_take(tables, tokens, TokenKind.Arrow) {
         cursor_skip_newlines(tables, tokens)
-        parse_type(source, tokens, tables, NodeKind.ResultType)?
+        let _ = parse_type(source, tokens, tables, NodeKind.ResultType)?
     }
     cursor_skip_newlines(tables, tokens)
     parse_block(source, tokens, tables)?
@@ -1173,7 +1173,7 @@ recursive fn parse_type_inner(
                 tables.nodes[inner].end = tables.state.last_end
                 return ok(inner)
             }
-            tables.nodes.pop()
+            let _ = tables.nodes.pop()
             var added_arrays = 0L
             for step in 0L..MAX_TOKENS_PER_FILE {
                 if !cursor_take(tables, tokens, TokenKind.LBracket) { break }
@@ -1260,13 +1260,13 @@ recursive fn parse_named_type(
                 argument_count += 1L
             }
         }
-        cursor_expect_type_gt(tables, tokens, ParseProblemKind.ExpectedTypeArgsClose)?
+        let _ = cursor_expect_type_gt(tables, tokens, ParseProblemKind.ExpectedTypeArgsClose)?
     }
     var range_extra = -1L
     if cursor_peek(tables, tokens, 0L).kind == TokenKind.Number || cursor_peek(tables, tokens, 0L).kind == TokenKind.Minus {
         let lower = parse_range_bound(source, tokens, tables)?
         let inclusive = cursor_take(tables, tokens, TokenKind.RangeInclusive)
-        if !inclusive { cursor_expect(tables, tokens, TokenKind.Range, ParseProblemKind.ExpectedTypeRange)? }
+        if !inclusive { let _ = cursor_expect(tables, tokens, TokenKind.Range, ParseProblemKind.ExpectedTypeRange)? }
         let upper = parse_range_bound(source, tokens, tables)?
         range_extra = tables.extra.count()
         append_extra(tables, lower.literal)?
@@ -1375,7 +1375,7 @@ recursive fn parse_function_type(
     cursor_skip_newlines(tables, tokens)
     if cursor_take(tables, tokens, TokenKind.Arrow) {
         cursor_skip_newlines(tables, tokens)
-        parse_type(source, tokens, tables, NodeKind.ResultType)?
+        let _ = parse_type(source, tokens, tables, NodeKind.ResultType)?
     }
     if cursor_word_is(source, tables, tokens, "effects") {
         cursor_next(tables, tokens)
@@ -1417,7 +1417,7 @@ recursive fn parse_function_type(
             let following = cursor_peek(tables, tokens, 1L)
             if following.kind != TokenKind.Ident { break }
             if !(token_is_word(source, tokens, following.token, tables.state.file_base, "out") || token_is_word(source, tokens, following.token, tables.state.file_base, "env") || token_is_word(source, tokens, following.token, tables.state.file_base, "fs") || token_is_word(source, tokens, following.token, tables.state.file_base, "reads") || token_is_word(source, tokens, following.token, tables.state.file_base, "writes")) { break }
-            cursor_next(tables, tokens)
+            let _ = cursor_next(tables, tokens)
         }
     }
     let end = tables.state.last_end
@@ -1631,7 +1631,7 @@ recursive fn parse_statement_candidate(
         let start = cursor_next(tables, tokens)
         let first = tables.nodes.count()
         if cursor_peek(tables, tokens, 0L).kind != TokenKind.Newline && cursor_peek(tables, tokens, 0L).kind != TokenKind.Semicolon && cursor_peek(tables, tokens, 0L).kind != TokenKind.RBrace {
-            parse_expression(source, tokens, tables, 0L)?
+            let _ = parse_expression(source, tokens, tables, 0L)?
         }
         let end = tables.state.last_end
         let node = append_node(tables, NodeKind.ReturnStatement, first, start.token, start.start, end, start.start, 0L, -1L, 0L)?
@@ -1865,7 +1865,7 @@ recursive fn parse_for_header(
     cursor_skip_newlines(tables, tokens)
     let inclusive = cursor_take(tables, tokens, TokenKind.RangeInclusive)
     let to_range = cursor_word_is(source, tables, tokens, "to")
-    if to_range { cursor_next(tables, tokens) }
+    if to_range { let _ = cursor_next(tables, tokens) }
     let is_range = inclusive || to_range || cursor_take(tables, tokens, TokenKind.Range)
     if is_range {
         if index_count > 0L { return err(ParseError { kind: ParseProblemKind.RangeForBindings, offset: start.start, token: start.token }) }
@@ -2317,7 +2317,7 @@ recursive fn postfix_call(
         name_token = tables.nodes[expression.node].token
         // Remove the provisional Name node so its replacement Call has no
         // ghost child and the newly parsed arguments remain contiguous.
-        tables.nodes.pop()
+        let _ = tables.nodes.pop()
         call_kind = 1L
     } else if expression.node >= 0L && tables.nodes[expression.node].kind == NodeKind.QualifiedCase {
         let old = tables.nodes[expression.node]
@@ -2326,7 +2326,7 @@ recursive fn postfix_call(
         let rollback = node_first_child(tables.nodes, expression.node)
         // QualifiedCase arguments are reparsed for this postfix form, so roll
         // back the whole provisional subtree before appending its replacement.
-        for pop_step in 0L..tables.nodes.count() - rollback { tables.nodes.pop() }
+        for pop_step in 0L..tables.nodes.count() - rollback { let _ = tables.nodes.pop() }
         call_kind = 2L
     } else {
         ()
@@ -2435,7 +2435,7 @@ recursive fn postfix_struct_literal(
     if expression.node >= 0L {
         name_token = tables.nodes[expression.node].token
         // StructInit replaces its bare name head in the same way as Call.
-        tables.nodes.pop()
+        let _ = tables.nodes.pop()
     }
     let is_list = token_is_word(source, tokens, name_token, tables.state.file_base, "list")
     let is_pool = token_is_word(source, tokens, name_token, tables.state.file_base, "pool")
@@ -2582,7 +2582,7 @@ recursive fn postfix_dot(
             var enum_token = expression.token
             if expression.node >= 0L {
                 enum_token = tables.nodes[expression.node].token
-                tables.nodes.pop()
+                let _ = tables.nodes.pop()
             }
             let first = tables.nodes.count()
             let item_count = parse_arguments(source, tokens, tables)?
@@ -2609,7 +2609,7 @@ recursive fn postfix_dot(
                 parse_expression(source, tokens, tables, 0L)?
                 arg_count = 2L
             }
-            cursor_expect(tables, tokens, TokenKind.RParen, ParseProblemKind.ExpectedSliceClose)?
+            let _ = cursor_expect(tables, tokens, TokenKind.RParen, ParseProblemKind.ExpectedSliceClose)?
         } else {
             arg_count = parse_arguments_after_open(source, tokens, tables)?
         }
@@ -2908,7 +2908,7 @@ recursive fn parse_pattern(
                 if cursor_peek(tables, tokens, 0L).kind == TokenKind.RParen { break }
             }
         }
-        cursor_expect(tables, tokens, TokenKind.RParen, ParseProblemKind.ExpectedPatternClose)?
+        let _ = cursor_expect(tables, tokens, TokenKind.RParen, ParseProblemKind.ExpectedPatternClose)?
     }
     let extra = if enum_token >= 0L { enum_token } else { -1L }
     let flags = if enum_token >= 0L { FLAG_HAS_ANNOTATION } else { 0L }

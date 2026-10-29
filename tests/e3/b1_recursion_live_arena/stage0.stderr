@@ -1,0 +1,1 @@
+main.nl:6:21: error: large value 'frame' keeps a data-stack region alive across a recursive call; move it out of this cycle or end its scope before the call

@@ -21,7 +21,12 @@ const TY_UNIT: long = 3L
 const TY_NEVER: long = 4L
 const TY_ADDR: long = 5L
 const TY_BYTE: long = 6L
-const TY_STRUCT_BASE: long = 7L
+const TY_ENV: long = 7L
+const TY_FS: long = 8L
+const TY_OUT: long = 9L
+const TY_ARGS: long = 10L
+const TY_ARG: long = 11L
+const TY_STRUCT_BASE: long = 12L
 // E3a1 begin: struct storage sizes are exact through signed long limits.
 const MAX_VALUE_SIZE: long = 9223372036854775807L
 // E3a1 end
@@ -134,7 +139,7 @@ const UNSUPPORTED_FRAME_BUDGET: long = 10L
 const UNSUPPORTED_RESULT_MAIN: long = 11L
 const UNSUPPORTED_NESTED_COLLECTIONS: long = 12L
 const UNSUPPORTED_TEXT_COLLECTION: long = 13L
-const UNSUPPORTED_TEXT_BUILDERS: long = 14L
+const UNSUPPORTED_CONDITIONAL_BUILDER_LOOP: long = 14L
 
 struct TypeRecord {
     // Kind and sizing state share a word; helper_mask is the registry row for this type id.
@@ -416,6 +421,9 @@ struct CompilerTables {
     child_next: list<long, CHILD_LINK_CAPACITY>
     facts: list<NodeFact, TYPED_FACT_CAPACITY>
     expected: list<long, TYPED_FACT_CAPACITY>
+    region_temp_scope: list<long, TYPED_FACT_CAPACITY>
+    block_end: list<long, TYPED_FACT_CAPACITY>
+    block_align: list<long, TYPED_FACT_CAPACITY>
     token_name_ids: list<long, TOKEN_STORAGE_CAPACITY>
     intern_slots: list<NameSlot, INTERN_HASH_CAPACITY>
     enum_type_by_name: list<long, TOKEN_STORAGE_CAPACITY>
@@ -460,6 +468,7 @@ struct CompilerTables {
     internal_emit_error_file: long
     ir_terminated: bool
     core_mode: bool
+    c_runtime: bool
     test_build: bool
     file_id_base: long
     memory_closure: bool
@@ -490,7 +499,14 @@ fn builtin_type_record(kind: long, size: long, align: long) -> TypeRecord {
     }
 }
 
-fn seed_builtin_types(types: write list<TypeRecord, TYPE_TABLE_CAPACITY>) {
+fn push_builtin_address_type(env: Env, types: write list<TypeRecord, TYPE_TABLE_CAPACITY>) {
+    match types.push(builtin_type_record(TYPE_KIND_ADDRESS, 8L, 8L)) {
+        ok(_) => (),
+        err(_) => fail_tool(env, "compiler built-in type table capacity exceeded"),
+    }
+}
+
+fn seed_builtin_types(env: Env, types: write list<TypeRecord, TYPE_TABLE_CAPACITY>) {
     types.push(builtin_type_record(TYPE_KIND_SCALAR, 4L, 4L)).unwrap()
     types.push(builtin_type_record(TYPE_KIND_SCALAR, 8L, 8L)).unwrap()
     types.push(builtin_type_record(TYPE_KIND_SCALAR, 1L, 1L)).unwrap()
@@ -498,6 +514,11 @@ fn seed_builtin_types(types: write list<TypeRecord, TYPE_TABLE_CAPACITY>) {
     types.push(builtin_type_record(TYPE_KIND_NEVER, 0L, 1L)).unwrap()
     types.push(builtin_type_record(TYPE_KIND_ADDRESS, 8L, 8L)).unwrap()
     types.push(builtin_type_record(TYPE_KIND_SCALAR, 4L, 4L)).unwrap()
+    push_builtin_address_type(env, types)
+    push_builtin_address_type(env, types)
+    push_builtin_address_type(env, types)
+    push_builtin_address_type(env, types)
+    push_builtin_address_type(env, types)
 }
 
 fn empty_compiler_tables() -> CompilerTables {
@@ -506,6 +527,9 @@ fn empty_compiler_tables() -> CompilerTables {
         child_next: list {},
         facts: list {},
         expected: list {},
+        region_temp_scope: list {},
+        block_end: list {},
+        block_align: list {},
         token_name_ids: list {},
         intern_slots: list {},
         enum_type_by_name: list {},
@@ -550,6 +574,7 @@ fn empty_compiler_tables() -> CompilerTables {
         internal_emit_error_file: -1L,
         ir_terminated: false,
         core_mode: false,
+        c_runtime: false,
         test_build: false,
         file_id_base: 0L,
         memory_closure: false,
@@ -562,11 +587,14 @@ fn empty_compiler_tables() -> CompilerTables {
     }
 }
 
-fn reset_compiler_tables(compiler: write CompilerTables) {
+fn reset_compiler_tables(env: Env, compiler: write CompilerTables) {
     compiler.child_first.clear()
     compiler.child_next.clear()
     compiler.facts.clear()
     compiler.expected.clear()
+    compiler.region_temp_scope.clear()
+    compiler.block_end.clear()
+    compiler.block_align.clear()
     compiler.token_name_ids.clear()
     compiler.intern_slots.clear()
     compiler.enum_type_by_name.clear()
@@ -577,7 +605,7 @@ fn reset_compiler_tables(compiler: write CompilerTables) {
     compiler.parameters.clear()
     compiler.type_records.clear()
     compiler.exit_cleanups.clear()
-    seed_builtin_types(compiler.type_records)
+    seed_builtin_types(env, compiler.type_records)
     compiler.struct_fields.clear()
     compiler.enum_cases.clear()
     compiler.enum_payloads.clear()
@@ -612,6 +640,7 @@ fn reset_compiler_tables(compiler: write CompilerTables) {
     compiler.internal_emit_error_file = -1L
     compiler.ir_terminated = false
     compiler.core_mode = false
+    compiler.c_runtime = false
     compiler.test_build = false
     compiler.file_id_base = 0L
     compiler.memory_closure = false
@@ -619,12 +648,24 @@ fn reset_compiler_tables(compiler: write CompilerTables) {
     compiler.region_max_size = 0L
 }
 
-fn add_compiler_links(tables: write ParseTables, compiler: write CompilerTables) {
+fn add_compiler_links(env: Env, tables: write ParseTables, compiler: write CompilerTables) {
     for node in 0L..tables.nodes.count() {
         compiler.child_first.push(-1L).unwrap()
         compiler.child_next.push(-1L).unwrap()
         compiler.facts.push(NodeFact { ty: -1L, flags: 0L, binding: -1L, function: -1L, literal: 0L }).unwrap()
         compiler.expected.push(-1L).unwrap()
+        match compiler.region_temp_scope.push(-3L) {
+            ok(_) => (),
+            err(_) => fail_tool(env, "compiler region node cache capacity exceeded"),
+        }
+        match compiler.block_end.push(-1L) {
+            ok(_) => (),
+            err(_) => fail_tool(env, "compiler region block cache capacity exceeded"),
+        }
+        match compiler.block_align.push(1L) {
+            ok(_) => (),
+            err(_) => fail_tool(env, "compiler region block cache capacity exceeded"),
+        }
     }
     for parent in 0L..tables.nodes.count() {
         let first = parent - tables.nodes[parent].subtree + 1L
@@ -963,7 +1004,7 @@ fn block_for_node(tables: ParseTables, node: long) -> long {
 
 fn enclosing_owner(tables: ParseTables, node: long) -> long {
     if node < 0L || node >= tables.nodes.count() { return -1L }
-    for candidate in node + 1L..tables.nodes.count() {
+    for candidate: long in node + 1L..tables.nodes.count() {
         let syntax = tables.nodes[candidate]
         if syntax.kind == NodeKind.Program { break }
         if (syntax.kind == NodeKind.Function || syntax.kind == NodeKind.Test) && candidate - syntax.subtree + 1L <= node {
@@ -1558,6 +1599,14 @@ fn resolve_value_type(
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "long") { return TY_LONG }
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "bool") { return TY_BOOL }
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "byte") { return TY_BYTE }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Env") { return TY_ENV }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Fs") { return TY_FS }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Out") { return TY_OUT }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Args") { return TY_ARGS }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Arg") { return TY_ARG }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Path") {
+        return collection_type_matches(compiler, TYPE_KIND_LIST, TY_BYTE, 4096L)
+    }
     if syntax.token < 0L { return -1L }
     let name_id = compiler.token_name_ids[syntax.token]
     let type_id = value_type_matches(compiler, name_id)
@@ -1656,7 +1705,7 @@ fn intern_written_type_instances(
             let target_node = if value_node >= 0L { compiler.child_next[value_node] } else { -1L }
             if target_node >= 0L {
                 let target_ty = compiler.facts[target_node].ty
-                if type_kind(compiler, target_ty) == TYPE_KIND_ASCII {
+                if type_kind(compiler, target_ty) == TYPE_KIND_ASCII || target_ty == TY_BYTE {
                     let _fit_option_type = intern_sum_type(compiler, TYPE_KIND_OPTION, target_ty, -1L,
                         node_file_index(tables.nodes, files, node), node, -1L, -1L)
                 }
@@ -1746,12 +1795,14 @@ fn check_package_name_shadows(
 }
 
 fn index_package_enums(
+    env: Env,
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: ParseTables,
     compiler: write CompilerTables,
 ) {
+    if compiler.c_runtime { intern_builtin_io_types(env, source, files, tokens, compiler) }
     for file_index in 0L..files.count() {
         let root = files[file_index].tree_root
         var child = compiler.child_first[root]
@@ -1787,7 +1838,7 @@ fn index_package_enums(
                     }
                     case_node = compiler.child_next[case_node]
                 }
-                append_type_record(compiler, TypeRecord {
+                let _ = append_type_record(compiler, TypeRecord {
                     kind_state: TYPE_KIND_ENUM * 16L,
                     name_id: compiler.token_name_ids[syntax.token],
                     name_token: syntax.token,
@@ -1803,6 +1854,198 @@ fn index_package_enums(
             child = compiler.child_next[child]
         }
     }
+}
+
+fn append_builtin_io_type(
+    env: Env,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: write CompilerTables,
+    record: TypeRecord,
+) -> long {
+    let type_id = compiler.type_records.count()
+    match compiler.type_records.push(record) {
+        ok(_) => (),
+        err(_) => fail_parse_limit(env, files[0].name, "C-runtime built-in type table capacity exceeded"),
+    }
+    if type_record_kind(record) == TYPE_KIND_ENUM {
+        match compiler.enum_type_ids.push(type_id) {
+            ok(_) => (),
+            err(_) => fail_parse_limit(env, files[0].name, "C-runtime enum table capacity exceeded"),
+        }
+        if record.name_id >= 0L && record.name_id < compiler.enum_type_by_name.count() {
+            compiler.enum_type_by_name[record.name_id] = type_id
+        }
+    }
+    type_id
+}
+
+fn intern_builtin_io_enum_case(
+    env: Env,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: write CompilerTables,
+    owner: long,
+    case_name_id: long,
+    case_token: long,
+    tag: long,
+    payload_type: long,
+) {
+    let payload_start = compiler.enum_payloads.count()
+    if payload_type >= 0L {
+        let payload = EnumPayloadRecord {
+            case_index: compiler.enum_cases.count(),
+            type_node: -1L,
+            ty: payload_type,
+            offset: 0L,
+        }
+        match compiler.enum_payloads.push(payload) {
+            ok(_) => (),
+            err(_) => fail_parse_limit(env, files[0].name, "C-runtime enum payload table capacity exceeded"),
+        }
+    }
+    let case_record = EnumCaseRecord {
+        owner,
+        name_id: case_name_id,
+        name_token: case_token,
+        node: -4L,
+        payload_start,
+        payload_count: compiler.enum_payloads.count() - payload_start,
+        tag,
+    }
+    match compiler.enum_cases.push(case_record) {
+        ok(_) => (),
+        err(_) => fail_parse_limit(env, files[0].name, "C-runtime enum case table capacity exceeded"),
+    }
+}
+
+fn intern_builtin_io_types(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: write CompilerTables,
+) {
+    let io_error_token = find_builtin_word_token(source, files, tokens, "IoError")
+    let io_error_name = if io_error_token >= 0L { compiler.token_name_ids[io_error_token] } else { -110L }
+    let io_error_owner = enum_type_count(compiler)
+    let io_error_start = compiler.enum_cases.count()
+    let not_found_token = find_builtin_word_token(source, files, tokens, "NotFound")
+    let no_permission_token = find_builtin_word_token(source, files, tokens, "NoPermission")
+    let too_large_token = find_builtin_word_token(source, files, tokens, "TooLarge")
+    let too_many_token = find_builtin_word_token(source, files, tokens, "TooMany")
+    let name_too_long_token = find_builtin_word_token(source, files, tokens, "NameTooLong")
+    let bad_path_token = find_builtin_word_token(source, files, tokens, "BadPath")
+    let outside_token = find_builtin_word_token(source, files, tokens, "Outside")
+    let other_token = find_builtin_word_token(source, files, tokens, "Other")
+    let invalid_utf8_token = find_builtin_word_token(source, files, tokens, "InvalidUtf8")
+    intern_builtin_io_enum_case(env, files, compiler, io_error_owner, if not_found_token >= 0L { compiler.token_name_ids[not_found_token] } else { -111L }, not_found_token, 0L, -1L)
+    intern_builtin_io_enum_case(env, files, compiler, io_error_owner, if no_permission_token >= 0L { compiler.token_name_ids[no_permission_token] } else { -112L }, no_permission_token, 1L, -1L)
+    intern_builtin_io_enum_case(env, files, compiler, io_error_owner, if too_large_token >= 0L { compiler.token_name_ids[too_large_token] } else { -113L }, too_large_token, 2L, -1L)
+    intern_builtin_io_enum_case(env, files, compiler, io_error_owner, if too_many_token >= 0L { compiler.token_name_ids[too_many_token] } else { -114L }, too_many_token, 3L, -1L)
+    intern_builtin_io_enum_case(env, files, compiler, io_error_owner, if name_too_long_token >= 0L { compiler.token_name_ids[name_too_long_token] } else { -115L }, name_too_long_token, 4L, -1L)
+    intern_builtin_io_enum_case(env, files, compiler, io_error_owner, if bad_path_token >= 0L { compiler.token_name_ids[bad_path_token] } else { -116L }, bad_path_token, 5L, -1L)
+    intern_builtin_io_enum_case(env, files, compiler, io_error_owner, if outside_token >= 0L { compiler.token_name_ids[outside_token] } else { -117L }, outside_token, 6L, -1L)
+    intern_builtin_io_enum_case(env, files, compiler, io_error_owner, if other_token >= 0L { compiler.token_name_ids[other_token] } else { -118L }, other_token, 7L, TY_INT)
+    intern_builtin_io_enum_case(env, files, compiler, io_error_owner, if invalid_utf8_token >= 0L { compiler.token_name_ids[invalid_utf8_token] } else { -119L }, invalid_utf8_token, 8L, -1L)
+    let _io_error_type = append_builtin_io_type(env, files, compiler, TypeRecord {
+        kind_state: TYPE_KIND_ENUM * 16L,
+        name_id: io_error_name,
+        name_token: io_error_token,
+        node: -4L,
+        file: 0L,
+        field_start: io_error_start,
+        field_count: 9L,
+        size: 0L,
+        align: 4L,
+        helper_mask: 0L,
+    })
+
+    let file_kind_token = find_builtin_word_token(source, files, tokens, "FileKind")
+    let file_kind_name = if file_kind_token >= 0L { compiler.token_name_ids[file_kind_token] } else { -120L }
+    let file_kind_owner = enum_type_count(compiler)
+    let file_kind_start = compiler.enum_cases.count()
+    let file_token = find_builtin_word_token(source, files, tokens, "File")
+    let directory_token = find_builtin_word_token(source, files, tokens, "Directory")
+    intern_builtin_io_enum_case(env, files, compiler, file_kind_owner, if file_token >= 0L { compiler.token_name_ids[file_token] } else { -121L }, file_token, 0L, -1L)
+    intern_builtin_io_enum_case(env, files, compiler, file_kind_owner, if directory_token >= 0L { compiler.token_name_ids[directory_token] } else { -122L }, directory_token, 1L, -1L)
+    intern_builtin_io_enum_case(env, files, compiler, file_kind_owner, if other_token >= 0L { compiler.token_name_ids[other_token] } else { -123L }, other_token, 2L, -1L)
+    let _file_kind_type = append_builtin_io_type(env, files, compiler, TypeRecord {
+        kind_state: TYPE_KIND_ENUM * 16L,
+        name_id: file_kind_name,
+        name_token: file_kind_token,
+        node: -5L,
+        file: 0L,
+        field_start: file_kind_start,
+        field_count: 3L,
+        size: 0L,
+        align: 4L,
+        helper_mask: 0L,
+    })
+
+    let path_token = find_builtin_word_token(source, files, tokens, "Path")
+    let path_name = if path_token >= 0L { compiler.token_name_ids[path_token] } else { -124L }
+    let existing_path_type = collection_type_matches(compiler, TYPE_KIND_LIST, TY_BYTE, 4096L)
+    let _path_type = if existing_path_type >= 0L { existing_path_type } else {
+        append_builtin_io_type(env, files, compiler, TypeRecord {
+            kind_state: TYPE_KIND_LIST * 16L,
+            name_id: path_name,
+            name_token: path_token,
+            node: -6L,
+            file: 0L,
+            field_start: TY_BYTE,
+            field_count: 4096L,
+            size: 0L,
+            align: 1L,
+            helper_mask: 0L,
+        })
+    }
+
+    let entry_token = find_builtin_word_token(source, files, tokens, "DirEntry")
+    let entry_name = if entry_token >= 0L { compiler.token_name_ids[entry_token] } else { -125L }
+    let path_type = collection_type_matches(compiler, TYPE_KIND_LIST, TY_BYTE, 4096L)
+    let file_kind_type = builtin_synthetic_type_id(compiler, -5L)
+    let fields_start = compiler.struct_fields.count()
+    let name_token = find_builtin_word_token(source, files, tokens, "name")
+    let kind_token = find_builtin_word_token(source, files, tokens, "kind")
+    let name_field = StructFieldRecord {
+        owner: struct_type_count(compiler),
+        name_id: if name_token >= 0L { compiler.token_name_ids[name_token] } else { -126L },
+        name_token,
+        node: -7L,
+        type_node: -1L,
+        ty: path_type,
+        offset: 0L,
+        default_node: -1L,
+    }
+    match compiler.struct_fields.push(name_field) {
+        ok(_) => (),
+        err(_) => fail_parse_limit(env, files[0].name, "C-runtime struct field table capacity exceeded"),
+    }
+    let kind_field = StructFieldRecord {
+        owner: struct_type_count(compiler),
+        name_id: if kind_token >= 0L { compiler.token_name_ids[kind_token] } else { -127L },
+        name_token: kind_token,
+        node: -7L,
+        type_node: -1L,
+        ty: file_kind_type,
+        offset: 16392L,
+        default_node: -1L,
+    }
+    match compiler.struct_fields.push(kind_field) {
+        ok(_) => (),
+        err(_) => fail_parse_limit(env, files[0].name, "C-runtime struct field table capacity exceeded"),
+    }
+    let _entry_type = append_builtin_io_type(env, files, compiler, TypeRecord {
+        kind_state: TYPE_KIND_STRUCT * 16L + 2L,
+        name_id: entry_name,
+        name_token: entry_token,
+        node: -7L,
+        file: 0L,
+        field_start: fields_start,
+        field_count: 2L,
+        size: 16400L,
+        align: 8L,
+        helper_mask: 0L,
+    })
 }
 
 fn intern_builtin_full(
@@ -1984,7 +2227,7 @@ fn index_package_structs(
                     }
                     field = compiler.child_next[field]
                 }
-                append_type_record(compiler, TypeRecord {
+                let _ = append_type_record(compiler, TypeRecord {
                     kind_state: TYPE_KIND_STRUCT * 16L,
                     name_id: compiler.token_name_ids[syntax.token],
                     name_token: syntax.token,
@@ -2486,6 +2729,10 @@ fn core_sys_result_type(operation: long) -> long {
 }
 // E3a1 end
 
+fn is_c_runtime_capability_type(compiler: CompilerTables, type_id: long) -> bool {
+    compiler.c_runtime && type_id >= TY_ENV && type_id <= TY_ARG
+}
+
 fn unsupported_category_for_node(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -2518,7 +2765,7 @@ fn unsupported_category_for_node(
         NodeKind.Const => if (compiler.facts[node].flags & FACT_CONSTANT_EVALUATED) != 0L { 0L } else { UNSUPPORTED_NODE },
         NodeKind.Global => UNSUPPORTED_NODE,
         NodeKind.ForEach => 0L,
-        NodeKind.While => 0L,
+        NodeKind.While => if compiler.c_runtime { UNSUPPORTED_NODE } else { 0L },
         NodeKind.Discard => 0L,
         NodeKind.Match => 0L,
         NodeKind.Cast => 0L,
@@ -2556,6 +2803,17 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "clear") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "pop") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "empty") ||
+            (compiler.c_runtime && (
+                token_is_word_at(source, tokens, files, file_index, value.token, "args") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "exit") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "get") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "byte") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "length") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "list_with_extension") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "join") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "read") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "write")
+            )) ||
             parse_number_method_kind(source, tokens, files, file_index, value.token) != PARSE_NUMBER_NONE { 0L } else { UNSUPPORTED_NODE },
         NodeKind.IndirectCall => UNSUPPORTED_NODE,
         NodeKind.Index => 0L,
@@ -2598,6 +2856,7 @@ fn unsupported_category_for_node(
             else if generic_type_kind(source, tokens, files, tables, file_index, node) != 0L { 0L }
             else if sum_type_syntax_shape(source, tokens, files, tables, file_index, node) { 0L }
             else if is_aggregate_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
+            else if is_c_runtime_capability_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
             else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
             else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
             else { 0L }
@@ -2610,6 +2869,7 @@ fn unsupported_category_for_node(
             else if generic_type_kind(source, tokens, files, tables, file_index, node) != 0L { 0L }
             else if sum_type_syntax_shape(source, tokens, files, tables, file_index, node) { 0L }
             else if is_aggregate_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
+            else if is_c_runtime_capability_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
             else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
             else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
             else { 0L }
@@ -2621,16 +2881,16 @@ fn unsupported_category_for_node(
             else if generic_type_kind(source, tokens, files, tables, file_index, node) != 0L { 0L }
             else if sum_type_syntax_shape(source, tokens, files, tables, file_index, node) { 0L }
             else if is_aggregate_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
+            else if is_c_runtime_capability_type(compiler, resolve_value_type(source, tokens, files, tables, compiler, file_index, node)) { 0L }
             else if known_non_scalar_type(source, tokens, files, file_index, value.token) { UNSUPPORTED_TYPE }
             else if value.meta0 > 1L || (value.meta1 & 2097151L) > 0L || ((value.meta1 >> 21L) & 2097151L) > 0L || ((value.meta1 >> 42L) & 2097151L) > 0L || (value.flags & FLAG_RANGE) != 0L { UNSUPPORTED_TYPE_FORM }
             else { 0L }
         },
         NodeKind.Function => {
             if !is_top_level_function(tables, compiler, node) || value.aux > 0L { UNSUPPORTED_NODE }
-            else if (value.flags & FLAG_RECURSIVE) != 0L { UNSUPPORTED_NODE }
             else { 0L }
         },
-        NodeKind.Parameter => if (value.flags & FLAG_MODE_GROW) != 0L { UNSUPPORTED_NODE } else { 0L },
+        NodeKind.Parameter => 0L,
         NodeKind.Test => if value.aux > 0L { UNSUPPORTED_NODE } else { 0L },
         NodeKind.Block => 0L,
         NodeKind.Let => 0L,
@@ -2712,7 +2972,8 @@ fn unsupported_node_message(kind: NodeKind) -> Ascii max 160 {
         NodeKind.Effect => "function effects",
         NodeKind.Parameter => "write and grow parameters",
         NodeKind.Test => "test parameters",
-        NodeKind.Function => "generic or recursive functions",
+        NodeKind.Function => "generic functions",
+        NodeKind.While => "while loops",
         NodeKind.WildcardPattern => "match patterns",
         NodeKind.BoolPattern => "match patterns",
         NodeKind.CasePattern => "match patterns",
@@ -2774,8 +3035,8 @@ fn report_unsupported(
         match env.err.write(b"nested collections") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_TEXT_COLLECTION {
         match env.err.write(b"text in collections") { ok(_) => (), err(_) => env.exit(3) }
-    } else if hit.category == UNSUPPORTED_TEXT_BUILDERS {
-        match env.err.write(b"text builders") { ok(_) => (), err(_) => env.exit(3) }
+    } else if hit.category == UNSUPPORTED_CONDITIONAL_BUILDER_LOOP {
+        match env.err.write(b"conditional builder growth inside loops") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_FRAME_BUDGET {
         match env.err.write(b"aggregate locals over 1 MiB on one call path") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_RESULT_MAIN {
@@ -2835,7 +3096,7 @@ fn report_typed_unsupported(
         UnsupportedHit { found: true, file: file_index, node, offset: tables.nodes[node].start, category, token: tables.nodes[node].token })
 }
 
-fn check_deferred_text_builder_method(
+fn check_text_builder_method(
     env: Env,
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -2848,7 +3109,7 @@ fn check_deferred_text_builder_method(
     receiver: long,
     receiver_type: long,
     expected: long,
-) -> never {
+) -> long {
     let method_token = tables.nodes[node].token
     let receiver_kind = type_kind(compiler, receiver_type)
     let is_push = token_is_word_at(source, tokens, files, file_index, method_token, "push")
@@ -2876,9 +3137,12 @@ fn check_deferred_text_builder_method(
             else { "Bytes.try_append needs a mutable builder; declare it with var" }
         fail_at_message(env, files, compiler, file_index, tables.nodes[receiver].start, message)
     }
-    if binding_is_write_parameter(compiler, receiver_binding) {
-        fail_at_message(env, files, compiler, file_index, tables.nodes[receiver].start,
-            "write text parameter cannot append")
+    if binding_is_write_parameter(compiler, receiver_binding) && !binding_is_grow_parameter(compiler, receiver_binding) {
+        let message: Ascii max 160 = if is_push { "Bytes.push through a write parameter requires 'grow' mode; 'write' cannot increase its length" }
+            else if receiver_kind == TYPE_KIND_ASCII { "Ascii.try_append through a write parameter requires 'grow' mode; 'write' cannot increase its length" }
+            else if receiver_kind == TYPE_KIND_TEXT { "Text.try_append through a write parameter requires 'grow' mode; 'write' cannot increase its length" }
+            else { "Bytes.try_append through a write parameter requires 'grow' mode; 'write' cannot increase its length" }
+        fail_at_message(env, files, compiler, file_index, tables.nodes[receiver].start, message)
     }
     if active_view_overlaps_place(tables, compiler, scope, receiver) {
         fail_at_message(env, files, compiler, file_index, tables.nodes[node].start,
@@ -2891,11 +3155,8 @@ fn check_deferred_text_builder_method(
         else if receiver_kind == TYPE_KIND_TEXT { type_kind(compiler, argument_type) == TYPE_KIND_TEXT || type_kind(compiler, argument_type) == TYPE_KIND_ASCII }
         else { type_kind(compiler, argument_type) == TYPE_KIND_BYTES }
     if !valid_argument {
-        let message: Ascii max 160 = if is_push { "Bytes.push needs byte" }
-            else if receiver_kind == TYPE_KIND_ASCII { "try_append needs Ascii" }
-            else if receiver_kind == TYPE_KIND_TEXT { "Text.try_append needs Text or Ascii" }
-            else { "try_append needs Bytes" }
-        fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, message)
+        fail_builder_argument_type(env, source, files, tokens, compiler, file_index,
+            tables.nodes[argument].start, receiver_kind, argument_type, is_push)
     }
     let full_ty = builtin_full_type_id(compiler)
     if full_ty < 0L { fail_at_message(env, files, compiler, file_index, tables.nodes[node].start, "internal capacity error type is unavailable") }
@@ -2903,8 +3164,7 @@ fn check_deferred_text_builder_method(
     if expected >= 0L && expected != result_ty {
         require_type(env, files, compiler, file_index, node, expected, result_ty, tables)
     }
-    report_typed_unsupported(env, source, files, tokens, tables, compiler, file_index,
-        node, UNSUPPORTED_TEXT_BUILDERS)
+    result_ty
 }
 
 fn check_nested_collections_eligibility(
@@ -2971,10 +3231,11 @@ fn manifest_number(contents: Bytes max FILE_SOURCE_CAPACITY, start: long, end: l
     for index in start..end {
         let digit = contents[index]
         if digit == 95 { continue }
-        if digit < 48 || digit > 57 { return -1L }
+        let digit_value = digit.to_long()
+        if digit_value < 48L || digit_value > 57L { return -1L }
         had_digit = true
         if value > 922337203685477580L { return -1L }
-        value = value * 10L + (digit.to_long() - 48L)
+        value = value * 10L + (digit_value - 48L)
         if value < 0L { return -1L }
     }
     if !had_digit { -1L } else { value }
@@ -2987,14 +3248,15 @@ fn manifest_step_budget_number(contents: Bytes max FILE_SOURCE_CAPACITY, start: 
     var previous_was_digit = false
     for index in start..end {
         let digit = contents[index]
-        if digit >= 48 && digit <= 57 {
-            let number = digit.to_long() - 48L
+        let digit_value = digit.to_long()
+        if digit_value >= 48L && digit_value <= 57L {
+            let number = digit_value - 48L
             if value > (9223372036854775807L - number) / 10L { return -1L }
             value = value * 10L + number
             had_digit = true
             previous_was_digit = true
         } else if digit == 95 {
-            if !previous_was_digit || index + 1L >= end || contents[index + 1L] < 48 || contents[index + 1L] > 57 { return -1L }
+            if !previous_was_digit || index + 1L >= end || contents[index + 1L].to_long() < 48L || contents[index + 1L].to_long() > 57L { return -1L }
             previous_was_digit = false
         } else {
             return -1L
@@ -3278,6 +3540,7 @@ fn is_builtin_type_name(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: CompilerTables,
     file_index: long,
     token: long,
 ) -> bool {
@@ -3292,7 +3555,18 @@ fn is_builtin_type_name(
     token_is_word_at(source, tokens, files, file_index, token, "Result") ||
     token_is_word_at(source, tokens, files, file_index, token, "Full") ||
     token_is_word_at(source, tokens, files, file_index, token, "TextError") ||
-    token_is_word_at(source, tokens, files, file_index, token, "Utf8Error")
+    token_is_word_at(source, tokens, files, file_index, token, "Utf8Error") ||
+    (compiler.c_runtime && (
+        token_is_word_at(source, tokens, files, file_index, token, "Env") ||
+        token_is_word_at(source, tokens, files, file_index, token, "Fs") ||
+        token_is_word_at(source, tokens, files, file_index, token, "Out") ||
+        token_is_word_at(source, tokens, files, file_index, token, "Args") ||
+        token_is_word_at(source, tokens, files, file_index, token, "Arg") ||
+        token_is_word_at(source, tokens, files, file_index, token, "Path") ||
+        token_is_word_at(source, tokens, files, file_index, token, "DirEntry") ||
+        token_is_word_at(source, tokens, files, file_index, token, "FileKind") ||
+        token_is_word_at(source, tokens, files, file_index, token, "IoError")
+    ))
 }
 
 fn has_prior_type_name(
@@ -3370,7 +3644,7 @@ fn check_struct_declarations(
                 if kind == wanted {
                     let declaration = tables.nodes[child]
                     let name_id = compiler.token_name_ids[declaration.token]
-                    if is_builtin_type_name(source, tokens, files, file_index, declaration.token) ||
+                    if is_builtin_type_name(source, tokens, files, compiler, file_index, declaration.token) ||
                         has_prior_type_name(tables, files, tokens, compiler, file_index, child, name_id) {
                         fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, declaration.start, "type '", declaration.token, "' is declared more than once or shadows a built-in type")
                     }
@@ -3383,6 +3657,7 @@ fn check_struct_declarations(
     // struct field is visited, matching checker.rs::fill_enum_cases.
     for enum_index in 0L..enum_type_count(compiler) {
         let ty = enum_record(compiler, enum_index)
+        if ty.node < 0L { continue }
         for case_offset in 0L..ty.field_count {
             let case_index = ty.field_start + case_offset
             let current = compiler.enum_cases[case_index]
@@ -4066,6 +4341,13 @@ fn register_package_declarations(
                         let param_node = tables.nodes[member]
                         let type_node = compiler.child_first[member]
                         let ty = parse_scalar_type(env, source, tokens, files, tables, compiler, file_index, type_node)
+                        if (param_node.flags & FLAG_MODE_GROW) != 0L &&
+                            type_kind(compiler, ty) != TYPE_KIND_ASCII &&
+                            type_kind(compiler, ty) != TYPE_KIND_TEXT &&
+                            type_kind(compiler, ty) != TYPE_KIND_BYTES {
+                            fail_at_message(env, files, compiler, file_index, param_node.start,
+                                "grow parameters are for Ascii, Text, and Bytes builders; use read or write for other types")
+                        }
                         compiler.parameters.push(ParameterRecord {
                             node: member,
                             file: file_index,
@@ -4128,6 +4410,20 @@ fn find_function_by_name(compiler: CompilerTables, name_id: long) -> long {
     -1L
 }
 
+fn is_builtin_fill_call(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    compiler: CompilerTables,
+    file_index: long,
+    token: long,
+    scope: long,
+) -> bool {
+    if !token_is_word_at(source, tokens, files, file_index, token, "fill") { return false }
+    let name_id = compiler.token_name_ids[token]
+    find_function_by_name(compiler, name_id) < 0L && find_binding_in_scope(compiler, scope, name_id) < 0L
+}
+
 fn check_entry_signature(
     env: Env,
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -4162,7 +4458,9 @@ fn check_entry_signature(
             token: signature.name_token,
         })
     }
-    if signature.param_count != 0L || signature.result_ty != TY_UNIT {
+    let accepts_environment = compiler.c_runtime && signature.param_count == 1L &&
+        compiler.parameters[signature.param_start].ty == TY_ENV
+    if (signature.param_count != 0L && !accepts_environment) || signature.result_ty != TY_UNIT {
         fail_compiler_diagnostic(env, files[signature.file].name, files, signature.file, tables.nodes[signature.node].start, compiler, "'main' must take no arguments or one Env parameter, and return () or Result<(), E> with a printable error; use 'fn main()' or 'fn main(env: Env)'")
     }
     entry
@@ -4374,11 +4672,11 @@ fn record_collection_count_branch(
         if join.kind == 1L {
             compiler.collection_count_joins[join_index].fallthrough_count += 1L
         }
-        for change_index in join.log_base..compiler.collection_count_changes.count() {
+        for change_index: long in join.log_base..compiler.collection_count_changes.count() {
             let change = compiler.collection_count_changes[change_index]
             if change.binding < 0L || change.binding >= join.binding_limit { continue }
             var found = -1L
-            for value_index in join.values_base..compiler.collection_count_branch_values.count() {
+            for value_index: long in join.values_base..compiler.collection_count_branch_values.count() {
                 let existing = compiler.collection_count_branch_values[value_index]
                 if existing.join_index == join_index && existing.branch == branch && existing.binding == change.binding {
                     found = value_index
@@ -4407,7 +4705,7 @@ fn collection_count_branch_value(
     binding: long,
 ) -> long {
     let join = compiler.collection_count_joins[join_index]
-    for value_index in join.values_base..compiler.collection_count_branch_values.count() {
+    for value_index: long in join.values_base..compiler.collection_count_branch_values.count() {
         let value = compiler.collection_count_branch_values[value_index]
         if value.join_index == join_index && value.branch == branch && value.binding == binding { return value.value }
     }
@@ -4418,11 +4716,11 @@ fn finish_if_collection_count_join(compiler: write CompilerTables, join_index: l
     if join_index < 0L || join_index >= compiler.collection_count_joins.count() { return }
     let join = compiler.collection_count_joins[join_index]
     if join.started && (join.branch0_falls || join.branch1_falls) {
-        for value_index in join.values_base..compiler.collection_count_branch_values.count() {
+        for value_index: long in join.values_base..compiler.collection_count_branch_values.count() {
             let candidate = compiler.collection_count_branch_values[value_index]
             if candidate.join_index != join_index { continue }
             var already_joined = false
-            for previous_index in join.values_base..value_index {
+            for previous_index: long in join.values_base..value_index {
                 let previous = compiler.collection_count_branch_values[previous_index]
                 if previous.join_index == join_index && previous.binding == candidate.binding {
                     already_joined = true
@@ -4462,11 +4760,11 @@ fn finish_match_collection_count_join(compiler: write CompilerTables, join_index
     if join_index < 0L || join_index >= compiler.collection_count_joins.count() { return }
     let join = compiler.collection_count_joins[join_index]
     if join.started && join.fallthrough_count > 0L {
-        for value_index in join.values_base..compiler.collection_count_branch_values.count() {
+        for value_index: long in join.values_base..compiler.collection_count_branch_values.count() {
             let candidate = compiler.collection_count_branch_values[value_index]
             if candidate.join_index != join_index || candidate.binding < 0L { continue }
             var already_joined = false
-            for previous_index in join.values_base..value_index {
+            for previous_index: long in join.values_base..value_index {
                 let previous = compiler.collection_count_branch_values[previous_index]
                 if previous.join_index == join_index && previous.binding == candidate.binding {
                     already_joined = true
@@ -4480,7 +4778,7 @@ fn finish_match_collection_count_join(compiler: write CompilerTables, join_index
             var merged = -2L
             var branch_value_count = 0L
             if baseline >= 0L {
-                for branch_value_index in join.values_base..compiler.collection_count_branch_values.count() {
+                for branch_value_index: long in join.values_base..compiler.collection_count_branch_values.count() {
                     let branch_value = compiler.collection_count_branch_values[branch_value_index]
                     if branch_value.join_index != join_index || branch_value.binding != candidate.binding { continue }
                     branch_value_count += 1L
@@ -4523,7 +4821,7 @@ fn finish_loop_count_snapshot(compiler: write CompilerTables, loop_node: long) {
     if snapshot_index < 0L { return }
     let snapshot = compiler.loop_count_snapshots[snapshot_index]
     let values_base = compiler.collection_count_branch_values.count()
-    for change_index in snapshot.log_base..compiler.collection_count_changes.count() {
+    for change_index: long in snapshot.log_base..compiler.collection_count_changes.count() {
         let change = compiler.collection_count_changes[change_index]
         if change.binding < 0L || change.binding >= snapshot.binding_limit { continue }
         var found = -1L
@@ -4628,7 +4926,7 @@ fn require_type(
 
 fn parameter_uses_text_read_view(compiler: CompilerTables, parameter: ParameterRecord) -> bool {
     type_kind(compiler, parameter.ty) == TYPE_KIND_TEXT &&
-        (parameter_mode(parameter) & FLAG_MODE_WRITE) == 0L
+        (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) == 0L
 }
 
 fn require_text_read_argument(
@@ -4728,7 +5026,8 @@ recursive fn natural_node_type(
         NodeKind.Fit => {
             let value_node = compiler.child_first[node]
             let target_node = if value_node >= 0L { compiler.child_next[value_node] } else { -1L }
-            if target_node >= 0L && type_kind(compiler, compiler.facts[target_node].ty) == TYPE_KIND_ASCII {
+            if target_node >= 0L &&
+                (type_kind(compiler, compiler.facts[target_node].ty) == TYPE_KIND_ASCII || compiler.facts[target_node].ty == TY_BYTE) {
                 find_sum_instance(compiler, TYPE_KIND_OPTION, compiler.facts[target_node].ty, -1L)
             } else { -1L }
         },
@@ -5367,10 +5666,96 @@ fn active_view_overlaps_place(
     false
 }
 
+fn write_text_builder_descriptor(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: CompilerTables,
+    type_id: long,
+) {
+    let kind = type_kind(compiler, type_id)
+    if kind == TYPE_KIND_ASCII || kind == TYPE_KIND_BYTES {
+        match env.err.write(if kind == TYPE_KIND_ASCII { b"Ascii max " } else { b"Bytes max " }) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(str(text_max_bytes(compiler, type_id)).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    } else if kind == TYPE_KIND_TEXT {
+        match env.err.write(b"Text max ") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(str(text_max_codepoints(compiler, type_id)).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b" bytes max ") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(str(text_max_bytes(compiler, type_id)).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    } else {
+        write_type_name(env, source, files, tokens, compiler, type_id)
+    }
+}
+
+fn fail_grow_argument_width_mismatch(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: CompilerTables,
+    file_index: long,
+    offset: long,
+    expected: long,
+    actual: long,
+) -> never {
+    let position = position_for_offset(file_index, files[file_index].base + offset, compiler)
+    let kind = type_kind(compiler, expected)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: grow argument needs ") { ok(_) => (), err(_) => env.exit(3) }
+    if kind == TYPE_KIND_ASCII { match env.err.write(b"an Ascii") { ok(_) => (), err(_) => env.exit(3) } }
+    else if kind == TYPE_KIND_TEXT { match env.err.write(b"a Text") { ok(_) => (), err(_) => env.exit(3) } }
+    else { match env.err.write(b"a Bytes") { ok(_) => (), err(_) => env.exit(3) } }
+    match env.err.write(b" builder with exactly ") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(text_max_bytes(compiler, expected)).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    if kind == TYPE_KIND_TEXT {
+        match env.err.write(b" bytes and ") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(str(text_max_codepoints(compiler, expected)).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b" code points reserved; found ") { ok(_) => (), err(_) => env.exit(3) }
+    } else { match env.err.write(b" bytes reserved; found ") { ok(_) => (), err(_) => env.exit(3) } }
+    write_text_builder_descriptor(env, source, files, tokens, compiler, actual)
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn fail_builder_argument_type(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    compiler: CompilerTables,
+    file_index: long,
+    offset: long,
+    receiver_kind: long,
+    actual: long,
+    is_push: bool,
+) -> never {
+    let position = position_for_offset(file_index, files[file_index].base + offset, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: ") { ok(_) => (), err(_) => env.exit(3) }
+    if is_push { match env.err.write(b"Bytes.push needs byte; found ") { ok(_) => (), err(_) => env.exit(3) } }
+    else if receiver_kind == TYPE_KIND_ASCII { match env.err.write(b"try_append needs Ascii; found ") { ok(_) => (), err(_) => env.exit(3) } }
+    else if receiver_kind == TYPE_KIND_TEXT { match env.err.write(b"Text.try_append needs Text or Ascii; found ") { ok(_) => (), err(_) => env.exit(3) } }
+    else { match env.err.write(b"try_append needs Bytes; found ") { ok(_) => (), err(_) => env.exit(3) } }
+    if is_push { write_type_name(env, source, files, tokens, compiler, actual) }
+    else { write_text_builder_descriptor(env, source, files, tokens, compiler, actual) }
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
 fn check_call_write_modes(
     env: Env,
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: ParseTables,
     compiler: CompilerTables,
     function: FunctionRecord,
@@ -5382,12 +5767,20 @@ fn check_call_write_modes(
     var argument = first_argument
     for argument_index in 0L..function.param_count {
         let parameter = compiler.parameters[function.param_start + argument_index]
-        if (parameter_mode(parameter) & FLAG_MODE_WRITE) != 0L {
+        let mode = parameter_mode(parameter)
+        if (mode & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
             if !is_assignable_place(tables, argument) { fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "a write argument must be an assignable place") }
             let binding = place_root_binding(tables, compiler, argument)
-            if binding < 0L || !compiler.bindings[binding].mutable { fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "a write argument needs a mutable local, field, or write parameter") }
+            if binding < 0L || !compiler.bindings[binding].mutable {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start,
+                    "a write argument must be a var, a field of a var, or another write parameter")
+            }
             if active_view_overlaps_place(tables, compiler, scope, argument) {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "cannot pass storage containing a live collection view as write")
+            }
+            if (mode & FLAG_MODE_GROW) != 0L && !grow_text_width_matches(compiler, compiler.facts[argument].ty, parameter.ty) {
+                fail_grow_argument_width_mismatch(env, source, files, tokens, compiler, file_index,
+                    tables.nodes[argument].start, parameter.ty, compiler.facts[argument].ty)
             }
         }
         var previous = first_argument
@@ -5415,6 +5808,49 @@ fn fail_at_message(
     message: Ascii max 160,
 ) -> never {
     fail_compiler_diagnostic(env, files[file_index].name, files, file_index, offset, compiler, message)
+}
+
+fn fail_ascii_append_unproven(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    assignment: long,
+    target: long,
+    maximum: long,
+) -> never {
+    let position = position_for_offset(file_index, files[file_index].base + tables.nodes[assignment].start, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: cannot prove this append fits Ascii max ") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(maximum).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"; use '") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[file_index].base, tables.nodes[target].token) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b".try_append(value)' and handle Full") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+}
+
+fn conditional_builder_loop_ancestor(tables: ParseTables, node: long) -> long {
+    var current = node
+    var conditional = false
+    for step in 0L..MAX_TREE_NODES {
+        let parent = region_parent_node(tables, current)
+        if parent < 0L { return -1L }
+        let kind = tables.nodes[parent].kind
+        if kind == NodeKind.If || kind == NodeKind.Match { conditional = true }
+        if conditional && (kind == NodeKind.For || kind == NodeKind.ForEach || kind == NodeKind.While) {
+            return parent
+        }
+        current = parent
+    }
+    -1L
 }
 
 fn fail_assignment_error(
@@ -5552,7 +5988,7 @@ fn body_child_expected(
             let tag = if frame.auxiliary == 21L || frame.auxiliary == 23L { 0L } else { 1L }
             sum_case_payload_type(compiler, frame.result_ty, tag, child_index)
         }
-        else if token_is_word_at(source, tokens, files, file_index, tables.nodes[parent].token, "fill") {
+        else if is_builtin_fill_call(source, tokens, files, compiler, file_index, tables.nodes[parent].token, frame.scope) {
             if type_kind(compiler, frame.expected) == TYPE_KIND_ARRAY { collection_element_type(compiler, frame.expected) } else { -1L }
         }
         else if token_is_word_at(source, tokens, files, file_index, tables.nodes[parent].token, "print") { -1L }
@@ -5560,7 +5996,7 @@ fn body_child_expected(
             let function = find_function_by_name(compiler, compiler.token_name_ids[tables.nodes[parent].token])
             if function >= 0L && child_index < compiler.functions[function].param_count {
                 let parameter = compiler.parameters[compiler.functions[function].param_start + child_index]
-                if parameter_uses_text_read_view(compiler, parameter) { -1L } else { parameter.ty }
+                if (parameter_mode(parameter) & FLAG_MODE_GROW) != 0L || parameter_uses_text_read_view(compiler, parameter) { -1L } else { parameter.ty }
             } else { -1L }
         }
     } else if kind == NodeKind.OptionalCall {
@@ -5575,6 +6011,10 @@ fn body_child_expected(
         }
     } else if kind == NodeKind.QualifiedCase && frame.child2 >= 0L {
         enum_case_payload_type(compiler, frame.child2, child_index)
+    } else if kind == NodeKind.MethodCall && frame.child0 >= 0L &&
+        c_runtime_method_kind(source, tokens, files, compiler, file_index, tables.nodes[parent].token, compiler.facts[frame.child0].ty) != C_METHOD_NONE {
+        c_runtime_child_expected(source, tokens, files, compiler, file_index, tables.nodes[parent].token,
+            compiler.facts[frame.child0].ty, child_index)
     } else if kind == NodeKind.MethodCall && is_core_sys_receiver(source, tokens, files, tables, compiler, parent, file_index) {
         core_sys_argument_type(core_sys_operation(source, tokens, files, file_index, tables.nodes[parent].token), child_index)
     } else if kind == NodeKind.MethodCall && frame.child0 >= 0L &&
@@ -5593,8 +6033,7 @@ fn body_child_expected(
         let receiver_type = compiler.facts[frame.child0].ty
         let receiver_kind = type_kind(compiler, receiver_type)
         let method = text_method_kind(source, tokens, files, file_index, tables.nodes[parent].token, receiver_kind)
-        if deferred_text_builder_method(source, tokens, files, file_index, tables.nodes[parent].token, receiver_type, compiler) &&
-            token_is_word_at(source, tokens, files, file_index, tables.nodes[parent].token, "push") && child_index == 0L { TY_BYTE }
+        if method == TEXT_METHOD_PUSH && child_index == 0L { TY_BYTE }
         else if method == TEXT_METHOD_SLICE { TY_LONG }
         else if (method == TEXT_METHOD_CONTAINS || method == TEXT_METHOD_STARTS_WITH) && child_index == 0L { compiler.facts[frame.child0].ty }
         else { -1L }
@@ -5938,10 +6377,23 @@ fn check_one_body(
                 (compiler.facts[frame.child2].flags & FACT_FALLS_THROUGH) != 0L,
             )
             if arm_type != TY_NEVER {
-                if frame.result_ty >= 0L && frame.result_ty != arm_type {
-                    fail_match_arm_type(env, source, files, tokens, tables, compiler, file_index, frame.child1, frame.result_ty, arm_type)
-                }
-                if frame.result_ty < 0L { frame.result_ty = arm_type }
+                if frame.result_ty < 0L {
+                    frame.result_ty = arm_type
+                } else if frame.result_ty != arm_type {
+                    if type_kind(compiler, frame.result_ty) == TYPE_KIND_ASCII && type_kind(compiler, arm_type) == TYPE_KIND_ASCII {
+                        let result_maximum = text_max_bytes(compiler, frame.result_ty)
+                        let arm_maximum = text_max_bytes(compiler, arm_type)
+                        if arm_maximum > result_maximum {
+                            frame.result_ty = intern_text_type(compiler, TYPE_KIND_ASCII, arm_maximum, 0L, file_index, node, -1L, -1L)
+                            if frame.result_ty < 0L {
+                                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child1].start,
+                                    "Ascii match result exceeds compiler capacity")
+                            }
+                        }
+                    } else {
+                        fail_match_arm_type(env, source, files, tokens, tables, compiler, file_index, frame.child1, frame.result_ty, arm_type)
+                    }
+                } else { () }
             }
             frame.cursor = compiler.child_next[frame.child1]
             frame.child1 = -1L
@@ -6048,7 +6500,7 @@ fn check_one_body(
             if kind == NodeKind.StructInit {
                 let type_index = struct_type_matches(compiler, compiler.token_name_ids[syntax.token])
                 if type_index < 0L {
-                    if is_builtin_type_name(source, tokens, files, file_index, syntax.token) {
+                    if is_builtin_type_name(source, tokens, files, compiler, file_index, syntax.token) {
                         fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "'", syntax.token, "' is not a struct type")
                     }
                     fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, syntax.start, "unknown struct '", syntax.token, "'; declare it with struct")
@@ -6299,7 +6751,7 @@ fn check_one_body(
                 let target_node = if value_node >= 0L { compiler.child_next[value_node] } else { -1L }
                 if value_node < 0L || target_node < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "malformed fit expression") }
                 let target_ty = compiler.facts[target_node].ty
-                if type_kind(compiler, target_ty) != TYPE_KIND_ASCII {
+                if type_kind(compiler, target_ty) != TYPE_KIND_ASCII && target_ty != TY_BYTE {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "fit<T>() needs an int or long refinement type")
                 }
                 frame.child0 = value_node
@@ -6398,7 +6850,7 @@ fn check_one_body(
                 }
                 if loop_ty < 0L { loop_ty = TY_INT }
                 let loop_scope = create_scope(env, files, compiler, frame.scope, function_id, node, file_index)
-                add_local_binding(env, source, files, tokens, tables, compiler, file_index, node, syntax.token, loop_scope, loop_ty, false, true, false)
+                let _ = add_local_binding(env, source, files, tokens, tables, compiler, file_index, node, syntax.token, loop_scope, loop_ty, false, true, false)
                 frame.child0 = start
                 frame.child1 = finish
                 frame.child2 = body_node
@@ -6572,13 +7024,13 @@ fn check_one_body(
             compiler.bindings[view_binding] = view_record
             if syntax.aux > 0L {
                 let index_token = tables.extra[syntax.extra]
-                add_local_binding(env, source, files, tokens, tables, compiler, file_index, node, index_token, view_scope, TY_LONG, false, true, false)
+                let _ = add_local_binding(env, source, files, tokens, tables, compiler, file_index, node, index_token, view_scope, TY_LONG, false, true, false)
             }
             frame.phase = 81L
             frame.result_ty = element_type
             frame.auxiliary = view_scope
             frame.child2 = frame.child1
-            let iterations = if collection_kind == TYPE_KIND_LIST && collection_binding >= 0L && compiler.bindings[collection_binding].collection_count >= 0L {
+            let iterations = if collection_binding >= 0L && compiler.bindings[collection_binding].collection_count >= 0L {
                 compiler.bindings[collection_binding].collection_count
             } else { collection_capacity(compiler, collection_type) }
             prepare_loop_push_proofs(source, tokens, files, tables, compiler, node, frame.child2, frame.scope, iterations, file_index, frame.loop_depth + 1L)
@@ -6760,7 +7212,10 @@ fn check_one_body(
                 if tables.nodes[value].kind == NodeKind.ListLiteral || (tables.nodes[value].kind == NodeKind.Call && (tables.nodes[value].flags & FLAG_SYNTHETIC) != 0L) {
                     set_binding_collection_count(compiler, binding, 0L)
                 } else { () }
-            }
+            } else if deferred_text_kind(type_kind(compiler, ty)) {
+                let byte_length = known_text_byte_length(source, tokens, files, tables, compiler, file_index, value, 0L)
+                set_binding_collection_count(compiler, binding, byte_length)
+            } else { () }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if (value_fact.flags & FACT_FALLS_THROUGH) != 0L { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding, function: -1L, literal: 0L }
         } else if kind == NodeKind.ArrayLiteral {
             let ty = frame.result_ty
@@ -6786,18 +7241,29 @@ fn check_one_body(
         } else if kind == NodeKind.Field {
             let receiver = frame.child0
             let receiver_ty = compiler.facts[receiver].ty
-            if !is_aggregate_type(compiler, receiver_ty) {
+            let environment_field = if receiver_ty == TY_ENV {
+                c_runtime_environment_field_kind(source, tokens, files, compiler, file_index, syntax.token)
+            } else { 0L }
+            if receiver_ty == TY_ENV {
+                let field_ty = c_runtime_environment_field_type(environment_field)
+                if field_ty < 0L {
+                    fail_at_message(env, files, compiler, file_index, syntax.anchor, "Env has no field with this name")
+                }
+                if frame.expected >= 0L && frame.expected != field_ty { require_type(env, files, compiler, file_index, node, frame.expected, field_ty, tables) }
+                compiler.facts[node] = NodeFact { ty: field_ty, flags: FACT_FALLS_THROUGH, binding: compiler.facts[receiver].binding, function: -1L, literal: environment_field }
+            } else if !is_aggregate_type(compiler, receiver_ty) {
                 let message: Ascii max 160 = "value has no fields; cannot read this field"
                 fail_at_message(env, files, compiler, file_index, syntax.anchor, message)
+            } else {
+                let type_index = struct_type_index(compiler, receiver_ty)
+                let field_index = struct_field_matches(compiler, type_index, compiler.token_name_ids[syntax.token])
+                if field_index < 0L {
+                    fail_unknown_struct_field(env, source, files, tokens, tables, compiler, file_index, syntax.anchor, type_index, syntax.token, false)
+                }
+                let field_ty = compiler.struct_fields[field_index].ty
+                if frame.expected >= 0L && frame.expected != field_ty { require_type(env, files, compiler, file_index, node, frame.expected, field_ty, tables) }
+                compiler.facts[node] = NodeFact { ty: field_ty, flags: FACT_FALLS_THROUGH, binding: compiler.facts[receiver].binding, function: -1L, literal: field_index }
             }
-            let type_index = struct_type_index(compiler, receiver_ty)
-            let field_index = struct_field_matches(compiler, type_index, compiler.token_name_ids[syntax.token])
-            if field_index < 0L {
-                fail_unknown_struct_field(env, source, files, tokens, tables, compiler, file_index, syntax.anchor, type_index, syntax.token, false)
-            }
-            let field_ty = compiler.struct_fields[field_index].ty
-            if frame.expected >= 0L && frame.expected != field_ty { require_type(env, files, compiler, file_index, node, frame.expected, field_ty, tables) }
-            compiler.facts[node] = NodeFact { ty: field_ty, flags: FACT_FALLS_THROUGH, binding: compiler.facts[receiver].binding, function: -1L, literal: field_index }
         } else if kind == NodeKind.StructInit {
             let type_index = struct_type_index(compiler, frame.result_ty)
             let ty = struct_record(compiler, type_index)
@@ -6837,27 +7303,58 @@ fn check_one_body(
             }
             let op = syntax.flags
             let value_fact = compiler.facts[value]
-            if deferred_text_assignment(op, target_fact.ty, compiler) {
+            if is_ascii_append_assignment(op, target_fact.ty, compiler) {
                 require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables)
-                if binding_is_write_parameter(compiler, binding) {
+                if binding_is_write_parameter(compiler, binding) && !binding_is_grow_parameter(compiler, binding) {
                     fail_at_message(env, files, compiler, file_index, syntax.start,
-                        "write text parameter cannot append")
+                        "appending through a parameter requires 'grow' mode; 'write' cannot increase its length")
                 }
-                report_typed_unsupported(env, source, files, tokens, tables, compiler,
-                    file_index, node, UNSUPPORTED_TEXT_BUILDERS)
+                let maximum = text_max_bytes(compiler, target_fact.ty)
+                let tracked_length = if binding >= 0L && binding < compiler.bindings.count() &&
+                    compiler.bindings[binding].ty == target_fact.ty {
+                    compiler.bindings[binding].collection_count
+                } else { -1L }
+                let current_maximum = if tracked_length >= 0L { tracked_length } else { maximum }
+                let appended_length = known_text_byte_length(source, tokens, files, tables, compiler, file_index, value, 0L)
+                let appended_maximum = if appended_length >= 0L { appended_length } else { text_max_bytes(compiler, value_fact.ty) }
+                let loop_proven = frame.loop_depth == 0L || appended_maximum == 0L ||
+                    loop_push_is_proven(compiler, binding, frame.loop_depth)
+                if maximum < 0L || current_maximum > maximum || appended_maximum < 0L ||
+                    appended_maximum > maximum - current_maximum || !loop_proven {
+                    let conditional_loop = conditional_builder_loop_ancestor(tables, node)
+                    if !loop_proven && conditional_loop >= 0L {
+                        report_typed_unsupported(env, source, files, tokens, tables, compiler,
+                            file_index, conditional_loop, UNSUPPORTED_CONDITIONAL_BUILDER_LOOP)
+                    }
+                    fail_ascii_append_unproven(env, source, files, tokens, tables, compiler, file_index, node, target, maximum)
+                }
+                if binding >= 0L && binding < compiler.bindings.count() && compiler.bindings[binding].ty == target_fact.ty {
+                    if tracked_length >= 0L && appended_length >= 0L {
+                        set_binding_collection_count(compiler, binding, tracked_length + appended_length)
+                    } else { set_binding_collection_count(compiler, binding, -1L) }
+                }
             } else { () }
             if is_bytes_view_value(tables, compiler, value) {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[value].start,
                     "a .bytes() view is temporary and cannot be stored or returned")
             }
-            if op == 0L { require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables) }
+            if op == 0L {
+                require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables)
+                if deferred_text_kind(type_kind(compiler, target_fact.ty)) &&
+                    binding >= 0L && binding < compiler.bindings.count() && compiler.bindings[binding].ty == target_fact.ty {
+                    set_binding_collection_count(compiler, binding,
+                        known_text_byte_length(source, tokens, files, tables, compiler, file_index, value, 0L))
+                }
+            } else if is_ascii_append_assignment(op, target_fact.ty, compiler) { () }
             else {
                 if !is_numeric_type(target_fact.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "compound assignment requires int or long") }
                 require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables)
             }
             if type_kind(compiler, target_fact.ty) == TYPE_KIND_LIST && binding < compiler.bindings.count() {
                 set_binding_collection_count(compiler, binding, -1L)
-            }
+            } else if deferred_text_kind(type_kind(compiler, target_fact.ty)) && op != 0L && !is_ascii_append_assignment(op, target_fact.ty, compiler) && binding < compiler.bindings.count() {
+                set_binding_collection_count(compiler, binding, -1L)
+            } else { () }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding, function: -1L, literal: 0L }
         } else if kind == NodeKind.Return || kind == NodeKind.ReturnStatement {
             if is_test { fail_at_message(env, files, compiler, file_index, syntax.start, "a test cannot return; let the test finish so all expectations run") }
@@ -6876,7 +7373,8 @@ fn check_one_body(
         } else if kind == NodeKind.Discard {
             let value = frame.child0
             if value < 0L || tables.nodes[value].kind != NodeKind.MethodCall ||
-                (compiler.facts[value].literal != COLLECTION_METHOD_PUSH && compiler.facts[value].literal != COLLECTION_METHOD_INSERT) {
+                (compiler.facts[value].literal != COLLECTION_METHOD_PUSH && compiler.facts[value].literal != COLLECTION_METHOD_INSERT &&
+                    compiler.facts[value].literal != TEXT_METHOD_TRY_APPEND && compiler.facts[value].literal != TEXT_METHOD_PUSH) {
                 fail_at_message(env, files, compiler, file_index, syntax.start, "discard accepts only built-in operations whose Result error is capacity Full")
             }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if (compiler.facts[value].flags & FACT_FALLS_THROUGH) != 0L { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: 0L }
@@ -6885,9 +7383,12 @@ fn check_one_body(
             let proven_success = frame.child0 >= 0L && (compiler.facts[frame.child0].flags & FACT_PROVEN_SUCCESS) != 0L
             if type_kind(compiler, ty) == TYPE_KIND_RESULT && !proven_success {
                 let operation = if frame.child0 >= 0L { compiler.facts[frame.child0].literal } else { 0L }
-                let is_capacity_result = frame.child0 >= 0L && tables.nodes[frame.child0].kind == NodeKind.MethodCall &&
+                let is_collection_capacity_result = frame.child0 >= 0L && tables.nodes[frame.child0].kind == NodeKind.MethodCall &&
                     (operation == COLLECTION_METHOD_PUSH || operation == COLLECTION_METHOD_INSERT)
-                let message: Ascii max 160 = if is_capacity_result { "collection Result with error Full is unused; handle it or write 'discard' to drop Full" }
+                let is_builder_capacity_result = frame.child0 >= 0L && tables.nodes[frame.child0].kind == NodeKind.MethodCall &&
+                    (operation == TEXT_METHOD_TRY_APPEND || operation == TEXT_METHOD_PUSH)
+                let message: Ascii max 160 = if is_collection_capacity_result { "collection Result with error Full is unused; handle it or write 'discard' to drop Full" }
+                    else if is_builder_capacity_result { "builder Result with error Full is unused; handle it or write 'discard' to drop Full" }
                     else { "this Result value is unused; handle it with '?', 'match', or '??' where supported" }
                 fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, message)
             }
@@ -6916,7 +7417,7 @@ fn check_one_body(
                 if sum_layout_has_invalid_overflow(compiler, ty) { fail_at_message(env, files, compiler, file_index, syntax.start, "Option or Result value layout is too large") }
                 if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
                 compiler.facts[node] = NodeFact { ty, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: tag }
-            } else if token_is_word_at(source, tokens, files, file_index, syntax.token, "fill") {
+            } else if is_builtin_fill_call(source, tokens, files, compiler, file_index, syntax.token, frame.scope) {
                 if arg_count != 1L { fail_at_message(env, files, compiler, file_index, syntax.start, "fill takes one value, but got an invalid number") }
                 if frame.expected < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "fill needs an expected array type; add a T[N] annotation") }
                 if type_kind(compiler, frame.expected) != TYPE_KIND_ARRAY { fail_at_message(env, files, compiler, file_index, syntax.start, "fill constructs a fixed array; add an array type annotation") }
@@ -6949,7 +7450,7 @@ fn check_one_body(
                 }
                 let function = compiler.functions[target]
                 check_call_count(env, source, files, tokens, tables, compiler, function, node, file_index)
-                check_call_write_modes(env, source, files, tables, compiler, function, node, file_index, frame.scope)
+                check_call_write_modes(env, source, files, tokens, tables, compiler, function, node, file_index, frame.scope)
                 var read_text_argument = compiler.child_first[node]
                 for argument_index in 0L..function.param_count {
                     if read_text_argument < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "call is missing an argument") }
@@ -6997,7 +7498,7 @@ fn check_one_body(
                     fail_at_message(env, files, compiler, file_index, syntax.anchor, "optional call has the wrong number of arguments")
                 }
                 let receiver_parameter = compiler.parameters[function.param_start]
-                if (parameter_mode(receiver_parameter) & FLAG_MODE_WRITE) != 0L {
+                if (parameter_mode(receiver_parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
                     fail_at_message(env, files, compiler, file_index, syntax.anchor, "optional chaining cannot call a function whose receiver parameter is write")
                 }
                 if parameter_uses_text_read_view(compiler, receiver_parameter) {
@@ -7010,7 +7511,7 @@ fn check_one_body(
                 for argument_index in 1L..function.param_count {
                     let parameter = compiler.parameters[function.param_start + argument_index]
                     if argument < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "optional call is missing an argument") }
-                    if (parameter_mode(parameter) & FLAG_MODE_WRITE) != 0L {
+                    if (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
                         fail_at_message(env, files, compiler, file_index, syntax.anchor, "optional calls cannot pass a write parameter; call a function directly with an assignable place")
                     }
                     if parameter_uses_text_read_view(compiler, parameter) {
@@ -7048,7 +7549,11 @@ fn check_one_body(
             let receiver = frame.child0
             let receiver_ty = if receiver >= 0L { compiler.facts[receiver].ty } else { -1L }
             let receiver_kind = type_kind(compiler, receiver_ty)
-            if check_parse_number_method(env, source, files, tokens, tables, compiler, file_index, node, frame.expected) {
+            let c_method = if receiver >= 0L { c_runtime_method_kind(source, tokens, files, compiler, file_index, syntax.token, receiver_ty) } else { C_METHOD_NONE }
+            if c_method != C_METHOD_NONE {
+                let method_result = c_runtime_check_method(env, source, files, tokens, tables, compiler, file_index, node, frame.scope, receiver_ty, frame.expected)
+                compiler.facts[node] = NodeFact { ty: method_result, flags: if method_result == TY_NEVER || !node_children_fall_through(tables, compiler, node) { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: c_method }
+            } else if check_parse_number_method(env, source, files, tokens, tables, compiler, file_index, node, frame.expected) {
                 ()
             } else if operation == TEXT_METHOD_EMPTY {
                 if count_children(tables, compiler, node) != 1L {
@@ -7124,12 +7629,26 @@ fn check_one_body(
                     (if proven { FACT_PROVEN_SUCCESS } else { 0L })
                 compiler.facts[node] = NodeFact { ty: operation_result_type, flags: fact_flags, binding: compiler.facts[receiver].binding, function: -1L, literal: method }
             } else if receiver_kind == TYPE_KIND_ASCII || receiver_kind == TYPE_KIND_TEXT || receiver_kind == TYPE_KIND_BYTES {
-                if deferred_text_builder_method(source, tokens, files, file_index, syntax.token, receiver_ty, compiler) {
-                    check_deferred_text_builder_method(env, source, files, tokens, tables, compiler,
-                        file_index, frame.scope, node, receiver, receiver_ty, frame.expected)
-                } else { () }
                 let method = text_method_kind(source, tokens, files, file_index, syntax.token, receiver_kind)
                 if method == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching text method is available on this value") }
+                if method == TEXT_METHOD_TRY_APPEND || method == TEXT_METHOD_PUSH {
+                    let method_result_ty = check_text_builder_method(env, source, files, tokens, tables, compiler,
+                        file_index, frame.scope, node, receiver, receiver_ty, frame.expected)
+                    let receiver_binding = compiler.facts[receiver].binding
+                    let tracks_root = receiver_binding >= 0L && receiver_binding < compiler.bindings.count() &&
+                        compiler.bindings[receiver_binding].ty == receiver_ty
+                    let proven = method == TEXT_METHOD_PUSH && builder_push_is_proven(compiler, receiver, frame.loop_depth)
+                    if tracks_root {
+                        if method == TEXT_METHOD_PUSH && proven {
+                            set_binding_collection_count(compiler, receiver_binding, compiler.bindings[receiver_binding].collection_count + 1L)
+                        } else {
+                            set_binding_collection_count(compiler, receiver_binding, -1L)
+                        }
+                    }
+                    let fact_flags = (if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }) |
+                        (if proven { FACT_PROVEN_SUCCESS } else { 0L })
+                    compiler.facts[node] = NodeFact { ty: method_result_ty, flags: fact_flags, binding: receiver_binding, function: -1L, literal: method }
+                } else {
                 let actual_count = count_children(tables, compiler, node) - 1L
                 let wanted_count = if method == TEXT_METHOD_SLICE { 2L }
                     else if method == TEXT_METHOD_CONTAINS || method == TEXT_METHOD_STARTS_WITH { 1L }
@@ -7193,6 +7712,7 @@ fn check_one_body(
                     require_type(env, files, compiler, file_index, node, frame.expected, method_result_ty, tables)
                 }
                 compiler.facts[node] = NodeFact { ty: method_result_ty, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: method }
+                }
             } else if operation < 0L {
                 if count_children(tables, compiler, node) != 1L {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "Option and Result methods take no arguments")
@@ -7244,9 +7764,19 @@ fn check_one_body(
         } else if kind == NodeKind.Fit {
             let source_ty = compiler.facts[frame.child0].ty
             let target_ty = frame.result_ty
-            if type_kind(compiler, source_ty) != TYPE_KIND_ASCII {
+            if type_kind(compiler, target_ty) == TYPE_KIND_ASCII {
+                if type_kind(compiler, source_ty) != TYPE_KIND_ASCII {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start,
+                        "fit input must be Ascii")
+                }
+            } else if target_ty == TY_BYTE {
+                if source_ty != TY_INT {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start,
+                        "fit input must have base type int")
+                }
+            } else {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start,
-                    "fit input must be Ascii")
+                    "fit<T>() needs an int or long refinement type")
             }
             let option_ty = intern_sum_type(compiler, TYPE_KIND_OPTION, target_ty, -1L, file_index, node, -1L, -1L)
             if sum_layout_has_invalid_overflow(compiler, option_ty) {
@@ -7270,7 +7800,7 @@ fn check_one_body(
             compiler.facts[node] = NodeFact { ty: target_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.ToLong {
             let value_ty = compiler.facts[frame.child0].ty
-            if value_ty != TY_INT {
+            if value_ty != TY_INT && value_ty != TY_BYTE {
                 let message: Ascii max 160 = if value_ty == TY_LONG { "no method 'to_long' on long; 'to_long' is available on int" }
                     else if value_ty == TY_BOOL { "no method 'to_long' on bool; 'to_long' is available on int" }
                     else if value_ty == TY_UNIT { "no method 'to_long' on (); 'to_long' is available on int" }
@@ -7354,7 +7884,7 @@ fn check_one_body(
                 if (op == 8L || op == 9L) && (left.ty == TY_UNIT || left.ty == TY_NEVER) {
                     fail_at_message(env, files, compiler, file_index, syntax.anchor, "equality requires values other than ()")
                 }
-                if op >= 10L && !is_numeric_type(left.ty) && !text_pair { fail_at_message(env, files, compiler, file_index, syntax.anchor, "ordered comparisons require int or long values") }
+                if op >= 10L && !is_numeric_type(left.ty) && left.ty != TY_BYTE && !text_pair { fail_at_message(env, files, compiler, file_index, syntax.anchor, "ordered comparisons require int, long, or byte values") }
                 ty = TY_BOOL
             } else if op >= 16L && op <= 20L {
                 if !is_numeric_type(left.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "bitwise operators require int or long values") }
@@ -7378,6 +7908,16 @@ fn check_one_body(
             if then_ty == TY_NEVER { ty = else_ty }
             else if else_ty == TY_NEVER { ty = then_ty }
             else if then_ty == else_ty { ty = then_ty }
+            else if type_kind(compiler, then_ty) == TYPE_KIND_ASCII && type_kind(compiler, else_ty) == TYPE_KIND_ASCII {
+                let then_maximum = text_max_bytes(compiler, then_ty)
+                let else_maximum = text_max_bytes(compiler, else_ty)
+                let maximum = if then_maximum > else_maximum { then_maximum } else { else_maximum }
+                ty = intern_text_type(compiler, TYPE_KIND_ASCII, maximum, 0L, file_index, node, -1L, -1L)
+                if ty < 0L {
+                    fail_at_message(env, files, compiler, file_index, syntax.start,
+                        "Ascii conditional result exceeds compiler capacity")
+                }
+            }
             else { fail_type_mismatch(env, files, compiler, file_index, syntax.start, then_ty, else_ty) }
             if frame.expected >= 0L && ty != TY_NEVER && ty != frame.expected { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
             compiler.facts[node] = NodeFact { ty, flags: if then_ty == TY_NEVER && else_ty == TY_NEVER { FACT_NEVER } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: 0L }
@@ -7487,7 +8027,7 @@ fn check_package_bodies(
         let scope = create_scope(env, files, compiler, -1L, function_id, function.node, function.file)
         for parameter_index in 0L..function.param_count {
             let parameter = compiler.parameters[function.param_start + parameter_index]
-            add_local_binding(env, source, files, tokens, tables, compiler, function.file, parameter.node, parameter_name_token(parameter), scope, parameter.ty, (parameter_mode(parameter) & FLAG_MODE_WRITE) != 0L, false, true)
+            let _ = add_local_binding(env, source, files, tokens, tables, compiler, function.file, parameter.node, parameter_name_token(parameter), scope, parameter.ty, (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L, false, true)
         }
         check_one_body(env, source, files, tokens, tables, config, compiler, function.body, function.file, function_id, function.result_ty, false, scope)
     }
@@ -7773,11 +8313,15 @@ fn add_body_frame_slot_bytes(
     }
 }
 
-fn compute_frame_slot_paths(compiler: write CompilerTables) {
+fn compute_frame_slot_paths(tables: ParseTables, compiler: write CompilerTables) {
     let graph_count = compiler.edge_first.count()
     for node in 0L..graph_count {
-        compiler.frame_visit[node] = 0L
-        compiler.frame_path_bytes[node] = 0L
+        compiler.frame_path_bytes[node] = -1L
+        if node < compiler.functions.count() && (tables.nodes[compiler.functions[node].node].flags & FLAG_RECURSIVE) != 0L {
+            compiler.frame_visit[node] = 2L
+        } else {
+            compiler.frame_visit[node] = 0L
+        }
     }
     for start in 0L..graph_count {
         if compiler.frame_visit[start] == 2L { continue }
@@ -7801,16 +8345,26 @@ fn compute_frame_slot_paths(compiler: write CompilerTables) {
             } else {
                 let node = compiler.cycle_stack[top]
                 var largest_child = 0L
+                var unknown_child = false
                 var successor = compiler.edge_first[node]
                 for edge_step in 0L..compiler.call_edges.count() {
                     if successor < 0L { break }
                     let edge = compiler.call_edges[successor]
-                    if edge.to >= 0L && edge.to < graph_count && compiler.frame_path_bytes[edge.to] > largest_child {
-                        largest_child = compiler.frame_path_bytes[edge.to]
+                    if edge.to >= 0L && edge.to < graph_count {
+                        let child_path = compiler.frame_path_bytes[edge.to]
+                        if child_path < 0L {
+                            unknown_child = true
+                        } else if child_path > largest_child {
+                            largest_child = child_path
+                        } else { () }
                     }
                     successor = edge.next
                 }
-                compiler.frame_path_bytes[node] = compiler.frame_own_bytes[node] + largest_child
+                if unknown_child {
+                    compiler.frame_path_bytes[node] = -1L
+                } else {
+                    compiler.frame_path_bytes[node] = compiler.frame_own_bytes[node] + largest_child
+                }
                 compiler.frame_visit[node] = 2L
                 match compiler.cycle_stack.pop() { some(_) => (), none => () }
                 match compiler.cycle_cursor.pop() { some(_) => (), none => () }
@@ -7888,16 +8442,16 @@ fn check_native_frame_budget(
     want_test_build: bool,
 ) {
     populate_frame_slot_bytes(tables, compiler)
-    compute_frame_slot_paths(compiler)
+    compute_frame_slot_paths(tables, compiler)
     if want_test_build {
         for test_index in 0L..compiler.tests.count() {
             let graph_node = test_graph_node(compiler, test_index)
-            if compiler.frame_path_bytes[graph_node] > 1048576L {
+            if compiler.frame_path_bytes[graph_node] >= 0L && compiler.frame_path_bytes[graph_node] > 1048576L {
                 let test = compiler.tests[test_index]
                 report_frame_budget_unsupported(env, source, files, tokens, tables, compiler, test.file, test.node)
             }
         }
-    } else if entry >= 0L && compiler.frame_path_bytes[entry] > 1048576L {
+    } else if entry >= 0L && compiler.frame_path_bytes[entry] >= 0L && compiler.frame_path_bytes[entry] > 1048576L {
         let function = compiler.functions[entry]
         report_frame_budget_unsupported(env, source, files, tokens, tables, compiler, function.file, function.node)
     } else { () }
@@ -7926,7 +8480,7 @@ fn fail_call_cycle(
         for path_index in 0L..compiler.cycle_path.count() {
             if compiler.cycle_path[path_index] == function_id { belongs = true }
         }
-        if belongs {
+        if belongs && (tables.nodes[compiler.functions[function_id].node].flags & FLAG_RECURSIVE) == 0L {
             if wrote_name { match env.err.write(b", ") { ok(_) => (), err(_) => env.exit(3) } }
             let member = compiler.functions[function_id]
             match env.err.write(b"'") { ok(_) => (), err(_) => env.exit(3) }
@@ -7948,6 +8502,7 @@ fn check_call_cycles(
 ) {
     for node in 0L..compiler.edge_first.count() { compiler.cycle_seen[node] = 0L }
     for start in 0L..compiler.functions.count() {
+        if (tables.nodes[compiler.functions[start].node].flags & FLAG_RECURSIVE) != 0L { continue }
         let stamp = start + 1L
         compiler.cycle_seen[start] = stamp
         compiler.cycle_stack.clear()
@@ -8011,12 +8566,13 @@ fn ir_hex_digit(value: long, lowercase: bool) -> byte {
 }
 
 fn ir_write_escaped_byte(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, value: byte) {
-    if value >= 32 && value <= 126 && value != 34 && value != 92 {
+    let byte_value = value.to_long()
+    if byte_value >= 32L && byte_value <= 126L && byte_value != 34L && byte_value != 92L {
         ir_push_byte(compiler, ir, value)
     } else {
         ir_push_byte(compiler, ir, 92)
-        ir_push_byte(compiler, ir, ir_hex_digit(value.to_long() / 16L, false))
-        ir_push_byte(compiler, ir, ir_hex_digit(value.to_long() % 16L, false))
+        ir_push_byte(compiler, ir, ir_hex_digit(byte_value / 16L, false))
+        ir_push_byte(compiler, ir, ir_hex_digit(byte_value % 16L, false))
     }
 }
 
@@ -8106,7 +8662,7 @@ fn llvm_type_name(ty: long) -> Ascii max 8 {
     else if ty == TY_BYTE { "i32" }
     else if ty == TY_UNIT { "void" }
     else if ty == TY_NEVER { "void" }
-    else if ty == TY_ADDR { "ptr" }
+    else if ty == TY_ADDR || (ty >= TY_ENV && ty <= TY_ARG) { "ptr" }
     else { "i32" }
 }
 
@@ -8174,6 +8730,21 @@ fn aggregate_source_location(compiler: CompilerTables, kind: long, node: long) -
 }
 // E3a1 end
 
+fn direct_call_argument_source_location(
+    tables: ParseTables,
+    compiler: CompilerTables,
+    node: long,
+) -> StorageLocation {
+    let kind = aggregate_source_kind(tables, compiler, node)
+    let source_node = aggregate_source_id(tables, compiler, node)
+    if kind == 3L && tables.nodes[node].kind == NodeKind.Field &&
+        place_root_binding(tables, compiler, node) >= 0L {
+        place_storage_location(tables, compiler, node)
+    } else {
+        aggregate_source_location(compiler, kind, source_node)
+    }
+}
+
 recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTables, node: long) -> StorageLocation {
     if node < 0L { return compiler_location(compiler, 0L, node, 0L) }
     let kind = tables.nodes[node].kind
@@ -8208,7 +8779,25 @@ recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTable
         if root >= 0L && tables.nodes[root].kind == NodeKind.Name {
             let root_binding = compiler.facts[root].binding
             if root_binding >= 0L && compiler.bindings[root_binding].parameter && is_aggregate_type(compiler, compiler.bindings[root_binding].ty) {
-                return StorageLocation { origin: LOCATION_NATIVE, anchor_kind: 2L, anchor_node: node, byte_offset: 0L, copies: 1L, index: 0L, index_node: -1L, index_stride: 0L }
+                let receiver = compiler.child_first[node]
+                if receiver < 0L { return compiler_location(compiler, 2L, node, 0L) }
+                let base = place_storage_location(tables, compiler, receiver)
+                let receiver_type = compiler.facts[receiver].ty
+                let field_index = compiler.facts[node].literal
+                if type_kind(compiler, receiver_type) != TYPE_KIND_STRUCT || field_index < 0L {
+                    return compiler_location(compiler, 2L, node, 0L)
+                }
+                let field = compiler.struct_fields[field_index]
+                return StorageLocation {
+                    origin: base.origin,
+                    anchor_kind: base.anchor_kind,
+                    anchor_node: base.anchor_node,
+                    byte_offset: base.byte_offset + field.offset,
+                    copies: 1L,
+                    index: 0L,
+                    index_node: -1L,
+                    index_stride: 0L,
+                }
             }
         }
         let receiver = compiler.child_first[node]
@@ -8259,7 +8848,7 @@ fn emit_location_pointer_materialization(
         if slot < 0L { compiler.ir_overflow = true; return -1L }
         if location.byte_offset == 0L { ir_write_ascii(compiler, ir, "  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %region.offset."); ir_write_number(compiler, ir, slot); ir_write_ascii(compiler, ir, ", 0\n") }
         else { ir_write_ascii(compiler, ir, "  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %region.offset."); ir_write_number(compiler, ir, slot); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, location.byte_offset); ir_write_ascii(compiler, ir, "\n") }
-        ir_write_ascii(compiler, ir, "  %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @nl_context_current_base(ptr %nl.ctx)\n  %loc.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n")
+        ir_write_ascii(compiler, ir, "  %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr "); emit_context_runtime_symbol(compiler, ir, "nl_context_current_base", "nlc_context_current_base"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n  %loc.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n")
         return serial
     } else if location.anchor_kind == 3L || location.anchor_kind == 9L {
         if location.anchor_kind == 3L {
@@ -8267,7 +8856,7 @@ fn emit_location_pointer_materialization(
         } else {
             ir_write_ascii(compiler, ir, "  %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = select i1 true, ptr %nl.dest.anchor, ptr %nl.dest.anchor\n  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %nl.dest.offset, "); ir_write_number(compiler, ir, location.byte_offset); ir_write_ascii(compiler, ir, "\n")
         }
-        ir_write_ascii(compiler, ir, "  %loc.is.stack."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = icmp eq ptr %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", null\n  %loc.native.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n  %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr @nl_context_current_base(ptr %nl.ctx)\n  %loc.stack.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n  %loc.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = select i1 %loc.is.stack."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %loc.stack.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %loc.native.pointer."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %loc.is.stack."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = icmp eq ptr %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", null\n  %loc.native.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n  %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr "); emit_context_runtime_symbol(compiler, ir, "nl_context_current_base", "nlc_context_current_base"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n  %loc.stack.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n  %loc.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = select i1 %loc.is.stack."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %loc.stack.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", ptr %loc.native.pointer."); ir_write_number(compiler, ir, serial); ir_push_byte(compiler, ir, 10)
         return serial
     } else if location.byte_offset != 0L {
         let base_location = StorageLocation {
@@ -8456,7 +9045,7 @@ recursive fn emit_dynamic_group_size_for_descriptor(
             if field_align > alignment { alignment = field_align }
             let rounded = next_location_serial(ir)
             ir_write_ascii(compiler, ir, "  %coll.desc.align.add."); ir_write_number(compiler, ir, rounded); ir_write_ascii(compiler, ir, " = add i64 ")
-            if offset_serial >= 0L { ir_write_ascii(compiler, ir, "%coll.desc.align.mask."); ir_write_number(compiler, ir, offset_serial) }
+            if offset_serial >= 0L { ir_write_ascii(compiler, ir, "%coll.desc.group.add."); ir_write_number(compiler, ir, offset_serial) }
             else { ir_write_ascii(compiler, ir, "0") }
             ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, field_align - 1L); ir_push_byte(compiler, ir, 10)
             ir_write_ascii(compiler, ir, "  %coll.desc.align.mask."); ir_write_number(compiler, ir, rounded); ir_write_ascii(compiler, ir, " = and i64 %coll.desc.align.add."); ir_write_number(compiler, ir, rounded); ir_write_ascii(compiler, ir, ", -"); ir_write_number(compiler, ir, field_align); ir_push_byte(compiler, ir, 10)
@@ -8786,7 +9375,8 @@ fn emit_type_helper_call_one(
 ) {
     let text_view_binding = text_read_view_binding(compiler, operand)
     if operation == HELPER_PRINT && type_kind(compiler, type_id) == TYPE_KIND_TEXT && text_view_binding >= 0L {
-        ir_write_ascii(compiler, ir, "@nl_print_ascii(ptr %nl.ctx, ptr ")
+        emit_context_runtime_symbol(compiler, ir, "nl_print_ascii", "nlc_print_ascii")
+        ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr ")
         emit_location_pointer_reference(compiler, ir, operand, pointer)
         ir_write_ascii(compiler, ir, ", i64 %arg.copies."); ir_write_number(compiler, ir, text_view_binding); ir_push_byte(compiler, ir, 41)
         return
@@ -9080,7 +9670,11 @@ fn emit_runtime_failure(
     ir_write_ascii(compiler, ir, "  br i1 %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %ov.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %ov.ok."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, "\nov.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
     if compiler.memory_closure { ir_write_ascii(compiler, ir, "  call void @llvm.trap()\n  unreachable\n") }
-    else { ir_write_ascii(compiler, ir, "  call void @nl_fail(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\n") }
+    else {
+        ir_write_ascii(compiler, ir, "  call void ")
+        emit_context_runtime_symbol(compiler, ir, "nl_fail", "nlc_fail")
+        ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\n")
+    }
     ir_write_ascii(compiler, ir, "ov.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
 }
 // E3a1 end
@@ -9100,14 +9694,14 @@ fn emit_checked_division(
 ) {
     let position = position_for_offset(file_index, files[file_index].base + tables.nodes[node].anchor, compiler)
     let llvm_ty = llvm_type_name(ty)
-    ir_write_ascii(compiler, ir, "  %div.zero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", 0\n  br i1 %div.zero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.zero.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.nonzero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ndiv.zero.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 9, i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ndiv.nonzero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+    ir_write_ascii(compiler, ir, "  %div.zero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", 0\n  br i1 %div.zero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.zero.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.nonzero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ndiv.zero.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_fail", "nlc_fail"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 9, i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ndiv.nonzero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
     let minimum = if ty == TY_INT { "-2147483648" } else { "-9223372036854775808" }
     let overflow_kind = if ty == TY_INT { 12L } else { 13L }
     ir_write_ascii(compiler, ir, "  %div.min."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, left); ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, minimum); ir_write_ascii(compiler, ir, "\n  %div.minusone."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", -1\n  %div.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = and i1 %div.min."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %div.minusone."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
     if is_remainder {
         ir_write_ascii(compiler, ir, "  br i1 %div.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %rem.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %rem.compute."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nrem.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  store "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " 0, ptr %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n  br label %rem.join."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nrem.compute."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %rem.value."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = srem "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, left); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, "\n  store "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " %rem.value."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n  br label %rem.join."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nrem.join."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, ", ptr %div.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
     } else {
-        ir_write_ascii(compiler, ir, "  br i1 %div.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.overflow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.safe."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ndiv.overflow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, overflow_kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ndiv.safe."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sdiv "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, left); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, "\n")
+        ir_write_ascii(compiler, ir, "  br i1 %div.special."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.overflow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %div.safe."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ndiv.overflow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_fail", "nlc_fail"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, overflow_kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\ndiv.safe."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sdiv "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, left); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, "\n")
     }
 }
 // E3a1 end
@@ -9127,7 +9721,7 @@ fn emit_checked_shift(
     let position = position_for_offset(file_index, files[file_index].base + tables.nodes[node].anchor, compiler)
     let llvm_ty = llvm_type_name(ty)
     let width = if ty == TY_INT { 32L } else { 64L }
-    ir_write_ascii(compiler, ir, "  %shift.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", 0\n  %shift.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, width); ir_write_ascii(compiler, ir, "\n  %shift.bad."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = or i1 %shift.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %shift.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  br i1 %shift.bad."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %shift.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %shift.good."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nshift.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 11, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\nshift.good."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = ");
+    ir_write_ascii(compiler, ir, "  %shift.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", 0\n  %shift.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, width); ir_write_ascii(compiler, ir, "\n  %shift.bad."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = or i1 %shift.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %shift.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  br i1 %shift.bad."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %shift.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %shift.good."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nshift.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_fail", "nlc_fail"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 11, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\nshift.good."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = ");
     if is_left { ir_write_ascii(compiler, ir, "shl ") } else { ir_write_ascii(compiler, ir, "ashr ") }
     ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, left); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, right); ir_push_byte(compiler, ir, 10)
 }
@@ -9145,6 +9739,10 @@ fn emit_compound_assignment(
     ty: long,
     op: long,
 ) {
+    if op == 1L && type_kind(compiler, ty) == TYPE_KIND_ASCII {
+        emit_ascii_append_assignment(tables, compiler, ir, node, target, binding, value)
+        return
+    }
     let field_target = tables.nodes[target].kind == NodeKind.Field
     let place_target = field_target || tables.nodes[target].kind == NodeKind.Index || binding_is_write_parameter(compiler, binding) || binding_is_view(compiler, binding)
     if !place_target { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
@@ -9763,7 +10361,7 @@ fn emit_option_result_method(
     } else if is_unwrap {
         let failure_kind = if receiver_kind == TYPE_KIND_OPTION { 14L } else { 15L }
         let failure_position = position_for_offset(file_index, files[file_index].base + tables.nodes[receiver].start, compiler)
-        ir_write_ascii(compiler, ir, "  %unwrap.is.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq i32 %method.tag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  br i1 %unwrap.is.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %unwrap.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %unwrap.success."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nunwrap.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, failure_kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, failure_position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, failure_position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\nunwrap.success."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+        ir_write_ascii(compiler, ir, "  %unwrap.is.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq i32 %method.tag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  br i1 %unwrap.is.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %unwrap.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %unwrap.success."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nunwrap.fail."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_fail", "nlc_fail"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, failure_kind); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, failure_position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, failure_position.col); ir_write_ascii(compiler, ir, ")\n  unreachable\nunwrap.success."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
         let payload = sum_payload_record(compiler, receiver_ty, 0L, 0L)
         emit_sum_payload_to_expression(compiler, ir, node, payload.ty, receiver_source, payload.offset, enum_temporary_address(node, MAX_TREE_NODES + 6L))
     } else if is_ok_method {
@@ -10213,14 +10811,18 @@ recursive fn emit_expr_linear(
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             }
         } else if kind == NodeKind.Field && frame.phase == 1L {
-            emit_aggregate_address(tables, compiler, ir, current)
-            let ty = compiler.facts[current].ty
-            if is_aggregate_type(compiler, ty) {
-                if compiler.emit_destination_node == current {
-                    emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, 0L, current), aggregate_source_location(compiler, 3L, current))
-                } else { () }
-            } else if ty != TY_UNIT { emit_load_scalar(compiler, ir, current, ty) }
-            else { () }
+            if compiler.c_runtime && compiler.facts[frame.child0].ty == TY_ENV {
+                emit_c_runtime_environment_field(compiler, ir, current)
+            } else {
+                emit_aggregate_address(tables, compiler, ir, current)
+                let ty = compiler.facts[current].ty
+                if is_aggregate_type(compiler, ty) {
+                    if compiler.emit_destination_node == current {
+                        emit_aggregate_copy(compiler, ir, ty, aggregate_destination_location(compiler, 0L, current), aggregate_source_location(compiler, 3L, current))
+                    } else { () }
+                } else if ty != TY_UNIT { emit_load_scalar(compiler, ir, current, ty) }
+                else { () }
+            }
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.Index && frame.phase == 70L {
             if frame.child0 >= 0L && (compiler.facts[frame.child0].flags & FACT_FALLS_THROUGH) == 0L {
@@ -10348,7 +10950,9 @@ recursive fn emit_expr_linear(
             }
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.Fit && frame.phase == 2L {
-            emit_ascii_fit(tables, compiler, ir, current)
+            let target_ty = sum_payload_record(compiler, compiler.facts[current].ty, 0L, 0L).ty
+            if target_ty == TY_BYTE { emit_byte_fit(compiler, ir, current) }
+            else { emit_ascii_fit(tables, compiler, ir, current) }
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.Cast && frame.phase == 1L {
             let source_ty = compiler.facts[frame.child0].ty
@@ -10370,12 +10974,12 @@ recursive fn emit_expr_linear(
                     }
                 } else {
                     let width: Ascii max 4 = if source_ty == TY_LONG { "i64" } else { "i32" }
-                    ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge "); ir_write_ascii(compiler, ir, width); ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 0\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle "); ir_write_ascii(compiler, ir, width); ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 255\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = "); if source_ty == TY_LONG { ir_write_ascii(compiler, ir, "trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n") } else { ir_write_ascii(compiler, ir, "add i32 0, "); ir_write_value_ref(compiler, ir, frame.child0); ir_push_byte(compiler, ir, 10) }
+                    ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge "); ir_write_ascii(compiler, ir, width); ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 0\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle "); ir_write_ascii(compiler, ir, width); ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 255\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_fail", "nlc_fail"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = "); if source_ty == TY_LONG { ir_write_ascii(compiler, ir, "trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n") } else { ir_write_ascii(compiler, ir, "add i32 0, "); ir_write_value_ref(compiler, ir, frame.child0); ir_push_byte(compiler, ir, 10) }
                 }
             } else if target_ty == TY_LONG && (source_ty == TY_BYTE || source_ty == TY_INT) {
                 ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = sext i32 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i64\n")
             } else {
-                ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", -2147483648\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 2147483647\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n")
+                ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", -2147483648\n  %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = icmp sle i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", 2147483647\n  %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\n  br i1 %cast.ok."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", label %cast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\ncast.fail."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_fail", "nlc_fail"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 10, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + syntax.start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\ncast.good."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = trunc i64 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, " to i32\n")
             }
             match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.ToLong && frame.phase == 1L {
@@ -10616,7 +11220,8 @@ recursive fn emit_expr_linear(
                 }
             } else {
                 let is_print = token_is_word_at(source, tokens, files, file_index, syntax.token, "print")
-                let is_fill = token_is_word_at(source, tokens, files, file_index, syntax.token, "fill")
+                let is_fill = token_is_word_at(source, tokens, files, file_index, syntax.token, "fill") &&
+                    compiler.facts[current].function < 0L
                 let format_kind = if (compiler.facts[current].flags & FACT_FORMAT_TEXT) != 0L { compiler.facts[current].literal } else { FORMAT_TEXT_NONE }
                 let first_arg = compiler.child_first[current]
                 if format_kind != FORMAT_TEXT_NONE {
@@ -10626,13 +11231,29 @@ recursive fn emit_expr_linear(
                     if is_aggregate_type(compiler, arg_ty) {
                         let location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, first_arg), aggregate_source_id(tables, compiler, first_arg))
                         let pointer = emit_location_pointer_materialization(compiler, ir, location)
-                        ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, arg_ty, HELPER_PRINT, location, pointer); ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline(ptr %nl.ctx)\n")
+                        ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, arg_ty, HELPER_PRINT, location, pointer); ir_write_ascii(compiler, ir, "\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_newline", "nlc_print_newline"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n")
                     } else {
-                        ir_write_ascii(compiler, ir, "  call void @nl_print_")
-                        if arg_ty == TY_INT || arg_ty == TY_BYTE { ir_write_ascii(compiler, ir, "int(ptr %nl.ctx, i32 ") }
-                        else if arg_ty == TY_LONG { ir_write_ascii(compiler, ir, "long(ptr %nl.ctx, i64 ") }
-                        else { ir_write_ascii(compiler, ir, "bool(ptr %nl.ctx, i1 zeroext ") }
+                        ir_write_ascii(compiler, ir, "  call void ")
+                        if compiler.c_runtime && (arg_ty == TY_INT || arg_ty == TY_BYTE) {
+                            emit_context_runtime_symbol(compiler, ir, "nl_print_int_raw", "nlc_print_int_raw")
+                            ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 ")
+                        } else if compiler.c_runtime && arg_ty == TY_LONG {
+                            emit_context_runtime_symbol(compiler, ir, "nl_print_long_raw", "nlc_print_long_raw")
+                            ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 ")
+                        } else if compiler.c_runtime {
+                            emit_context_runtime_symbol(compiler, ir, "nl_print_bool_raw", "nlc_print_bool_raw")
+                            ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i1 zeroext ")
+                        } else if arg_ty == TY_INT || arg_ty == TY_BYTE {
+                            ir_write_ascii(compiler, ir, "@nl_print_int(ptr %nl.ctx, i32 ")
+                        } else if arg_ty == TY_LONG {
+                            ir_write_ascii(compiler, ir, "@nl_print_long(ptr %nl.ctx, i64 ")
+                        } else {
+                            ir_write_ascii(compiler, ir, "@nl_print_bool(ptr %nl.ctx, i1 zeroext ")
+                        }
                         ir_write_value_ref(compiler, ir, first_arg); ir_write_ascii(compiler, ir, ")\n")
+                        if compiler.c_runtime {
+                            ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_newline", "nlc_print_newline"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n")
+                        }
                     }
                 } else if is_fill {
                     let fill_type = compiler.facts[current].ty
@@ -10650,7 +11271,7 @@ recursive fn emit_expr_linear(
                         for argument_index in 0L..function.param_count {
                             let parameter = compiler.parameters[function.param_start + argument_index]
                             if parameter.ty != TY_UNIT {
-                                if (parameter_mode(parameter) & FLAG_MODE_WRITE) != 0L {
+                                if (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
                                     let location = place_storage_location(tables, compiler, prepared_argument)
                                     let geometry = is_aggregate_type(compiler, parameter.ty)
                                     emit_prepare_location_descriptor(compiler, ir, location, geometry, prepared_argument)
@@ -10659,17 +11280,13 @@ recursive fn emit_expr_linear(
                                         let argument_type = compiler.facts[prepared_argument].ty
                                         let use_snapshot = direct_call_text_view_needs_snapshot(tables, compiler, current, prepared_argument)
                                         let location = if use_snapshot { compiler_location(compiler, 0L, prepared_argument, 0L) }
-                                            else { aggregate_source_location(compiler,
-                                                aggregate_source_kind(tables, compiler, prepared_argument),
-                                                aggregate_source_id(tables, compiler, prepared_argument)) }
+                                            else { direct_call_argument_source_location(tables, compiler, prepared_argument) }
                                         prepare_text_parameter_descriptor(compiler, ir, argument_type, location, prepared_argument)
                                     } else {
                                         let location = if direct_call_argument_needs_snapshot(tables, compiler, current, prepared_argument) {
                                             aggregate_destination_location(compiler, 0L, prepared_argument)
                                         } else {
-                                            aggregate_source_location(compiler,
-                                                aggregate_source_kind(tables, compiler, prepared_argument),
-                                                aggregate_source_id(tables, compiler, prepared_argument))
+                                            direct_call_argument_source_location(tables, compiler, prepared_argument)
                                         }
                                         emit_prepare_location_descriptor(compiler, ir, location, true, prepared_argument)
                                     }
@@ -10709,7 +11326,7 @@ recursive fn emit_expr_linear(
                         let param_ty = parameter.ty
                         if param_ty != TY_UNIT {
                             if wrote_argument { ir_write_ascii(compiler, ir, ", ") }
-                            if (parameter_mode(parameter) & FLAG_MODE_WRITE) != 0L {
+                            if (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
                                 emit_location_descriptor_argument(compiler, ir, place_storage_location(tables, compiler, arg), is_aggregate_type(compiler, param_ty), arg)
                             } else if is_aggregate_type(compiler, param_ty) {
                                 if parameter_uses_text_read_view(compiler, parameter) {
@@ -10719,9 +11336,7 @@ recursive fn emit_expr_linear(
                                     let location = if direct_call_argument_needs_snapshot(tables, compiler, current, arg) {
                                         aggregate_destination_location(compiler, 0L, arg)
                                     } else {
-                                        aggregate_source_location(compiler,
-                                            aggregate_source_kind(tables, compiler, arg),
-                                            aggregate_source_id(tables, compiler, arg))
+                                        direct_call_argument_source_location(tables, compiler, arg)
                                     }
                                     emit_location_descriptor_argument(compiler, ir, location, true, arg)
                                 }
@@ -10794,7 +11409,10 @@ recursive fn emit_expr_linear(
                 let receiver = compiler.child_first[current]
                 let receiver_ty = compiler.facts[receiver].ty
                 let receiver_kind = type_kind(compiler, receiver_ty)
-                if parse_number_method_kind(source, tokens, files, file_index, syntax.token) != PARSE_NUMBER_NONE {
+                let c_method = c_runtime_method_kind(source, tokens, files, compiler, file_index, syntax.token, receiver_ty)
+                if c_method != C_METHOD_NONE {
+                    emit_c_runtime_method_call(tables, compiler, ir, current)
+                } else if parse_number_method_kind(source, tokens, files, file_index, syntax.token) != PARSE_NUMBER_NONE {
                     emit_parse_number_method(source, files, tokens, tables, compiler, ir, current, file_index)
                 } else if compiler.facts[current].literal == TEXT_METHOD_EMPTY {
                     emit_text_empty_value(compiler, ir, current, is_test || compiler.test_build)
@@ -11223,11 +11841,11 @@ fn emit_expect_after_expression(
             let right_location = aggregate_source_location(compiler, aggregate_source_kind(tables, compiler, right_node), aggregate_source_id(tables, compiler, right_node))
             let left_pointer = emit_location_pointer_materialization(compiler, ir, left_location)
             let right_pointer = emit_location_pointer_materialization(compiler, ir, right_location)
-            ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_header(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.expect."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 "); ir_write_number(compiler, ir, length - 1L); ir_write_ascii(compiler, ir, ")\n")
-            ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_left(ptr %nl.ctx)\n  call void "); emit_type_helper_call_one(compiler, ir, operand_ty, HELPER_PRINT, left_location, left_pointer)
-            ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline(ptr %nl.ctx)\n  call void @nl_expect_fail_right(ptr %nl.ctx)\n  call void "); emit_type_helper_call_one(compiler, ir, operand_ty, HELPER_PRINT, right_location, right_pointer); ir_write_ascii(compiler, ir, "\n  call void @nl_print_newline(ptr %nl.ctx)\n")
+            ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, "nl_expect_fail_header", "nlc_expect_fail_header"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 "); ir_write_number(compiler, ir, file_index); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position.col); ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.expect."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 "); ir_write_number(compiler, ir, length - 1L); ir_write_ascii(compiler, ir, ")\n")
+            ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, "nl_expect_fail_left", "nlc_expect_fail_left"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n  call void "); emit_type_helper_call_one(compiler, ir, operand_ty, HELPER_PRINT, left_location, left_pointer)
+            ir_write_ascii(compiler, ir, "\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_newline", "nlc_print_newline"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_expect_fail_right", "nlc_expect_fail_right"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n  call void "); emit_type_helper_call_one(compiler, ir, operand_ty, HELPER_PRINT, right_location, right_pointer); ir_write_ascii(compiler, ir, "\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_newline", "nlc_print_newline"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n")
         } else {
-        if operand_ty == TY_INT || operand_ty == TY_BOOL {
+        if operand_ty == TY_INT || operand_ty == TY_BOOL || operand_ty == TY_BYTE {
             let extension = if operand_ty == TY_INT { "sext" } else { "zext" }
             ir_write_ascii(compiler, ir, "  %expect.left.")
             ir_write_number(compiler, ir, node)
@@ -11247,7 +11865,7 @@ fn emit_expect_after_expression(
             ir_write_value_ref(compiler, ir, right_node)
             ir_write_ascii(compiler, ir, " to i64\n")
         }
-        ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_compare(ptr %nl.ctx, i32 ")
+        ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, "nl_expect_fail_compare", "nlc_expect_fail_compare"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 ")
         ir_write_number(compiler, ir, file_index)
         ir_write_ascii(compiler, ir, ", i32 ")
         ir_write_number(compiler, ir, position.line)
@@ -11270,7 +11888,7 @@ fn emit_expect_after_expression(
         ir_write_ascii(compiler, ir, ")\n")
         }
     } else {
-        ir_write_ascii(compiler, ir, "  call void @nl_expect_fail_bool(ptr %nl.ctx, i32 ")
+        ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, "nl_expect_fail_bool", "nlc_expect_fail_bool"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 ")
         ir_write_number(compiler, ir, file_index)
         ir_write_ascii(compiler, ir, ", i32 ")
         ir_write_number(compiler, ir, position.line)
@@ -11402,7 +12020,7 @@ recursive fn emit_function_body(
             }
             ir_write_ascii(compiler, ir, "while.step."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n")
             if compiler.step_budget_main >= 0L {
-                ir_write_ascii(compiler, ir, "  %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, " = call i1 @nl_core_nl_context_step_budget_take(ptr %nl.ctx)\n  br i1 %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.cond."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, "\nwhile.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n  call void @nl_fail(ptr %nl.ctx, i32 23, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\n")
+                ir_write_ascii(compiler, ir, "  %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, " = call i1 @nl_core_nl_context_step_budget_take(ptr %nl.ctx)\n  br i1 %while.steps.within."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.cond."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ", label %while.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, "\nwhile.fail."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_fail", "nlc_fail"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i32 23, i32 "); ir_write_number(compiler, ir, file_index + compiler_file_id_base(compiler)); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).line); ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, position_for_offset(file_index, files[file_index].base + tables.nodes[frame.node].start, compiler).col); ir_write_ascii(compiler, ir, ")\n  unreachable\n")
             } else { ir_write_ascii(compiler, ir, "  br label %while.cond."); ir_write_number(compiler, ir, frame.node); ir_push_byte(compiler, ir, 10) }
             ir_write_ascii(compiler, ir, "while.end."); ir_write_number(compiler, ir, frame.node); ir_write_ascii(compiler, ir, ":\n")
             match compiler.emit_loops.pop() { some(_) => (), none => () }
@@ -11752,7 +12370,7 @@ fn emit_function_definition(
         let binding = binding_for_node(compiler, parameter.node)
         if parameter.ty == TY_UNIT { continue }
         if wrote_parameter { ir_write_ascii(compiler, ir, ", ") }
-        if is_aggregate_type(compiler, parameter.ty) || (parameter_mode(parameter) & FLAG_MODE_WRITE) != 0L {
+        if is_aggregate_type(compiler, parameter.ty) || (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
             emit_location_parameter(compiler, ir, binding)
             wrote_parameter = true
             continue
@@ -11777,6 +12395,7 @@ fn emit_function_definition(
     let body_first = function.body - tables.nodes[function.body].subtree + 1L
     for node in 0L..tables.nodes.count() {
         if node < body_first || node > function.body { continue }
+        emit_c_runtime_method_storage(source, files, tokens, tables, compiler, ir, node, function.file)
         if tables.nodes[node].kind == NodeKind.OptionalCall && compiler.facts[node].function >= 0L {
             let target = compiler.functions[compiler.facts[node].function]
             let receiver_parameter = compiler.parameters[target.param_start]
@@ -11797,7 +12416,8 @@ fn emit_function_definition(
         if tables.nodes[node].kind == NodeKind.Binary && tables.nodes[node].flags == 21L && compiler.facts[node].ty != TY_UNIT && !is_aggregate_type(compiler, compiler.facts[node].ty) {
             ir_write_ascii(compiler, ir, "  %coalesce.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(compiler.facts[node].ty)); ir_write_ascii(compiler, ir, ", align 1\n")
         }
-        if tables.nodes[node].kind == NodeKind.Call && token_is_word_at(source, tokens, files, function.file, tables.nodes[node].token, "fill") {
+        if tables.nodes[node].kind == NodeKind.Call && token_is_word_at(source, tokens, files, function.file, tables.nodes[node].token, "fill") &&
+            compiler.facts[node].function < 0L {
             ir_write_ascii(compiler, ir, "  %coll.fill.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca i64, align 8\n")
         }
         if tables.nodes[node].kind == NodeKind.If && compiler.facts[node].ty != TY_UNIT && compiler.facts[node].ty != TY_NEVER && !is_aggregate_type(compiler, compiler.facts[node].ty) {
@@ -11831,7 +12451,7 @@ fn emit_function_definition(
     }
     for parameter_index in 0L..function.param_count {
         let parameter = compiler.parameters[function.param_start + parameter_index]
-        if parameter.ty == TY_UNIT || is_aggregate_type(compiler, parameter.ty) || (parameter_mode(parameter) & FLAG_MODE_WRITE) != 0L { continue }
+        if parameter.ty == TY_UNIT || is_aggregate_type(compiler, parameter.ty) || (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L { continue }
         let binding = binding_for_node(compiler, parameter.node)
         if parameter.ty == TY_BOOL {
             ir_write_ascii(compiler, ir, "  %arg.bool."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, " = zext i1 %arg."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, " to i8\n")
@@ -11872,6 +12492,7 @@ fn emit_test_definition(
     let body_first = test.body - tables.nodes[test.body].subtree + 1L
     for node in 0L..tables.nodes.count() {
         if node < body_first || node > test.body { continue }
+        emit_c_runtime_method_storage(source, files, tokens, tables, compiler, ir, node, test.file)
         if tables.nodes[node].kind == NodeKind.OptionalCall && compiler.facts[node].function >= 0L {
             let target = compiler.functions[compiler.facts[node].function]
             let receiver_parameter = compiler.parameters[target.param_start]
@@ -11892,7 +12513,8 @@ fn emit_test_definition(
         if tables.nodes[node].kind == NodeKind.Binary && tables.nodes[node].flags == 21L && compiler.facts[node].ty != TY_UNIT && !is_aggregate_type(compiler, compiler.facts[node].ty) {
             ir_write_ascii(compiler, ir, "  %coalesce.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(compiler.facts[node].ty)); ir_write_ascii(compiler, ir, ", align 1\n")
         }
-        if tables.nodes[node].kind == NodeKind.Call && token_is_word_at(source, tokens, files, test.file, tables.nodes[node].token, "fill") {
+        if tables.nodes[node].kind == NodeKind.Call && token_is_word_at(source, tokens, files, test.file, tables.nodes[node].token, "fill") &&
+            compiler.facts[node].function < 0L {
             ir_write_ascii(compiler, ir, "  %coll.fill.slot."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = alloca i64, align 8\n")
         }
         if tables.nodes[node].kind == NodeKind.If && compiler.facts[node].ty != TY_UNIT && compiler.facts[node].ty != TY_NEVER && !is_aggregate_type(compiler, compiler.facts[node].ty) {
@@ -12362,7 +12984,7 @@ fn emit_struct_print_text_call(
     index: long,
     length: long,
 ) {
-    ir_write_ascii(compiler, ir, "  call void @nl_print_ascii(ptr %nl.ctx, ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length + 1L); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.struct."); ir_write_ascii(compiler, ir, kind); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 "); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, ")\n")
+    ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_ascii", "nlc_print_ascii"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length + 1L); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.struct."); ir_write_ascii(compiler, ir, kind); ir_write_ascii(compiler, ir, "."); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 "); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, ")\n")
 }
 // E3a1 end
 
@@ -12394,10 +13016,9 @@ fn emit_struct_print_helpers(
                 let pointer = emit_location_pointer_materialization(compiler, ir, location)
                 ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, field.ty, HELPER_PRINT, location, pointer); ir_push_byte(compiler, ir, 10)
             } else if field.ty == TY_BOOL {
-                ir_write_ascii(compiler, ir, "  %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = trunc i8 %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " to i1\n  call void @nl_print_bool_raw(ptr %nl.ctx, i1 zeroext %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n")
+                ir_write_ascii(compiler, ir, "  %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = trunc i8 %print.bool.byte."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " to i1\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_bool_raw", "nlc_print_bool_raw"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i1 zeroext %print.bool."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n")
             } else {
-                let raw_name: Ascii max 16 = if field.ty == TY_LONG { "long" } else { "int" }
-                ir_write_ascii(compiler, ir, "  %print.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  call void @nl_print_"); ir_write_ascii(compiler, ir, raw_name); ir_write_ascii(compiler, ir, "_raw(ptr %nl.ctx, "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, " %print.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n")
+                ir_write_ascii(compiler, ir, "  %print.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  call void "); emit_context_runtime_symbol(compiler, ir, if field.ty == TY_LONG { "nl_print_long_raw" } else { "nl_print_int_raw" }, if field.ty == TY_LONG { "nlc_print_long_raw" } else { "nlc_print_int_raw" }); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, "); ir_write_ascii(compiler, ir, llvm_type_name(field.ty)); ir_write_ascii(compiler, ir, " %print.value."); ir_write_number(compiler, ir, field_index); ir_write_ascii(compiler, ir, ")\n")
             }
         }
         emit_struct_print_text_call(compiler, ir, "close", 0L, 2L)
@@ -12413,7 +13034,7 @@ fn emit_enum_text_call(
     index: long,
     length: long,
 ) {
-    ir_write_ascii(compiler, ir, "  call void @nl_print_ascii(ptr %nl.ctx, ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length + 1L); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.enum."); ir_write_ascii(compiler, ir, prefix); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 "); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, ")\n")
+    ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_ascii", "nlc_print_ascii"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr getelementptr inbounds (["); ir_write_number(compiler, ir, length + 1L); ir_write_ascii(compiler, ir, " x i8], ptr @.nl.enum."); ir_write_ascii(compiler, ir, prefix); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, index); ir_write_ascii(compiler, ir, ", i64 0, i64 0), i64 "); ir_write_number(compiler, ir, length); ir_write_ascii(compiler, ir, ")\n")
 }
 
 fn emit_enum_print_helpers(
@@ -12458,10 +13079,9 @@ fn emit_enum_print_helpers(
                             let pointer = emit_location_pointer_materialization(compiler, ir, location)
                             ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, payload.ty, HELPER_PRINT, location, pointer); ir_push_byte(compiler, ir, 10)
                         } else if payload.ty == TY_BOOL {
-                            ir_write_ascii(compiler, ir, "  %print.bool.byte."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  %print.bool."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = trunc i8 %print.bool.byte."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " to i1\n  call void @nl_print_bool_raw(ptr %nl.ctx, i1 zeroext %print.bool."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, ")\n")
+                            ir_write_ascii(compiler, ir, "  %print.bool.byte."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  %print.bool."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = trunc i8 %print.bool.byte."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " to i1\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_bool_raw", "nlc_print_bool_raw"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i1 zeroext %print.bool."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, ")\n")
                         } else {
-                            let raw_name: Ascii max 16 = if payload.ty == TY_INT { "int" } else { "long" }
-                            ir_write_ascii(compiler, ir, "  %print.value."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(payload.ty)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  call void @nl_print_"); ir_write_ascii(compiler, ir, raw_name); ir_write_ascii(compiler, ir, "_raw(ptr %nl.ctx, "); ir_write_ascii(compiler, ir, llvm_type_name(payload.ty)); ir_write_ascii(compiler, ir, " %print.value."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, ")\n")
+                            ir_write_ascii(compiler, ir, "  %print.value."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(payload.ty)); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address); ir_write_ascii(compiler, ir, ", align 1\n  call void "); emit_context_runtime_symbol(compiler, ir, if payload.ty == TY_LONG { "nl_print_long_raw" } else { "nl_print_int_raw" }, if payload.ty == TY_LONG { "nlc_print_long_raw" } else { "nlc_print_int_raw" }); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, "); ir_write_ascii(compiler, ir, llvm_type_name(payload.ty)); ir_write_ascii(compiler, ir, " %print.value."); ir_write_number(compiler, ir, payload_index); ir_write_ascii(compiler, ir, ")\n")
                         }
                     }
                 }
@@ -12479,7 +13099,7 @@ fn emit_sum_builtin_text_call(
     word: Ascii max 16,
     length: long,
 ) {
-    ir_write_ascii(compiler, ir, "  call void @nl_print_ascii(ptr %nl.ctx, ptr getelementptr inbounds ([")
+    ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_ascii", "nlc_print_ascii"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr getelementptr inbounds ([")
     ir_write_number(compiler, ir, length + 1L)
     ir_write_ascii(compiler, ir, " x i8], ptr @.nl.sum.")
     ir_write_ascii(compiler, ir, word)
@@ -12678,14 +13298,13 @@ fn emit_sum_print_helpers(
                             ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, address)
                             ir_write_ascii(compiler, ir, ", align 1\n  %sum.print.bool."); ir_write_number(compiler, ir, payload.case_index)
                             ir_write_ascii(compiler, ir, " = trunc i8 %sum.print.bool.byte."); ir_write_number(compiler, ir, payload.case_index)
-                            ir_write_ascii(compiler, ir, " to i1\n  call void @nl_print_bool_raw(ptr %nl.ctx, i1 zeroext %sum.print.bool."); ir_write_number(compiler, ir, payload.case_index); ir_write_ascii(compiler, ir, ")\n")
+                            ir_write_ascii(compiler, ir, " to i1\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_bool_raw", "nlc_print_bool_raw"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i1 zeroext %sum.print.bool."); ir_write_number(compiler, ir, payload.case_index); ir_write_ascii(compiler, ir, ")\n")
                         } else {
-                            let raw_name: Ascii max 16 = if payload.ty == TY_INT { "int" } else { "long" }
                             ir_write_ascii(compiler, ir, "  %sum.print.value."); ir_write_number(compiler, ir, payload.case_index)
                             ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(payload.ty))
                             ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address)
-                            ir_write_ascii(compiler, ir, ", align 1\n  call void @nl_print_"); ir_write_ascii(compiler, ir, raw_name)
-                            ir_write_ascii(compiler, ir, "_raw(ptr %nl.ctx, "); ir_write_ascii(compiler, ir, llvm_type_name(payload.ty))
+                            ir_write_ascii(compiler, ir, ", align 1\n  call void "); emit_context_runtime_symbol(compiler, ir, if payload.ty == TY_LONG { "nl_print_long_raw" } else { "nl_print_int_raw" }, if payload.ty == TY_LONG { "nlc_print_long_raw" } else { "nlc_print_int_raw" })
+                            ir_write_ascii(compiler, ir, "(ptr %nl.ctx, "); ir_write_ascii(compiler, ir, llvm_type_name(payload.ty))
                             ir_write_ascii(compiler, ir, " %sum.print.value."); ir_write_number(compiler, ir, payload.case_index); ir_write_ascii(compiler, ir, ")\n")
                         }
                     }
@@ -13059,6 +13678,10 @@ fn emit_main_function(
     config: MemoryConfig,
     entry: long,
 ) {
+    if compiler.c_runtime {
+        emit_c_main_function(compiler, ir, files, config, entry)
+        return
+    }
     // E3a1 subsection: create the stable context before any context-passing hook.
     ir_write_ascii(compiler, ir, "define i32 @main(i32 %argc, ptr %argv, ptr %envp, ptr %auxv) {\nentry:\n  %nl.ctx = call ptr @nl_context_create(i64 4096, i64 ")
     ir_write_number(compiler, ir, config.recursion_budget)
@@ -13327,15 +13950,15 @@ fn compile_embedded_core(
     reset_parse_tables(tables)
     initialize_parse_tables(tables)
     append_embedded_core_sources(env, source, files, tokens, delimiters, tables)
-    reset_compiler_tables(compiler)
+    reset_compiler_tables(env, compiler)
     compiler.core_mode = true
     compiler.test_build = test_build
     compiler.file_id_base = file_id_base + if test_build { COMPILER_TEST_BUILD_FLAG } else { 0L }
-    add_compiler_links(tables, compiler)
+    add_compiler_links(env, tables, compiler)
     intern_package_names(env, source, files, tokens, tables, compiler)
     build_line_start_index(env, source, files, compiler)
     register_scalar_constants(env, source, tokens, files, tables, compiler)
-    index_package_enums(source, files, tokens, tables, compiler)
+    index_package_enums(env, source, files, tokens, tables, compiler)
     // E3a1 subsection: embedded core context intrinsics need the sized layout.
     index_package_structs(source, files, tokens, tables, compiler)
     // E3a1 subsection end
@@ -13395,7 +14018,7 @@ fn compile_selfhost_package(
     ir_write_ascii(compiler, ir, "; nlc-link-ir 2\n; nlc.build ")
     ir_write_ascii(compiler, ir, if want_test_build { "test" } else { "program" })
     ir_write_ascii(compiler, ir, "\n; nlc.stack offset\n; nlc.recursion none\n")
-    ir_write_ascii(compiler, ir, "; nlc.runtime core\n")
+    ir_write_ascii(compiler, ir, if compiler.c_runtime { "; nlc.runtime c\n" } else { "; nlc.runtime core\n" })
     ir_write_ascii(compiler, ir, "; nlc.core ")
     ir_write_ascii(compiler, ir, core_hash)
     ir_write_ascii(compiler, ir, "\n")
@@ -13413,6 +14036,7 @@ fn compile_selfhost_package(
     }
     ir_write_ascii(compiler, ir, "source_filename = \"next-lang\"\n\ndeclare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.smul.with.overflow.i32(i32, i32)\ndeclare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)\ndeclare void @llvm.trap()\n")
     ir_write_ascii(compiler, ir, "\n")
+    if compiler.c_runtime { emit_c_runtime_adapters(compiler, ir) }
     for function_id in 0L..compiler.functions.count() {
         emit_function_definition(source, files, tokens, tables, compiler, ir, function_id)
     }
@@ -13423,8 +14047,10 @@ fn compile_selfhost_package(
     emit_file_globals(files, source, tokens, tables, compiler, ir)
     emit_main_function(source, compiler, ir, files, tokens, config, entry)
     let user_ir_overflow = compiler.ir_overflow
-    if !compile_embedded_core(env, config, ir, files.count(), want_test_build, tables, compiler) {
-        fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded")
+    if !compiler.c_runtime {
+        if !compile_embedded_core(env, config, ir, files.count(), want_test_build, tables, compiler) {
+            fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded")
+        }
     }
     compiler.ir_overflow = compiler.ir_overflow || user_ir_overflow
     emit_storage_tbaa_metadata(compiler, ir)

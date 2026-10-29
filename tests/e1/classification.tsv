@@ -193,7 +193,7 @@ diagnose	tests/run/missing_result
 diagnose	tests/run/mixed_int_long
 build	tests/run/mod_min_div_neg_one
 diagnose	tests/run/none_inference
-unsupported	tests/run/o1_offset_slice
+build	tests/run/o1_offset_slice
 diagnose	tests/run/option_question_wrong_return
 build	tests/run/overflow_add
 build	tests/run/overflow_add_assign
@@ -388,13 +388,13 @@ unsupported	tests/run/t17_worked_reservation
 unsupported	tests/run/t18_abs_min
 diagnose	tests/run/t18_bad_radix
 unsupported	tests/run/t18_clamp_bounds
-unsupported	tests/run/t18_logsum_alignment
+build	tests/run/t18_logsum_alignment
 diagnose	tests/run/t18_unbounded_width
 unsupported	tests/run/t19_const_depth
 unsupported	tests/run/t19_const_depth_10000
 unsupported	tests/run/t19_const_effect
-unsupported	tests/run/t19_deep_budget
-unsupported	tests/run/t19_deep_default
+expected	tests/run/t19_deep_budget
+expected	tests/run/t19_deep_default
 build	tests/run/t19_expression_and_1000
 build	tests/run/t19_expression_call_1000
 diagnose	tests/run/t19_expression_call_limit
@@ -403,15 +403,15 @@ build	tests/run/t19_expression_if_300
 build	tests/run/t19_expression_paren_1000
 diagnose	tests/run/t19_expression_paren_limit
 build	tests/run/t19_expression_plus_1000
-unsupported	tests/run/t19_foreign_margin
+build	tests/run/t19_foreign_margin
 unsupported	tests/run/t19_indirect_budget
 unsupported	tests/run/t19_large_frame
 unsupported	tests/run/t19_recursion
-unsupported	tests/run/t19_region_direct
+expected	tests/run/t19_region_direct
 unsupported	tests/run/t19_region_indirect
-unsupported	tests/run/t19_region_mutual
-unsupported	tests/run/t19_region_result
-unsupported	tests/run/t19_region_temporary
+expected	tests/run/t19_region_mutual
+expected	tests/run/t19_region_result
+expected	tests/run/t19_region_temporary
 unsupported	tests/run/t20_args
 unsupported	tests/run/t20_args_without_grant
 unsupported	tests/run/t20_capability_collection
@@ -452,7 +452,7 @@ diagnose	tests/run/t26_never_return
 diagnose	tests/run/t26_never_return_expression
 unsupported	tests/run/t26_never_values
 unsupported	tests/run/t29_inline_text_fields
-unsupported	tests/run/t30_copy_down
+build	tests/run/t30_copy_down
 build	tests/run/t30_locality
 build	tests/run/t32_decimal_print
 diagnose	tests/run/test_return
@@ -475,16 +475,16 @@ rejects	tests/test/t16_text_bytes
 unsupported	tests/test/t17_stack_peak_fail
 unsupported	tests/test/t17_stack_peak_pass
 unsupported	tests/test/t18_number_text
-unsupported	tests/test/t19_recursion_budget
+expected	tests/test/t19_recursion_budget
 rejects	tests/test/t20_io
 unsupported	tests/test/t20_result_error
 unsupported	tests/test/t24_byte_escape
 unsupported	tests/test/t24_exit_in_test
-unsupported	tests/test/t25_bytes
-unsupported	tests/test/t29_dirty_inline_copy
+build	tests/test/t25_bytes
+build	tests/test/t29_dirty_inline_copy
 unsupported	tests/test/t31_collection_text_lanes
 unsupported	tests/test/t31_large_classes_build
-unsupported	tests/test/t32_number_format
+rejects	tests/test/t32_number_format
 # noshadow begin
 build	tests/e1/noshadow_functionshadow
 build	tests/e2/noshadow_enum_match_runtime
@@ -525,8 +525,8 @@ unsupported	tests/test/noshadow_t18_number_text
 unsupported	tests/test/noshadow_t20_io
 unsupported	tests/test/noshadow_t20_result_error
 unsupported	tests/test/noshadow_t24_byte_escape
-unsupported	tests/test/noshadow_t25_bytes
-unsupported	tests/test/noshadow_t32_number_format
+build	tests/test/noshadow_t25_bytes
+rejects	tests/test/noshadow_t32_number_format
 # noshadow end
 
 # E3a begin
@@ -714,16 +714,16 @@ expected	tests/e3/e3a3fix_while_exits
 diagnose	tests/e3/s0fix5_count_loop
 diagnose	tests/e3/s0fix5_count_match
 build	tests/e3/s0fix5_count_valid
-unsupported	tests/e3/s0fix5_grow_ascii_small
-unsupported	tests/e3/s0fix5_grow_ascii_large
-unsupported	tests/e3/s0fix5_grow_bytes_small
-unsupported	tests/e3/s0fix5_grow_text_codepoints
-unsupported	tests/e3/s0fix5_grow_text_bytes
-unsupported	tests/e3/s0fix5_grow_field
+diagnose	tests/e3/s0fix5_grow_ascii_small
+diagnose	tests/e3/s0fix5_grow_ascii_large
+diagnose	tests/e3/s0fix5_grow_bytes_small
+diagnose	tests/e3/s0fix5_grow_text_codepoints
+diagnose	tests/e3/s0fix5_grow_text_bytes
+diagnose	tests/e3/s0fix5_grow_field
 unsupported	tests/e3/s0fix5_grow_indirect
 unsupported	tests/e3/s0fix5_grow_valid
 diagnose	tests/e3/s0fix5_byte_invalid
-unsupported	tests/e3/s0fix5_byte_valid
+build	tests/e3/s0fix5_byte_valid
 diagnose	tests/e3/s0fix5_byte_negative
 diagnose	tests/e3/s0fix5_count_break
 # E3c begin
@@ -801,3 +801,38 @@ unsupported	tests/e3/b1_bytes_fields_unsupported_nested
 unsupported	tests/e3/b1_bytes_fields_unsupported_sum_payload
 diagnose	tests/e3/b1_bytes_fields_invalid_write
 # B1 Bytes fields end
+
+# B1 builder foundations begin
+diagnose	tests/e3/d1_builder_ascii_kind
+build	tests/e3/d1_builder_atomicity
+diagnose	tests/e3/d1_builder_bytes_kind
+diagnose	tests/e3/d1_builder_grow_kind
+diagnose	tests/e3/d1_builder_immutable
+diagnose	tests/e3/d1_builder_modes
+build	tests/e3/d1_builder_ops
+diagnose	tests/e3/d1_builder_place
+build	tests/e3/d1_builder_relocation
+diagnose	tests/e3/d1_builder_scalar_mode
+diagnose	tests/e3/d1_builder_text_bytes_large
+diagnose	tests/e3/d1_builder_text_kind
+diagnose	tests/e3/d1_builder_text_points_large
+diagnose	tests/e3/d1_builder_text_points_small
+diagnose	tests/e3/d1_builder_write_mode
+# B1 builder foundations end
+
+# B1 ordinary recursion begin
+build	tests/e3/b1_recursion_self
+build	tests/e3/b1_recursion_mutual
+diagnose	tests/e3/b1_recursion_unmarked_self
+diagnose	tests/e3/b1_recursion_unmarked_overlap
+expected	tests/e3/b1_recursion_live_arena
+# B1 ordinary recursion end
+
+# B1 compiler-used Ascii conditionals and Byte operations
+build	tests/e3/b1_ascii_if_bounds
+build	tests/e3/b1_byte_to_long
+build	tests/e3/b1_ascii_match_bounds
+build	tests/e3/b1_byte_ordering
+diagnose	tests/e3/b1_byte_order_mixed
+expected-reject	tests/e3/b1_byte_order_arithmetic
+build	tests/e3/b1_byte_fit

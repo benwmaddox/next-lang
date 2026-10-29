@@ -107,30 +107,30 @@ and 76 recursive declarations.
    The bounded [Bytes-field task](B1-bytes-fields.md) preserves layout,
    independent live bytes, indexed stride, gather, and relocation. Broad nesting,
    Ascii/Text lanes, sum elements, and reachability optimization stay deferred.
-3. **Source-used recursion and native-stack checks.** This is now the actual
-   first gate, but Ben deferred its implementation on 2026-10-28 pending further
-   language design. See [B1-recursion.md](B1-recursion.md) for unresolved budget,
-   default-policy, and size-dependent region rules. The unmerged prototype was
-   removed; existing gates remain. Favor simple StasisLang-like syntax and
-   rules, and defend any Rust-derived approach. Do not resume this task merely
-   because it remains first in source order. Work on independent builder and
-   capability/I/O prerequisites while the recursion design is unsettled.
-4. **E3d1 builder prerequisites.** `ir_push_byte` writes through `grow Bytes`,
-   and the compiler uses checked appends. Implement grow descriptors, byte pushes,
-   append transactions, width checks, and the required proof/rollback rules.
-   Use [prep-E3d1.md](prep-E3d1.md), especially its manager answers: equal maxima
-   only; keep `+=` through grow refused with the `try_append(x)?` hint; rollback
-   covers one append. Recount existing fixture classifications because E3c
-   already promoted four rows from the old prep table.
+3. **Source-used recursion (reopened).** Ben reopened this prerequisite on
+   2026-10-28 after confirming that compiler source already needs it. Follow
+   [B1-recursion.md](B1-recursion.md): ordinary calls and arena scopes, with OS
+   process termination on native-stack exhaustion. Controlled diagnostics are
+   deferred; the removed prototype's budgets and live-region ban are superseded.
+4. **Compiler-used builders (active).** Keep the smallest working subset and
+   simplify the broader proposal as needed. Follow [B1-builders.md](B1-builders.md):
+   source-used builder descriptors/mutators first. Defer call-output append
+   variants and unrelated semantic migrations unless the compiler needs them.
+   Use the existing prep as an oracle, not as authorization
+   for bundled `take`/move tracking or unrelated optimizations. Equal maxima,
+   explicit capacity-result handling, relocation-safe access, and rollback of
+   one failed append remain required. Recursion is a separate active prerequisite.
 5. **E3f1 capability/I/O requirements used by the compiler.** `Env`, arguments,
    `Out.write`, and Fs listing/join/read/write support are required. The package
    grants fs/out/env. Deterministic source ordering from `list_with_extension`
-   is part of the compiler's reproducibility contract. Stdin, atomic writes, and
+   is part of the compiler's reproducibility contract. Ben chose the existing
+   C runtime for the first self-hosted compiler; defer the core I/O port and
+   add only the compiler lowering/adapters needed to reuse C. Stdin, atomic writes, and
    streaming writers need not precede B1 unless an actual source dependency appears.
 6. **B1 stage chain and reproducibility.** Use Stage0 to build the seed compiler;
    use that compiler to emit stage 2, then stage 2 to emit stage 3. Require exact
    stage-2/stage-3 LLVM IR and binary identity, plus compiler corpus correctness.
-   LLVM/clang remains the backend. The bootstrap harness may invoke clang
+   LLVM/clang remains the backend and links the existing C runtime. The bootstrap harness may invoke clang
    directly; after the seed build, do not depend on Rust nlc's checker, emitter,
    or link-ir driver to claim the full B1 gate. A Rust link-ir bridge may help
    diagnose progress but must be labeled as a bridge. E3g's in-language process
@@ -144,6 +144,17 @@ and 76 recursive declarations.
    generated packages, and representative real packages. Preserve raw samples,
    best/median/spread, and exact commands; distinguish static reservations from
    resident memory. Keep runtime benchmarks as separate regression evidence.
+   Ben's acceptance gate (2026-10-28): more than **3x the Rust-implemented
+   Stage0 `nlc` compile time is a failure**. Compare the same inputs and
+   equivalent work with matching optimization/runtime/link settings. Report
+   per-case ratios; do not average away a failing case or hide compiler time
+   behind shared link time. The Rust-built language compiler is not this
+   baseline.
+   Rust Stage0 rejects this compiler source in offset mode (large
+   `CompilerTables` is outside its supported slice). Use its normal supported
+   pointer mode against the self-built compiler's offset mode and report that
+   representation difference explicitly; it does not waive the 3x gate or
+   authorize Stage0 changes.
 8. **Improve measured bottlenecks.** Prioritize checker/emitter scaling, bootstrap
    memory, generated IR size, LLVM/link time, or runtime costs according to the
    profile. Each optimization needs correctness coverage and before/after data.

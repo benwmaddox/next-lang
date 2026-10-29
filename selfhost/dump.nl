@@ -148,7 +148,7 @@ fn output_token_dump(
             for number_index in 0L..col_text.len() { buffer.push(col_text.bytes()[number_index]).unwrap() }
             buffer.push(32).unwrap()
             buffer.push(34).unwrap()
-            for source_index in file.base + token.start..file.base + token.start + token.length {
+            for source_index: long in file.base + token.start..file.base + token.start + token.length {
                 let byte_value = source[source_index]
                 if byte_value == 34 || byte_value == 92 || byte_value == 10 || byte_value == 13 || byte_value == 9 || byte_value < 32 {
                     if buffer.count() > OUTPUT_BUFFER_BYTES - 12L {
@@ -180,7 +180,7 @@ fn output_token_dump(
             if buffer.count() > OUTPUT_BUFFER_BYTES - 8L { out.write(buffer)?; buffer = Bytes.empty() }
             buffer.push(34).unwrap()
             buffer.push(10).unwrap()
-            for offset in token.start..token.start + token.length {
+            for offset: long in token.start..token.start + token.length {
                 if source[file.base + offset] == 10 {
                     line += 1L
                     col = 1L

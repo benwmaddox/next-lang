@@ -1,0 +1,1 @@
+main.nl:5:1: error: call cycle contains unmarked function(s) 'beta'; mark every function in the cycle 'recursive'
