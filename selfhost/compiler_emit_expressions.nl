@@ -311,7 +311,7 @@ fn emit_sys_method(
     let syntax = tables.nodes[node]
     let operation = core_sys_operation(source, tokens, files, file_index, syntax.token)
     let collection_operation = compiler.facts[node].literal
-    if collection_operation >= COLLECTION_METHOD_LEN && collection_operation <= COLLECTION_METHOD_POP {
+    if collection_operation >= COLLECTION_METHOD_LEN && collection_operation <= COLLECTION_METHOD_PEEK {
         emit_collection_method(source, files, tables, compiler, ir, node, file_index, collection_operation)
         return
     }
@@ -1068,7 +1068,7 @@ recursive fn emit_expr_linear(
                 }
                 frame.phase = 72L
                 compiler.expr_work[frame_index] = frame
-            } else if kind == NodeKind.ListLiteral {
+            } else if kind == NodeKind.ListLiteral || kind == NodeKind.QueueLiteral {
                 let list_type = compiler.facts[current].ty
                 emit_collection_zero_storage(compiler, ir, current, list_type, 0L)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
@@ -1096,7 +1096,7 @@ recursive fn emit_expr_linear(
                 compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
             } else if kind == NodeKind.Call && (syntax.flags & FLAG_SYNTHETIC) != 0L {
                 let ty = compiler.facts[current].ty
-                if type_kind(compiler, ty) == TYPE_KIND_ARRAY || type_kind(compiler, ty) == TYPE_KIND_LIST {
+                if type_kind(compiler, ty) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, ty)) {
                     emit_collection_zero_storage(compiler, ir, current, ty, 0L)
                 } else if ty == TY_UNIT || ty == TY_NEVER { () }
                 else { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = add "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " 0, 0\n") }
@@ -1259,7 +1259,7 @@ recursive fn emit_expr_linear(
                 compiler.expr_work.push(EmitExprFrame { node: element, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
             } else {
                 let ty = compiler.facts[current].ty
-                if type_kind(compiler, ty) == TYPE_KIND_LIST { emit_collection_zero_storage(compiler, ir, current, ty, frame.auxiliary) }
+                if collection_kind_is_list(type_kind(compiler, ty)) { emit_collection_zero_storage(compiler, ir, current, ty, frame.auxiliary) }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             }
         } else if kind == NodeKind.ArrayLiteral && frame.phase == 73L {
@@ -2675,7 +2675,7 @@ recursive fn emit_function_body(
             let capacity = collection_capacity(compiler, collection_type)
             let location = collection_value_location(tables, compiler, collection)
             let pointer = emit_location_pointer_materialization(compiler, ir, location)
-            if collection_kind == TYPE_KIND_LIST {
+            if collection_kind_is_list(collection_kind) {
                 ir_write_ascii(compiler, ir, "  %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 0\n  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 1\n")
             } else if collection_kind == TYPE_KIND_ASCII || collection_kind == TYPE_KIND_BYTES {
                 ir_write_ascii(compiler, ir, "  %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 0\n  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 1\n")

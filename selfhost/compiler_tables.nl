@@ -44,6 +44,7 @@ const TYPE_KIND_ASCII: long = 10L
 const TYPE_KIND_TEXT: long = 11L
 const TYPE_KIND_BYTES: long = 12L
 const TYPE_KIND_ADDRESS: long = 13L
+const TYPE_KIND_QUEUE: long = 14L
 const TYPE_STATE_LAYOUT_OVERFLOW: long = 5L
 
 const LOCATION_NATIVE: long = 0L
@@ -142,6 +143,8 @@ const UNSUPPORTED_FRAME_BUDGET: long = 10L
 const UNSUPPORTED_RESULT_MAIN: long = 11L
 const UNSUPPORTED_NESTED_COLLECTIONS: long = 12L
 const UNSUPPORTED_TEXT_COLLECTION: long = 13L
+const UNSUPPORTED_QUEUE_ELEMENT: long = 15L
+const UNSUPPORTED_QUEUE_USE: long = 16L
 const UNSUPPORTED_CONDITIONAL_BUILDER_LOOP: long = 14L
 
 struct TypeRecord {
@@ -1222,7 +1225,6 @@ fn known_non_scalar_type(
     token_is_word_at(source, tokens, files, file_index, token, "map") ||
     token_is_word_at(source, tokens, files, file_index, token, "set") ||
     token_is_word_at(source, tokens, files, file_index, token, "pool") ||
-    token_is_word_at(source, tokens, files, file_index, token, "queue") ||
     token_is_word_at(source, tokens, files, file_index, token, "ring") ||
     token_is_word_at(source, tokens, files, file_index, token, "grid") ||
     token_is_word_at(source, tokens, files, file_index, token, "Path") ||

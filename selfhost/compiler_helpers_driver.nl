@@ -160,7 +160,7 @@ fn mark_struct_helpers(
                         if has_type_helper(compiler, type_id, HELPER_PRINT) { register_type_helper(compiler, child_ty, HELPER_PRINT) }
                     }
                 }
-            } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || type_kind(compiler, type_id) == TYPE_KIND_LIST {
+            } else if type_kind(compiler, type_id) == TYPE_KIND_ARRAY || collection_kind_is_list(type_kind(compiler, type_id)) {
                 let child_ty = collection_element_type(compiler, type_id)
                 if type_kind(compiler, child_ty) == TYPE_KIND_STRUCT {
                     let element = type_record(compiler, child_ty)
@@ -887,7 +887,7 @@ fn emit_type_helpers_for_kind(
         emit_sum_print_helpers(compiler, ir)
     } else if kind == TYPE_KIND_RESULT {
         ()
-    } else if kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST {
+    } else if kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) {
         emit_collection_copy_helpers(compiler, ir, kind)
         emit_collection_equal_helpers(compiler, ir, kind)
         emit_collection_print_helpers(compiler, ir, kind)

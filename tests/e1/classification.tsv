@@ -82,9 +82,9 @@ unsupported	tests/e1/unsupported_type_path_unused
 unsupported	tests/e1/unsupported_type_pool_test
 unsupported	tests/e1/unsupported_type_pool_unreachable
 unsupported	tests/e1/unsupported_type_pool_unused
-unsupported	tests/e1/unsupported_type_queue_test
-unsupported	tests/e1/unsupported_type_queue_unreachable
-unsupported	tests/e1/unsupported_type_queue_unused
+diagnose	tests/e1/unsupported_type_queue_test
+diagnose	tests/e1/unsupported_type_queue_unreachable
+diagnose	tests/e1/unsupported_type_queue_unused
 diagnose	tests/e1/unsupported_type_result_test
 diagnose	tests/e1/unsupported_type_result_unreachable
 diagnose	tests/e1/unsupported_type_result_unused
@@ -321,7 +321,7 @@ unsupported	tests/run/t10_grid_product_overflow
 unsupported	tests/run/t10_grid_readonly_write
 unsupported	tests/run/t10_grid_x_range
 unsupported	tests/run/t10_grid_y_range
-unsupported	tests/run/t10_large_queue
+build	tests/run/t10_large_queue
 unsupported	tests/run/t10_queue_pop_view
 unsupported	tests/run/t10_queue_ring_grid
 unsupported	tests/run/t10_ring_push_view
@@ -878,3 +878,8 @@ diagnose	tests/e3/b1_bytes_const_too_long
 build	tests/e3/b1_clamp_byte_push
 build	tests/e3/b1_array_consts_ints
 unsupported	tests/e3/b1_array_consts_text_unsupported
+build	tests/e3/b1_queue_basic
+build	tests/e3/b1_queue_full
+build	tests/e3/b1_queue_wrap
+build	tests/e3/b1_queue_write_param
+unsupported	tests/e3/b1_queue_bool_unsupported
