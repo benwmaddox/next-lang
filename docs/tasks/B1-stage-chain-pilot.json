@@ -1,0 +1,205 @@
+{
+  "acceptance_basis": "the timed-out single-sample lower bound exceeded the 3x threshold",
+  "acceptance_result": "failure",
+  "benchmark_lock": "/home/ben/linuxbench/bench.lock",
+  "chain_report": {
+    "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-85a_5o6y/report.json",
+    "sha256": "a783388104d1fd8bf953bae4bec31b844141bfa9ba75f503f458b790d39e6e44"
+  },
+  "commands": [
+    {
+      "command": [
+        "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+        "selfhost",
+        "target/b1-stage3-timing/pilot-selfhost-3eoy_s7_/ir/rust-pointer-c.ll"
+      ],
+      "cpu_seconds": 1.76,
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 1.819,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C",
+        "NLC_OPT_LEVEL": "3",
+        "NLC_STACK_MODE": "pointer"
+      },
+      "ir": {
+        "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/pilot-selfhost-3eoy_s7_/ir/rust-pointer-c.ll",
+        "sha256": "3d8645fc2ab28e81c1f842f695070ec59526aff3a248cedcd4938a92a345524a"
+      },
+      "label": "rust-stage0",
+      "max_resident_set_kib": 270080,
+      "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+      "status": 0,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-stage3-timing/pilot-selfhost-3eoy_s7_/rust-stage0.stderr",
+      "stderr_preview": "",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-stage3-timing/pilot-selfhost-3eoy_s7_/rust-stage0.stdout",
+      "system_cpu_seconds": 0.14,
+      "timed_out": false,
+      "timeout_deadline_seconds": 300,
+      "user_cpu_seconds": 1.62,
+      "wall_seconds": 1.8,
+      "wrapper_command": [
+        "/usr/bin/time",
+        "-f",
+        "NLC_TIME=%e,%U,%S,%M",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-stage3-timing/pilot-selfhost-3eoy_s7_/rust-stage0.time",
+        "/usr/bin/timeout",
+        "-k",
+        "5s",
+        "300s",
+        "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+        "selfhost",
+        "target/b1-stage3-timing/pilot-selfhost-3eoy_s7_/ir/rust-pointer-c.ll"
+      ]
+    },
+    {
+      "command": [
+        "/mnt/d/code/next-lang/.selfhost-stage-chain-85a_5o6y/stage3",
+        "build",
+        "selfhost",
+        "-o",
+        "target/b1-stage3-timing/pilot-selfhost-3eoy_s7_/ir/stage3-offset-c.ll",
+        "--runtime=c"
+      ],
+      "cpu_seconds": 30.58,
+      "cwd": "/mnt/d/code/next-lang",
+      "duration_seconds": 30.033,
+      "environment": {
+        "LANG": "C",
+        "LC_ALL": "C"
+      },
+      "label": "stage3",
+      "max_resident_set_kib": 489280,
+      "resource_usage_source": "GNU time: %e wall, %U user CPU, %S system CPU, %M max resident set",
+      "status": 124,
+      "stderr_path": "/mnt/d/code/next-lang/target/b1-stage3-timing/pilot-selfhost-3eoy_s7_/stage3.stderr",
+      "stderr_preview": "",
+      "stdout_path": "/mnt/d/code/next-lang/target/b1-stage3-timing/pilot-selfhost-3eoy_s7_/stage3.stdout",
+      "system_cpu_seconds": 0.2,
+      "timed_out": true,
+      "timeout_deadline_seconds": 30,
+      "user_cpu_seconds": 30.38,
+      "wall_seconds": 30.87,
+      "wrapper_command": [
+        "/usr/bin/time",
+        "-f",
+        "NLC_TIME=%e,%U,%S,%M",
+        "-o",
+        "/mnt/d/code/next-lang/target/b1-stage3-timing/pilot-selfhost-3eoy_s7_/stage3.time",
+        "/usr/bin/timeout",
+        "-k",
+        "5s",
+        "30s",
+        "/mnt/d/code/next-lang/.selfhost-stage-chain-85a_5o6y/stage3",
+        "build",
+        "selfhost",
+        "-o",
+        "target/b1-stage3-timing/pilot-selfhost-3eoy_s7_/ir/stage3-offset-c.ll",
+        "--runtime=c"
+      ]
+    }
+  ],
+  "comparison_modes": {
+    "rust_stage0": {
+      "implementation": "Rust frontend API from the same fresh release rlib as the reference nlc",
+      "runtime": "C (Rust package_link_description selects LinkRuntime::C)",
+      "stack_mode": "pointer (NLC_STACK_MODE=pointer)"
+    },
+    "stage3": {
+      "implementation": "O3 self-hosted compiler from the passing stage-chain report",
+      "runtime": "C (--runtime=c)",
+      "stack_mode": "offset (Stage 3 emitter mode)"
+    }
+  },
+  "cpu_affinity": [
+    0
+  ],
+  "diagnostic_measurement": {
+    "interpretation": "single-sample censored diagnostic; no completed Stage 3 duration, IR hash, median, or PASS claimed",
+    "rust_stage0_cpu_seconds": 1.76,
+    "rust_stage0_wall_seconds": 1.8,
+    "stage3_cpu_seconds_before_termination": 30.58,
+    "stage3_gnu_time_wall_seconds_before_termination": 30.87,
+    "stage3_over_rust_ratio_lower_bound": 16.6667,
+    "stage3_wall_lower_bound_seconds": 30.0,
+    "threshold_observation": "failure_by_lower_bound"
+  },
+  "expected_stage3_binary_sha256": "8b522f4748978c3daa23cfa6267c16c43962cf70311dfd6f92a1a04c22fc8a80",
+  "expected_stage3_ir_sha256": "d266ebfc364eecbc03772f4ae51460e41c896eccf013c59291bf7d366aa80b05",
+  "input_fingerprints_unchanged": true,
+  "inputs_after": {
+    "pilot_runner_source": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-pilot.py",
+      "sha256": "c532cea7b28d829ded799106612ef94e079b4e863e28b82587fb095eda9b6723"
+    },
+    "rust_compiler_sources_sha256": "12f6e610a8c5b25bfc3a7498d27f0b256cb19b82f5ea67728ae821991f3da2b7",
+    "rust_helper_binary": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+      "sha256": "406f3a58114c7758c39683a7d485dd36ecedea7ce8ec801915f592db3f4ad7fd"
+    },
+    "rust_helper_source": {
+      "path": "/mnt/d/code/next-lang/.scratch-b1-deferred-benchmark-20261028/bench-selfhost-compile-rust.rs",
+      "sha256": "12cce63e4a707f5cb2ca7025f2e50cb2e5aec03e58c88396f22025f29087dffe"
+    },
+    "rust_reference_nlc": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/nlc",
+      "sha256": "42e743e8a51ac4abd536b90463047b4d02f78d9ed7a10e21b733c9de303da2a9"
+    },
+    "rust_rlib": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/deps/libnext_lang-ff9bf2564b5fb483.rlib",
+      "sha256": "66bb96af9174b1073b2d4b02bea54aad09eb1c48f0805aefe9314308df8d75bc"
+    },
+    "selfhost_package_sha256": "4122ebd8aa654c36ccf6952fcbfe3c72fafc1f6e43612a8704911429acbc136a",
+    "stage3_binary": {
+      "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-85a_5o6y/stage3",
+      "sha256": "8b522f4748978c3daa23cfa6267c16c43962cf70311dfd6f92a1a04c22fc8a80"
+    },
+    "stage_chain_sources_sha256": "da110929d75bae90f2242f983705550f11813cc780f74b05d7dc770dd4723f50"
+  },
+  "inputs_before": {
+    "pilot_runner_source": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-pilot.py",
+      "sha256": "c532cea7b28d829ded799106612ef94e079b4e863e28b82587fb095eda9b6723"
+    },
+    "rust_compiler_sources_sha256": "12f6e610a8c5b25bfc3a7498d27f0b256cb19b82f5ea67728ae821991f3da2b7",
+    "rust_helper_binary": {
+      "path": "/mnt/d/code/next-lang/target/b1-stage3-timing/bench-selfhost-compile-rust",
+      "sha256": "406f3a58114c7758c39683a7d485dd36ecedea7ce8ec801915f592db3f4ad7fd"
+    },
+    "rust_helper_source": {
+      "path": "/mnt/d/code/next-lang/.scratch-b1-deferred-benchmark-20261028/bench-selfhost-compile-rust.rs",
+      "sha256": "12cce63e4a707f5cb2ca7025f2e50cb2e5aec03e58c88396f22025f29087dffe"
+    },
+    "rust_reference_nlc": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/nlc",
+      "sha256": "42e743e8a51ac4abd536b90463047b4d02f78d9ed7a10e21b733c9de303da2a9"
+    },
+    "rust_rlib": {
+      "path": "/home/ben/.cache/next-lang/target-takeover-e3c-20261028/release/deps/libnext_lang-ff9bf2564b5fb483.rlib",
+      "sha256": "66bb96af9174b1073b2d4b02bea54aad09eb1c48f0805aefe9314308df8d75bc"
+    },
+    "selfhost_package_sha256": "4122ebd8aa654c36ccf6952fcbfe3c72fafc1f6e43612a8704911429acbc136a",
+    "stage3_binary": {
+      "path": "/mnt/d/code/next-lang/.selfhost-stage-chain-85a_5o6y/stage3",
+      "sha256": "8b522f4748978c3daa23cfa6267c16c43962cf70311dfd6f92a1a04c22fc8a80"
+    },
+    "stage_chain_sources_sha256": "da110929d75bae90f2242f983705550f11813cc780f74b05d7dc770dd4723f50"
+  },
+  "package": {
+    "path": "/mnt/d/code/next-lang/selfhost",
+    "sha256": "4122ebd8aa654c36ccf6952fcbfe3c72fafc1f6e43612a8704911429acbc136a"
+  },
+  "repository_root": "/mnt/d/code/next-lang",
+  "sample_count": 1,
+  "scope": "single selfhost-package timing pair; diagnostic only",
+  "stage3_ir_completed": false,
+  "stage3_ir_hash_verified": false,
+  "stage3_partial_ir_present": false,
+  "stage3_timeout_censored": true,
+  "stage3_timeout_deadline_seconds": 30,
+  "status": "observed_gate_failure",
+  "threshold_stage3_over_rust": 3.0,
+  "warmups": 0,
+  "work_directory": "/mnt/d/code/next-lang/target/b1-stage3-timing/pilot-selfhost-3eoy_s7_"
+}

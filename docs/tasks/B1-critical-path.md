@@ -6,6 +6,21 @@ checks remain guards throughout. New benchmark ports and unrelated features wait
 This queue refines the historical phase order in PLAN.md using actual compiler
 source requirements; it does not claim language parity is already reached.
 
+## Current checkpoint (2026-10-28)
+
+The C-runtime/offset Stage2-to-Stage3 chain passes at O1 and O3. Stage2 and
+Stage3 LLVM IR artifacts and binaries are byte-identical at each level. The
+actual Stage3 C-runtime golden checks pass at O1/O3, and the required
+staged-tree suite passed in 839 seconds for commit `23a7e64`. The Stage3 corpus run was
+invoked with selectors covering 791 registered plus 256 generated cases, but
+timed out after 180 seconds in the 3,200-enum scaling precheck; package
+comparisons never began. A separate Stage3 own-source pilot timed out at its
+30-second deadline, exceeding the 3x gate by a lower bound of at least 16x
+versus Rust Stage0. Small/large comparisons and corpus package coverage remain
+incomplete, so B1 is not accepted. See the
+[Stage-chain checkpoint report](B1-stage-chain-report.md) and [raw pilot
+record](B1-stage-chain-pilot.json).
+
 Memory baseline clarified by Ben, 2026-10-28: a reusable job instance may have
 optional StasisLang-style static storage that persists across its runs. Most
 work uses per-run stack arenas that may move/grow and are reclaimed in bulk.
@@ -75,17 +90,22 @@ name. Source commit `8dbcce0` passed the full staged suite in 694 seconds,
 including all 755 registered and 256 generated packages at O1/O3. The
 [scalar report](B1-scalar-constants-report.md) records focused tests, the
 immediate-operand regression fixes, and final acceptance.
-The compiler does not yet self-host.
+At the current checkpoint, Stage3 package comparisons have not begun because
+the enum scaling precheck timed out, and the own-source pilot exceeds the 3x
+gate by timeout lower bound. Full corpus and small/large benchmark coverage
+remain outstanding; B1 is not accepted. See the current checkpoint above.
 
 ## Completed prerequisite: Bytes fields in struct collections
 
-The Bytes-field implementation advances the own-source probe to
-`collections.nl:107:1: generic or recursive functions`. The declaration is the
-concrete recursive capacity evaluator, so source-used recursion is the next
-demonstrated gate. The [Bytes-field report](B1-bytes-fields-report.md) records
-focused O1/O3 results, copy/stride review, and a confirmed relocation while the
-populated list remains live. Source commit `7dc2b4e` passed the full staged suite
-in 642 seconds, including 762 registered and 256 generated packages at O1/O3.
+At that checkpoint, the Bytes-field implementation advanced the own-source
+probe to `collections.nl:107:1: generic or recursive functions`, making
+source-used recursion the next demonstrated gate. The [Bytes-field
+report](B1-bytes-fields-report.md) records the focused O1/O3 results,
+copy/stride review, and a confirmed relocation while the populated list remains
+live. Source commit `7dc2b4e` passed the full staged suite in 642 seconds,
+including 762 registered and 256 generated packages at O1/O3. Recursion,
+builders, and compiler C-runtime support have since reached the current
+Stage2/Stage3 checkpoint.
 
 ## Dependency queue
 
@@ -107,27 +127,33 @@ and 76 recursive declarations.
    The bounded [Bytes-field task](B1-bytes-fields.md) preserves layout,
    independent live bytes, indexed stride, gather, and relocation. Broad nesting,
    Ascii/Text lanes, sum elements, and reachability optimization stay deferred.
-3. **Source-used recursion (reopened).** Ben reopened this prerequisite on
-   2026-10-28 after confirming that compiler source already needs it. Follow
+3. **Source-used recursion (implemented checkpoint).** Ordinary explicitly
+   marked recursion and arena scopes now compile through the O1/O3 Stage2/Stage3
+   chain. Follow
    [B1-recursion.md](B1-recursion.md): ordinary calls and arena scopes, with OS
    process termination on native-stack exhaustion. Controlled diagnostics are
    deferred; the removed prototype's budgets and live-region ban are superseded.
-4. **Compiler-used builders (active).** Keep the smallest working subset and
+   Full compiler-corpus correctness remains pending.
+4. **Compiler-used builders (implemented checkpoint).** Keep the smallest working subset and
    simplify the broader proposal as needed. Follow [B1-builders.md](B1-builders.md):
    source-used builder descriptors/mutators first. Defer call-output append
    variants and unrelated semantic migrations unless the compiler needs them.
    Use the existing prep as an oracle, not as authorization
    for bundled `take`/move tracking or unrelated optimizations. Equal maxima,
    explicit capacity-result handling, relocation-safe access, and rollback of
-   one failed append remain required. Recursion is a separate active prerequisite.
-5. **E3f1 capability/I/O requirements used by the compiler.** `Env`, arguments,
+   one failed append remain required. Full Stage3 package comparisons are
+   blocked by the enum scaling timeout. The required staged-tree suite passed
+   for commit `23a7e64`.
+5. **E3f1 capability/I/O requirements (implemented C-runtime checkpoint).** `Env`, arguments,
    `Out.write`, and Fs listing/join/read/write support are required. The package
    grants fs/out/env. Deterministic source ordering from `list_with_extension`
    is part of the compiler's reproducibility contract. Ben chose the existing
    C runtime for the first self-hosted compiler; defer the core I/O port and
    add only the compiler lowering/adapters needed to reuse C. Stdin, atomic writes, and
    streaming writers need not precede B1 unless an actual source dependency appears.
-6. **B1 stage chain and reproducibility.** Use Stage0 to build the seed compiler;
+   The Stage3 C-runtime golden and Stage2 smoke-parse checks pass at O1/O3; the
+   core I/O port remains deferred.
+6. **B1 stage chain (O1/O3 identity passed; corpus blocked, own-source timing fails).** Use Stage0 to build the seed compiler;
    use that compiler to emit stage 2, then stage 2 to emit stage 3. Require exact
    stage-2/stage-3 LLVM IR and binary identity, plus compiler corpus correctness.
    LLVM/clang remains the backend and links the existing C runtime. The bootstrap harness may invoke clang
@@ -136,8 +162,13 @@ and 76 recursive declarations.
    diagnose progress but must be labeled as a bridge. E3g's in-language process
    driver is a separate product milestone if the harness can already link with
    clang directly. A required linker/core runtime gap re-enters this queue as a
-   demonstrated blocker, rather than being assumed solved.
-7. **Benchmark the self-built compiler.** Pin toolchain, flags, source revision,
+   demonstrated blocker, rather than being assumed solved. The Stage2/Stage3
+   chain passed at O1 and O3. The Stage3 corpus attempt passed its struct IR
+   bounds, then timed out on the 3,200-enum scaling precheck at 180 seconds;
+   package comparisons and cache work never began. The own-source Stage3
+   timing pilot separately failed the 3x gate by lower bound. The complete
+   staged-tree suite passed for commit `23a7e64`.
+7. **Benchmark the self-built compiler (own-source failure observed; full benchmark pending).** Pin toolchain, flags, source revision,
    and corpus; verify outputs before timing. Measure IR generation and end-to-end
    builds separately, cold and warm runs, peak RSS, data/native-stack measures,
    and output sizes. Include the compiler compiling its own source, small/large
@@ -154,10 +185,22 @@ and 76 recursive declarations.
    `CompilerTables` is outside its supported slice). Use its normal supported
    pointer mode against the self-built compiler's offset mode and report that
    representation difference explicitly; it does not waive the 3x gate or
-   authorize Stage0 changes.
-8. **Improve measured bottlenecks.** Prioritize checker/emitter scaling, bootstrap
-   memory, generated IR size, LLVM/link time, or runtime costs according to the
-   profile. Each optimization needs correctness coverage and before/after data.
+   authorize Stage0 changes. The O1/O3 chain totals (398.79/402.39 seconds) are
+   pipeline diagnostics, not Rust comparisons or benchmark acceptance. An
+   isolated own-source Stage3/Rust pilot used one sample, no warmups, CPU 0,
+   O3, and C runtime. The Rust frontend API emitted IR in 1.80 seconds; Stage3
+   timed out at 30 seconds, a computed 16.6667x lower bound (at least 16x at
+   the reported precision). This is a per-case gate failure, not a full
+   benchmark. Exact commands and raw measurements are in
+   [the pilot record](B1-stage-chain-pilot.json); small and large cases remain
+   to be measured.
+8. **Improve measured bottlenecks (pending).** Prioritize checker/emitter scaling,
+   bootstrap memory, generated IR size, LLVM/link time, or runtime costs according
+   to the profile. A five-sample GDB trace currently shows repeated
+   `CompilerTables` copies on the own-source compile path. Each optimization
+   needs correctness coverage and before/after data. The requested snapshot
+   design discussion is deferred until this work is complete; no semantics,
+   hoisting, or purity rules change here.
 
 ## Explicitly deferred until evidence requires them
 
