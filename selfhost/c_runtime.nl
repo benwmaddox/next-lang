@@ -11,7 +11,7 @@ fn emit_c_runtime_declarations(compiler: write CompilerTables, ir: grow Bytes ma
 }
 
 fn emit_c_runtime_context_adapters(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
-    ir_write_ascii(compiler, ir, "define ptr @nlc_context_current_base(ptr %nl.ctx) {\nentry:\n  %base = call ptr @nl_context_base(ptr %nl.ctx)\n  ret ptr %base\n}\n\n")
+    ir_write_ascii(compiler, ir, "define ptr @nlc_context_current_base(ptr %nl.ctx) alwaysinline {\nentry:\n  %base.address = getelementptr inbounds i8, ptr %nl.ctx, i64 56\n  %base = load ptr, ptr %base.address, align 8, !tbaa !9002\n  ret ptr %base\n}\n\n")
     ir_write_ascii(compiler, ir, "define ptr @nlc_context_current_limit(ptr %nl.ctx) {\nentry:\n  %limit = call ptr @nl_context_limit(ptr %nl.ctx)\n  ret ptr %limit\n}\n\n")
     ir_write_ascii(compiler, ir, "define void @nlc_context_note_peak(ptr %nl.ctx, i64 %top.offset) {\nentry:\n  call void @nl_context_note_peak_offset(ptr %nl.ctx, i64 %top.offset)\n  ret void\n}\n\n")
     // The C runtime exports allocation, not its private grow routine. Reserve
