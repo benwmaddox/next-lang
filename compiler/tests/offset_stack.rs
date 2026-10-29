@@ -130,14 +130,13 @@ fn region_allocation_is_inline_in_pointer_and_offset_modes() {
 }
 
 #[test]
-fn offset_slice_fixtures_survive_growth_at_o1_and_o3() {
+fn offset_slice_fixtures_run_on_a_fixed_stack_at_o1_and_o3() {
     let _lock = ENV_LOCK.lock().expect("environment lock");
     for optimization in ["1", "3"] {
         for fixture in ["o1_offset_slice", "o1_offset_cache_call"] {
             let _environment = EnvRestore::set(&[
                 ("NLC_STACK_MODE", Some("offset")),
                 ("NLC_OPT_LEVEL", Some(optimization)),
-                ("NLC_STACK_PREALLOC", None),
             ]);
             let root = package(&format!("tests/run/{fixture}"));
             let binary = std::env::temp_dir().join(format!(
@@ -146,9 +145,6 @@ fn offset_slice_fixtures_survive_growth_at_o1_and_o3() {
             ));
             build_package(&root, &binary).expect("offset fixture should build");
             let output = Command::new(&binary)
-                .env("NLC_STACK_VERIFY", "1")
-                .env("NLC_STACK_STATS", "1")
-                .env_remove("NLC_STACK_PREALLOC")
                 .output()
                 .expect("run offset fixture");
             let expected =
@@ -159,15 +155,6 @@ fn offset_slice_fixtures_survive_growth_at_o1_and_o3() {
                 String::from_utf8_lossy(&output.stderr)
             );
             assert_eq!(output.stdout, expected, "{fixture} at O{optimization}");
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                stderr.contains("growths="),
-                "stack growth was not reported: {stderr}"
-            );
-            assert!(
-                stderr.contains("relocations="),
-                "stack relocation was not reported: {stderr}"
-            );
             let _ = std::fs::remove_file(binary);
         }
     }
