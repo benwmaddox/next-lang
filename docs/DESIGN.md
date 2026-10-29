@@ -185,15 +185,6 @@ supersedes the older E2 snapshot default for caller-backed arguments; migration
 of legacy lowering paths is deferred where it is not needed for self-hosting,
 not a new compatibility rule.
 
-Snapshots are rare, programmer-selected operations. The compiler must not
-insert a snapshot implicitly. If an operation appears to require frozen
-contents, bring the concrete case, copy cost, and clearer alternative to design
-review. Options include a compile-time error where practical, a
-programmer-selected snapshot or copy, or clearer code/API/method; when the
-caller-backed/materialized boundary is unclear, request review rather than
-assume a copy. Existing implicit snapshot lowerings are legacy debt pending
-review; this policy does not claim they have been removed.
-
 No per-object heap, ownership headers, reference counts, or general allocator are part of the default. More elaborate mechanisms below are extensions that need a concrete need and a safety or measured-performance defense.
 
 At startup, `main` defines jobs, counts/triggers, and HTTP/mailboxes. The host gives `main` an allowed CPU/core/available-RAM grant, possibly a subset of the host's resources; `main` chooses job counts and settings only within that grant. Per-job resource subdivision and CPU affinity are optional policy, not required by this baseline. A full bounded-mailbox send returns a full status for the caller to handle; it does not wait, drop, or retry implicitly.

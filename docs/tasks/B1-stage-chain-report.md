@@ -82,8 +82,9 @@ compile cases and full compiler-corpus package coverage remain incomplete; the
 corpus run timed out in its scaling precheck before package comparisons began.
 The chain and pilot measurements separate IR emission from clang time.
 
-A five-sample GDB trace showed repeated `CompilerTables` copies on the
-own-source compilation path. This is an investigation lead, not an accepted
-optimization. The requested snapshot-design discussion is deferred until the
-current work is complete. This checkpoint makes no semantic, hoisting, or
-purity-rule changes.
+A five-sample GDB trace showed repeated `CompilerTables` copies on the own-source
+compilation path, motivating a compiler-implementation preference to avoid
+snapshots or copies of working tables unless no other reasonable option remains.
+Before choosing one for a concrete case, review its cost and clearer code,
+dataflow, or helper alternatives; this records no blanket language policy and
+changes no emitted-program snapshot semantics.
