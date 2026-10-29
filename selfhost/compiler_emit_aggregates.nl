@@ -90,7 +90,7 @@ fn emit_aggregate_copy_to_place(
         let source_id = aggregate_source_id(tables, compiler, source_node)
         let source = aggregate_source_location(compiler, source_kind, source_id)
         let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
-        emit_collection_store_element_fields(compiler, ir, type_id, destination.copies, 0L,
+        emit_collection_store_element_fields(compiler, ir, type_id, destination.index_stride, 0L,
             destination.index_node, destination.byte_offset, 0L, base, source, destination_pointer, source_pointer)
     } else {
         let source_kind = aggregate_source_kind(tables, compiler, source_node)

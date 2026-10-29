@@ -299,12 +299,9 @@ fn sum_parameter_location(compiler: CompilerTables, binding: long, base: Storage
     if binding < 0L || binding >= compiler.bindings.count() { return base }
     let type_id = compiler.bindings[binding].ty
     if !is_sum_type(compiler, type_id) { return base }
-    // A sum value is one contiguous leaf in the caller's indexed lane group.
-    // Keep its descriptor and apply the runtime lane index when materializing
-    // the address; structs still use their existing noncontiguous geometry.
+    // The caller folded any element index into the offset, so a sum value is just at its offset.
     StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node,
-        byte_offset: base.byte_offset, copies: -1L, index: -1L, index_node: -1L,
-        index_stride: value_type_size(compiler, type_id) }
+        byte_offset: base.byte_offset, copies: 1L, index: 0L, index_node: -1L, index_stride: 0L }
 }
 
 fn is_indexed_sum_parameter_location(location: StorageLocation) -> bool {
@@ -383,7 +380,7 @@ recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTable
                 else { value_type_size(compiler, element_type) }
             let base = collection_value_location(tables, compiler, collection)
             if is_aggregate_type(compiler, element_type) {
-                StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + base_offset, copies: capacity, index: 0L, index_node: -2L - loop_node, index_stride: 0L }
+                StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + base_offset, copies: 1L, index: 0L, index_node: -2L - loop_node, index_stride: element_stride }
             } else {
                 StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + base_offset, copies: 1L, index: 0L, index_node: -2L - loop_node, index_stride: element_stride }
             }
@@ -433,7 +430,7 @@ recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTable
             let field_start = type_record(compiler, receiver_type).field_start
             collection_field_lane_offset(compiler, receiver_type, base.copies, field_index - field_start)
         } else { field.offset }
-        let stride = if base.index_node != -1L && (!is_aggregate_type(compiler, field.ty) || collection_text_leaf(type_kind(compiler, field.ty))) { value_type_size(compiler, field.ty) } else { 0L }
+        let stride = base.index_stride
         StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + field_offset, copies: base.copies, index: base.index, index_node: base.index_node, index_stride: stride }
     } else if kind == NodeKind.Index {
         let receiver = compiler.child_first[node]
@@ -446,7 +443,7 @@ recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTable
         let base = place_storage_location(tables, compiler, receiver)
         if element_type < 0L || capacity < 0L || base_offset < 0L { return compiler_location(compiler, 2L, node, 0L) }
         if is_aggregate_type(compiler, element_type) {
-            StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + base_offset, copies: capacity, index: 0L, index_node, index_stride: 0L }
+            StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + base_offset, copies: 1L, index: 0L, index_node, index_stride: value_type_size(compiler, element_type) }
         } else {
             StorageLocation { origin: base.origin, anchor_kind: base.anchor_kind, anchor_node: base.anchor_node, byte_offset: base.byte_offset + base_offset, copies: 1L, index: 0L, index_node, index_stride: value_type_size(compiler, element_type) }
         }
@@ -662,11 +659,7 @@ recursive fn emit_collection_field_path_address(
         location = compiler_location(compiler, 2L, collection_address, 0L)
     }
     let pointer = emit_location_pointer_materialization(compiler, ir, location)
-    let field_type = compiler.facts[node].ty
-    let stride = if is_aggregate_type(compiler, field_type) &&
-        !collection_text_leaf(type_kind(compiler, field_type)) && !is_sum_type(compiler, field_type) {
-        0L
-    } else { value_type_size(compiler, field_type) }
+    let stride = value_type_size(compiler, element_type)
     if stride > 0L {
         ir_write_ascii(compiler, ir, "  %coll.field.index.bytes."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, index_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.field.index.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, byte_offset); ir_write_ascii(compiler, ir, ", %coll.field.index.bytes."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
@@ -781,71 +774,50 @@ fn emit_parameter_field_path_address(
         return false
     }
     let binding = compiler.facts[current].binding
-    if binding_is_view(compiler, binding) {
-        let loop_node = compiler.bindings[binding].node
-        let collection = compiler.child_first[loop_node]
-        let collection_type = compiler.facts[collection].ty
-        let copies = collection_capacity(compiler, collection_type)
-        var field_type = compiler.bindings[binding].ty
-        var byte_offset = collection_element_base_offset(compiler, collection_type)
-        for path_index in 0L..compiler.type_walk.count() {
-            let field_node = compiler.type_walk[compiler.type_walk.count() - path_index - 1L].type_index
-            let field_number = compiler.facts[field_node].literal - type_record(compiler, field_type).field_start
-            let lane_offset = collection_field_lane_offset(compiler, field_type, copies, field_number)
-            if lane_offset < 0L { compiler.type_walk.clear(); compiler.ir_overflow = true; return true }
-            byte_offset += lane_offset
-            field_type = compiler.facts[field_node].ty
-        }
-        let base = collection_value_location(tables, compiler, collection)
-        let pointer_location = compiler_location(compiler, base.anchor_kind, base.anchor_node, base.byte_offset)
-        let pointer = emit_location_pointer_materialization(compiler, ir, pointer_location)
-        if (!is_aggregate_type(compiler, field_type) || collection_text_leaf(type_kind(compiler, field_type)) || is_sum_type(compiler, field_type)) && field_type != TY_UNIT {
-            let stride = value_type_size(compiler, field_type)
-            ir_write_ascii(compiler, ir, "  %coll.view.index.bytes."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 %for.each.current."); ir_write_number(compiler, ir, loop_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
-            ir_write_ascii(compiler, ir, "  %coll.view.index.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, byte_offset); ir_write_ascii(compiler, ir, ", %coll.view.index.bytes."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
-        }
-        ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
-        emit_location_pointer_reference(compiler, ir, pointer_location, pointer)
-        ir_write_ascii(compiler, ir, ", i64 ")
-        if (!is_aggregate_type(compiler, field_type) || collection_text_leaf(type_kind(compiler, field_type)) || is_sum_type(compiler, field_type)) && field_type != TY_UNIT { ir_write_ascii(compiler, ir, "%coll.view.index.offset."); ir_write_number(compiler, ir, address_id) }
-        else { ir_write_number(compiler, ir, byte_offset) }
-        ir_push_byte(compiler, ir, 10)
-        compiler.type_walk.clear()
-        return true
-    }
-    if binding < 0L || !compiler.bindings[binding].parameter || !is_aggregate_type(compiler, compiler.bindings[binding].ty) {
+    let is_view = binding_is_view(compiler, binding)
+    if !is_view && (binding < 0L || !compiler.bindings[binding].parameter || !is_aggregate_type(compiler, compiler.bindings[binding].ty)) {
         compiler.type_walk.clear()
         return false
     }
+    // The element is one plain slot: a field is at its offset inside the slot, and the element
+    // itself is `index` slots from the start of the collection (a loop variable's index is the
+    // loop counter, a parameter's is passed in).
+    let slot_size = value_type_size(compiler, compiler.bindings[binding].ty)
     var field_type = compiler.bindings[binding].ty
-    var total_serial = -1L
+    var byte_offset = 0L
+    if is_view {
+        let loop_node = compiler.bindings[binding].node
+        let collection = compiler.child_first[loop_node]
+        byte_offset = collection_element_base_offset(compiler, compiler.facts[collection].ty)
+    }
     for path_index in 0L..compiler.type_walk.count() {
         let field_node = compiler.type_walk[compiler.type_walk.count() - path_index - 1L].type_index
-        let field_index = compiler.facts[field_node].literal
-        let field_number = field_index - type_record(compiler, field_type).field_start
-        let lane_serial = emit_dynamic_field_lane_offset_for_descriptor(compiler, ir, field_type, binding, field_number)
-        if lane_serial < 0L { compiler.type_walk.clear(); return true }
-        let sum = next_location_serial(ir)
-        ir_write_ascii(compiler, ir, "  %coll.desc.path.offset."); ir_write_number(compiler, ir, sum); ir_write_ascii(compiler, ir, " = add i64 ")
-        if total_serial < 0L { ir_write_ascii(compiler, ir, "0") }
-        else { ir_write_ascii(compiler, ir, "%coll.desc.path.offset."); ir_write_number(compiler, ir, total_serial) }
-        ir_write_ascii(compiler, ir, ", %coll.desc.field.offset."); ir_write_number(compiler, ir, lane_serial); ir_push_byte(compiler, ir, 10)
-        total_serial = sum
+        let field_number = compiler.facts[field_node].literal - type_record(compiler, field_type).field_start
+        let field_offset = collection_field_lane_offset(compiler, field_type, 1L, field_number)
+        if field_offset < 0L || slot_size < 0L { compiler.type_walk.clear(); compiler.ir_overflow = true; return true }
+        byte_offset += field_offset
         field_type = compiler.facts[field_node].ty
     }
-    if (!is_aggregate_type(compiler, field_type) || collection_text_leaf(type_kind(compiler, field_type)) || is_sum_type(compiler, field_type)) && field_type != TY_UNIT {
-        let stride = value_type_size(compiler, field_type)
-        let index_serial = next_location_serial(ir)
-        ir_write_ascii(compiler, ir, "  %coll.desc.element.index."); ir_write_number(compiler, ir, index_serial); ir_write_ascii(compiler, ir, " = mul i64 %arg.index."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
-        let sum = next_location_serial(ir)
-        ir_write_ascii(compiler, ir, "  %coll.desc.path.offset."); ir_write_number(compiler, ir, sum); ir_write_ascii(compiler, ir, " = add i64 %coll.desc.path.offset."); ir_write_number(compiler, ir, total_serial); ir_write_ascii(compiler, ir, ", %coll.desc.element.index."); ir_write_number(compiler, ir, index_serial); ir_push_byte(compiler, ir, 10)
-        total_serial = sum
+    let view_loop_node = compiler.bindings[binding].node
+    ir_write_ascii(compiler, ir, "  %coll.desc.element.index."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 ")
+    if is_view {
+        ir_write_ascii(compiler, ir, "%for.each.current."); ir_write_number(compiler, ir, view_loop_node)
+    } else {
+        ir_write_ascii(compiler, ir, "%arg.index."); ir_write_number(compiler, ir, binding)
     }
-    let base = compiler_location(compiler, 3L, binding, 0L)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, slot_size); ir_push_byte(compiler, ir, 10)
+    ir_write_ascii(compiler, ir, "  %coll.desc.path.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 %coll.desc.element.index.")
+    ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, byte_offset); ir_push_byte(compiler, ir, 10)
+    var base = compiler_location(compiler, 3L, binding, 0L)
+    if is_view {
+        let collection = compiler.child_first[compiler.bindings[binding].node]
+        let collection_base = collection_value_location(tables, compiler, collection)
+        base = compiler_location(compiler, collection_base.anchor_kind, collection_base.anchor_node, collection_base.byte_offset)
+    }
     let pointer = emit_location_pointer_materialization(compiler, ir, base)
     ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
     emit_location_pointer_reference(compiler, ir, base, pointer)
-    ir_write_ascii(compiler, ir, ", i64 %coll.desc.path.offset."); ir_write_number(compiler, ir, total_serial); ir_push_byte(compiler, ir, 10)
+    ir_write_ascii(compiler, ir, ", i64 %coll.desc.path.offset."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
     compiler.type_walk.clear()
     true
 }

@@ -244,3 +244,13 @@ fn direct_call_argument_needs_snapshot(tables: ParseTables, compiler: CompilerTa
     }
     false
 }
+
+// A sum value in a collection element is reached by a plain offset, so the caller folds the element
+// index into the offset. Its parameter still has the aggregate shape, with one copy at index zero.
+fn descriptor_geometry(compiler: CompilerTables, ty: long) -> bool {
+    is_aggregate_type(compiler, ty) && !is_sum_type(compiler, ty)
+}
+
+fn emit_plain_geometry_tail(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, ty: long) {
+    if is_sum_type(compiler, ty) { ir_write_ascii(compiler, ir, ", i64 1, i64 0") }
+}
