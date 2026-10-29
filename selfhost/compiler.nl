@@ -9015,7 +9015,10 @@ recursive fn emit_collection_field_path_address(
     }
     let pointer = emit_location_pointer_materialization(compiler, ir, location)
     let field_type = compiler.facts[node].ty
-    let stride = if is_aggregate_type(compiler, field_type) && type_kind(compiler, field_type) != TYPE_KIND_BYTES { 0L } else { value_type_size(compiler, field_type) }
+    let stride = if is_aggregate_type(compiler, field_type) &&
+        type_kind(compiler, field_type) != TYPE_KIND_BYTES && !is_sum_type(compiler, field_type) {
+        0L
+    } else { value_type_size(compiler, field_type) }
     if stride > 0L {
         ir_write_ascii(compiler, ir, "  %coll.field.index.bytes."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, index_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "  %coll.field.index.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, byte_offset); ir_write_ascii(compiler, ir, ", %coll.field.index.bytes."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
@@ -9148,7 +9151,7 @@ fn emit_parameter_field_path_address(
         let base = collection_value_location(tables, compiler, collection)
         let pointer_location = compiler_location(compiler, base.anchor_kind, base.anchor_node, base.byte_offset)
         let pointer = emit_location_pointer_materialization(compiler, ir, pointer_location)
-        if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES) && field_type != TY_UNIT {
+        if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES || is_sum_type(compiler, field_type)) && field_type != TY_UNIT {
             let stride = value_type_size(compiler, field_type)
             ir_write_ascii(compiler, ir, "  %coll.view.index.bytes."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 %for.each.current."); ir_write_number(compiler, ir, loop_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
             ir_write_ascii(compiler, ir, "  %coll.view.index.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 "); ir_write_number(compiler, ir, byte_offset); ir_write_ascii(compiler, ir, ", %coll.view.index.bytes."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
@@ -9156,7 +9159,7 @@ fn emit_parameter_field_path_address(
         ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
         emit_location_pointer_reference(compiler, ir, pointer_location, pointer)
         ir_write_ascii(compiler, ir, ", i64 ")
-        if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES) && field_type != TY_UNIT { ir_write_ascii(compiler, ir, "%coll.view.index.offset."); ir_write_number(compiler, ir, address_id) }
+        if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES || is_sum_type(compiler, field_type)) && field_type != TY_UNIT { ir_write_ascii(compiler, ir, "%coll.view.index.offset."); ir_write_number(compiler, ir, address_id) }
         else { ir_write_number(compiler, ir, byte_offset) }
         ir_push_byte(compiler, ir, 10)
         compiler.type_walk.clear()
@@ -9182,7 +9185,7 @@ fn emit_parameter_field_path_address(
         total_serial = sum
         field_type = compiler.facts[field_node].ty
     }
-    if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES) && field_type != TY_UNIT {
+    if (!is_aggregate_type(compiler, field_type) || type_kind(compiler, field_type) == TYPE_KIND_BYTES || is_sum_type(compiler, field_type)) && field_type != TY_UNIT {
         let stride = value_type_size(compiler, field_type)
         let index_serial = next_location_serial(ir)
         ir_write_ascii(compiler, ir, "  %coll.desc.element.index."); ir_write_number(compiler, ir, index_serial); ir_write_ascii(compiler, ir, " = mul i64 %arg.index."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)
@@ -9413,8 +9416,23 @@ fn emit_type_helper_call_two(
 }
 // E3a1 end
 
+fn is_enum_case_field(tables: ParseTables, compiler: CompilerTables, node: long) -> bool {
+    if node < 0L || node >= tables.nodes.count() ||
+        tables.nodes[node].kind != NodeKind.Field ||
+        compiler.facts[node].binding >= 0L ||
+        type_kind(compiler, compiler.facts[node].ty) != TYPE_KIND_ENUM {
+        return false
+    }
+    // A qualified case keeps its type-name receiver unevaluated. A field
+    // read from a temporary can also have no binding, so binding alone is
+    // not enough to classify an enum-valued field as a constructor.
+    let receiver = compiler.child_first[node]
+    receiver >= 0L && tables.nodes[receiver].kind == NodeKind.Name &&
+        compiler.facts[receiver].binding < 0L && compiler.facts[receiver].ty < 0L
+}
+
 fn aggregate_source_kind(tables: ParseTables, compiler: CompilerTables, node: long) -> long {
-    if tables.nodes[node].kind == NodeKind.Field && compiler.facts[node].binding < 0L && type_kind(compiler, compiler.facts[node].ty) == TYPE_KIND_ENUM { 0L }
+    if is_enum_case_field(tables, compiler, node) { 0L }
     else if tables.nodes[node].kind == NodeKind.Field { 3L }
     else if tables.nodes[node].kind == NodeKind.Name {
         let binding = compiler.facts[node].binding
@@ -10648,10 +10666,9 @@ recursive fn emit_expr_linear(
                 else { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             } else if kind == NodeKind.Field {
-                if is_sum_type(compiler, compiler.facts[current].ty) && compiler.facts[current].binding < 0L {
+                if is_enum_case_field(tables, compiler, current) {
                     let case_tag = compiler.facts[current].literal
-                    if type_kind(compiler, compiler.facts[current].ty) == TYPE_KIND_ENUM { emit_enum_tag_store(compiler, ir, current, case_tag) }
-                    else { emit_sum_tag_store(compiler, ir, current, case_tag) }
+                    emit_enum_tag_store(compiler, ir, current, case_tag)
                     match compiler.expr_work.pop() { some(_) => (), none => () }
                 } else {
                     frame.child0 = compiler.child_first[current]

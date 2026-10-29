@@ -1,8 +1,19 @@
 # Compiler-source emission checkpoint
 
-Status, 2026-10-28: the language-written compiler emits LLVM IR for its own
-source using the existing C runtime. A runnable self-built compiler and
-stage-2/stage-3 identity have **not** been established. Rust Stage0, the C
+Status, 2026-10-28: the Stage2-to-Stage3 chain passes at O1 and O3. The Stage2
+and Stage3 C-runtime/offset LLVM IR artifacts and binaries are byte-identical
+at each level. Eight actual Stage3 C-runtime golden checks passed at O1/O3, and
+the tiny Stage2 smoke-parse check passed. The Stage3 corpus run was invoked with
+selectors covering 791 registered and 256 generated cases. Its struct IR-bound
+checks passed, but the 3,200-enum
+scaling precheck timed out after 180 seconds before package comparisons began.
+The required staged-tree suite passed in 839 seconds for commit `23a7e64`. A
+separate Stage3 own-source pilot timed out at 30 seconds against a 1.80-second
+Rust Stage0 run, exceeding the 3x gate by a computed 16.6667x lower bound (at
+least 16x accounting for reported-time precision). This is an observed failure
+for the own-source case; small/large comparisons and package coverage remain
+incomplete. See the [Stage-chain checkpoint report](B1-stage-chain-report.md)
+and [raw pilot record](B1-stage-chain-pilot.json). Rust Stage0, the C
 runtime, and core sources remain unchanged; core I/O replacement is postponed.
 Release publishing remains manual.
 
@@ -40,12 +51,14 @@ python3 scripts/check-selfhost-stage-chain.py --reference /path/to/rust/nlc --op
 Clang rejected an undefined descriptor SSA accumulator at that checkpoint.
 The source fix changes its reference to the previous `coll.desc.group.add`
 value; the C record fixture now includes a nested multi-field prefix to cover
-this case. The full compiler rebuild chain still requires a successful rerun.
+this case. This was a historical checkpoint; the later O1/O3 chain results are
+recorded in [the Stage-chain checkpoint report](B1-stage-chain-report.md).
 
 These are diagnostic timings from different compiler revisions, with different
 outcomes. They are **not** a self-built compiler benchmark or a claimed ratio
 against Rust Stage0. Ben's maximum 3x Rust-implemented Stage0 compile-time gate
-remains pending.
+has an observed own-source failure by lower bound; the broader benchmark and
+corpus coverage remain incomplete.
 
 Ten supported programs covering nested loop exits, relocation, and recursion
 produced byte-identical LLVM IR before and after scope caching. C bootstrap
@@ -57,11 +70,14 @@ recursion policies now use explicit B1 oracles, with all 21 previous Rust
 oracle files preserved byte-for-byte as `stage0.*`. The formatting append-proof
 limitation remains an explicit rejection, not a new language rule.
 
-The complete 789-package comparison plus 256 generated packages passed at
-O1/O3. Forced-relocation checks separately passed 249 packages and 322 runs at
-each level, with 57 packages actually relocating. The two deliberate native
+An earlier 789-package comparison plus 256 generated packages passed at O1/O3.
+Forced-relocation checks separately passed 249 packages and 322 runs at each
+level, with 57 packages actually relocating. The two deliberate native
 stack-exhaustion cases remain in ordinary comparisons but are excluded from
 relocation statistics, because OS termination cannot print final statistics.
 
-The installed staged-tree suite, including the C I/O integration test, must
-pass before this checkpoint is pushed.
+The required staged-tree suite, including the C I/O integration test, passed
+in 839 seconds for commit `23a7e64`. The Stage2/Stage3 chain pass is a bootstrap
+checkpoint, not full B1 acceptance: Stage3 package coverage did not begin after
+the enum scaling timeout, and the own-source pilot exceeded the 3x timing gate
+by timeout lower bound. Small/large timing cases remain unmeasured.

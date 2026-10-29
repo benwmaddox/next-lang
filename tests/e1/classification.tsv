@@ -836,3 +836,5 @@ build	tests/e3/b1_byte_ordering
 diagnose	tests/e3/b1_byte_order_mixed
 expected-reject	tests/e3/b1_byte_order_arithmetic
 build	tests/e3/b1_byte_fit
+build	tests/e3/b1_enum_call_field
+build	tests/e3/b1_enum_index_field

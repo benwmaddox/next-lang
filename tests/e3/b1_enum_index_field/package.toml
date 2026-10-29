@@ -1,0 +1,3 @@
+[package]
+name = "b1-enum-index-field"
+capabilities = ["out"]
