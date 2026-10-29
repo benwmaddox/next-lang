@@ -417,7 +417,8 @@ fn unsupported_category_for_node(
         NodeKind.BytesLiteral => 0L,
         NodeKind.ByteString => 0L,
         NodeKind.Name => {
-            if is_function_value_name(files, tables, compiler, node, file_index) { UNSUPPORTED_FUNCTION_VALUE }
+            if is_sort_comparator_name(source, tokens, files, tables, compiler, file_index, node) { 0L }
+            else if is_function_value_name(files, tables, compiler, node, file_index) { UNSUPPORTED_FUNCTION_VALUE }
             else if builtin_case_name(source, tokens, files, file_index, value.token) &&
                 user_case_matches(compiler, compiler.token_name_ids[value.token]) == -1L &&
                 !(token_is_word_at(source, tokens, files, file_index, value.token, "none") &&
@@ -434,6 +435,7 @@ fn unsupported_category_for_node(
             if token_is_word_at(source, tokens, files, file_index, value.token, "fill") { 0L }
             else if numeric_builtin_kind(source, tokens, files, compiler, file_index, value.token, -1L) != NUMERIC_BUILTIN_NONE { 0L }
             else if format_text_builtin_kind(source, tokens, files, tables, compiler, file_index, node) != FORMAT_TEXT_NONE { 0L }
+            else if sort_builtin_kind(source, tokens, files, compiler, file_index, value.token, -1L) != SORT_NONE { 0L }
             else if builtin_function_name(source, tokens, files, file_index, value.token) {
                 let id = compiler.token_name_ids[value.token]
                 if function_exists_by_name(compiler, id) { 0L } else { UNSUPPORTED_CALLEE }

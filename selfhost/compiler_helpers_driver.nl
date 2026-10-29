@@ -919,6 +919,7 @@ fn emit_registered_type_helpers(
     ir: grow Bytes max IR_BUFFER_CAPACITY,
 ) {
     emit_collection_print_globals(compiler, ir)
+    emit_sort_functions(tables, compiler, ir)
     for kind in TYPE_KIND_STRUCT..TYPE_KIND_MAP + 1L {
         emit_type_helpers_for_kind(source, files, tokens, tables, compiler, ir, kind)
     }
