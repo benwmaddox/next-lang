@@ -259,7 +259,7 @@ fn set_type_helper_mask(compiler: write CompilerTables, type_id: long, mask: lon
 fn is_aggregate_type(compiler: CompilerTables, type_id: long) -> bool {
     let kind = type_kind(compiler, type_id)
     kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_ENUM || kind == TYPE_KIND_OPTION || kind == TYPE_KIND_RESULT ||
-        kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) || kind == TYPE_KIND_ASCII || kind == TYPE_KIND_TEXT || kind == TYPE_KIND_BYTES
+        kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) || kind == TYPE_KIND_ASCII || kind == TYPE_KIND_TEXT || kind == TYPE_KIND_BYTES || kind == TYPE_KIND_MAP
 }
 
 fn set_type_state(compiler: write CompilerTables, type_id: long, state: long) {

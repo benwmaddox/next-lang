@@ -464,6 +464,14 @@ fn check_one_body(
                 match compiler.work.pop() { some(_) => (), none() => () }
                 continue
             }
+            if kind == NodeKind.MapLiteral {
+                if type_kind(compiler, frame.expected) != TYPE_KIND_MAP {
+                    fail_at_message(env, files, compiler, file_index, syntax.start, "cannot infer the key and value types for 'map {}'; add a map<K, V, N> type annotation")
+                }
+                compiler.facts[node] = NodeFact { ty: frame.expected, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+                match compiler.work.pop() { some(_) => (), none() => () }
+                continue
+            }
             if kind == NodeKind.ListLiteral {
                 if type_kind(compiler, frame.expected) != TYPE_KIND_LIST {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "cannot infer the capacity for 'list {}'; add a list<T, N> type annotation")
@@ -900,6 +908,9 @@ fn check_one_body(
         if kind == NodeKind.ForEach && frame.phase == 80L {
             let collection_type = compiler.facts[frame.child0].ty
             let collection_kind = type_kind(compiler, collection_type)
+            if collection_kind == TYPE_KIND_MAP {
+                report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: frame.child0, offset: tables.nodes[frame.child0].start, category: UNSUPPORTED_MAP_USE, token: tables.nodes[frame.child0].token })
+            }
             if collection_kind == TYPE_KIND_QUEUE {
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: frame.child0, offset: tables.nodes[frame.child0].start, category: UNSUPPORTED_QUEUE_USE, token: tables.nodes[frame.child0].token })
             }
@@ -1517,6 +1528,38 @@ fn check_one_body(
                     require_type(env, files, compiler, file_index, node, frame.expected, method_result_ty, tables)
                 }
                 compiler.facts[node] = NodeFact { ty: method_result_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: TEXT_METHOD_EMPTY }
+            } else if receiver_kind == TYPE_KIND_MAP {
+                let method = map_method_kind(source, tokens, files, file_index, syntax.token)
+                if method == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching map method is available on this value") }
+                let actual_count = count_children(tables, compiler, node) - 1L
+                let wanted_count = if method == COLLECTION_METHOD_COUNT { 0L } else if method == COLLECTION_METHOD_MAP_SET { 2L } else { 1L }
+                if actual_count != wanted_count { fail_at_message(env, files, compiler, file_index, syntax.start, "map method has the wrong number of arguments") }
+                let key_argument = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
+                var operation_result_type = TY_LONG
+                if method != COLLECTION_METHOD_COUNT {
+                    require_type(env, files, compiler, file_index, key_argument, map_key_type(compiler, receiver_ty), compiler.facts[key_argument].ty, tables)
+                }
+                if method == COLLECTION_METHOD_MAP_SET || method == COLLECTION_METHOD_MAP_REMOVE {
+                    let receiver_binding = compiler.facts[receiver].binding
+                    if receiver_binding < 0L || !compiler.bindings[receiver_binding].mutable { fail_at_message(env, files, compiler, file_index, syntax.start, "map mutation requires a writable local, parameter or field") }
+                    if active_view_overlaps_place(tables, compiler, frame.scope, receiver) {
+                        fail_view_live_method(env, source, files, tokens, compiler, file_index, syntax.anchor, receiver_ty, syntax.token)
+                    }
+                }
+                if method == COLLECTION_METHOD_MAP_SET {
+                    let value_argument = compiler.child_next[key_argument]
+                    require_type(env, files, compiler, file_index, value_argument, map_value_type(compiler, receiver_ty), compiler.facts[value_argument].ty, tables)
+                    let full_ty = builtin_full_type_id(compiler)
+                    if full_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "internal capacity error type is unavailable") }
+                    operation_result_type = intern_sum_type(compiler, TYPE_KIND_RESULT, TY_UNIT, full_ty, file_index, node, -1L, -1L)
+                } else if method == COLLECTION_METHOD_MAP_GET || method == COLLECTION_METHOD_MAP_REMOVE {
+                    operation_result_type = intern_sum_type(compiler, TYPE_KIND_OPTION, map_value_type(compiler, receiver_ty), -1L, file_index, node, -1L, -1L)
+                } else if method == COLLECTION_METHOD_MAP_CONTAINS {
+                    operation_result_type = TY_BOOL
+                } else { () }
+                if frame.expected >= 0L && frame.expected != operation_result_type { require_type(env, files, compiler, file_index, node, frame.expected, operation_result_type, tables) }
+                let map_fact_flags = if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }
+                compiler.facts[node] = NodeFact { ty: operation_result_type, flags: map_fact_flags, binding: compiler.facts[receiver].binding, function: -1L, literal: method }
             } else if receiver_kind == TYPE_KIND_ARRAY || collection_kind_is_list(receiver_kind) {
                 let method = collection_method_kind(source, tokens, files, file_index, syntax.token, receiver_kind)
                 if method == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching array or list method is available on this value") }

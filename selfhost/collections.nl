@@ -24,7 +24,7 @@ fn collection_text_leaf(kind: long) -> bool {
 // A value copied, compared or printed through its type's helpers when it sits inside an element:
 // text, and a nested array or list (an inline value like any other).
 fn collection_helper_leaf(kind: long) -> bool {
-    collection_text_leaf(kind) || kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind)
+    collection_text_leaf(kind) || kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) || kind == TYPE_KIND_MAP
 }
 
 fn collection_kind_is_list(kind: long) -> bool {
@@ -551,6 +551,8 @@ fn collection_type_syntax_kind(
         TYPE_KIND_LIST
     } else if syntax.token >= 0L && token_is_word_at(source, tokens, files, file_index, syntax.token, "queue") {
         TYPE_KIND_QUEUE
+    } else if syntax.token >= 0L && token_is_word_at(source, tokens, files, file_index, syntax.token, "map") {
+        TYPE_KIND_MAP
     } else { 0L }
 }
 
@@ -570,6 +572,9 @@ fn intern_collection_type_syntax(
     let array_count = (syntax.meta1 >> 42L) & 2097151L
     let written_kind = collection_type_syntax_kind(source, tokens, files, file_index, syntax)
     let is_list = collection_kind_is_list(written_kind)
+    if written_kind == TYPE_KIND_MAP && array_count == 0L {
+        return intern_map_type_syntax(env, source, tokens, files, tables, compiler, file_index, node)
+    }
     if !is_list && array_count == 0L {
         return intern_text_type_syntax(env, source, tokens, files, tables, compiler, file_index, node)
     }
@@ -1706,6 +1711,15 @@ fn emit_collection_default_array_aggregate(
 }
 
 fn emit_collection_zero_storage(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, node: long, type_id: long, live_count: long) {
+    if type_kind(compiler, type_id) == TYPE_KIND_MAP {
+        // An empty map is all zero: no entries, every slot empty.
+        let location = aggregate_destination_location(compiler, 0L, node)
+        let serial = emit_location_pointer_materialization(compiler, ir, location)
+        ir_write_ascii(compiler, ir, "  %map.zero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @memset(ptr ")
+        emit_location_pointer_reference(compiler, ir, location, serial)
+        ir_write_ascii(compiler, ir, ", i32 0, i64 "); ir_write_number(compiler, ir, value_type_size(compiler, type_id)); ir_write_ascii(compiler, ir, ")\n")
+        return
+    }
     let element = collection_element_type(compiler, type_id)
     if collection_kind_is_list(type_kind(compiler, type_id)) {
         let location = aggregate_destination_location(compiler, 0L, node)
@@ -1778,6 +1792,10 @@ fn emit_collection_method(
     let value_argument = if method == COLLECTION_METHOD_INSERT && argument >= 0L { compiler.child_next[argument] } else { argument }
     let type_id = compiler.facts[receiver].ty
     let kind = type_kind(compiler, type_id)
+    if kind == TYPE_KIND_MAP {
+        emit_map_method(tables, compiler, ir, node, method)
+        return
+    }
     let element = collection_element_type(compiler, type_id)
     let capacity = collection_capacity(compiler, type_id)
     let stride = value_type_size(compiler, element)

@@ -311,7 +311,7 @@ fn emit_sys_method(
     let syntax = tables.nodes[node]
     let operation = core_sys_operation(source, tokens, files, file_index, syntax.token)
     let collection_operation = compiler.facts[node].literal
-    if collection_operation >= COLLECTION_METHOD_LEN && collection_operation <= COLLECTION_METHOD_PEEK {
+    if collection_operation >= COLLECTION_METHOD_LEN && collection_operation <= COLLECTION_METHOD_MAP_CONTAINS {
         emit_collection_method(source, files, tables, compiler, ir, node, file_index, collection_operation)
         return
     }
@@ -1069,7 +1069,7 @@ recursive fn emit_expr_linear(
                 }
                 frame.phase = 72L
                 compiler.expr_work[frame_index] = frame
-            } else if kind == NodeKind.ListLiteral || kind == NodeKind.QueueLiteral {
+            } else if kind == NodeKind.ListLiteral || kind == NodeKind.QueueLiteral || kind == NodeKind.MapLiteral {
                 let list_type = compiler.facts[current].ty
                 emit_collection_zero_storage(compiler, ir, current, list_type, 0L)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
@@ -1547,6 +1547,9 @@ recursive fn emit_expr_linear(
                 if op == 0L { ir_write_ascii(compiler, ir, "add ") }
                 else if op == 1L { ir_write_ascii(compiler, ir, "sub ") }
                 else if op == 2L { ir_write_ascii(compiler, ir, "mul ") }
+                else if op == 5L { ir_write_ascii(compiler, ir, "add ") }
+                else if op == 6L { ir_write_ascii(compiler, ir, "sub ") }
+                else if op == 7L { ir_write_ascii(compiler, ir, "mul ") }
                 else if op == 3L { ir_write_ascii(compiler, ir, "sdiv ") }
                 else if op == 4L { ir_write_ascii(compiler, ir, "srem ") }
                 else if op == 8L { ir_write_ascii(compiler, ir, "icmp eq ") }
