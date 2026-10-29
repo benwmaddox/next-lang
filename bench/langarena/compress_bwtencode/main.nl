@@ -1,6 +1,6 @@
 // LangArena Compress::BWTEncode: Burrows-Wheeler transform by prefix doubling
 // (sort the rotations by pairs of ranks, doubling the compared length each round).
-type Octet = int 0..=255
+type Octet = byte
 
 struct Entry {
     first: long

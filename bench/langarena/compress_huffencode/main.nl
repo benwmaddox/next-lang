@@ -1,6 +1,6 @@
 // LangArena Compress::HuffEncode: Huffman coding. The tree lives in a list of nodes
 // and refers to children by index; a sorted queue of node indices builds it.
-type Octet = int 0..=255
+type Octet = byte
 type Slot = long 0..=512
 
 struct Node {

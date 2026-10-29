@@ -1,5 +1,5 @@
 // LangArena Hash::CRC32: bitwise CRC-32 of a random buffer, run after changing one random byte per iteration.
-type Octet = int 0..=255
+type Octet = byte
 const MASK32: long = 4294967295L
 
 fn is_run_mode(env: Env) -> bool {

@@ -1,6 +1,6 @@
 // LangArena Compress::BWTDecode: inverse Burrows-Wheeler transform of data produced by a
 // prefix-doubling forward transform (sort the rotations by pairs of ranks).
-type Octet = int 0..=255
+type Octet = byte
 
 struct Entry {
     first: long

@@ -1,5 +1,5 @@
 // LangArena Compress::ArithDecode: decode 32-bit arithmetic-coded data with a static frequency table.
-type Octet = int 0..=255
+type Octet = byte
 const HALF: long = 0x80000000L
 const QUARTER: long = 0x40000000L
 const THREE_QUARTERS: long = 0xC0000000L

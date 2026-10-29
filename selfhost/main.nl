@@ -121,6 +121,7 @@ fn main(env: Env) {
         index_package_structs(source, files, tokens, tables, compiler)
         intern_builtin_text_types(source, files, tokens, compiler)
         intern_written_type_instances(env, source, tokens, files, tables, compiler)
+        check_type_alias_targets(env, source, tokens, files, tables, compiler)
         size_package_types(source, files, tokens, tables, compiler)
         check_package_name_shadows(env, source, files, tokens, tables, compiler)
         check_package_eligibility(env, source, files, tokens, tables, compiler)

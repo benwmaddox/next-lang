@@ -1,0 +1,1 @@
+main.nl:1:10: error: unknown type in alias 'A'; declare the base type first

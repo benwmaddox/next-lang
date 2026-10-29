@@ -53,3 +53,8 @@ const ENUM_PAYLOAD_TABLE_CAPACITY: long = MAX_TREE_NODES
 const IR_BYTES_PER_ENUM_TABLE_ENTRY: long = 768L
 const IR_BUFFER_CAPACITY: long = MAX_TREE_NODES * IR_BYTES_PER_NODE + MAX_TREE_NODES * IR_BYTES_PER_TABLE_ENTRY + MAX_TREE_NODES * IR_BYTES_PER_ENUM_TABLE_ENTRY + MAX_SOURCE_BYTES_PER_PACKAGE + IR_FIXED_BYTES
 // E2b end
+
+// Type alias resolution repeats the written-type sweep while it still resolves new nodes.
+// Each sweep resolves at least one alias level, so this bounds alias chains declared in
+// reverse order (type A = B, type B = C, ...) and nests such as list<Alias, N>.
+const MAX_TYPE_ALIAS_PASSES: long = 8L

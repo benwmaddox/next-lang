@@ -240,6 +240,9 @@ fn unsupported_category_for_node(
             return UNSUPPORTED_TEXT_COLLECTION
         }
     }
+    // Range types (int 0..=255) are not implemented: reject them wherever a type is written
+    // instead of treating them as their base type and dropping the range check.
+    if is_type_node(value.kind) && (value.flags & FLAG_RANGE) != 0L { return UNSUPPORTED_TYPE_FORM }
     match value.kind {
         NodeKind.Program => 0L,
         NodeKind.Enum => 0L,
@@ -250,7 +253,7 @@ fn unsupported_category_for_node(
         NodeKind.EnumCase => 0L,
         NodeKind.FieldType => if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE } else { 0L },
         NodeKind.PayloadType => if type_node_is_oversized(source, tokens, files, tables, compiler, node, file_index) { UNSUPPORTED_LARGE_VALUE } else { 0L },
-        NodeKind.TypeAlias => UNSUPPORTED_NODE,
+        NodeKind.TypeAlias => 0L,
         NodeKind.Const => if (compiler.facts[node].flags & FACT_CONSTANT_EVALUATED) != 0L { 0L } else { UNSUPPORTED_NODE },
         NodeKind.Global => UNSUPPORTED_NODE,
         NodeKind.ForEach => 0L,
@@ -263,6 +266,8 @@ fn unsupported_category_for_node(
                 token_is_word_at(source, tokens, files, file_index, value.token, "long") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "byte") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "Ascii") { 0L }
+            else if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L &&
+                (compiler.facts[node].ty == TY_INT || compiler.facts[node].ty == TY_LONG || compiler.facts[node].ty == TY_BYTE) { 0L }
             else { UNSUPPORTED_NODE }
         },
         NodeKind.Fit => 0L,
@@ -335,7 +340,7 @@ fn unsupported_category_for_node(
         NodeKind.FunctionType => UNSUPPORTED_NODE,
         NodeKind.FunctionTypeParameter => UNSUPPORTED_NODE,
         NodeKind.Effect => UNSUPPORTED_NODE,
-        NodeKind.AliasedType => UNSUPPORTED_NODE,
+        NodeKind.AliasedType => if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L { 0L } else { UNSUPPORTED_TYPE },
         NodeKind.DeclaredType => if compiler.facts[node].ty == TY_INT || compiler.facts[node].ty == TY_LONG { 0L } else { UNSUPPORTED_NODE },
         NodeKind.TypeArgument => 0L,
         NodeKind.ParameterType => {

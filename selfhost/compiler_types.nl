@@ -415,6 +415,18 @@ fn resolve_value_type(
     let name_id = compiler.token_name_ids[syntax.token]
     let type_id = value_type_matches(compiler, name_id)
     if type_id >= 0L { return type_id }
+    alias_target_type(tables, compiler, name_id)
+}
+
+// The type a `type Name = ...` alias stands for, or -1 while its target is unresolved.
+fn alias_target_type(tables: ParseTables, compiler: CompilerTables, name_id: long) -> long {
+    for candidate in 0L..tables.nodes.count() {
+        if tables.nodes[candidate].kind != NodeKind.TypeAlias { continue }
+        if compiler.token_name_ids[tables.nodes[candidate].token] != name_id { continue }
+        let target = compiler.child_first[candidate]
+        if target >= 0L && (compiler.facts[target].flags & FACT_RESOLVED_TYPE) != 0L { return compiler.facts[target].ty }
+        return -1L
+    }
     -1L
 }
 
@@ -455,17 +467,21 @@ fn sum_case_payload_type(compiler: CompilerTables, type_id: long, tag: long, par
     sum_payload_record(compiler, type_id, tag, part).ty
 }
 
-fn intern_written_type_instances(
+// One sweep over the written types; returns whether it resolved a new node. A use of an alias
+// resolves only once the alias target has, so intern_written_type_instances repeats it.
+fn intern_written_type_pass(
     env: Env,
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tables: ParseTables,
     compiler: write CompilerTables,
-) {
+) -> bool {
+    var progressed = false
     for node in 0L..tables.nodes.count() {
         let syntax = tables.nodes[node]
         if !is_type_node(syntax.kind) { continue }
+        if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L { continue }
         let file_index = node_file_index(tables.nodes, files, node)
         var ty = -1L
         if (syntax.flags & FLAG_TYPE_UNIT) != 0L { ty = TY_UNIT }
@@ -501,7 +517,22 @@ fn intern_written_type_instances(
         }
         if ty >= 0L {
             compiler.facts[node] = NodeFact { ty, flags: FACT_RESOLVED_TYPE, binding: -1L, function: -1L, literal: 0L }
+            progressed = true
         }
+    }
+    progressed
+}
+
+fn intern_written_type_instances(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+) {
+    for pass in 0L..MAX_TYPE_ALIAS_PASSES {
+        if !intern_written_type_pass(env, source, tokens, files, tables, compiler) { break }
     }
     for node in 0L..tables.nodes.count() {
         if tables.nodes[node].kind == NodeKind.Fit {

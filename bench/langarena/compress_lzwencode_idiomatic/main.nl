@@ -1,6 +1,6 @@
 // LangArena Compress::LZWEncode: LZW with 16-bit codes. The dictionary maps
 // (code of the current phrase, next byte) to the code of the longer phrase.
-type Octet = int 0..=255
+type Octet = byte
 
 fn is_run_mode(env: Env) -> bool {
     match env.args().get(0L) {
