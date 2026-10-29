@@ -6,15 +6,16 @@ checks remain guards throughout. New benchmark ports and unrelated features wait
 This queue refines the historical phase order in PLAN.md using actual compiler
 source requirements; it does not claim language parity is already reached.
 
-## Current checkpoint (2026-10-28)
+## Current checkpoint (2026-10-29)
 
-The Stage2-to-Stage3 chain passes at O1 and O3. The required staged suite
-passed in 806 seconds for commit `27256a3`, and actual Stage3 C-runtime golden
-checks passed at O1/O3. The latest Stage3 corpus completed with 16 mismatches
-that baseline checks reproduced before the working-data cleanup;
-the current O3 own-source pilot measured 13.4813x Rust Stage0 time and exceeded
-the 3x gate. B1 is not accepted. See the [working-data copy report](B1-working-data-copies.md)
-for corpus details and the [raw pilot record](B1-working-data-pilot.json).
+The indexed sum-parameter geometry fix is on commit `5067d85`. Its required
+staged suite passed in 758 seconds, and the actual Stage3 corpus passed at O1/O3
+with 792 registered and 256 seeded cases and zero mismatches. Stage2/Stage3
+chains and eight C-runtime golden runs passed at O1/O3. The 25.4-second O3
+self-source emission is a chain measurement, not a matched-input Rust
+comparison; the 3x performance gate remains open. The compile-error scope
+question remains open separately; no snapshot policy or enforcement changed.
+See the [sum-parameter geometry report](B1-sum-parameter-geometry.md).
 
 Memory baseline clarified by Ben, 2026-10-28: a reusable job instance may have
 optional StasisLang-style static storage that persists across its runs. Most
