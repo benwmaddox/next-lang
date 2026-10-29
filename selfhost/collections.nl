@@ -2034,3 +2034,20 @@ fn emit_queue_method(
     emit_sum_tag_store(compiler, ir, node, 1L)
     ir_write_ascii(compiler, ir, "  br label %q.take.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nq.take.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
 }
+
+// A type whose bytes are all live data: scalars, bools, enums, and structs and arrays of them. Such a
+// value can be copied as one block; lists, text, queues and sums carry a live length or tag and copy
+// through their helper.
+recursive fn type_is_flat(compiler: CompilerTables, type_id: long) -> bool {
+    let kind = type_kind(compiler, type_id)
+    if kind == TYPE_KIND_SCALAR || kind == TYPE_KIND_ENUM { return !is_sum_type(compiler, type_id) }
+    if kind == TYPE_KIND_STRUCT {
+        let record = type_record(compiler, type_id)
+        for field_offset in 0L..record.field_count {
+            if !type_is_flat(compiler, compiler.struct_fields[record.field_start + field_offset].ty) { return false }
+        }
+        true
+    } else if kind == TYPE_KIND_ARRAY {
+        type_is_flat(compiler, type_record(compiler, type_id).field_start)
+    } else { false }
+}

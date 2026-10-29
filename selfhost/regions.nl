@@ -645,3 +645,26 @@ fn clear_function_regions(compiler: write CompilerTables) {
     compiler.region_max_size = 0L
 }
 // E3a1 end
+
+// `name = value` builds the value straight into the local when nothing in the value can read that
+// local (directly, or through a loop variable that views it). Otherwise the value is built in a
+// temporary and copied, as before.
+fn assign_builds_in_place(tables: ParseTables, compiler: CompilerTables, assign: long) -> bool {
+    if assign < 0L || tables.nodes[assign].kind != NodeKind.Assign || tables.nodes[assign].flags != 0L { return false }
+    let target = compiler.child_first[assign]
+    let value = if target >= 0L { compiler.child_next[target] } else { -1L }
+    if target < 0L || value < 0L || tables.nodes[target].kind != NodeKind.Name { return false }
+    let binding = compiler.facts[target].binding
+    if binding < 0L || compiler.bindings[binding].parameter || binding_is_view(compiler, binding) { return false }
+    let ty = compiler.bindings[binding].ty
+    let kind = type_kind(compiler, ty)
+    if kind != TYPE_KIND_STRUCT && kind != TYPE_KIND_ARRAY && !collection_kind_is_list(kind) { return false }
+    let first = value - tables.nodes[value].subtree + 1L
+    for node in first..value + 1L {
+        if tables.nodes[node].kind != NodeKind.Name { continue }
+        let used = compiler.facts[node].binding
+        if used == binding { return false }
+        if used >= 0L && binding_is_view(compiler, used) { return false }
+    }
+    true
+}

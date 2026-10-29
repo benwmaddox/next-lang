@@ -60,6 +60,15 @@ fn emit_aggregate_copy(
     }
     let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
+    if compiler.c_runtime && type_is_flat(compiler, type_id) {
+        // One block copy; memmove because an element may be assigned to itself.
+        ir_write_ascii(compiler, ir, "  call ptr @memmove(ptr ")
+        emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
+        ir_write_ascii(compiler, ir, ", ptr ")
+        emit_location_pointer_reference(compiler, ir, source, source_pointer)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, value_type_size(compiler, type_id)); ir_write_ascii(compiler, ir, ")\n")
+        return
+    }
     ir_write_ascii(compiler, ir, "  call void ")
     emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY)
     ir_push_byte(compiler, ir, 40)

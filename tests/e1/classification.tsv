@@ -882,6 +882,7 @@ build	tests/e3/b1_queue_basic
 build	tests/e3/b1_queue_full
 build	tests/e3/b1_queue_wrap
 build	tests/e3/b1_nested_collections
+build	tests/e3/b1_assignment_in_place
 build	tests/e3/b1_queue_write_param
 unsupported	tests/e3/b1_queue_bool_unsupported
 build	tests/e3/b1_text_list_basic
