@@ -1712,12 +1712,18 @@ fn emit_collection_default_array_aggregate(
 
 fn emit_collection_zero_storage(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, node: long, type_id: long, live_count: long) {
     if type_kind(compiler, type_id) == TYPE_KIND_MAP {
-        // An empty map is all zero: no entries, every slot empty.
+        // An empty map has no entries and an empty index; the entries are written as they are added.
         let location = aggregate_destination_location(compiler, 0L, node)
         let serial = emit_location_pointer_materialization(compiler, ir, location)
-        ir_write_ascii(compiler, ir, "  %map.zero."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @memset(ptr ")
+        let map_capacity_value = map_capacity(compiler, type_id)
+        let index_start = 16L + map_capacity_value * map_slot_size(compiler, type_id)
+        ir_write_ascii(compiler, ir, "  %map.zero.header."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @memset(ptr ")
         emit_location_pointer_reference(compiler, ir, location, serial)
-        ir_write_ascii(compiler, ir, ", i32 0, i64 "); ir_write_number(compiler, ir, value_type_size(compiler, type_id)); ir_write_ascii(compiler, ir, ")\n")
+        ir_write_ascii(compiler, ir, ", i32 0, i64 16)\n  %map.zero.index.pointer."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
+        emit_location_pointer_reference(compiler, ir, location, serial)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, index_start)
+        ir_write_ascii(compiler, ir, "\n  %map.zero.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @memset(ptr %map.zero.index.pointer."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i32 0, i64 "); ir_write_number(compiler, ir, map_slot_count(map_capacity_value) * 4L); ir_write_ascii(compiler, ir, ")\n")
         return
     }
     let element = collection_element_type(compiler, type_id)
