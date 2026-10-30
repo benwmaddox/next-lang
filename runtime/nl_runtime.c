@@ -40,17 +40,6 @@ static int nl_output_write(int fd, const unsigned char *bytes, uint64_t length);
 static int nl_output_write_and_flush(int fd, const unsigned char *bytes,
                                      uint64_t length);
 
-#define NL_TEST_VAR_STORAGE_CAPACITY 131072
-static const void *nl_test_var_descriptors[NL_TEST_VAR_STORAGE_CAPACITY];
-static const void *nl_test_var_data[NL_TEST_VAR_STORAGE_CAPACITY];
-static uint64_t nl_test_var_lengths[NL_TEST_VAR_STORAGE_CAPACITY];
-static unsigned char *nl_test_var_metadata[NL_TEST_VAR_STORAGE_CAPACITY];
-static uint64_t nl_test_var_metadata_sizes[NL_TEST_VAR_STORAGE_CAPACITY];
-static size_t nl_test_var_count;
-
-const char *nl_runtime_unicode_version(void) {
-    return nl_unicode_version;
-}
 
 typedef struct {
     void *header_mapping;
@@ -84,18 +73,48 @@ _Static_assert(offsetof(nl_data_stack_context, base) == 56, "generated code read
 _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col);
 static int nl_write_all(int fd, const unsigned char *bytes, uint64_t length);
 
+/* Diagnostics go straight to the file descriptor with write(2); no stdio. */
+static void nl_put_text(int fd, const char *text) {
+    size_t length = 0;
+    while (text[length]) ++length;
+    (void)nl_write_all(fd, (const unsigned char *)text, length);
+}
+
+static void nl_put_unsigned(int fd, unsigned long long value) {
+    char digits[24];
+    int at = 24;
+    do {
+        digits[--at] = (char)('0' + value % 10);
+        value /= 10;
+    } while (value != 0);
+    (void)nl_write_all(fd, (const unsigned char *)digits + at, (uint64_t)(24 - at));
+}
+
+static void nl_put_signed(int fd, long long value) {
+    if (value < 0) {
+        nl_put_text(fd, "-");
+        nl_put_unsigned(fd, 0ULL - (unsigned long long)value);
+    } else {
+        nl_put_unsigned(fd, (unsigned long long)value);
+    }
+}
+
 static void nl_stack_startup_failure(const char *message) {
-    fprintf(stderr, "nlc: data stack startup failure: %s\n", message);
+    nl_put_text(2, "nlc: data stack startup failure: ");
+    nl_put_text(2, message);
+    nl_put_text(2, "\n");
     exit(1);
 }
 
 static void nl_stack_startup_failure_for(const char *entry_name, uint64_t bytes,
                                          const char *message) {
-    fprintf(stderr,
-            "nlc: data stack startup failure for entry '%s' (reservation %llu bytes): %s\n",
-            entry_name ? entry_name : "<unknown>",
-            (unsigned long long)bytes,
-            message);
+    nl_put_text(2, "nlc: data stack startup failure for entry '");
+    nl_put_text(2, entry_name ? entry_name : "<unknown>");
+    nl_put_text(2, "' (reservation ");
+    nl_put_unsigned(2, bytes);
+    nl_put_text(2, " bytes): ");
+    nl_put_text(2, message);
+    nl_put_text(2, "\n");
     exit(1);
 }
 
@@ -315,16 +334,6 @@ void *nl_context_limit(void *opaque) {
     return context ? context->limit : NULL;
 }
 
-void nl_context_note_peak(void *opaque, const void *top) {
-    nl_data_stack_context *context = opaque;
-    if (!context || !top) return;
-    uintptr_t base = (uintptr_t)context->base;
-    uintptr_t address = (uintptr_t)top;
-    if (address < base || address - base > context->reservation_bytes) return;
-    uint64_t used = (uint64_t)(address - base);
-    if (used > context->peak_used_bytes) context->peak_used_bytes = used;
-}
-
 #if defined(NLC_STACK_MODE_OFFSET)
 uint64_t nl_context_base_offset(void *opaque) {
     /* Offsets are relative to the current base, so the base is always zero. */
@@ -343,16 +352,6 @@ void nl_context_note_peak_offset(void *opaque, uint64_t top_offset) {
     if (top_offset > context->peak_used_bytes) context->peak_used_bytes = top_offset;
 }
 #endif
-
-void nl_context_set_top(void *opaque, void *top) {
-    nl_data_stack_context *context = opaque;
-    if (!context) return;
-    uintptr_t address = (uintptr_t)top;
-    if (address < (uintptr_t)context->base || address > (uintptr_t)context->limit) {
-        nl_stack_startup_failure("invalid data stack top");
-    }
-    context->top = top;
-}
 
 #if defined(NLC_STACK_MODE_OFFSET)
 void nl_context_set_top_offset(void *opaque, uint64_t top_offset) {
@@ -402,63 +401,10 @@ void nl_context_destroy(void *opaque) {
     if (nl_output_flush_all() != 0) nl_fail(20, -1, 0, 0);
 #if defined(NLC_STACK_MODE_OFFSET)
 #endif
-#if defined(NLC_TEST_BUILD)
-    /* Test-only resident-page reporting; this allocation is outside program operations. */
-    const char *report = getenv("NLC_TEST_REPORT_STACK_RESIDENT");
-    if (report && strcmp(report, "1") == 0) {
-        long page = sysconf(_SC_PAGESIZE);
-        if (page > 0) {
-            size_t pages = (size_t)(context->reservation_bytes / (uint64_t)page);
-            unsigned char *residency = calloc(pages ? pages : 1, 1);
-            if (residency && mincore(context->mapping, (size_t)context->reservation_bytes,
-                                     residency) == 0) {
-                uint64_t resident_bytes = 0;
-                for (size_t index = 0; index < pages; ++index) {
-                    if (residency[index] & 1) resident_bytes += (uint64_t)page;
-                }
-                fprintf(stderr,
-                        "nlc stack entry '%s': reserved=%llu bytes resident=%llu bytes peak_used=%llu bytes\n",
-                        context->entry_name ? context->entry_name : "<unknown>",
-                        (unsigned long long)context->reservation_bytes,
-                        (unsigned long long)resident_bytes,
-                        (unsigned long long)context->peak_used_bytes);
-            }
-            free(residency);
-        }
-    }
-#endif
     munmap(context->mapping, context->mapping_bytes);
     void *header_mapping = context->header_mapping;
     size_t header_bytes = context->header_bytes;
     munmap(header_mapping, header_bytes);
-#endif
-}
-
-void *nl_stack_alloc(void *opaque, void *top, uint64_t bytes, uint64_t alignment,
-                     int32_t file_id, int32_t line, int32_t col) {
-#if defined(NLC_STACK_MODE_OFFSET)
-    (void)opaque;
-    (void)top;
-    (void)bytes;
-    (void)alignment;
-    nl_stack_startup_failure("offset stack mode received a pointer-based region allocation");
-    return NULL;
-#else
-    nl_data_stack_context *context = opaque;
-    if (!context || alignment == 0 || (alignment & (alignment - 1)) != 0) {
-        nl_stack_startup_failure("invalid region allocation request");
-    }
-    uintptr_t base = (uintptr_t)context->base;
-    uintptr_t limit = (uintptr_t)context->limit;
-    uintptr_t current = (uintptr_t)top;
-    if (current < base || current > limit || current > UINTPTR_MAX - (alignment - 1)) {
-        nl_fail(18, file_id, line, col);
-    }
-    uintptr_t aligned = (current + (uintptr_t)alignment - 1) & ~((uintptr_t)alignment - 1);
-    if (bytes > UINTPTR_MAX - aligned || aligned + (uintptr_t)bytes > limit) {
-        nl_fail(18, file_id, line, col);
-    }
-    return (void *)aligned;
 #endif
 }
 
@@ -488,349 +434,7 @@ int32_t nl_test_selected_index(void) {
 }
 
 void nl_set_test_mode(void) {
-    nl_test_var_count = 0;
     nl_test_mode = 1;
-}
-
-void nl_test_var_storage_reset(void) {
-    if (!nl_test_mode) return;
-    /* Test-only snapshots verify that one growing field leaves other lanes alone. */
-    for (size_t index = 0; index < nl_test_var_count; ++index) {
-        free(nl_test_var_metadata[index]);
-        nl_test_var_metadata[index] = NULL;
-        nl_test_var_metadata_sizes[index] = 0;
-    }
-    nl_test_var_count = 0;
-}
-
-void nl_test_var_storage_note(const void *descriptor, const void *data, uint64_t length,
-                              uint64_t metadata_size) {
-    if (!nl_test_mode || !descriptor) return;
-    if (metadata_size > 128) {
-        fprintf(stderr, "test failure: variable-size lane metadata exceeds 128 bytes\n");
-        exit(70);
-    }
-    size_t current = nl_test_var_count;
-    for (size_t index = 0; index < nl_test_var_count; ++index) {
-        if (nl_test_var_descriptors[index] == descriptor) {
-            current = index;
-            break;
-        }
-    }
-    for (size_t index = 0; index < nl_test_var_count; ++index) {
-        if (index == current) continue;
-        if (memcmp(nl_test_var_descriptors[index], nl_test_var_metadata[index],
-                   nl_test_var_metadata_sizes[index]) != 0) {
-            fprintf(stderr,
-                    "test failure: updating one variable-size field changed another field's lane\n");
-            exit(70);
-        }
-    }
-    if (current < nl_test_var_count && length < nl_test_var_lengths[current] &&
-        data != nl_test_var_data[current]) {
-        fprintf(stderr,
-                "test failure: shrinking a variable-size field moved it to a different slot\n");
-        exit(70);
-    }
-    if (current == nl_test_var_count) {
-        if (nl_test_var_count == NL_TEST_VAR_STORAGE_CAPACITY) {
-            fprintf(stderr, "test failure: variable-size storage test hook capacity exceeded\n");
-            exit(70);
-        }
-        nl_test_var_descriptors[current] = descriptor;
-        /* Test-only metadata snapshot; never used by normal program operations. */
-        nl_test_var_metadata[current] = malloc((size_t)metadata_size);
-        if (!nl_test_var_metadata[current]) {
-            fprintf(stderr, "test failure: cannot allocate variable-size metadata snapshot\n");
-            exit(70);
-        }
-        ++nl_test_var_count;
-    }
-    nl_test_var_data[current] = data;
-    nl_test_var_lengths[current] = length;
-    nl_test_var_metadata_sizes[current] = metadata_size;
-    memcpy(nl_test_var_metadata[current], descriptor, (size_t)metadata_size);
-}
-
-_Bool nl_has_argument(int32_t argc, const char **argv, const char *wanted) {
-    for (int32_t i = 1; i < argc; ++i) {
-        if (argv[i] && strcmp(argv[i], wanted) == 0) return 1;
-    }
-    return 0;
-}
-
-typedef struct {
-    int mode;
-    uint64_t memory_limit;
-    uint64_t memory_used;
-    uint64_t swap_limit;
-    uint64_t swap_used;
-    uint64_t host_available;
-    uint64_t commit_limit;
-    uint64_t committed;
-    int has_cgroup;
-    int has_host;
-    int has_commit;
-} nl_memory_policy;
-
-static uint64_t nl_saturating_add(uint64_t a, uint64_t b) {
-    return UINT64_MAX - a < b ? UINT64_MAX : a + b;
-}
-
-static int nl_read_u64_file(const char *path, uint64_t *value) {
-    FILE *file = fopen(path, "r");
-    if (!file) return 0;
-    char text[128];
-    int ok = fgets(text, sizeof(text), file) != NULL;
-    fclose(file);
-    if (!ok) return 0;
-    if (strncmp(text, "max", 3) == 0) {
-        *value = UINT64_MAX;
-        return 1;
-    }
-    errno = 0;
-    char *end = NULL;
-    if (text[0] == '-') return 0;
-    unsigned long long parsed = strtoull(text, &end, 10);
-    if (errno || end == text) return 0;
-    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') ++end;
-    if (*end != '\0') return 0;
-    *value = (uint64_t)parsed;
-    return 1;
-}
-
-static uint64_t nl_min_remaining(uint64_t limit, uint64_t used) {
-    if (limit == UINT64_MAX) return UINT64_MAX;
-    return used >= limit ? 0 : limit - used;
-}
-
-static void nl_read_host_memory(nl_memory_policy *policy) {
-#if defined(__linux__)
-    FILE *file = fopen("/proc/meminfo", "r");
-    if (!file) return;
-    char line[256];
-    uint64_t available_kb = 0;
-    uint64_t commit_limit_kb = 0;
-    uint64_t committed_kb = 0;
-    int found_available = 0;
-    int found_commit_limit = 0;
-    int found_committed = 0;
-    while (fgets(line, sizeof(line), file)) {
-        unsigned long long value = 0;
-        if (sscanf(line, "MemAvailable: %llu kB", &value) == 1) {
-            available_kb = value;
-            found_available = 1;
-        } else if (sscanf(line, "CommitLimit: %llu kB", &value) == 1) {
-            commit_limit_kb = value;
-            found_commit_limit = 1;
-        } else if (sscanf(line, "Committed_AS: %llu kB", &value) == 1) {
-            committed_kb = value;
-            found_committed = 1;
-        }
-    }
-    fclose(file);
-    if (found_available) {
-        policy->host_available = available_kb > UINT64_MAX / 1024 ? UINT64_MAX : available_kb * 1024;
-        policy->has_host = 1;
-    }
-    if (found_commit_limit) {
-        policy->commit_limit = commit_limit_kb > UINT64_MAX / 1024 ? UINT64_MAX : commit_limit_kb * 1024;
-    }
-    if (found_committed) {
-        policy->committed = committed_kb > UINT64_MAX / 1024 ? UINT64_MAX : committed_kb * 1024;
-    }
-    policy->has_commit = found_commit_limit && found_committed;
-#endif
-}
-
-static void nl_read_cgroup_memory(nl_memory_policy *policy) {
-#if defined(__linux__)
-    FILE *file = fopen("/proc/self/cgroup", "r");
-    if (!file) return;
-    char line[PATH_MAX + 64];
-    char group[PATH_MAX] = "";
-    while (fgets(line, sizeof(line), file)) {
-        if (strncmp(line, "0::", 3) == 0) {
-            size_t len = strcspn(line + 3, "\r\n");
-            if (len < sizeof(group)) {
-                memcpy(group, line + 3, len);
-                group[len] = '\0';
-            }
-            break;
-        }
-    }
-    fclose(file);
-    if (!group[0] || strstr(group, "..")) return;
-
-    char directory[PATH_MAX];
-    if (snprintf(directory, sizeof(directory), "/sys/fs/cgroup%s", group) >= (int)sizeof(directory)) return;
-    const char *mount = "/sys/fs/cgroup";
-    for (;;) {
-        char path[PATH_MAX];
-        uint64_t limit, used;
-        if (snprintf(path, sizeof(path), "%s/memory.max", directory) < (int)sizeof(path)
-            && nl_read_u64_file(path, &limit)) {
-            if (snprintf(path, sizeof(path), "%s/memory.current", directory) < (int)sizeof(path)
-                && nl_read_u64_file(path, &used)) {
-                uint64_t remaining = nl_min_remaining(limit, used);
-                uint64_t current_remaining = nl_min_remaining(policy->memory_limit, policy->memory_used);
-                if (remaining < current_remaining) {
-                    policy->memory_limit = limit;
-                    policy->memory_used = used;
-                }
-                policy->has_cgroup = 1;
-            }
-        }
-        uint64_t swap_limit, swap_used;
-        if (snprintf(path, sizeof(path), "%s/memory.swap.max", directory) < (int)sizeof(path)
-            && nl_read_u64_file(path, &swap_limit)
-            && snprintf(path, sizeof(path), "%s/memory.swap.current", directory) < (int)sizeof(path)
-            && nl_read_u64_file(path, &swap_used)) {
-            uint64_t remaining = nl_min_remaining(swap_limit, swap_used);
-            uint64_t current_remaining = nl_min_remaining(policy->swap_limit, policy->swap_used);
-            if (remaining < current_remaining) {
-                policy->swap_limit = swap_limit;
-                policy->swap_used = swap_used;
-            }
-        }
-        if (strcmp(directory, mount) == 0) break;
-        char *slash = strrchr(directory, '/');
-        if (!slash || slash < directory + strlen(mount)) break;
-        if (slash == directory + strlen(mount)) directory[slash - directory] = '\0';
-        else *slash = '\0';
-    }
-#endif
-}
-
-static int nl_read_policy(nl_memory_policy *policy) {
-    memset(policy, 0, sizeof(*policy));
-    policy->memory_limit = UINT64_MAX;
-    policy->swap_limit = UINT64_MAX;
-    policy->commit_limit = UINT64_MAX;
-#ifdef NLC_TEST_BUILD
-    const char *injected = getenv("NLC_TEST_MEMORY_POLICY");
-    if (injected && *injected) {
-        char copy[512];
-        if (strlen(injected) >= sizeof(copy)) return 0;
-        strcpy(copy, injected);
-        char *save = NULL;
-        int has_commit_limit = 0;
-        int has_committed = 0;
-        for (char *part = strtok_r(copy, ";", &save); part; part = strtok_r(NULL, ";", &save)) {
-            char key[40], value[80];
-            if (sscanf(part, "%39[^=]=%79s", key, value) != 2) return 0;
-            char *end = NULL;
-            errno = 0;
-            unsigned long long parsed = 0;
-            if (strcmp(value, "max") != 0) {
-                parsed = strtoull(value, &end, 10);
-                if (errno || end == value || *end) return 0;
-            }
-            uint64_t number = strcmp(value, "max") == 0 ? UINT64_MAX : (uint64_t)parsed;
-            if (strcmp(key, "mode") == 0) policy->mode = (int)number;
-            else if (strcmp(key, "memory") == 0) policy->memory_limit = number;
-            else if (strcmp(key, "current") == 0) policy->memory_used = number;
-            else if (strcmp(key, "swap") == 0) policy->swap_limit = number;
-            else if (strcmp(key, "swap_current") == 0) policy->swap_used = number;
-            else if (strcmp(key, "available") == 0) { policy->host_available = number; policy->has_host = 1; }
-            else if (strcmp(key, "commit") == 0) { policy->commit_limit = number; has_commit_limit = 1; }
-            else if (strcmp(key, "committed") == 0) { policy->committed = number; has_committed = 1; }
-            else return 0;
-        }
-        policy->has_cgroup = policy->memory_limit != UINT64_MAX || policy->swap_limit != UINT64_MAX;
-        policy->has_commit = has_commit_limit && has_committed;
-        if (!policy->has_host) policy->host_available = UINT64_MAX;
-        return 1;
-    }
-#endif
-#if defined(__linux__)
-    FILE *overcommit = fopen("/proc/sys/vm/overcommit_memory", "r");
-    if (!overcommit || fscanf(overcommit, "%d", &policy->mode) != 1) {
-        if (overcommit) fclose(overcommit);
-        return 0;
-    }
-    fclose(overcommit);
-    nl_read_host_memory(policy);
-    nl_read_cgroup_memory(policy);
-    return 1;
-#else
-    return 0;
-#endif
-}
-
-static void nl_memory_refuse(const char *reason) {
-    fprintf(stderr, "nlc: startup memory guarantee failed: %s\n", reason);
-    fflush(stderr);
-    exit(1);
-}
-
-void nl_claim_memory(void *memory, uint64_t claim, uint64_t headroom, _Bool allow_overcommit) {
-    if (allow_overcommit) {
-        fputs("nlc: startup memory guarantee is off (--allow-overcommit)\n", stderr);
-        fflush(stderr);
-    } else {
-        nl_memory_policy policy;
-        if (!nl_read_policy(&policy)) nl_memory_refuse("could not read Linux overcommit or cgroup memory policy");
-        uint64_t required = nl_saturating_add(claim, headroom);
-        uint64_t cgroup_memory = nl_min_remaining(policy.memory_limit, policy.memory_used);
-        uint64_t cgroup_swap = nl_min_remaining(policy.swap_limit, policy.swap_used);
-        if (claim > cgroup_memory) nl_memory_refuse("global state does not fit the effective cgroup memory.max limit");
-        uint64_t available = policy.has_host ? policy.host_available : UINT64_MAX;
-        if (cgroup_memory < available) available = cgroup_memory;
-        if (claim > available) nl_memory_refuse("global state does not fit currently available memory");
-        if (policy.has_cgroup && required > nl_saturating_add(cgroup_memory, cgroup_swap)) {
-            nl_memory_refuse("global state plus job_headroom exceeds effective cgroup memory and swap limits");
-        }
-        if (!policy.has_cgroup && required > available) {
-            nl_memory_refuse("global state plus job_headroom exceeds currently available memory");
-        }
-        if (policy.mode == 2) {
-            if (!policy.has_commit) nl_memory_refuse("could not read Linux strict commit limits");
-            uint64_t committed = policy.committed;
-            uint64_t commit_available = nl_min_remaining(policy.commit_limit, committed);
-            if (required > commit_available) nl_memory_refuse("strict overcommit commit limit cannot back global state and job_headroom");
-        } else if (policy.has_host && required > available && !policy.has_cgroup) {
-            nl_memory_refuse("global state plus job_headroom exceeds available host memory");
-        }
-    }
-
-    if (memory && claim) {
-        long page_size = sysconf(_SC_PAGESIZE);
-        if (page_size <= 0) nl_memory_refuse("could not determine the system page size");
-        volatile unsigned char *bytes = (volatile unsigned char *)memory;
-        for (uint64_t offset = 0; offset < claim; offset += (uint64_t)page_size) {
-            unsigned char value = bytes[offset];
-            bytes[offset] = value;
-        }
-        unsigned char value = bytes[claim - 1];
-        bytes[claim - 1] = value;
-    }
-
-    if (!allow_overcommit) {
-        nl_memory_policy after;
-        if (!nl_read_policy(&after)) {
-            nl_memory_refuse("could not recheck Linux memory policy after touching global state");
-        }
-        if (after.has_host && headroom > after.host_available) {
-            nl_memory_refuse("touching global state left less than job_headroom in host memory");
-        }
-        if (after.mode == 2) {
-            if (!after.has_commit) nl_memory_refuse("could not recheck Linux strict commit limits after touching global state");
-            uint64_t commit_left = nl_min_remaining(after.commit_limit, after.committed);
-            if (headroom > commit_left) {
-                nl_memory_refuse("touching global state left less than job_headroom under the strict commit limit");
-            }
-        }
-        if (after.has_cgroup) {
-            uint64_t memory_left = nl_min_remaining(after.memory_limit, after.memory_used);
-            uint64_t swap_left = nl_min_remaining(after.swap_limit, after.swap_used);
-            if (headroom > nl_saturating_add(memory_left, swap_left)) {
-                nl_memory_refuse("touching global state left less than job_headroom in the cgroup");
-            }
-        } else if (!after.has_host) {
-            nl_memory_refuse("cannot establish remaining host memory headroom after touching global state");
-        }
-    }
 }
 
 static const char *nl_file_name(int32_t file_id) {
@@ -840,8 +444,6 @@ static const char *nl_file_name(int32_t file_id) {
 
 _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col) {
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    (void)fflush(stderr);
     const char *file = nl_file_name(file_id);
     const char *message = "runtime failure";
     switch (kind) {
@@ -870,38 +472,48 @@ _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col)
         case 19: message = "recursion budget exhausted"; break;
         case 20: message = "standard output write failed"; break;
     }
-    fprintf(stderr, "%s:%d:%d: %s\n", file, line, col, message);
+    nl_put_text(2, file);
+    nl_put_text(2, ":");
+    nl_put_signed(2, line);
+    nl_put_text(2, ":");
+    nl_put_signed(2, col);
+    nl_put_text(2, ": ");
+    nl_put_text(2, message);
+    nl_put_text(2, "\n");
     exit(nl_test_mode ? 70 : 1);
 }
 
 void nl_expect_fail_compare(int32_t file_id, int32_t line, int32_t col,
                             const char *source, int64_t left, int64_t right,
                             int32_t is_bool) {
-    char left_text[32];
-    char right_text[32];
-    if (is_bool) {
-        snprintf(left_text, sizeof(left_text), "%s", left ? "true" : "false");
-        snprintf(right_text, sizeof(right_text), "%s", right ? "true" : "false");
-    } else {
-        snprintf(left_text, sizeof(left_text), "%lld", (long long)left);
-        snprintf(right_text, sizeof(right_text), "%lld", (long long)right);
-    }
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    (void)fflush(stderr);
-    printf("  %s:%d:%d: %s\n    left:  %s\n    right: %s\n",
-           nl_file_name(file_id), line, col, source, left_text, right_text);
-    (void)fflush(stdout);
+    nl_put_text(1, "  ");
+    nl_put_text(1, nl_file_name(file_id));
+    nl_put_text(1, ":");
+    nl_put_signed(1, line);
+    nl_put_text(1, ":");
+    nl_put_signed(1, col);
+    nl_put_text(1, ": ");
+    nl_put_text(1, source);
+    nl_put_text(1, "\n    left:  ");
+    if (is_bool) nl_put_text(1, left ? "true" : "false"); else nl_put_signed(1, left);
+    nl_put_text(1, "\n    right: ");
+    if (is_bool) nl_put_text(1, right ? "true" : "false"); else nl_put_signed(1, right);
+    nl_put_text(1, "\n");
 }
 
 void nl_expect_fail_bool(int32_t file_id, int32_t line, int32_t col,
                          const char *source) {
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    (void)fflush(stderr);
-    printf("  %s:%d:%d: %s\n    value: false\n",
-           nl_file_name(file_id), line, col, source);
-    (void)fflush(stdout);
+    nl_put_text(1, "  ");
+    nl_put_text(1, nl_file_name(file_id));
+    nl_put_text(1, ":");
+    nl_put_signed(1, line);
+    nl_put_text(1, ":");
+    nl_put_signed(1, col);
+    nl_put_text(1, ": ");
+    nl_put_text(1, source);
+    nl_put_text(1, "\n    value: false\n");
 }
 
 static void nl_print_bytes(const unsigned char *bytes, uint64_t length) {
@@ -1359,22 +971,23 @@ void nl_print_newline(void) {
 void nl_expect_fail_header(int32_t file_id, int32_t line, int32_t col,
                            const char *source) {
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    (void)fflush(stderr);
-    printf("  %s:%d:%d: %s\n", nl_file_name(file_id), line, col, source);
-    (void)fflush(stdout);
+    nl_put_text(1, "  ");
+    nl_put_text(1, nl_file_name(file_id));
+    nl_put_text(1, ":");
+    nl_put_signed(1, line);
+    nl_put_text(1, ":");
+    nl_put_signed(1, col);
+    nl_put_text(1, ": ");
+    nl_put_text(1, source);
+    nl_put_text(1, "\n");
 }
 void nl_expect_fail_left(void) {
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    fputs("    left:  ", stdout);
-    (void)fflush(stdout);
+    nl_put_text(1, "    left:  ");
 }
 void nl_expect_fail_right(void) {
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    fputs("    right: ", stdout);
-    (void)fflush(stdout);
+    nl_put_text(1, "    right: ");
 }
 
 typedef struct { int root_fd; } nl_fs_handle;
@@ -1410,7 +1023,9 @@ static int nl_errno_error(int error) {
 }
 
 static void nl_args_startup_failure(const char *message) {
-    fprintf(stderr, "nlc: startup argument failure: %s\n", message);
+    nl_put_text(2, "nlc: startup argument failure: ");
+    nl_put_text(2, message);
+    nl_put_text(2, "\n");
     exit(1);
 }
 
@@ -1425,10 +1040,13 @@ static void nl_remove_tree(const char *path) {
     struct dirent *entry;
     while ((entry = readdir(directory)) != NULL) {
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
-        size_t length = strlen(path) + strlen(entry->d_name) + 2;
-        char *child = (char *)malloc(length);
+        size_t path_length = strlen(path);
+        size_t name_length = strlen(entry->d_name);
+        char *child = (char *)malloc(path_length + name_length + 2);
         if (!child) continue;
-        snprintf(child, length, "%s/%s", path, entry->d_name);
+        memcpy(child, path, path_length);
+        child[path_length] = '/';
+        memcpy(child + path_length + 1, entry->d_name, name_length + 1);
         struct stat status;
         if (lstat(child, &status) == 0 && S_ISDIR(status.st_mode)) nl_remove_tree(child);
         else unlink(child);
@@ -1495,10 +1113,10 @@ void *nl_env_out(void *value, int fd) {
 
 _Noreturn void nl_env_exit(int32_t code) {
     if (nl_output_flush_all() != 0) nl_fail(20, -1, 0, 0);
-    (void)fflush(stdout);
-    (void)fflush(stderr);
     if (nl_test_mode) {
-        fprintf(stderr, "Env.exit(%d) cannot be used in a test; this test process failed\n", code);
+        nl_put_text(2, "Env.exit(");
+        nl_put_signed(2, code);
+        nl_put_text(2, ") cannot be used in a test; this test process failed\n");
         exit(70);
     }
     exit(code);

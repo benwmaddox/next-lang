@@ -88,10 +88,16 @@ enum LinkRuntime {
     Core,
 }
 
+// The runtime source the frozen Rust compiler and the core runtime link, and the live one that programs
+// the self-hosted compiler builds for the C runtime link.
+const STAGE0_RUNTIME: &str = "../runtime/stage0/nl_runtime.c";
+const LIVE_RUNTIME: &str = "../runtime/nl_runtime.c";
+
 struct LinkDescription<'a> {
     build_kind: BuildKind,
     stack_mode: StackMode,
     runtime: LinkRuntime,
+    runtime_source: &'static str,
     optimization: String,
     recursion: Option<&'a CompileOutput>,
 }
@@ -922,6 +928,7 @@ pub fn link_ir(ir: &Path, output: &Path) -> Result<(), PackageError> {
         build_kind: metadata.build_kind,
         stack_mode: metadata.stack_mode,
         runtime: metadata.runtime,
+        runtime_source: if metadata.runtime == LinkRuntime::C { LIVE_RUNTIME } else { STAGE0_RUNTIME },
         optimization: optimization_level()?,
         recursion: None,
     };
@@ -953,6 +960,7 @@ pub fn test_ir(ir: &Path) -> Result<u8, PackageError> {
         build_kind: metadata.build_kind,
         stack_mode: metadata.stack_mode,
         runtime: metadata.runtime,
+        runtime_source: if metadata.runtime == LinkRuntime::C { LIVE_RUNTIME } else { STAGE0_RUNTIME },
         optimization: optimization_level()?,
         recursion: None,
     };
@@ -1492,6 +1500,7 @@ fn package_link_description(
         },
         stack_mode: compiled.stack_mode,
         runtime: LinkRuntime::C,
+        runtime_source: STAGE0_RUNTIME,
         optimization: optimization_level()?,
         recursion: Some(compiled),
     })
@@ -1652,8 +1661,10 @@ fn clang_internal(
     link: &LinkDescription<'_>,
     need_native_frames: bool,
 ) -> Result<Option<HashMap<usize, u64>>, PackageError> {
-    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/nl_runtime.c");
-    if link.runtime == LinkRuntime::C && !runtime.is_file() {
+    // Programs the frozen Rust compiler emits link its own frozen copy of the runtime; programs the
+    // self-hosted compiler emits for the C runtime link the live one.
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join(link.runtime_source);
+    if !runtime.is_file() {
         return Err(PackageError::Tool(format!(
             "runtime source is missing: {}",
             runtime.display()
@@ -2654,9 +2665,12 @@ fn selfhost_cache_key(selfhost_dir: &Path, stack_mode: StackMode) -> Result<Stri
     })?;
     let nlc_binary = fs::read(&compiler)
         .map_err(|error| PackageError::Tool(format!("cannot read nlc build identity: {error}")))?;
-    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime/nl_runtime.c");
-    let runtime = fs::read(&runtime)
+    let runtime_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtime");
+    let mut runtime = fs::read(runtime_root.join("nl_runtime.c"))
         .map_err(|error| PackageError::Tool(format!("cannot read runtime source: {error}")))?;
+    runtime.extend(fs::read(runtime_root.join("stage0/nl_runtime.c")).map_err(|error| {
+        PackageError::Tool(format!("cannot read stage 0 runtime source: {error}"))
+    })?);
     let manifest = selfhost_dir.join("package.toml");
     let manifest = fs::read(&manifest)
         .map_err(|error| PackageError::Tool(format!("cannot read selfhost manifest: {error}")))?;
@@ -2985,6 +2999,7 @@ mod native_frame_cache_tests {
             build_kind: BuildKind::Program,
             stack_mode: StackMode::Offset,
             runtime: LinkRuntime::Core,
+            runtime_source: STAGE0_RUNTIME,
             optimization: "1".to_owned(),
             recursion: None,
         };
