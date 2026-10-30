@@ -6,14 +6,58 @@
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <time.h>
+
+#if defined(_WIN32)
+#define NL_WINDOWS 1
+#else
+#define NL_WINDOWS 0
+#endif
+
+#if NL_WINDOWS
+/* Windows (64-bit, clang targeting the MSVC runtime). The data stack reserves its address range with
+   VirtualAlloc and commits it as the stack grows; files go through CRT descriptors opened with
+   CreateFileW beneath the working directory. Tests (NLC_TEST_BUILD) are not supported here yet. */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shellapi.h>
+#include <io.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#if !defined(__MINGW32__)
+typedef long long ssize_t;
+#endif
+typedef int mode_t;
+#undef SSIZE_MAX
+#define SSIZE_MAX INT_MAX
+#define STDOUT_FILENO 1
+#define STDERR_FILENO 2
+#define O_CLOEXEC 0
+#define O_PATH 0
+#define O_DIRECTORY 0
+#ifndef S_ISREG
+#define S_ISREG(mode) (((mode) & _S_IFMT) == _S_IFREG)
+#define S_ISDIR(mode) (((mode) & _S_IFMT) == _S_IFDIR)
+#endif
+#define read _read
+#define write _write
+#define close _close
+#define isatty _isatty
+/* The native stack is only 1 MiB by default; the compiler recurses deeply. */
+#pragma comment(linker, "/STACK:268435456")
+#pragma comment(lib, "shell32.lib")
+/* The file-system root is the working directory at startup, held as a wide path. */
+static wchar_t nl_win_root[32768];
+static size_t nl_win_root_length;
+#else
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
-#include <time.h>
 #include <linux/openat2.h>
+#endif
 
 #include "nl_unicode_upper.h"
 
@@ -64,6 +108,9 @@ typedef struct {
     uintptr_t native_stack_limit;
     uintptr_t native_stack_start;
     uint64_t recursion_budget;
+    /* Bytes of the stack range (from base) that are backed by memory. Linux backs all of it lazily;
+       Windows commits as the stack grows. */
+    uint64_t committed_bytes;
 } nl_data_stack_context;
 
 /* The generated code reads the stack base straight from the context (selfhost/c_runtime.nl,
@@ -97,6 +144,64 @@ static void nl_put_signed(int fd, long long value) {
     } else {
         nl_put_unsigned(fd, (unsigned long long)value);
     }
+}
+
+/* Address-range helpers for the data stack. Reserve a range without backing it, make a part of it
+   usable, and give it back. */
+static long nl_page_size(void) {
+#if NL_WINDOWS
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    return (long)info.dwPageSize;
+#else
+    return sysconf(_SC_PAGESIZE);
+#endif
+}
+
+static void *nl_map_reserve(size_t total) {
+#if NL_WINDOWS
+    return VirtualAlloc(NULL, total, MEM_RESERVE, PAGE_NOACCESS);
+#else
+    void *mapping = mmap(NULL, total, PROT_NONE,
+                         MAP_PRIVATE | MAP_ANONYMOUS
+#ifdef MAP_NORESERVE
+                             | MAP_NORESERVE
+#endif
+                         , -1, 0);
+    return mapping == MAP_FAILED ? NULL : mapping;
+#endif
+}
+
+static int nl_map_enable(void *address, size_t bytes) {
+#if NL_WINDOWS
+    return VirtualAlloc(address, bytes, MEM_COMMIT, PAGE_READWRITE) ? 0 : -1;
+#else
+    return mprotect(address, bytes, PROT_READ | PROT_WRITE);
+#endif
+}
+
+/* Make the first part of the stack range usable; Linux enables all of it (pages are only backed when
+   touched), Windows commits an initial chunk and the rest as the stack grows. */
+static int nl_map_enable_stack(void *base, uint64_t bytes, uint64_t *committed) {
+#if NL_WINDOWS
+    uint64_t initial = bytes < UINT64_C(1048576) ? bytes : UINT64_C(1048576);
+    if (nl_map_enable(base, (size_t)initial) != 0) return -1;
+    *committed = initial;
+    return 0;
+#else
+    if (nl_map_enable(base, (size_t)bytes) != 0) return -1;
+    *committed = bytes;
+    return 0;
+#endif
+}
+
+static void nl_map_release(void *mapping, size_t total) {
+#if NL_WINDOWS
+    (void)total;
+    VirtualFree(mapping, 0, MEM_RELEASE);
+#else
+    munmap(mapping, total);
+#endif
 }
 
 static void nl_stack_startup_failure(const char *message) {
@@ -187,6 +292,13 @@ static void nl_native_stack_setup(nl_data_stack_context *context,
                                   uint64_t requested_budget) {
     uintptr_t stack_low = 0;
     uint64_t stack_bytes = 0;
+#if NL_WINDOWS
+    ULONG_PTR stack_floor = 0, stack_ceiling = 0;
+    GetCurrentThreadStackLimits(&stack_floor, &stack_ceiling);
+    if (stack_ceiling <= stack_floor) nl_stack_startup_failure("could not determine the native stack bounds");
+    stack_low = (uintptr_t)stack_floor;
+    stack_bytes = (uint64_t)(stack_ceiling - stack_floor);
+#else
     pthread_attr_t attributes;
     if (pthread_getattr_np(pthread_self(), &attributes) != 0) {
         nl_stack_startup_failure("could not determine the native stack bounds");
@@ -208,6 +320,7 @@ static void nl_native_stack_setup(nl_data_stack_context *context,
         stack_bytes -= guard_size;
     }
     pthread_attr_destroy(&attributes);
+#endif
     uintptr_t current = nl_current_stack_pointer();
     if (current < stack_low || current - stack_low > stack_bytes) {
         nl_stack_startup_failure("current stack pointer is outside the reported native stack");
@@ -223,8 +336,8 @@ static void nl_native_stack_setup(nl_data_stack_context *context,
 
 void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_budget,
                         const char *entry_name) {
-#if defined(__linux__)
-    long page = sysconf(_SC_PAGESIZE);
+#if defined(__linux__) || NL_WINDOWS
+    long page = nl_page_size();
     if (page <= 0) nl_stack_startup_failure_for(entry_name, requested_bytes,
                                                  "could not determine the system page size");
     uint64_t bytes = nl_data_stack_reservation(requested_bytes, entry_name);
@@ -247,35 +360,26 @@ void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_b
     }
     /* Keep the context in a stable header page before the movable stack mapping. */
     size_t total = (size_t)bytes + 2 * (size_t)page_size;
-    void *mapping = mmap(NULL, total, PROT_NONE,
-                         MAP_PRIVATE | MAP_ANONYMOUS
-#ifdef MAP_NORESERVE
-                             | MAP_NORESERVE
-#endif
-                         , -1, 0);
+    void *mapping = nl_map_reserve(total);
 #if defined(NLC_STACK_MODE_OFFSET)
     /* Under an address-space limit (ulimit -v, containers) the default range may not fit: halve it
        until it does. A program that then outgrows the range fails with "data stack exhausted". */
-    while (mapping == MAP_FAILED && bytes > UINT64_C(256) * 1024 * 1024 && bytes > requested_bytes) {
+    while (mapping == NULL && bytes > UINT64_C(256) * 1024 * 1024 && bytes > requested_bytes) {
         bytes = (bytes / 2 / page_size) * page_size;
         total = (size_t)bytes + 2 * (size_t)page_size;
-        mapping = mmap(NULL, total, PROT_NONE,
-                       MAP_PRIVATE | MAP_ANONYMOUS
-#ifdef MAP_NORESERVE
-                           | MAP_NORESERVE
-#endif
-                       , -1, 0);
+        mapping = nl_map_reserve(total);
     }
 #endif
-    if (mapping == MAP_FAILED) {
+    if (mapping == NULL) {
         nl_stack_startup_failure_for(entry_name, bytes,
                                      "could not reserve the requested address range");
     }
     unsigned char *base = (unsigned char *)mapping + page_size;
+    uint64_t committed = 0;
     if (sizeof(nl_data_stack_context) > page_size ||
-        mprotect(mapping, (size_t)page_size, PROT_READ | PROT_WRITE) != 0 ||
-        mprotect(base, (size_t)bytes, PROT_READ | PROT_WRITE) != 0) {
-        munmap(mapping, total);
+        nl_map_enable(mapping, (size_t)page_size) != 0 ||
+        nl_map_enable_stack(base, bytes, &committed) != 0) {
+        nl_map_release(mapping, total);
         nl_stack_startup_failure_for(entry_name, bytes,
                                      "could not enable writable data stack pages");
     }
@@ -290,6 +394,7 @@ void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_b
     context->base = base;
     context->top = context->base;
     context->limit = context->base + bytes;
+    context->committed_bytes = committed;
     nl_native_stack_setup(context, requested_recursion_budget);
     return context;
 #else
@@ -341,9 +446,11 @@ uint64_t nl_context_base_offset(void *opaque) {
     return 0;
 }
 
+/* The generated code compares a scope's end with this and calls the grow routine when it is past it,
+   so it reports the bytes that are backed (all of the range on Linux, the committed part on Windows). */
 uint64_t nl_context_reservation_bytes(void *opaque) {
     nl_data_stack_context *context = opaque;
-    return context ? context->reservation_bytes : 0;
+    return context ? context->committed_bytes : 0;
 }
 
 void nl_context_note_peak_offset(void *opaque, uint64_t top_offset) {
@@ -363,11 +470,21 @@ void nl_context_set_top_offset(void *opaque, uint64_t top_offset) {
     context->top_offset = top_offset;
 }
 
-#if defined(__linux__)
+#if defined(__linux__) || NL_WINDOWS
 static void nl_stack_grow_offset(nl_data_stack_context *context, uint64_t needed_bytes,
                                  int32_t file_id, int32_t line, int32_t col) {
-    if (needed_bytes <= context->reservation_bytes) return;
-    nl_fail(18, file_id, line, col);
+    if (needed_bytes > context->reservation_bytes) nl_fail(18, file_id, line, col);
+    if (needed_bytes <= context->committed_bytes) return;
+    /* Back more of the range: at least double what is committed, in whole megabytes. */
+    uint64_t target = context->committed_bytes * 2;
+    if (target < needed_bytes) target = needed_bytes;
+    target = (target + UINT64_C(1048575)) & ~UINT64_C(1048575);
+    if (target > context->reservation_bytes) target = context->reservation_bytes;
+    if (nl_map_enable(context->base + context->committed_bytes,
+                      (size_t)(target - context->committed_bytes)) != 0) {
+        nl_fail(18, file_id, line, col);
+    }
+    context->committed_bytes = target;
 }
 #endif
 
@@ -384,7 +501,7 @@ uint64_t nl_stack_alloc_offset(void *opaque, uint64_t top_offset, uint64_t bytes
     uint64_t aligned = (top_offset + alignment - 1) & ~(alignment - 1);
     if (bytes > UINT64_MAX - aligned) nl_fail(18, file_id, line, col);
     uint64_t after = aligned + bytes;
-#if defined(__linux__)
+#if defined(__linux__) || NL_WINDOWS
     nl_stack_grow_offset(context, after, file_id, line, col);
 #else
     if (after > context->reservation_bytes) nl_fail(18, file_id, line, col);
@@ -397,14 +514,16 @@ uint64_t nl_stack_alloc_offset(void *opaque, uint64_t top_offset, uint64_t bytes
 void nl_context_destroy(void *opaque) {
     nl_data_stack_context *context = opaque;
     if (!context) return;
-#if defined(__linux__)
+#if defined(__linux__) || NL_WINDOWS
     if (nl_output_flush_all() != 0) nl_fail(20, -1, 0, 0);
-#if defined(NLC_STACK_MODE_OFFSET)
-#endif
+#if NL_WINDOWS
+    nl_map_release(context->header_mapping, 0);
+#else
     munmap(context->mapping, context->mapping_bytes);
     void *header_mapping = context->header_mapping;
     size_t header_bytes = context->header_bytes;
     munmap(header_mapping, header_bytes);
+#endif
 #endif
 }
 
@@ -886,7 +1005,33 @@ void *nl_env_create(int argc, char **argv, int capabilities) {
     nl_environment *environment = (nl_environment *)calloc(1, sizeof(nl_environment));
     if (!environment) nl_stack_startup_failure("cannot allocate capability environment");
     environment->capabilities = capabilities;
+#if NL_WINDOWS
+    /* Raw bytes on stdout and stderr, UTF-8 arguments, and the working directory as the file root. */
+    _setmode(1, _O_BINARY);
+    _setmode(2, _O_BINARY);
+    {
+        int wide_count = 0;
+        wchar_t **wide_arguments = CommandLineToArgvW(GetCommandLineW(), &wide_count);
+        if (!wide_arguments) nl_stack_startup_failure("cannot read the command line");
+        argv = (char **)calloc((size_t)wide_count + 1, sizeof(char *));
+        if (!argv) nl_stack_startup_failure("cannot allocate the argument list");
+        for (int i = 0; i < wide_count; ++i) {
+            int bytes = WideCharToMultiByte(CP_UTF8, 0, wide_arguments[i], -1, NULL, 0, NULL, NULL);
+            argv[i] = (char *)calloc((size_t)bytes + 1, 1);
+            if (bytes <= 0 || !argv[i]) nl_stack_startup_failure("cannot convert an argument to UTF-8");
+            WideCharToMultiByte(CP_UTF8, 0, wide_arguments[i], -1, argv[i], bytes, NULL, NULL);
+        }
+        argc = wide_count;
+        LocalFree(wide_arguments);
+        DWORD root_length = GetCurrentDirectoryW((DWORD)(sizeof(nl_win_root) / sizeof(nl_win_root[0])), nl_win_root);
+        if (root_length == 0 || root_length >= sizeof(nl_win_root) / sizeof(nl_win_root[0])) {
+            nl_stack_startup_failure("cannot read the working directory");
+        }
+        nl_win_root_length = root_length;
+    }
+#else
     (void)signal(SIGPIPE, SIG_IGN);
+#endif
     environment->root_fd = -1;
     environment->fs.root_fd = -1;
     environment->args.argv = argv;
@@ -905,7 +1050,11 @@ void *nl_env_create(int argc, char **argv, int capabilities) {
     if (!environment->test_directory) nl_stack_startup_failure("cannot save the test file-system root");
     environment->root_fd = open(directory, O_PATH | O_DIRECTORY | O_CLOEXEC);
 #else
+#if NL_WINDOWS
+    environment->root_fd = 0; /* unused: paths resolve against nl_win_root */
+#else
     environment->root_fd = open(".", O_PATH | O_DIRECTORY | O_CLOEXEC);
+#endif
 #endif
     if (environment->root_fd < 0) nl_stack_startup_failure("cannot open the file-system root");
     environment->fs.root_fd = environment->root_fd;
@@ -917,7 +1066,9 @@ void *nl_env_create(int argc, char **argv, int capabilities) {
 void nl_env_destroy(void *value) {
     nl_environment *environment = (nl_environment *)value;
     if (!environment) return;
+#if !NL_WINDOWS
     if (environment->root_fd >= 0) close(environment->root_fd);
+#endif
 #if defined(NLC_TEST_BUILD)
     if (environment->test_directory) {
         nl_remove_tree(environment->test_directory);
@@ -1034,6 +1185,72 @@ static int nl_extract_raw(const void *value, int is_argument, uint64_t capacity,
     return 1;
 }
 
+#if NL_WINDOWS
+static int nl_win_errno(DWORD error) {
+    switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+    case ERROR_INVALID_NAME: return ENOENT;
+    case ERROR_ACCESS_DENIED:
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION: return EACCES;
+    case ERROR_ALREADY_EXISTS:
+    case ERROR_FILE_EXISTS: return EEXIST;
+    case ERROR_DIRECTORY: return ENOTDIR;
+    case ERROR_NOT_ENOUGH_MEMORY:
+    case ERROR_OUTOFMEMORY: return ENOMEM;
+    default: return EIO;
+    }
+}
+
+/* Turn a relative UTF-8 path into the wide path beneath the root. Absolute paths, drive letters,
+   backslashes and ".." segments are refused, as RESOLVE_BENEATH refuses them on Linux. */
+static int nl_win_resolve(const char *path, wchar_t *out, size_t capacity) {
+    size_t length = strlen(path);
+    if (length > 0 && (path[0] == '/' || path[0] == '\\')) { errno = EPERM; return -1; }
+    size_t segment = 0;
+    for (size_t i = 0; i <= length; ++i) {
+        char c = path[i];
+        if (c == ':' || c == '\\') { errno = EPERM; return -1; }
+        if (c == '/' || c == 0) {
+            if (i - segment == 2 && path[segment] == '.' && path[segment + 1] == '.') { errno = EPERM; return -1; }
+            segment = i + 1;
+        }
+    }
+    if (nl_win_root_length + 2 >= capacity) { errno = ENAMETOOLONG; return -1; }
+    memcpy(out, nl_win_root, nl_win_root_length * sizeof(wchar_t));
+    size_t at = nl_win_root_length;
+    out[at++] = L'\\';
+    int wide = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, (int)length + 1, out + at, (int)(capacity - at));
+    if (wide <= 0) { errno = EINVAL; return -1; }
+    for (wchar_t *p = out + at; *p; ++p) if (*p == L'/') *p = L'\\';
+    return 0;
+}
+
+static int nl_open_beneath(int root_fd, const char *path, int flags, mode_t mode) {
+    (void)root_fd;
+    (void)mode;
+    wchar_t wide[32768];
+    if (nl_win_resolve(path, wide, sizeof(wide) / sizeof(wide[0])) != 0) return -1;
+    int writing = (flags & (O_WRONLY | O_RDWR)) != 0;
+    DWORD disposition = (flags & O_CREAT) ? ((flags & O_TRUNC) ? CREATE_ALWAYS : OPEN_ALWAYS) : OPEN_EXISTING;
+    HANDLE handle = CreateFileW(wide, writing ? GENERIC_WRITE : GENERIC_READ,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                                disposition, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (handle == INVALID_HANDLE_VALUE) { errno = nl_win_errno(GetLastError()); return -1; }
+    BY_HANDLE_FILE_INFORMATION information;
+    if (GetFileInformationByHandle(handle, &information) &&
+        ((information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+         (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))) {
+        CloseHandle(handle);
+        errno = (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? EISDIR : ELOOP;
+        return -1;
+    }
+    int fd = _open_osfhandle((intptr_t)handle, (writing ? _O_WRONLY : _O_RDONLY) | _O_BINARY);
+    if (fd < 0) { CloseHandle(handle); errno = EIO; return -1; }
+    return fd;
+}
+#else
 static int nl_open_beneath(int root_fd, const char *path, int flags, mode_t mode) {
 #if defined(__linux__) && defined(SYS_openat2)
     struct open_how how;
@@ -1047,6 +1264,7 @@ static int nl_open_beneath(int root_fd, const char *path, int flags, mode_t mode
     return -1;
 #endif
 }
+#endif
 
 static int nl_entry_kind_beneath(int root_fd, const char *directory_path,
                                  const char *name, size_t name_length) {
@@ -1094,6 +1312,12 @@ static int nl_output_uses_same_terminal(void) {
     struct stat error_status;
     nl_output_is_terminal[0] = isatty(STDOUT_FILENO) != 0;
     nl_output_is_terminal[1] = isatty(STDERR_FILENO) != 0;
+#if NL_WINDOWS
+    (void)output_status;
+    (void)error_status;
+    /* Both streams are consoles; Windows reports no inode, so treat them as one terminal. */
+    nl_output_shared_terminal = nl_output_is_terminal[0] && nl_output_is_terminal[1] ? 1 : 0;
+#else
     nl_output_shared_terminal =
         nl_output_is_terminal[0] && nl_output_is_terminal[1] &&
                 fstat(STDOUT_FILENO, &output_status) == 0 &&
@@ -1102,6 +1326,7 @@ static int nl_output_uses_same_terminal(void) {
                 output_status.st_ino == error_status.st_ino
             ? 1
             : 0;
+#endif
     return nl_output_shared_terminal;
 }
 
@@ -1338,6 +1563,7 @@ void nl_fs_read_string(void *handle, void *path_value, int path_is_argument,
 
 #define NL_DIR_NAME_SLOT_BYTES UINT64_C(16392)
 
+#if !NL_WINDOWS
 struct nl_linux_dirent64 {
     uint64_t inode;
     int64_t offset;
@@ -1393,6 +1619,8 @@ static int nl_directory_next(nl_directory_iterator *iterator,
         return 1;
     }
 }
+
+#endif
 
 static unsigned char *nl_dir_name_slot(unsigned char *base, size_t index) {
     return base + 8 + (uint64_t)index * NL_DIR_NAME_SLOT_BYTES;
@@ -1482,6 +1710,7 @@ static void nl_dir_entry_store(unsigned char *base, uint64_t capacity,
     kinds[index] = kind;
 }
 
+#if !NL_WINDOWS
 void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t path_capacity,
                 void *output, uint64_t capacity, void *result) {
     int error_tag = -1, error_code = 0;
@@ -1527,6 +1756,8 @@ void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t p
     nl_io_error(result, -1, 0);
 }
 
+#endif
+
 static int nl_has_extension(const char *name, size_t name_length,
                             const unsigned char *extension, uint64_t extension_length) {
     size_t dot = name_length;
@@ -1539,6 +1770,7 @@ static int nl_has_extension(const char *name, size_t name_length,
            (!actual_length || memcmp(name + dot, extension, actual_length) == 0);
 }
 
+#if !NL_WINDOWS
 void nl_fs_list_with_extension(void *handle, void *path_value, int path_is_argument,
                                uint64_t path_capacity, const unsigned char *extension,
                                uint64_t extension_length, void *output,
@@ -1604,6 +1836,88 @@ void nl_fs_list_with_extension(void *handle, void *path_value, int path_is_argum
     *(int64_t *)output = (int64_t)count;
     nl_io_error(result, -1, 0);
 }
+
+#endif
+
+#if NL_WINDOWS
+/* Directory listing with FindFirstFileW: names as UTF-8, kinds from the attributes (a link is "other"). */
+static void nl_win_list(const char *path, const unsigned char *extension,
+                        uint64_t extension_length, int filter, void *output, uint64_t capacity,
+                        void *result) {
+    wchar_t pattern[32768];
+    if (nl_win_resolve(path, pattern, sizeof(pattern) / sizeof(pattern[0]) - 2) != 0) {
+        int error = errno;
+        nl_io_error(result, nl_errno_error(error), error);
+        return;
+    }
+    size_t at = wcslen(pattern);
+    if (at > 0 && pattern[at - 1] != L'\\') pattern[at++] = L'\\';
+    pattern[at++] = L'*';
+    pattern[at] = 0;
+    WIN32_FIND_DATAW data;
+    HANDLE find = FindFirstFileW(pattern, &data);
+    if (find == INVALID_HANDLE_VALUE) {
+        int error = nl_win_errno(GetLastError());
+        nl_io_error(result, nl_errno_error(error), error);
+        return;
+    }
+    unsigned char *base = (unsigned char *)output;
+    size_t count = 0;
+    int failure_tag = -1, failure_code = 0;
+    do {
+        if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L"..")) continue;
+        char name[4 * 260 + 1];
+        int length = WideCharToMultiByte(CP_UTF8, 0, data.cFileName, -1, name, (int)sizeof(name), NULL, NULL);
+        if (length <= 0) { failure_tag = 4; break; }
+        length -= 1;
+        if (filter && !nl_has_extension(name, (size_t)length, extension, extension_length)) continue;
+        if ((uint64_t)count >= capacity) { failure_tag = 3; break; }
+        int kind = (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? 2
+                 : (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+        nl_dir_entry_store(base, capacity, count, name, (size_t)length, kind);
+        ++count;
+    } while (FindNextFileW(find, &data));
+    FindClose(find);
+    if (failure_tag >= 0) { nl_io_error(result, failure_tag, failure_code); return; }
+    nl_dir_sort(base, capacity, count);
+    *(int64_t *)output = (int64_t)count;
+    nl_io_error(result, -1, 0);
+}
+
+void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t path_capacity,
+                void *output, uint64_t capacity, void *result) {
+    (void)handle;
+    int error_tag = -1, error_code = 0;
+    char path[4097];
+    if (output) *(int64_t *)output = 0;
+    if (capacity > (SIZE_MAX - 8) / 16396 || !output) { nl_io_error(result, 3, 0); return; }
+    if (!nl_extract_path(path_value, path_is_argument, path_capacity, path, &error_tag, &error_code)) {
+        nl_io_error(result, error_tag, error_code); return;
+    }
+    int flush_error = nl_output_flush_all();
+    if (flush_error) { nl_io_error(result, nl_errno_error(flush_error), flush_error); return; }
+    nl_win_list(path, NULL, 0, 0, output, capacity, result);
+}
+
+void nl_fs_list_with_extension(void *handle, void *path_value, int path_is_argument,
+                               uint64_t path_capacity, const unsigned char *extension,
+                               uint64_t extension_length, void *output,
+                               uint64_t capacity, void *result) {
+    (void)handle;
+    int error_tag = -1, error_code = 0;
+    char path[4097];
+    if (output) *(int64_t *)output = 0;
+    if (capacity > (SIZE_MAX - 8) / 16396 || !output || (extension_length && !extension)) {
+        nl_io_error(result, 3, 0); return;
+    }
+    if (!nl_extract_path(path_value, path_is_argument, path_capacity, path, &error_tag, &error_code)) {
+        nl_io_error(result, error_tag, error_code); return;
+    }
+    int flush_error = nl_output_flush_all();
+    if (flush_error) { nl_io_error(result, nl_errno_error(flush_error), flush_error); return; }
+    nl_win_list(path, extension, extension_length, 1, output, capacity, result);
+}
+#endif
 
 void nl_fs_write(void *handle, void *path_value, int path_is_argument, uint64_t path_capacity,
                  void *data_value, int data_is_argument, uint64_t data_capacity, void *result) {
