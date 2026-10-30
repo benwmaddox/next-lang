@@ -1,0 +1,1 @@
+not-comparable: parses the template once into literal chunks and variable slots before the timed rounds, so each round only copies chunks and looks keys up; LangArena's reference scans the template in every round

@@ -1,10 +1,12 @@
-// map<K, V, N>: up to N keys, hashed. A map value is [count: i64][slot 0][slot 1]...: a power-of-two
-// number of slots (at least twice N, so a probe always meets an empty slot), each a plain record
-// [state: i64][key][value] where state is 0 for empty and 1 for full. Keys are numbers, bools,
-// enums or text; values are numbers, bools, enums or text. Lookups use linear probing and a removal
-// shifts later entries back, so no tombstones build up. The operations are generated once per map
-// type as small functions (find, set, get, remove); a method call passes numbers by value and text
-// by pointer.
+// map<K, V, N>: up to N keys, hashed. A map value is [count: i64][used: i64], then N entries in
+// insertion order, then an index of 4-byte slots (a power of two, at least twice N). An entry is a
+// plain record [state: i64][key][value] with state 1 for a live entry and 0 for a removed one. The
+// index holds entry number + 1 (0 is empty) and is probed linearly from the key hash. Entries are only
+// appended, so a run of lookups in insertion order reads the entries array sequentially. A removal
+// marks its entry dead; when the entries fill up with dead ones they are squeezed out (order kept) and
+// the index is rebuilt. Keys and values are numbers, bools, enums or text. The operations are
+// generated once per map type as small functions (find, get, set, remove, compact); a method call
+// passes numbers by value and text by pointer.
 
 const COLLECTION_METHOD_MAP_GET: long = 1009L
 const COLLECTION_METHOD_MAP_SET: long = 1010L
@@ -131,8 +133,10 @@ fn intern_map_type(
     })
     if value_type_size(compiler, key) >= 0L && value_type_size(compiler, value) >= 0L {
         let slot_size = map_slot_size(compiler, type_id)
-        let table = checked_size_product(map_slot_count(capacity), slot_size)
-        let size = if table < 0L { table } else { checked_layout_size_align(checked_layout_size_add(8L, table), 8L) }
+        let entries = checked_size_product(capacity, slot_size)
+        let index = checked_size_product(map_slot_count(capacity), 4L)
+        let size = if entries < 0L { entries } else if index < 0L { index }
+            else { checked_layout_size_align(checked_layout_size_add(checked_layout_size_add(16L, entries), index), 8L) }
         if size == -2L {
             set_type_layout(compiler, type_id, -1L, 8L, TYPE_STATE_LAYOUT_OVERFLOW)
         } else if size < 0L || size >= MAX_VALUE_SIZE {
@@ -248,26 +252,56 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
         ir_write_ascii(compiler, ir, "  %z = icmp eq i64 %k, %v\n  ret i1 %z\n}\n\n")
     }
 
-    // find(map, key) -> slot index or -1
+    let index_base = 16L + capacity * slot_size
+
+    // link(map, hash, entry): put entry + 1 in the first empty index slot on the hash probe path
+    ir_write_ascii(compiler, ir, "define internal void "); ir_map_sym(compiler, ir, "link", type_id)
+    ir_write_ascii(compiler, ir, "(ptr %map, i64 %h, i64 %e) {\nentry:\n  %start = and i64 %h, "); ir_write_number(compiler, ir, mask)
+    ir_write_ascii(compiler, ir, "\n  %e1 = add i64 %e, 1\n  %e32 = trunc i64 %e1 to i32\n  br label %scan\nscan:\n  %i = phi i64 [ %start, %entry ], [ %next, %scan.next ]\n  %io = mul i64 %i, 4\n  %io2 = add i64 %io, ")
+    ir_write_number(compiler, ir, index_base)
+    ir_write_ascii(compiler, ir, "\n  %sp = getelementptr i8, ptr %map, i64 %io2\n  %v = load i32, ptr %sp\n  %free = icmp eq i32 %v, 0\n  br i1 %free, label %fill, label %scan.next\nscan.next:\n  %i1 = add i64 %i, 1\n  %next = and i64 %i1, ")
+    ir_write_number(compiler, ir, mask)
+    ir_write_ascii(compiler, ir, "\n  br label %scan\nfill:\n  store i32 %e32, ptr %sp\n  ret void\n}\n\n")
+
+    // find(map, key) -> entry index or -1
     ir_write_ascii(compiler, ir, "define internal i64 "); ir_map_sym(compiler, ir, "find", type_id); ir_write_ascii(compiler, ir, "(ptr %map, ")
     ir_write_ascii(compiler, ir, key_param); ir_write_ascii(compiler, ir, " %k) {\nentry:\n  %h = call i64 "); ir_map_sym(compiler, ir, "hash", type_id)
     ir_write_ascii(compiler, ir, "("); ir_write_ascii(compiler, ir, key_param); ir_write_ascii(compiler, ir, " %k)\n  %start = and i64 %h, "); ir_write_number(compiler, ir, mask)
-    ir_write_ascii(compiler, ir, "\n  br label %probe\nprobe:\n  %i = phi i64 [ %start, %entry ], [ %next, %advance ]\n  %n = phi i64 [ 0, %entry ], [ %n1, %advance ]\n  %off = mul i64 %i, ")
+    ir_write_ascii(compiler, ir, "\n  br label %probe\nprobe:\n  %i = phi i64 [ %start, %entry ], [ %next, %advance ]\n  %n = phi i64 [ 0, %entry ], [ %n1, %advance ]\n  %io = mul i64 %i, 4\n  %io2 = add i64 %io, ")
+    ir_write_number(compiler, ir, index_base)
+    ir_write_ascii(compiler, ir, "\n  %sp = getelementptr i8, ptr %map, i64 %io2\n  %v = load i32, ptr %sp\n  %empty = icmp eq i32 %v, 0\n  br i1 %empty, label %miss, label %check\ncheck:\n  %e32 = sub i32 %v, 1\n  %e = zext i32 %e32 to i64\n  %eo = mul i64 %e, ")
     ir_write_number(compiler, ir, slot_size)
-    ir_write_ascii(compiler, ir, "\n  %so = add i64 %off, 8\n  %slot = getelementptr i8, ptr %map, i64 %so\n  %st = load i64, ptr %slot\n  %empty = icmp eq i64 %st, 0\n  br i1 %empty, label %miss, label %check\ncheck:\n")
-    ir_write_ascii(compiler, ir, "  %kp = getelementptr i8, ptr %slot, i64 "); ir_write_number(compiler, ir, key_offset)
+    ir_write_ascii(compiler, ir, "\n  %eo2 = add i64 %eo, 16\n  %ep = getelementptr i8, ptr %map, i64 %eo2\n  %st = load i64, ptr %ep\n  %live = icmp eq i64 %st, 1\n  br i1 %live, label %cmp, label %advance\ncmp:\n  %kp = getelementptr i8, ptr %ep, i64 ")
+    ir_write_number(compiler, ir, key_offset)
     ir_write_ascii(compiler, ir, "\n  %same = call i1 "); ir_map_sym(compiler, ir, "same", type_id); ir_write_ascii(compiler, ir, "("); ir_write_ascii(compiler, ir, key_param)
     ir_write_ascii(compiler, ir, " %k, ptr %kp)\n  br i1 %same, label %hit, label %advance\nadvance:\n  %i1 = add i64 %i, 1\n  %next = and i64 %i1, "); ir_write_number(compiler, ir, mask)
     ir_write_ascii(compiler, ir, "\n  %n1 = add i64 %n, 1\n  %full = icmp uge i64 %n1, "); ir_write_number(compiler, ir, slots)
-    ir_write_ascii(compiler, ir, "\n  br i1 %full, label %miss, label %probe\nhit:\n  ret i64 %i\nmiss:\n  ret i64 -1\n}\n\n")
+    ir_write_ascii(compiler, ir, "\n  br i1 %full, label %miss, label %probe\nhit:\n  ret i64 %e\nmiss:\n  ret i64 -1\n}\n\n")
 
     // get(map, key) -> pointer to the value or null
     ir_write_ascii(compiler, ir, "define internal ptr "); ir_map_sym(compiler, ir, "get", type_id); ir_write_ascii(compiler, ir, "(ptr %map, ")
     ir_write_ascii(compiler, ir, key_param); ir_write_ascii(compiler, ir, " %k) {\nentry:\n  %idx = call i64 "); ir_map_sym(compiler, ir, "find", type_id)
     ir_write_ascii(compiler, ir, "(ptr %map, "); ir_write_ascii(compiler, ir, key_param); ir_write_ascii(compiler, ir, " %k)\n  %found = icmp sge i64 %idx, 0\n  br i1 %found, label %some, label %none\nsome:\n  %off = mul i64 %idx, ")
     ir_write_number(compiler, ir, slot_size)
-    ir_write_ascii(compiler, ir, "\n  %so = add i64 %off, "); ir_write_number(compiler, ir, 8L + value_offset)
+    ir_write_ascii(compiler, ir, "\n  %so = add i64 %off, "); ir_write_number(compiler, ir, 16L + value_offset)
     ir_write_ascii(compiler, ir, "\n  %vp = getelementptr i8, ptr %map, i64 %so\n  ret ptr %vp\nnone:\n  ret ptr null\n}\n\n")
+
+    // compact(map): squeeze the removed entries out (keeping order) and rebuild the index
+    ir_write_ascii(compiler, ir, "define internal void "); ir_map_sym(compiler, ir, "compact", type_id)
+    ir_write_ascii(compiler, ir, "(ptr %map) {\nentry:\n  %usedp = getelementptr i8, ptr %map, i64 8\n  %used = load i64, ptr %usedp\n  br label %loop\nloop:\n  %e = phi i64 [ 0, %entry ], [ %e1, %latch ]\n  %d = phi i64 [ 0, %entry ], [ %d2, %latch ]\n  %more = icmp ult i64 %e, %used\n  br i1 %more, label %body, label %rebuild\nbody:\n  %eo = mul i64 %e, ")
+    ir_write_number(compiler, ir, slot_size)
+    ir_write_ascii(compiler, ir, "\n  %eo2 = add i64 %eo, 16\n  %ep = getelementptr i8, ptr %map, i64 %eo2\n  %st = load i64, ptr %ep\n  %live = icmp eq i64 %st, 1\n  br i1 %live, label %move, label %latch\nmove:\n  %do = mul i64 %d, ")
+    ir_write_number(compiler, ir, slot_size)
+    ir_write_ascii(compiler, ir, "\n  %do2 = add i64 %do, 16\n  %dp = getelementptr i8, ptr %map, i64 %do2\n  %mv = call ptr @memmove(ptr %dp, ptr %ep, i64 "); ir_write_number(compiler, ir, slot_size)
+    ir_write_ascii(compiler, ir, ")\n  %d1 = add i64 %d, 1\n  br label %latch\nlatch:\n  %d2 = phi i64 [ %d, %body ], [ %d1, %move ]\n  %e1 = add i64 %e, 1\n  br label %loop\nrebuild:\n  store i64 %d, ptr %usedp\n  %ip = getelementptr i8, ptr %map, i64 ")
+    ir_write_number(compiler, ir, index_base)
+    ir_write_ascii(compiler, ir, "\n  %clr = call ptr @memset(ptr %ip, i32 0, i64 "); ir_write_number(compiler, ir, slots * 4L)
+    ir_write_ascii(compiler, ir, ")\n  br label %relink\nrelink:\n  %r = phi i64 [ 0, %rebuild ], [ %r1, %relink.body ]\n  %rm = icmp ult i64 %r, %d\n  br i1 %rm, label %relink.body, label %done\nrelink.body:\n  %ro = mul i64 %r, ")
+    ir_write_number(compiler, ir, slot_size)
+    ir_write_ascii(compiler, ir, "\n  %ro2 = add i64 %ro, "); ir_write_number(compiler, ir, 16L + key_offset)
+    ir_write_ascii(compiler, ir, "\n  %kp = getelementptr i8, ptr %map, i64 %ro2\n  %hh = call i64 "); ir_map_sym(compiler, ir, "hashslot", type_id)
+    ir_write_ascii(compiler, ir, "(ptr %kp)\n  call void "); ir_map_sym(compiler, ir, "link", type_id)
+    ir_write_ascii(compiler, ir, "(ptr %map, i64 %hh, i64 %r)\n  %r1 = add i64 %r, 1\n  br label %relink\ndone:\n  ret void\n}\n\n")
 
     // set(map, key, value) -> true unless the map is full
     ir_write_ascii(compiler, ir, "define internal i1 "); ir_map_sym(compiler, ir, "set", type_id); ir_write_ascii(compiler, ir, "(ptr %map, ")
@@ -275,46 +309,33 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
     ir_write_ascii(compiler, ir, " %v) {\nentry:\n  %idx = call i64 "); ir_map_sym(compiler, ir, "find", type_id); ir_write_ascii(compiler, ir, "(ptr %map, ")
     ir_write_ascii(compiler, ir, key_param); ir_write_ascii(compiler, ir, " %k)\n  %found = icmp sge i64 %idx, 0\n  br i1 %found, label %update, label %insert\nupdate:\n  %uoff = mul i64 %idx, ")
     ir_write_number(compiler, ir, slot_size)
-    ir_write_ascii(compiler, ir, "\n  %uo = add i64 %uoff, "); ir_write_number(compiler, ir, 8L + value_offset)
+    ir_write_ascii(compiler, ir, "\n  %uo = add i64 %uoff, "); ir_write_number(compiler, ir, 16L + value_offset)
     ir_write_ascii(compiler, ir, "\n  %up = getelementptr i8, ptr %map, i64 %uo\n")
     if value_is_text { emit_map_text_copy(compiler, ir, value_data, "up", "v", 1L) } else { emit_map_scalar_store(compiler, ir, value_size, "up", "v", 1L) }
-    ir_write_ascii(compiler, ir, "  ret i1 true\ninsert:\n  %cnt = load i64, ptr %map\n  %room = icmp ult i64 %cnt, "); ir_write_number(compiler, ir, capacity)
-    ir_write_ascii(compiler, ir, "\n  br i1 %room, label %place, label %full\nfull:\n  ret i1 false\nplace:\n  %h = call i64 "); ir_map_sym(compiler, ir, "hash", type_id)
-    ir_write_ascii(compiler, ir, "("); ir_write_ascii(compiler, ir, key_param); ir_write_ascii(compiler, ir, " %k)\n  %start = and i64 %h, "); ir_write_number(compiler, ir, mask)
-    ir_write_ascii(compiler, ir, "\n  br label %scan\nscan:\n  %i = phi i64 [ %start, %place ], [ %next, %scan.next ]\n  %off = mul i64 %i, "); ir_write_number(compiler, ir, slot_size)
-    ir_write_ascii(compiler, ir, "\n  %so = add i64 %off, 8\n  %slot = getelementptr i8, ptr %map, i64 %so\n  %st = load i64, ptr %slot\n  %free = icmp eq i64 %st, 0\n  br i1 %free, label %fill, label %scan.next\n")
-    ir_write_ascii(compiler, ir, "scan.next:\n  %i1 = add i64 %i, 1\n  %next = and i64 %i1, "); ir_write_number(compiler, ir, mask)
-    ir_write_ascii(compiler, ir, "\n  br label %scan\nfill:\n  store i64 1, ptr %slot\n  %kp = getelementptr i8, ptr %slot, i64 "); ir_write_number(compiler, ir, key_offset); ir_push_byte(compiler, ir, 10)
+    ir_write_ascii(compiler, ir, "  ret i1 true\ninsert:\n  %usedp = getelementptr i8, ptr %map, i64 8\n  %used = load i64, ptr %usedp\n  %roomy = icmp ult i64 %used, "); ir_write_number(compiler, ir, capacity)
+    ir_write_ascii(compiler, ir, "\n  br i1 %roomy, label %place, label %packed\npacked:\n  %cnt = load i64, ptr %map\n  %slack = icmp ult i64 %cnt, "); ir_write_number(compiler, ir, capacity)
+    ir_write_ascii(compiler, ir, "\n  br i1 %slack, label %squeeze, label %full\nfull:\n  ret i1 false\nsqueeze:\n  call void "); ir_map_sym(compiler, ir, "compact", type_id)
+    ir_write_ascii(compiler, ir, "(ptr %map)\n  br label %place\nplace:\n  %e = load i64, ptr %usedp\n  %eoff = mul i64 %e, "); ir_write_number(compiler, ir, slot_size)
+    ir_write_ascii(compiler, ir, "\n  %eo = add i64 %eoff, 16\n  %ep = getelementptr i8, ptr %map, i64 %eo\n  store i64 1, ptr %ep\n  %kp = getelementptr i8, ptr %ep, i64 "); ir_write_number(compiler, ir, key_offset); ir_push_byte(compiler, ir, 10)
     if key_is_text { emit_map_text_copy(compiler, ir, key_data, "kp", "k", 2L) } else { emit_map_scalar_store(compiler, ir, key_size, "kp", "k", 2L) }
-    ir_write_ascii(compiler, ir, "  %vp = getelementptr i8, ptr %slot, i64 "); ir_write_number(compiler, ir, value_offset); ir_push_byte(compiler, ir, 10)
+    ir_write_ascii(compiler, ir, "  %vp = getelementptr i8, ptr %ep, i64 "); ir_write_number(compiler, ir, value_offset); ir_push_byte(compiler, ir, 10)
     if value_is_text { emit_map_text_copy(compiler, ir, value_data, "vp", "v", 3L) } else { emit_map_scalar_store(compiler, ir, value_size, "vp", "v", 3L) }
-    ir_write_ascii(compiler, ir, "  %cnt2 = add i64 %cnt, 1\n  store i64 %cnt2, ptr %map\n  ret i1 true\n}\n\n")
+    ir_write_ascii(compiler, ir, "  %e2 = add i64 %e, 1\n  store i64 %e2, ptr %usedp\n  %cnt2o = load i64, ptr %map\n  %cnt2 = add i64 %cnt2o, 1\n  store i64 %cnt2, ptr %map\n  %h = call i64 "); ir_map_sym(compiler, ir, "hash", type_id)
+    ir_write_ascii(compiler, ir, "("); ir_write_ascii(compiler, ir, key_param); ir_write_ascii(compiler, ir, " %k)\n  call void "); ir_map_sym(compiler, ir, "link", type_id)
+    ir_write_ascii(compiler, ir, "(ptr %map, i64 %h, i64 %e)\n  ret i1 true\n}\n\n")
 
     // remove(map, key, out) -> true if the key was present; the old value is copied to out
     ir_write_ascii(compiler, ir, "define internal i1 "); ir_map_sym(compiler, ir, "remove", type_id); ir_write_ascii(compiler, ir, "(ptr %map, ")
     ir_write_ascii(compiler, ir, key_param); ir_write_ascii(compiler, ir, " %k, ptr %out) {\nentry:\n  %idx = call i64 "); ir_map_sym(compiler, ir, "find", type_id)
     ir_write_ascii(compiler, ir, "(ptr %map, "); ir_write_ascii(compiler, ir, key_param); ir_write_ascii(compiler, ir, " %k)\n  %found = icmp sge i64 %idx, 0\n  br i1 %found, label %take, label %absent\nabsent:\n  ret i1 false\ntake:\n  %toff = mul i64 %idx, ")
     ir_write_number(compiler, ir, slot_size)
-    ir_write_ascii(compiler, ir, "\n  %tov = add i64 %toff, "); ir_write_number(compiler, ir, 8L + value_offset)
-    ir_write_ascii(compiler, ir, "\n  %tp = getelementptr i8, ptr %map, i64 %tov\n")
+    ir_write_ascii(compiler, ir, "\n  %tov = add i64 %toff, 16\n  %ep = getelementptr i8, ptr %map, i64 %tov\n  %tp = getelementptr i8, ptr %ep, i64 "); ir_write_number(compiler, ir, value_offset); ir_push_byte(compiler, ir, 10)
     if value_is_text {
         emit_map_text_copy(compiler, ir, value_data, "out", "tp", 4L)
     } else {
         ir_write_ascii(compiler, ir, "  %tc = call ptr @memcpy(ptr %out, ptr %tp, i64 "); ir_write_number(compiler, ir, value_size); ir_write_ascii(compiler, ir, ")\n")
     }
-    ir_write_ascii(compiler, ir, "  br label %shift.head\nshift.head:\n  %hole = phi i64 [ %idx, %take ], [ %hole.n, %shift.latch ]\n  %j = phi i64 [ %idx, %take ], [ %jj, %shift.latch ]\n")
-    ir_write_ascii(compiler, ir, "  %j1 = add i64 %j, 1\n  %jj = and i64 %j1, "); ir_write_number(compiler, ir, mask)
-    ir_write_ascii(compiler, ir, "\n  %joff = mul i64 %jj, "); ir_write_number(compiler, ir, slot_size)
-    ir_write_ascii(compiler, ir, "\n  %jo = add i64 %joff, 8\n  %sj = getelementptr i8, ptr %map, i64 %jo\n  %stj = load i64, ptr %sj\n  %jempty = icmp eq i64 %stj, 0\n  br i1 %jempty, label %shift.done, label %shift.test\n")
-    ir_write_ascii(compiler, ir, "shift.test:\n  %jk = getelementptr i8, ptr %sj, i64 "); ir_write_number(compiler, ir, key_offset)
-    ir_write_ascii(compiler, ir, "\n  %hh = call i64 "); ir_map_sym(compiler, ir, "hashslot", type_id); ir_write_ascii(compiler, ir, "(ptr %jk)\n  %home = and i64 %hh, "); ir_write_number(compiler, ir, mask)
-    ir_write_ascii(compiler, ir, "\n  %dh = sub i64 %jj, %home\n  %dhm = and i64 %dh, "); ir_write_number(compiler, ir, mask)
-    ir_write_ascii(compiler, ir, "\n  %dl = sub i64 %jj, %hole\n  %dlm = and i64 %dl, "); ir_write_number(compiler, ir, mask)
-    ir_write_ascii(compiler, ir, "\n  %mv = icmp uge i64 %dhm, %dlm\n  br i1 %mv, label %shift.move, label %shift.latch\nshift.move:\n  %hoff = mul i64 %hole, "); ir_write_number(compiler, ir, slot_size)
-    ir_write_ascii(compiler, ir, "\n  %ho = add i64 %hoff, 8\n  %sh = getelementptr i8, ptr %map, i64 %ho\n  %mc = call ptr @memmove(ptr %sh, ptr %sj, i64 "); ir_write_number(compiler, ir, slot_size)
-    ir_write_ascii(compiler, ir, ")\n  br label %shift.latch\nshift.latch:\n  %hole.n = phi i64 [ %hole, %shift.test ], [ %jj, %shift.move ]\n  br label %shift.head\nshift.done:\n")
-    ir_write_ascii(compiler, ir, "  %doff = mul i64 %hole, "); ir_write_number(compiler, ir, slot_size)
-    ir_write_ascii(compiler, ir, "\n  %dov = add i64 %doff, 8\n  %sd = getelementptr i8, ptr %map, i64 %dov\n  store i64 0, ptr %sd\n  %rc = load i64, ptr %map\n  %rc2 = sub i64 %rc, 1\n  store i64 %rc2, ptr %map\n  ret i1 true\n}\n\n")
+    ir_write_ascii(compiler, ir, "  store i64 0, ptr %ep\n  %rc = load i64, ptr %map\n  %rc2 = sub i64 %rc, 1\n  store i64 %rc2, ptr %map\n  ret i1 true\n}\n\n")
 }
 
 fn emit_map_type_functions(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {

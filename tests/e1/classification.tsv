@@ -884,6 +884,8 @@ build	tests/e3/b1_queue_wrap
 build	tests/e3/b1_nested_collections
 build	tests/e3/b1_assignment_in_place
 unsupported	tests/e3/b1_map_basic
+unsupported	tests/e3/b1_map_churn
+unsupported	tests/e3/b1_sort_builtins
 build	tests/e3/b1_wrapping_ops
 build	tests/e3/b1_queue_write_param
 unsupported	tests/e3/b1_queue_bool_unsupported

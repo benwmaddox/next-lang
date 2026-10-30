@@ -1660,6 +1660,8 @@ recursive fn emit_expr_linear(
                     }
                 } else if (compiler.facts[current].flags & FACT_NUMERIC_BUILTIN) != 0L {
                     emit_numeric_builtin(files, tables, compiler, ir, current, file_index)
+                } else if (compiler.facts[current].flags & FACT_SORT_BUILTIN) != 0L {
+                    emit_sort_call(tables, compiler, ir, current)
                 } else if is_fill {
                     let fill_type = compiler.facts[current].ty
                     emit_collection_fill_array(tables, compiler, ir, current, fill_type, first_arg)

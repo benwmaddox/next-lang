@@ -855,6 +855,11 @@ fn check_one_body(
                         continue
                     }
                     let function = find_function_by_name(compiler, compiler.token_name_ids[syntax.token])
+                    if function >= 0L && is_sort_comparator_name(source, tokens, files, tables, compiler, file_index, node) {
+                        compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function, literal: 0L }
+                        match compiler.work.pop() { some(_) => (), none() => () }
+                        continue
+                    }
                     if function >= 0L { report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node, offset: syntax.start, category: UNSUPPORTED_NODE, token: syntax.token }) }
                     var case_index = -1L
                     var case_type = -1L
@@ -1346,6 +1351,17 @@ fn check_one_body(
                     fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values")
                 }
                 compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: 0L }
+            } else if sort_builtin_kind(source, tokens, files, compiler, file_index, syntax.token, frame.scope) != SORT_NONE {
+                let sort_kind = sort_builtin_kind(source, tokens, files, compiler, file_index, syntax.token, frame.scope)
+                let comparator = check_sort_builtin(env, source, tokens, files, tables, compiler, file_index, node, frame.scope, sort_kind)
+                if frame.expected >= 0L && frame.expected != TY_UNIT { require_type(env, files, compiler, file_index, node, frame.expected, TY_UNIT, tables) }
+                if comparator >= 0L && function_id >= 0L {
+                    let sort_edge = compiler.call_edges.count()
+                    let sort_next = compiler.edge_first[function_id]
+                    compiler.call_edges.push(CallEdge { from: function_id, to: comparator, node, next: sort_next }).unwrap()
+                    compiler.edge_first[function_id] = sort_edge
+                }
+                compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: (if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }) | FACT_SORT_BUILTIN, binding: -1L, function: -1L, literal: comparator }
             } else if numeric_builtin_kind(source, tokens, files, compiler, file_index, syntax.token, frame.scope) != NUMERIC_BUILTIN_NONE {
                 let builtin_kind = numeric_builtin_kind(source, tokens, files, compiler, file_index, syntax.token, frame.scope)
                 let required_args = if builtin_kind == NUMERIC_BUILTIN_ABS { 1L } else if builtin_kind == NUMERIC_BUILTIN_CLAMP { 3L } else { 2L }
@@ -2287,7 +2303,7 @@ fn add_default_call_graph_edges(
         let from = test_graph_node(compiler, test_index)
         for syntax_node in first..root + 1L {
             if tables.nodes[syntax_node].kind == NodeKind.Call {
-                let target = compiler.facts[syntax_node].function
+                let target = if (compiler.facts[syntax_node].flags & FACT_SORT_BUILTIN) != 0L { compiler.facts[syntax_node].literal } else { compiler.facts[syntax_node].function }
                 if target >= 0L { push_call_graph_edge(compiler, from, target, syntax_node) }
             } else if tables.nodes[syntax_node].kind == NodeKind.StructInit {
                 let type_index = struct_type_matches(compiler, compiler.token_name_ids[tables.nodes[syntax_node].token])

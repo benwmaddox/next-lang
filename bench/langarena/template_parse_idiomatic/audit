@@ -1,0 +1,1 @@
+closest-possible: the same scanner as template_parse, but each literal run between tags is appended with one slice copy (a block copy) instead of a byte at a time; Crystal appends spans too, so this is the closer match to idiomatic use of the language, kept separate so the byte-loop port stays the like-for-like baseline.
