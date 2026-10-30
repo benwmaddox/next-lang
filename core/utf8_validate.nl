@@ -38,9 +38,3 @@ fn non_ascii_offset(data: sys.Addr, byte_count: long) -> long {
     }
     byte_count
 }
-
-fn nl_text_assert_valid(data: sys.Addr, byte_count: long) {
-    if utf8_error_offset(data, byte_count) != byte_count {
-        nl_fail(22, 0, 0, 0)
-    }
-}

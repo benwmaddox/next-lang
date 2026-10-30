@@ -1237,6 +1237,12 @@ fn copy_core_name(name: Ascii max 64) -> Bytes max 4096 {
     result
 }
 
+// The core files whose helpers a C-runtime program compiles in directly. They use no core state and fail
+// nothing, and the compiled functions are internal, so only the ones the program calls survive.
+fn embedded_core_is_prelude_file(name: Ascii max 64) -> bool {
+    name == "text_format.nl" || name == "parse_number.nl" || name == "utf8_validate.nl" || name == "utf8_trusted.nl"
+}
+
 fn append_embedded_core_sources(
     env: Env,
     source: grow Bytes max SOURCE_BUFFER_CAPACITY,
@@ -1244,8 +1250,10 @@ fn append_embedded_core_sources(
     tokens: write list<Token, TOKEN_STORAGE_CAPACITY>,
     delimiters: write list<DelimiterKind, MAX_DELIMITER_NESTING>,
     tables: write ParseTables,
+    prelude_only: bool,
 ) {
     for file_index in 0L..embedded_core_file_count() {
+        if prelude_only && !embedded_core_is_prelude_file(embedded_core_file_name(file_index)) { continue }
         let file_name = copy_core_name(embedded_core_file_name(file_index))
         var file_data: Bytes max FILE_SOURCE_CAPACITY = Bytes.empty()
         for chunk_index in 0L..embedded_core_chunk_count(file_index) {
@@ -1388,6 +1396,7 @@ fn compile_embedded_core(
     test_build: bool,
     tables: write ParseTables,
     compiler: write CompilerTables,
+    prelude_only: bool,
 ) -> bool {
     var source: Bytes max SOURCE_BUFFER_CAPACITY = Bytes.empty()
     var files: list<SourceFile, MAX_SOURCE_FILES> = list {}
@@ -1395,7 +1404,7 @@ fn compile_embedded_core(
     var delimiters: list<DelimiterKind, MAX_DELIMITER_NESTING> = list {}
     reset_parse_tables(tables)
     initialize_parse_tables(tables)
-    append_embedded_core_sources(env, source, files, tokens, delimiters, tables)
+    append_embedded_core_sources(env, source, files, tokens, delimiters, tables, prelude_only)
     reset_compiler_tables(env, compiler)
     compiler.core_mode = true
     compiler.test_build = test_build
@@ -1425,6 +1434,7 @@ fn compile_embedded_core(
         emit_function_definition(source, files, tokens, tables, compiler, ir, function_id)
     }
     emit_registered_type_helpers(source, files, tokens, tables, compiler, ir)
+    if prelude_only { return !compiler.ir_overflow }
     emit_core_file_globals(source, files, tokens, tables, compiler, ir)
     emit_core_registration(files, compiler, ir)
     emit_syscall_helpers(compiler, ir)
@@ -1492,10 +1502,9 @@ fn compile_selfhost_package(
     emit_file_globals(files, source, tokens, tables, compiler, ir)
     emit_main_function(source, compiler, ir, files, tokens, config, entry)
     let user_ir_overflow = compiler.ir_overflow
-    if !compiler.c_runtime {
-        if !compile_embedded_core(env, config, ir, files.count(), want_test_build, tables, compiler) {
-            fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded")
-        }
+    let prelude_only = compiler.c_runtime
+    if !compile_embedded_core(env, config, ir, files.count(), want_test_build, tables, compiler, prelude_only) {
+        fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded")
     }
     compiler.ir_overflow = compiler.ir_overflow || user_ir_overflow
     emit_storage_tbaa_metadata(compiler, ir)
