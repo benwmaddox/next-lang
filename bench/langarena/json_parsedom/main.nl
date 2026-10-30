@@ -24,6 +24,13 @@ fn next_scaled(rng: write Rng, unit: long) -> long {
     (rng.last * unit * 2L + 139968L) / (2L * 139968L)
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn is_run_mode(env: Env) -> bool {
     match env.args().get(0L) {
         some(argument) => argument.count() == 3L,
@@ -425,7 +432,8 @@ fn main(env: Env) {
 
     var nodes: list<JsonNode, 120000> = list {}
     var result = 0L
-    for _round in 0L..warmup + iterations {
+    let rounds = if is_prep_mode(env) { warmup } else { warmup + iterations }
+    for _round in 0L..rounds {
         let averages = calc(text, nodes)
         let sum = checksum_f64(averages.x) + checksum_f64(averages.y) + checksum_f64(averages.z)
         result = (result + sum) % 4294967296L

@@ -26,7 +26,8 @@ const TY_FS: long = 8L
 const TY_OUT: long = 9L
 const TY_ARGS: long = 10L
 const TY_ARG: long = 11L
-const TY_STRUCT_BASE: long = 12L
+const TY_DOUBLE: long = 12L
+const TY_STRUCT_BASE: long = 13L
 // E3a1 begin: struct storage sizes are exact through signed long limits.
 const MAX_VALUE_SIZE: long = 9223372036854775807L
 // E3a1 end
@@ -148,6 +149,7 @@ const UNSUPPORTED_QUEUE_ELEMENT: long = 15L
 const UNSUPPORTED_QUEUE_USE: long = 16L
 const UNSUPPORTED_MAP_USE: long = 17L
 const UNSUPPORTED_MAP_ELEMENT: long = 18L
+const UNSUPPORTED_FLOAT: long = 19L
 const UNSUPPORTED_CONDITIONAL_BUILDER_LOOP: long = 14L
 
 struct TypeRecord {
@@ -533,6 +535,7 @@ fn seed_builtin_types(env: Env, types: write list<TypeRecord, TYPE_TABLE_CAPACIT
     push_builtin_address_type(env, types)
     push_builtin_address_type(env, types)
     push_builtin_address_type(env, types)
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 8L, 8L)).unwrap()
 }
 
 fn empty_compiler_tables() -> CompilerTables {

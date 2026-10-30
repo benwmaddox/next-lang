@@ -1,1 +1,1 @@
-pending: this port generates and parses the same CSV workload, but the numeric columns and checksum require floating-point parsing and formatting. Those language features are scheduled for F1, so there is no executable comparison yet.
+closest-possible: runs on the self-hosted compiler only (stage 0 has no floats). The checksum matches LangArena's, so the work is the same result; how closely the algorithm and allocation pattern follow the reference has not been audited line by line yet.

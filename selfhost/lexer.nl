@@ -208,6 +208,39 @@ fn lex_file(
                     break
                 }
             }
+            // A decimal point followed by a digit continues a decimal number (1.5, 2.5e-3, 1e5 stays an integer error).
+            let radix_prefix = source[base + start] == 48 && start + 1L < length &&
+                (source[base + start + 1L] == 120 || source[base + start + 1L] == 88 || source[base + start + 1L] == 98 || source[base + start + 1L] == 66 || source[base + start + 1L] == 111 || source[base + start + 1L] == 79)
+            if !radix_prefix && pos + 1L < length && source[base + pos] == 46 && source[base + pos + 1L] >= 48 && source[base + pos + 1L] <= 57 {
+                pos += 1L
+                col += 1L
+                for fraction_step in 0L..length {
+                    if pos >= length { break }
+                    let next = source[base + pos]
+                    if (next >= 48 && next <= 57) || (next >= 65 && next <= 90) || (next >= 97 && next <= 122) || next == 95 {
+                        pos += 1L
+                        col += 1L
+                    } else {
+                        break
+                    }
+                }
+                let last = source[base + pos - 1L]
+                if (last == 101 || last == 69) && pos + 1L < length && (source[base + pos] == 43 || source[base + pos] == 45) &&
+                    source[base + pos + 1L] >= 48 && source[base + pos + 1L] <= 57 {
+                    pos += 2L
+                    col += 2L
+                    for exponent_step in 0L..length {
+                        if pos >= length { break }
+                        let next = source[base + pos]
+                        if (next >= 48 && next <= 57) || next == 95 {
+                            pos += 1L
+                            col += 1L
+                        } else {
+                            break
+                        }
+                    }
+                }
+            }
             match emit_token(tokens, file_token_count, TokenKind.Number, start, pos - start, start_line, start_col) {
                 ok(_) => { last_kind = TokenKind.Number },
                 err(problem) => return err(problem),

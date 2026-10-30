@@ -6,6 +6,7 @@ const FORMAT_TEXT_PAD: long = 4L
 const FORMAT_TEXT_PAD_RIGHT: long = 5L
 const FORMAT_TEXT_PAD_ZERO: long = 6L
 const FORMAT_TEXT_ASCII_UPPER: long = 7L
+const FORMAT_TEXT_FIXED: long = 8L
 const FACT_FORMAT_TEXT: long = 16L
 
 fn format_text_builtin_kind(
@@ -27,6 +28,7 @@ fn format_text_builtin_kind(
     else if token_is_word_at(source, tokens, files, file_index, callee_token, "pad_right") { FORMAT_TEXT_PAD_RIGHT }
     else if token_is_word_at(source, tokens, files, file_index, callee_token, "pad_zero") { FORMAT_TEXT_PAD_ZERO }
     else if token_is_word_at(source, tokens, files, file_index, callee_token, "ascii_upper") { FORMAT_TEXT_ASCII_UPPER }
+    else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, callee_token, "str_fixed") { FORMAT_TEXT_FIXED }
     else { FORMAT_TEXT_NONE }
 }
 
@@ -128,7 +130,7 @@ fn check_format_text_builtin(
 ) -> long {
     let kind = format_text_builtin_kind(source, tokens, files, tables, compiler, file_index, node)
     let argument_count = count_children(tables, compiler, node)
-    let wants_two = kind == FORMAT_TEXT_PAD || kind == FORMAT_TEXT_PAD_RIGHT || kind == FORMAT_TEXT_PAD_ZERO
+    let wants_two = kind == FORMAT_TEXT_PAD || kind == FORMAT_TEXT_PAD_RIGHT || kind == FORMAT_TEXT_PAD_ZERO || kind == FORMAT_TEXT_FIXED
     let expected_argument_count = if wants_two { 2L } else { 1L }
     if argument_count != expected_argument_count {
         let name = if kind == FORMAT_TEXT_STR { "str" }
@@ -137,6 +139,7 @@ fn check_format_text_builtin(
             else if kind == FORMAT_TEXT_PAD { "pad" }
             else if kind == FORMAT_TEXT_PAD_RIGHT { "pad_right" }
             else if kind == FORMAT_TEXT_PAD_ZERO { "pad_zero" }
+            else if kind == FORMAT_TEXT_FIXED { "str_fixed" }
             else { "ascii_upper" }
         let expected_count = if wants_two { "two" } else { "one" }
         fail_at_message(env, files, compiler, file_index, tables.nodes[node].start,
@@ -159,6 +162,15 @@ fn check_format_text_builtin(
         format_text_check_capacity(env, files, compiler, file_index, tables.nodes[node].start,
             TYPE_KIND_ASCII, maximum, 0L)
         result_type = intern_text_type(compiler, TYPE_KIND_ASCII, maximum, 0L, file_index, node, -1L, -1L)
+    } else if kind == FORMAT_TEXT_FIXED {
+        if argument_type != TY_DOUBLE {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "str_fixed needs a double and a digit count")
+        }
+        let digits_node = compiler.child_next[argument]
+        if compiler.facts[digits_node].ty != TY_INT && compiler.facts[digits_node].ty != TY_LONG {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[digits_node].start, "str_fixed digit count must be an int or long")
+        }
+        result_type = intern_text_type(compiler, TYPE_KIND_ASCII, FIXED_TEXT_MAXIMUM, 0L, file_index, node, -1L, -1L)
     } else if kind == FORMAT_TEXT_ASCII_UPPER {
         if type_kind(compiler, argument_type) != TYPE_KIND_ASCII {
             let found_type = type_name_or_fallback(argument_type)
@@ -304,6 +316,15 @@ fn emit_format_text_builtin(
         ir_write_ascii(compiler, ir, " = call i64 @nl_core_nl_text_format_ascii_upper(ptr %nl.ctx, ptr %text.format.source.data."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i64 %text.format.src.length."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", ptr %text.format.output.data."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 41); ir_push_byte(compiler, ir, 10)
+    } else if kind == FORMAT_TEXT_FIXED {
+        let digits_node = compiler.child_next[argument]
+        emit_format_text_width_i64(compiler, ir, node, digits_node)
+        ir_write_ascii(compiler, ir, "  %text.format.written."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call i64 @nl_format_fixed(double "); ir_write_value_ref(compiler, ir, argument)
+        ir_write_ascii(compiler, ir, ", i64 %text.format.width."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", ptr %text.format.output.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, FIXED_TEXT_MAXIMUM)
+        ir_write_ascii(compiler, ir, ")\n  %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt i64 %text.format.written."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
+        emit_runtime_failure(files, tables, compiler, ir, node, file_index, FAILURE_FIXED_TEXT)
     } else if kind == FORMAT_TEXT_STR || kind == FORMAT_TEXT_HEX || kind == FORMAT_TEXT_BIN {
         emit_format_text_numeric_i64(compiler, ir, node, argument)
         let radix = if kind == FORMAT_TEXT_HEX { 16L } else if kind == FORMAT_TEXT_BIN { 2L } else { 10L }

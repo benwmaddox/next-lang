@@ -210,6 +210,7 @@ fn write_parse_message(
         ParseProblemKind.ExpectedMatchSeparator => out.write(b"expected a comma or newline between match arms")?,
         ParseProblemKind.ExpectedPattern => out.write(b"expected an enum case, bool or integer literal, or '_' pattern")?,
         ParseProblemKind.ExpectedPatternNumber => out.write(b"expected an integer literal after '-' in a pattern")?,
+        ParseProblemKind.FloatLiteral => out.write(b"malformed floating-point literal; write digits, a point, digits and an optional exponent such as 2.5e-3")?,
         ParseProblemKind.ExpectedPatternEnumCase => out.write(b"expected an enum case after '.'")?,
         ParseProblemKind.ExpectedPatternBinding => out.write(b"expected a payload name or '_' in this pattern")?,
         ParseProblemKind.ExpectedPatternClose => out.write(b"expected ')' after pattern payload")?,

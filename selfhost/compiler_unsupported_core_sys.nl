@@ -263,6 +263,7 @@ fn unsupported_category_for_node(
             if token_is_word_at(source, tokens, files, file_index, value.token, "int") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "long") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "byte") ||
+                (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "double")) ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "Ascii") { 0L }
             else if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L &&
                 (compiler.facts[node].ty == TY_INT || compiler.facts[node].ty == TY_LONG || compiler.facts[node].ty == TY_BYTE) { 0L }
@@ -296,6 +297,8 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "clear") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "pop") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "set") ||
+            (compiler.c_runtime && (token_is_word_at(source, tokens, files, file_index, value.token, "to_double") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "parse_double"))) ||
             token_is_word_at(source, tokens, files, file_index, value.token, "empty") ||
             (compiler.c_runtime && (
                 token_is_word_at(source, tokens, files, file_index, value.token, "args") ||
@@ -412,7 +415,7 @@ fn unsupported_category_for_node(
         NodeKind.BreakStatement => 0L,
         NodeKind.ContinueStatement => 0L,
         NodeKind.Unit => 0L,
-        NodeKind.Integer => 0L,
+        NodeKind.Integer => if (value.flags & FLAG_FLOAT) != 0L && !compiler.c_runtime { UNSUPPORTED_FLOAT } else { 0L },
         NodeKind.Bool => 0L,
         NodeKind.BytesLiteral => 0L,
         NodeKind.ByteString => 0L,
@@ -538,6 +541,8 @@ fn report_unsupported(
         match env.err.write(b"the >>= operator") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_QUEUE_USE {
         match env.err.write(b"iterating or indexing a queue") { ok(_) => (), err(_) => env.exit(3) }
+    } else if hit.category == UNSUPPORTED_FLOAT {
+        match env.err.write(b"floating-point numbers on the core runtime") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_MAP_USE {
         match env.err.write(b"iterating a map") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_MAP_ELEMENT {

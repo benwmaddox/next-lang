@@ -129,6 +129,7 @@ enum ParseProblemKind {
     ExpectedMatchSeparator,
     ExpectedPattern,
     ExpectedPatternNumber,
+    FloatLiteral,
     ExpectedPatternEnumCase,
     ExpectedPatternBinding,
     ExpectedPatternClose,
@@ -390,6 +391,7 @@ const FLAG_TYPE_TEXT_BYTES: long = 1048576L
 const FLAG_EFFECT_WRITES: long = 2097152L
 const FLAG_BYTESTRING_NONASCII_HEX: long = 4194304L
 const FLAG_CAST_UNCHECKED: long = 8388608L
+const FLAG_FLOAT: long = 16777216L
 
 const PENDING_NAME: long = 1L
 const PENDING_QUALIFIED: long = 2L
@@ -1445,6 +1447,41 @@ recursive fn parse_range_bound(
     ok(RangeBound { literal: literal_index, negative: if negative && !is_zero { 1L } else { 0L } })
 }
 
+// A decimal number with a point (1.5, 2.5e-3): kept as source text; LLVM rounds the decimal to the nearest double.
+fn token_is_float_literal(source: Bytes max SOURCE_BUFFER_CAPACITY, tables: ParseTables, start: long, token_length: long) -> bool {
+    let token_start = tables.state.file_base + start
+    for at in token_start..token_start + token_length {
+        if source[at] == 46 { return true }
+    }
+    false
+}
+
+fn check_float_literal(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tables: write ParseTables,
+    token_index: long,
+    start: long,
+    token_length: long,
+) -> Result<long, ParseError> {
+    let token_start = tables.state.file_base + start
+    let token_end = token_start + token_length
+    var seen_exponent = false
+    var digits_after_exponent = 0L
+    for at in token_start..token_end {
+        let value = source[at]
+        let is_digit = value >= 48 && value <= 57
+        var valid = is_digit || value == 95 || value == 46
+        if (value == 101 || value == 69) && !seen_exponent { seen_exponent = true; valid = true }
+        if (value == 43 || value == 45) && seen_exponent && at > token_start && (source[at - 1L] == 101 || source[at - 1L] == 69) { valid = true }
+        if seen_exponent && is_digit { digits_after_exponent += 1L }
+        if !valid { return err(ParseError { kind: ParseProblemKind.FloatLiteral, offset: start, token: token_index }) }
+    }
+    if source[token_end - 1L] == 46 || source[token_end - 1L] == 95 || (seen_exponent && digits_after_exponent == 0L) {
+        return err(ParseError { kind: ParseProblemKind.FloatLiteral, offset: start, token: token_index })
+    }
+    append_literal(tables, Literal128 { limb0: 0L, limb1: 0L, limb2: 0L, limb3: 0L })
+}
+
 recursive fn parse_literal(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     tables: write ParseTables,
@@ -2060,7 +2097,7 @@ recursive fn parse_prefix(
     }
     if token.kind == TokenKind.Minus {
         let next = cursor_peek(tables, tokens, 0L)
-        if next.kind == TokenKind.Number {
+        if next.kind == TokenKind.Number && !token_is_float_literal(source, tables, next.start, next.length) {
             cursor_next(tables, tokens)
             let parsed = parse_literal(source, tables, next.token, next.start, next.length, token.start)?
             let first = tables.nodes.count()
@@ -2139,6 +2176,12 @@ recursive fn parse_prefix_leaf(
     tables: write ParseTables,
     token: CursorToken,
 ) -> Result<ExprRef, ParseError> {
+    if token.kind == TokenKind.Number && token_is_float_literal(source, tables, token.start, token.length) {
+        let literal_index = check_float_literal(source, tables, token.token, token.start, token.length)?
+        let first = tables.nodes.count()
+        let node = append_node(tables, NodeKind.Integer, first, token.token, token.start, token.start + token.length, token.start, FLAG_FLOAT, literal_index, 0L)?
+        return ok(ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start: token.start, end: token.start + token.length })
+    }
     if token.kind == TokenKind.Number {
         let parsed = parse_literal(source, tables, token.token, token.start, token.length, token.start)?
         let first = tables.nodes.count()
@@ -2685,7 +2728,7 @@ recursive fn parse_parenthesized(
 fn is_cast_start(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
     let first = cursor_peek(tables, tokens, 0L)
     let second = cursor_peek(tables, tokens, 1L)
-    let simple = token_is_word(source, tokens, first.token, tables.state.file_base, "int") || token_is_word(source, tokens, first.token, tables.state.file_base, "long") || token_is_word(source, tokens, first.token, tables.state.file_base, "bool") || token_is_word(source, tokens, first.token, tables.state.file_base, "byte")
+    let simple = token_is_word(source, tokens, first.token, tables.state.file_base, "int") || token_is_word(source, tokens, first.token, tables.state.file_base, "long") || token_is_word(source, tokens, first.token, tables.state.file_base, "bool") || token_is_word(source, tokens, first.token, tables.state.file_base, "byte") || token_is_word(source, tokens, first.token, tables.state.file_base, "double")
     let ascii_max = token_is_word(source, tokens, first.token, tables.state.file_base, "Ascii") && token_is_word(source, tokens, second.token, tables.state.file_base, "max")
     let uppercase = first.kind == TokenKind.Ident && is_upper_ascii(source[tables.state.file_base + first.start])
     (simple && second.kind == TokenKind.RParen) || (uppercase && (second.kind == TokenKind.RParen || ascii_max))

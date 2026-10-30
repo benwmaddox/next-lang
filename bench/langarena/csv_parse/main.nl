@@ -19,6 +19,13 @@ struct Point {
     z: double
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn is_run_mode(env: Env) -> bool {
     match env.args().get(0L) {
         some(argument) => argument.count() == 3L,
@@ -32,7 +39,7 @@ fn next_float(last: write long) -> double {
     (double)last / 139968.0
 }
 
-fn put(data: grow Bytes max 8000000, text: Ascii max 64) {
+fn put(data: grow Bytes max 8000000, text: Ascii max 80) {
     data.try_append(text.bytes()).unwrap()
 }
 
@@ -67,7 +74,7 @@ fn checksum_data(data: Data) -> long {
     hash
 }
 
-fn checksum_text(text: Ascii max 32) -> long {
+fn checksum_text(text: Ascii max 64) -> long {
     var hash = 5381L
     for i: long in 0L..text.len() {
         hash = (hash * 33L + text.bytes()[i].to_long()) % MODULUS
@@ -119,7 +126,8 @@ fn main(env: Env) {
     var data: Data = Bytes.empty()
     generate(data, rows)
     var checksum = 0L
-    for _round: long in 0L..(warmup + iterations) {
+    let rounds = if is_prep_mode(env) { warmup } else { warmup + iterations }
+    for _round: long in 0L..rounds {
         var points: list<Point, 100000> = list {}
         parse_points(data, points)
         if points.count() > 0L {

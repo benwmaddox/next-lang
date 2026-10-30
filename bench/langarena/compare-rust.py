@@ -77,15 +77,16 @@ with open(lock_path, "w") as lock:
     for pkg in pkgs:
         d = root / pkg
         status = (d / "status").read_text().strip() if (d / "status").is_file() else "ready"
-        if status.startswith("pending-"):
+        stage3_only = status.startswith("pending-") and stage3 is not None
+        if status.startswith("pending-") and not stage3_only:
             print(f"{pkg:26} {status}"); continue
         if not (d / "name").is_file():
             print(f"{pkg:26} ERROR missing package name file")
             failures += 1
             continue
         name = (d / "name").read_text().strip()
-        kind = "variant" if status.startswith("variant-") else "not-comparable" if status.startswith("not-comparable:") else "ready"
-        if kind == "ready" and status not in ("", "ready"):
+        kind = "ready" if stage3_only else "variant" if status.startswith("variant-") else "not-comparable" if status.startswith("not-comparable:") else "ready"
+        if kind == "ready" and not stage3_only and status not in ("", "ready"):
             print(f"{pkg:26} ERROR unknown status {status!r}")
             failures += 1
             continue
@@ -110,8 +111,8 @@ with open(lock_path, "w") as lock:
         expected = params[name]
         exe = work / pkg
         b = subprocess.run([nlc, "build", str(d), "-o", str(exe)], capture_output=True, text=True,
-                           env=dict(os.environ, NLC_OPT_LEVEL="3"))
-        if b.returncode != 0:
+                           env=dict(os.environ, NLC_OPT_LEVEL="3")) if not stage3_only else None
+        if b is not None and b.returncode != 0:
             print(f"{pkg:26} BUILD FAILED {b.stderr[:200]}")
             failures += 1
             continue
@@ -125,7 +126,7 @@ with open(lock_path, "w") as lock:
             if b3.returncode == 0 and ir3.is_file():
                 exe3 = work / (pkg + ".s3")
                 l3 = subprocess.run(["clang", "-O3", "-DNLC_STACK_MODE_OFFSET=1", str(ir3), str(repo / "runtime/nl_runtime.c"),
-                                     "-o", str(exe3)], capture_output=True, text=True)
+                                     "-o", str(exe3), "-lm"], capture_output=True, text=True)
                 if l3.returncode != 0:
                     print(f"{pkg:26} STAGE3 CLANG FAILED {l3.stderr[:200]}")
                     exe3 = None
@@ -153,7 +154,8 @@ with open(lock_path, "w") as lock:
             return global_ok
 
         for _ in range(runs):
-            ok = check_nl(exe, "NEXT-LANG", "run", "prep", "nl") and ok
+            if not stage3_only:
+                ok = check_nl(exe, "NEXT-LANG", "run", "prep", "nl") and ok
             if exe3 is not None:
                 ok = check_nl(exe3, "STAGE3", "run3", "prep3", "nl3") and ok
             r, wall, rss = timed([rust, str(arena / "run.js"), name], cwd=arena / "rust")
@@ -166,8 +168,8 @@ with open(lock_path, "w") as lock:
             print(f"{pkg:26} FAILED")
             failures += 1
             continue
-        net = best["run"] - best["prep"]
-        if net <= 0:
+        net = best["run"] - best["prep"] if not stage3_only else None
+        if net is not None and net <= 0:
             print(f"{pkg:26} INVALID TIMING: best run ({best['run']:.6f}s) <= best prep ({best['prep']:.6f}s)")
             failures += 1
             continue
@@ -176,14 +178,16 @@ with open(lock_path, "w") as lock:
             print(f"{pkg:26} INVALID STAGE3 TIMING: best run ({best['run3']:.6f}s) <= best prep ({best['prep3']:.6f}s)")
             failures += 1
             continue
-        ratio = net / best["rust"]
+        ratio = (net if net is not None else net3) / best["rust"]
         groups[kind].append((pkg, ratio, status))
-        note = status if kind in ("variant", "not-comparable") else "see audit" if kind == "closest-possible" else ""
+        note = "stage 0 cannot build this port" if stage3_only else status if kind in ("variant", "not-comparable") else "see audit" if kind == "closest-possible" else ""
         s3_cell = f"{net3:7.3f}" if net3 is not None else f"{'-':>7}"
         r3_cell = f"{net3 / best['rust']:8.2f}" if net3 is not None else f"{'-':>8}"
-        x_cell = f"{net3 / net:6.2f}" if net3 is not None else f"{'-':>6}"
+        x_cell = f"{net3 / net:6.2f}" if net3 is not None and net is not None else f"{'-':>6}"
         m3_cell = f"{mem['nl3'] / 1024:7.1f}" if net3 is not None else f"{'-':>7}"
-        line = (f"{pkg:26} {net:7.3f} {s3_cell} {best['rust']:7.3f} {ratio:8.2f} {r3_cell} {x_cell} {best['run']:7.3f} {best['rust_p']:8.3f} "
+        s0_cell = f"{net:7.3f}" if net is not None else f"{'-':>7}"
+        s0r_cell = f"{ratio:8.2f}" if net is not None else f"{'-':>8}"
+        line = (f"{pkg:26} {s0_cell} {s3_cell} {best['rust']:7.3f} {s0r_cell} {r3_cell} {x_cell} {(best['run'] if net is not None else 0.0):7.3f} {best['rust_p']:8.3f} "
                 f"{mem['nl'] / 1024:7.1f} {m3_cell} {mem['rust'] / 1024:8.1f}  {note}")
         lines[kind].append(line)
         print(line, flush=True)
