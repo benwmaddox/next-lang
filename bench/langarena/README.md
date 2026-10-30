@@ -9,7 +9,7 @@ Conventions, one directory per test, named after the test in lowercase with `::`
 - `status` (optional): `pending-floats` (needs floats, step F1), `pending-threads`, `pending-regex`, or `pending-<reason>` while it can't be checked yet; absent means ready.
 - The algorithm follows LangArena's reference implementations (rust/src/benchmarks/*.rs is a good source) closely enough that the checksum matches, written idiomatically for next-lang: bounded collections with capacities large enough for the run parameters, `write` parameters, pools and typed ids instead of pointers, no mutable globals, no name shadowing.
 
-Check: `python3 bench/langarena/check.py --mode test` (and `--mode run --time`) builds every package with stage-0 nlc at NLC_OPT_LEVEL=3 and compares the output with the checksum.
+Check: `python3 bench/langarena/check.py --mode test` (and `--mode run --time`) builds every package with the self-hosted compiler (clang -O3, C runtime) and compares the output with the checksum.
 
 ## Fair comparison conventions
 

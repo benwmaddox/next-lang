@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build each bench/langarena package with stage-0 nlc (NLC_OPT_LEVEL=3) and check
+"""Build each bench/langarena package with the self-hosted compiler (clang -O3, C runtime) and check
 its output against LangArena's checksum. Usage:
   check.py [--mode test|run] [--time] [package ...]
 A package is bench/langarena/<dir>/ whose `name` file holds the LangArena test
@@ -15,7 +15,9 @@ an alternative version of a ready port (e.g. `variant-idiomatic`); `not-comparab
 follows the colon). Variants and not-comparable ports are listed in separate groups."""
 import json, os, subprocess, sys, time, pathlib
 root = pathlib.Path(__file__).resolve().parent
-nlc = os.environ.get("NLC", os.path.expanduser("~/.cache/next-lang/target/release/nlc"))
+repo = root.parent.parent
+nlc = os.environ.get("NLC") or subprocess.run([sys.executable, str(repo / "scripts/build-selfhost-cached.py")],
+                                              capture_output=True, text=True, check=True).stdout.strip()
 args = sys.argv[1:]
 mode = "test"
 if "--mode" in args:
@@ -48,8 +50,14 @@ for pkg in pkgs:
     label = "" if kind == "ready" else f"[{status}] "
     want = str(params[name]["checksum"])
     exe = work / pkg
-    env = dict(os.environ, NLC_OPT_LEVEL="3")
-    b = subprocess.run([nlc, "build", str(d), "-o", str(exe)], capture_output=True, text=True, env=env)
+    ir = repo / "target" / "langarena-check" / f"{pkg}.ll"
+    ir.parent.mkdir(parents=True, exist_ok=True)
+    ir.unlink(missing_ok=True)
+    b = subprocess.run([nlc, "build", str(d.relative_to(repo)), "-o", str(ir.relative_to(repo)), "--runtime=c"],
+                       capture_output=True, text=True, cwd=repo)
+    if b.returncode == 0:
+        b = subprocess.run(["clang", "-O3", "-DNLC_STACK_MODE_OFFSET=1", str(ir), str(repo / "runtime/nl_runtime.c"), "-o", str(exe)],
+                           capture_output=True, text=True)
     if b.returncode != 0:
         if status.startswith("pending"):
             pending += 1; print(f"{pkg:28} {status} (doesn't build yet)"); continue
