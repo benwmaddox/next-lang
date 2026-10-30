@@ -1,1 +1,1 @@
-pending: parses the generated JSON directly into typed coordinates and computes the configured result. The reference uses floating-point values and checksum formatting, which next-lang adds in F1; this port cannot yet be run against the checksum.
+closest-possible: runs on the self-hosted compiler only (stage 0 has no floats). The checksum matches LangArena's, so the work is the same result; how closely the algorithm and allocation pattern follow the reference has not been audited line by line yet.

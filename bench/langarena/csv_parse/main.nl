@@ -19,6 +19,13 @@ struct Point {
     z: double
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn is_run_mode(env: Env) -> bool {
     match env.args().get(0L) {
         some(argument) => argument.count() == 3L,
@@ -119,7 +126,8 @@ fn main(env: Env) {
     var data: Data = Bytes.empty()
     generate(data, rows)
     var checksum = 0L
-    for _round: long in 0L..(warmup + iterations) {
+    let rounds = if is_prep_mode(env) { warmup } else { warmup + iterations }
+    for _round: long in 0L..rounds {
         var points: list<Point, 100000> = list {}
         parse_points(data, points)
         if points.count() > 0L {

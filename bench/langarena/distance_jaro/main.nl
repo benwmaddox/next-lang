@@ -7,6 +7,13 @@ struct Pair {
     second: Bytes max 54
 }
 
+fn is_prep_mode(env: Env) -> bool {
+    match env.args().get(1L) {
+        some(_argument) => true,
+        none => false
+    }
+}
+
 fn is_run_mode(env: Env) -> bool {
     match env.args().get(0L) {
         some(argument) => argument.count() == 3L,
@@ -101,7 +108,8 @@ fn main(env: Env) {
 
     let pairs = generate_pairs(count_pairs, size)
     var result = 0L
-    for _w: long in 0L..warmup + iterations {
+    let rounds = if is_prep_mode(env) { warmup } else { warmup + iterations }
+    for _w: long in 0L..rounds {
         for pair in pairs {
             result = (result + (long)(jaro(pair.first, pair.second) * 1000.0)) % 4294967296L
         }

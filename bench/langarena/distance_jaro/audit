@@ -1,1 +1,1 @@
-pending: this port follows the Jaro matching-window and transposition calculation over the reference's random byte pairs. The result and checksum require double-precision arithmetic, which is scheduled for F1; there is no executable comparison yet.
+closest-possible: runs on the self-hosted compiler only (stage 0 has no floats). The checksum matches LangArena's, so the work is the same result; how closely the algorithm and allocation pattern follow the reference has not been audited line by line yet.
