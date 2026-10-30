@@ -48,9 +48,8 @@ jobs:
       - name: Build nlc-selfhost.exe from the seed IR
         shell: pwsh
         run: |
-          clang -O1 -DNLC_STACK_MODE_OFFSET=1 -fuse-ld=lld -o nlc-selfhost.exe seed/stage3.ll runtime/nl_runtime.c
+          clang -O1 -DNLC_STACK_MODE_OFFSET=1 -D_CRT_SECURE_NO_WARNINGS -fuse-ld=lld -o nlc-selfhost.exe seed/stage3.ll runtime/nl_runtime.c
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          ./nlc-selfhost.exe 2>&1 | Select-Object -First 3
       - name: The compiler rebuilds itself (IR identical to the seed)
         shell: pwsh
         run: |
@@ -68,7 +67,7 @@ jobs:
           foreach ($dir in Get-ChildItem tests/c_runtime -Directory) {
             $name = $dir.Name
             ./nlc-selfhost.exe build "tests/c_runtime/$name" -o "$name.ll" --runtime=c
-            clang -O1 -DNLC_STACK_MODE_OFFSET=1 -fuse-ld=lld -o "$name.exe" "$name.ll" runtime/nl_runtime.c
+            clang -O1 -DNLC_STACK_MODE_OFFSET=1 -D_CRT_SECURE_NO_WARNINGS -fuse-ld=lld -o "$name.exe" "$name.ll" runtime/nl_runtime.c
             $out = (& "./$name.exe") -join "`n"
             $want = (Get-Content "tests/c_runtime/$name/expected.stdout" -Raw).TrimEnd("`r","`n")
             if ($out.TrimEnd("`r","`n") -ne $want) { Write-Host "FAIL $name"; $failed++ } else { Write-Host "ok $name" }
