@@ -126,7 +126,7 @@ fn emit_c_main_function(
             ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, ptr %nl.env)\n")
         } else { ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top)\n") }
     }
-    ir_write_ascii(compiler, ir, "  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 0\n}\n")
+    ir_write_ascii(compiler, ir, "  call void @nl_jobs_join_all()\n  call void @nl_env_destroy(ptr %nl.env)\n  call void @nl_context_destroy(ptr %nl.ctx)\n  ret i32 0\n}\n")
 }
 
 fn c_runtime_method_kind(

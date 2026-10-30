@@ -220,6 +220,7 @@ enum NodeKind {
     PatternBinding,
     IgnoredPatternBinding,
     While,
+    Spawn,
 }
 
 struct Node {
@@ -1648,6 +1649,15 @@ recursive fn parse_statement_candidate(
     }
     if cursor_word_is(source, tables, tokens, "expect") {
         return ok(ParseCandidate { node: parse_expect_statement(source, tokens, tables)?, is_statement: true })
+    }
+    if cursor_word_is(source, tables, tokens, "spawn") && cursor_peek(tables, tokens, 1L).kind == TokenKind.Ident {
+        // `spawn f(args)`: start f on its own thread with copies of the arguments.
+        let start = cursor_next(tables, tokens)
+        let first = tables.nodes.count()
+        let value = parse_expression(source, tokens, tables, 0L)?
+        let end = tables.nodes[value].end
+        let node = append_node(tables, NodeKind.Spawn, first, start.token, start.start, end, start.start, 0L, -1L, 0L)?
+        return ok(ParseCandidate { node, is_statement: true })
     }
     if cursor_word_is(source, tables, tokens, "discard") {
         let start = cursor_next(tables, tokens)
@@ -3215,7 +3225,7 @@ fn push_block_walk_children(tables: write ParseTables, node: long, child_depth: 
             let value = tables.child_scratch2[subcount - 2L]
             push_nesting_task(tables, target, child_depth, NEST_EXPR)?
             push_nesting_task(tables, value, child_depth, NEST_EXPR)?
-        } else if kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Discard || kind == NodeKind.Expect {
+        } else if kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Discard || kind == NodeKind.Spawn || kind == NodeKind.Expect {
             let subcount = collect_children2(tables, child)
             if subcount > 0L {
                 let expression = tables.child_scratch2[subcount - 1L]

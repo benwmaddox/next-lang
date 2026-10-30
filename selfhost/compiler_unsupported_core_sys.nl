@@ -272,6 +272,7 @@ fn unsupported_category_for_node(
         NodeKind.ForEach => 0L,
         NodeKind.While => if compiler.c_runtime { UNSUPPORTED_NODE } else { 0L },
         NodeKind.Discard => 0L,
+        NodeKind.Spawn => if compiler.c_runtime { 0L } else { UNSUPPORTED_NODE },
         NodeKind.Match => 0L,
         NodeKind.Cast => 0L,
         NodeKind.CastType => {
@@ -484,6 +485,7 @@ fn unsupported_node_message(kind: NodeKind) -> Ascii max 160 {
         NodeKind.Global => "global declarations",
         NodeKind.ForEach => "for-each loops",
         NodeKind.Discard => "discard statements",
+        NodeKind.Spawn => "spawn statements on the core runtime",
         NodeKind.Match => "match",
         NodeKind.MatchArm => "match arms",
         NodeKind.Cast => "casts",
