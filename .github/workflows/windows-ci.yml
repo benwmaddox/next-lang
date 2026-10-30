@@ -77,6 +77,13 @@ jobs:
             python -c "import sys; a=open('seed/stage3.ll','rb').read().split(b'\n'); b=open('self.ll','rb').read().split(b'\n'); i=next((i for i in range(min(len(a),len(b))) if a[i]!=b[i]), None); print('first difference at line', i, 'of', len(a), len(b)); print(a[i][:200] if i is not None else ''); print(b[i][:200] if i is not None else '')"
             Write-Error "IR differs from the seed"; exit 1
           }
+      - name: The PowerShell driver builds and runs a program
+        shell: pwsh
+        run: |
+          $env:NLC_SELFHOST = (Resolve-Path nlc-selfhost.exe).Path
+          $out = (./scripts/nlc.ps1 run tests/c_runtime/pools) -join "`n"
+          $want = (Get-Content tests/c_runtime/pools/expected.stdout -Raw)
+          if ($out.TrimEnd() -ne $want.TrimEnd()) { Write-Host $out; Write-Error "driver output differs"; exit 1 }
       - name: Build and run the c_runtime programs
         shell: pwsh
         run: |
