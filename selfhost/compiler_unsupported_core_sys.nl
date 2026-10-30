@@ -219,7 +219,7 @@ fn core_sys_result_type(operation: long) -> long {
 // E3a1 end
 
 fn is_c_runtime_capability_type(compiler: CompilerTables, type_id: long) -> bool {
-    compiler.c_runtime && type_id >= TY_ENV && type_id <= TY_ARG
+    compiler.c_runtime && ((type_id >= TY_ENV && type_id <= TY_ARG) || type_id == TY_HOST)
 }
 
 fn unsupported_category_for_node(
@@ -319,6 +319,11 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "empty") ||
             (compiler.c_runtime && (
                 token_is_word_at(source, tokens, files, file_index, value.token, "args") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "host") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "cores") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "total_cores") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "ram_bytes") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "page_size") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "exit") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "get") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "byte") ||
