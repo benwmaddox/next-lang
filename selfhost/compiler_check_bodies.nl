@@ -497,7 +497,7 @@ fn check_one_body(
                 compiler.work[frame_index] = frame
                 continue
             }
-            if kind == NodeKind.Return || kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Discard || kind == NodeKind.Expect {
+            if kind == NodeKind.Return || kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Discard || kind == NodeKind.Spawn || kind == NodeKind.Expect {
                 frame.child0 = compiler.child_first[node]
                 frame.cursor = frame.child0
                 frame.phase = 1L
@@ -1056,7 +1056,7 @@ fn check_one_body(
                     frame.cursor = 2L
                 }
                 else { () }
-            } else if kind == NodeKind.Return || kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Discard || kind == NodeKind.Expect || kind == NodeKind.Unary || kind == NodeKind.Cast || kind == NodeKind.Fit || kind == NodeKind.ToLong || kind == NodeKind.Try {
+            } else if kind == NodeKind.Return || kind == NodeKind.ReturnStatement || kind == NodeKind.ExpressionStatement || kind == NodeKind.Discard || kind == NodeKind.Spawn || kind == NodeKind.Expect || kind == NodeKind.Unary || kind == NodeKind.Cast || kind == NodeKind.Fit || kind == NodeKind.ToLong || kind == NodeKind.Try {
                 child = frame.cursor
                 frame.cursor = -1L
             } else if kind == NodeKind.Binary {
@@ -1311,6 +1311,23 @@ fn check_one_body(
                 require_type(env, files, compiler, file_index, frame.child0, result_ty, actual, tables)
                 compiler.facts[node] = NodeFact { ty: TY_NEVER, flags: FACT_NEVER, binding: -1L, function: -1L, literal: 0L }
             }
+        } else if kind == NodeKind.Spawn {
+            let call = frame.child0
+            if call < 0L || tables.nodes[call].kind != NodeKind.Call || compiler.facts[call].function < 0L {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "spawn starts a call of one of your functions: spawn worker(arguments)")
+            }
+            let target = compiler.functions[compiler.facts[call].function]
+            if target.result_ty != TY_UNIT {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "a spawned function returns nothing")
+            }
+            for parameter_index in 0L..target.param_count {
+                let parameter = compiler.parameters[target.param_start + parameter_index]
+                let numeric = parameter.ty == TY_INT || parameter.ty == TY_LONG || parameter.ty == TY_BOOL || parameter.ty == TY_BYTE || parameter.ty == TY_DOUBLE
+                if !numeric || (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[call].start, "a spawned function takes numbers and bools for now")
+                }
+            }
+            compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function: compiler.facts[call].function, literal: 0L }
         } else if kind == NodeKind.Discard {
             let value = frame.child0
             if value < 0L || tables.nodes[value].kind != NodeKind.MethodCall ||

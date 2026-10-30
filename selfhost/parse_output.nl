@@ -515,6 +515,7 @@ fn dump_node_kind(kind: NodeKind) -> Ascii max 24 {
         NodeKind.For => "For",
         NodeKind.ForEach => "ForEach",
         NodeKind.Discard => "Discard",
+        NodeKind.Spawn => "Spawn",
         NodeKind.Expect => "Expect",
         NodeKind.BreakStatement => "BreakStatement",
         NodeKind.ContinueStatement => "ContinueStatement",
@@ -932,6 +933,7 @@ fn wire_node_tag(kind: NodeKind) -> long {
         NodeKind.CasePattern => 72L, NodeKind.PatternBinding => 73L,
         NodeKind.IgnoredPatternBinding => 74L,
         NodeKind.While => 75L,
+        NodeKind.Spawn => 76L,
     }
 }
 

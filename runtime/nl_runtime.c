@@ -1228,6 +1228,39 @@ void nl_wake(volatile int32_t *address, int32_t count) {
 #endif
 }
 
+/* ---- Jobs ----
+   A job is a thread that runs one generated function on a data stack of its own. `spawn` allocates a block for the
+   job's arguments, starts a thread whose entry (generated) creates the job's context and calls the function, and
+   registers the thread; the program waits for every job before it finishes. Jobs are pinned in turn to the
+   processors granted to the process. */
+int64_t nl_host_cores(void *host);
+
+#define NL_JOB_LIMIT 4096
+#define NL_JOB_NATIVE_STACK_BYTES (UINT64_C(64) * 1024 * 1024)
+static void *nl_jobs[NL_JOB_LIMIT];
+static int nl_job_count;
+
+void *nl_job_args_alloc(uint64_t bytes) {
+    void *block = calloc(1, bytes ? (size_t)bytes : 1);
+    if (!block) nl_stack_startup_failure("cannot allocate a job's arguments");
+    return block;
+}
+
+void nl_job_args_free(void *block) { free(block); }
+
+void nl_job_start(void *(*entry)(void *), void *arguments) {
+    if (nl_job_count >= NL_JOB_LIMIT) nl_stack_startup_failure("too many jobs");
+    int64_t cores = nl_host_cores(NULL);
+    void *record = nl_thread_start(entry, arguments, NL_JOB_NATIVE_STACK_BYTES, cores > 0 ? nl_job_count % cores : -1);
+    if (!record) nl_stack_startup_failure("cannot start a job");
+    nl_jobs[nl_job_count++] = record;
+}
+
+void nl_jobs_join_all(void) {
+    for (int index = 0; index < nl_job_count; ++index) (void)nl_thread_join(nl_jobs[index]);
+    nl_job_count = 0;
+}
+
 /* Host facts for main. The thread grant is the processors the program may use, capped by NLC_CORES; the RAM
    figure is the machine's physical memory and is advisory. The handle is the environment itself. */
 static int64_t nl_host_total_core_count(void) {

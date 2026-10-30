@@ -43,6 +43,11 @@ jobs:
       - name: "Threads (start, join, park and wake, locked output)"
         shell: pwsh
         run: python tests/py/test_threads.py
+      - name: "Jobs (spawn)"
+        shell: pwsh
+        run: |
+          $env:NLC_SELFHOST = (Resolve-Path nlc-selfhost.exe).Path
+          python tests/py/test_jobs.py
       - name: Build and run the c_runtime programs
         shell: pwsh
         run: |

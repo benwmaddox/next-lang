@@ -1501,6 +1501,7 @@ fn compile_selfhost_package(
     emit_registered_type_helpers(source, files, tokens, tables, compiler, ir)
     emit_file_globals(files, source, tokens, tables, compiler, ir)
     emit_main_function(source, compiler, ir, files, tokens, config, entry)
+    emit_job_entries(files, tables, compiler, ir, config)
     let user_ir_overflow = compiler.ir_overflow
     let prelude_only = compiler.c_runtime
     if !compile_embedded_core(env, config, ir, files.count(), want_test_build, tables, compiler, prelude_only) {

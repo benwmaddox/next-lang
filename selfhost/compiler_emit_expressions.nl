@@ -2489,7 +2489,7 @@ recursive fn emit_function_body(
             compiler.work[frame_index].cursor = -1L
             continue
         }
-        let is_statement = tables.nodes[child].kind == NodeKind.Let || tables.nodes[child].kind == NodeKind.Assign || tables.nodes[child].kind == NodeKind.ExpressionStatement || tables.nodes[child].kind == NodeKind.Discard || tables.nodes[child].kind == NodeKind.ReturnStatement || tables.nodes[child].kind == NodeKind.For || tables.nodes[child].kind == NodeKind.ForEach || tables.nodes[child].kind == NodeKind.While || tables.nodes[child].kind == NodeKind.Expect || tables.nodes[child].kind == NodeKind.BreakStatement || tables.nodes[child].kind == NodeKind.ContinueStatement || tables.nodes[child].kind == NodeKind.Block
+        let is_statement = tables.nodes[child].kind == NodeKind.Let || tables.nodes[child].kind == NodeKind.Assign || tables.nodes[child].kind == NodeKind.ExpressionStatement || tables.nodes[child].kind == NodeKind.Discard || tables.nodes[child].kind == NodeKind.Spawn || tables.nodes[child].kind == NodeKind.ReturnStatement || tables.nodes[child].kind == NodeKind.For || tables.nodes[child].kind == NodeKind.ForEach || tables.nodes[child].kind == NodeKind.While || tables.nodes[child].kind == NodeKind.Expect || tables.nodes[child].kind == NodeKind.BreakStatement || tables.nodes[child].kind == NodeKind.ContinueStatement || tables.nodes[child].kind == NodeKind.Block
         if !is_statement {
             let redirect_return = function_root && frame.node == body && child == frame.child0 &&
                 (tables.nodes[body].flags & FLAG_HAS_TAIL) != 0L && is_aggregate_type(compiler, return_ty)
@@ -2611,6 +2611,8 @@ recursive fn emit_function_body(
             } else {
                 emit_compound_assignment(files, tables, compiler, ir, child, file_index, target, binding, value, ty, op)
             }
+        } else if kind == NodeKind.Spawn {
+            emit_spawn_statement(source, files, tokens, tables, compiler, ir, child, file_index, return_ty, is_test)
         } else if kind == NodeKind.Discard {
             let expression = compiler.child_first[child]
             emit_expr_linear(source, files, tokens, tables, compiler, ir, expression, file_index, return_ty, is_test)
