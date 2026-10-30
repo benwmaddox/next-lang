@@ -1080,7 +1080,7 @@ recursive fn emit_expr_linear(
                 }
                 frame.phase = 72L
                 compiler.expr_work[frame_index] = frame
-            } else if kind == NodeKind.ListLiteral || kind == NodeKind.QueueLiteral || kind == NodeKind.MapLiteral {
+            } else if kind == NodeKind.ListLiteral || kind == NodeKind.QueueLiteral || kind == NodeKind.MapLiteral || kind == NodeKind.PoolLiteral {
                 let list_type = compiler.facts[current].ty
                 emit_collection_zero_storage(compiler, ir, current, list_type, 0L)
                 match compiler.expr_work.pop() { some(_) => (), none => () }

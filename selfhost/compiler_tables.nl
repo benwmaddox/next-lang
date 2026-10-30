@@ -47,6 +47,7 @@ const TYPE_KIND_BYTES: long = 12L
 const TYPE_KIND_ADDRESS: long = 13L
 const TYPE_KIND_QUEUE: long = 14L
 const TYPE_KIND_MAP: long = 15L
+const TYPE_KIND_POOL: long = 16L
 const TYPE_STATE_LAYOUT_OVERFLOW: long = 5L
 
 const LOCATION_NATIVE: long = 0L
@@ -150,6 +151,7 @@ const UNSUPPORTED_QUEUE_USE: long = 16L
 const UNSUPPORTED_MAP_USE: long = 17L
 const UNSUPPORTED_MAP_ELEMENT: long = 18L
 const UNSUPPORTED_FLOAT: long = 19L
+const UNSUPPORTED_POOL_USE: long = 20L
 const UNSUPPORTED_CONDITIONAL_BUILDER_LOOP: long = 14L
 
 struct TypeRecord {
