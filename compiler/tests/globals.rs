@@ -123,7 +123,7 @@ fn linux_startup_memory_policy_checks_each_configured_branch() {
     let ir = temp.join("program.ll");
     let binary = temp.join("program");
     fs::write(&ir, compiled.llvm_ir).expect("write generated LLVM IR");
-    let runtime = root.join("runtime/nl_runtime.c");
+    let runtime = root.join("runtime/stage0/nl_runtime.c");
     let build = Command::new("clang")
         .args(["-O1", "-DNLC_TEST_BUILD=1"])
         .arg(&ir)

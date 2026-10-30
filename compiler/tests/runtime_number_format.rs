@@ -109,7 +109,7 @@ int main(void) {
     let build = Command::new("clang")
         .args(["-O2", "-pthread"])
         .arg(&source)
-        .arg(root.join("runtime/nl_runtime.c"))
+        .arg(root.join("runtime/stage0/nl_runtime.c"))
         .arg("-o")
         .arg(&binary)
         .output()

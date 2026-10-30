@@ -36,11 +36,11 @@ fn every_run_fixture_matches_its_expected_result() {
         if name == "t20_probe" {
             let _ = fs::remove_file(fixture.join("a.txt"));
         }
-        let expected_stdout = fs::read_to_string(fixture.join("expected.stdout"))
+        let expected_stdout = fs::read_to_string(fixture.join(format!("{}.stdout", expected_set(&fixture))))
             .unwrap_or_else(|e| panic!("{name}: cannot read expected.stdout: {e}"));
-        let expected_stderr = fs::read_to_string(fixture.join("expected.stderr"))
+        let expected_stderr = fs::read_to_string(fixture.join(format!("{}.stderr", expected_set(&fixture))))
             .unwrap_or_else(|e| panic!("{name}: cannot read expected.stderr: {e}"));
-        let expected_exit: i32 = fs::read_to_string(fixture.join("expected.exit"))
+        let expected_exit: i32 = fs::read_to_string(fixture.join(format!("{}.exit", expected_set(&fixture))))
             .unwrap_or_else(|e| panic!("{name}: cannot read expected.exit: {e}"))
             .trim()
             .parse()
@@ -88,11 +88,11 @@ fn every_test_fixture_matches_its_expected_result() {
             .arg(&fixture)
             .output()
             .unwrap_or_else(|e| panic!("{name}: could not launch nlc test: {e}"));
-        let expected_stdout = fs::read_to_string(fixture.join("expected.stdout"))
+        let expected_stdout = fs::read_to_string(fixture.join(format!("{}.stdout", expected_set(&fixture))))
             .unwrap_or_else(|e| panic!("{name}: cannot read expected.stdout: {e}"));
-        let expected_stderr = fs::read_to_string(fixture.join("expected.stderr"))
+        let expected_stderr = fs::read_to_string(fixture.join(format!("{}.stderr", expected_set(&fixture))))
             .unwrap_or_else(|e| panic!("{name}: cannot read expected.stderr: {e}"));
-        let expected_exit: i32 = fs::read_to_string(fixture.join("expected.exit"))
+        let expected_exit: i32 = fs::read_to_string(fixture.join(format!("{}.exit", expected_set(&fixture))))
             .unwrap_or_else(|e| panic!("{name}: cannot read expected.exit: {e}"))
             .trim()
             .parse()
@@ -232,4 +232,14 @@ fn replace_temp_paths(text: &str) -> String {
 fn hybrid_frontend_check_is_on_demand() -> bool {
     std::env::var("NLC_FRONTEND").as_deref() == Ok("selfhost")
         && std::env::var("NLC_STAGE0_PARITY").as_deref() != Ok("1")
+}
+
+/// These tests run the Rust compiler. A fixture whose target compiler behaves differently from Rust
+/// stage 0 keeps stage 0's own result in `stage0.*`; the rest use `expected.*`.
+fn expected_set(fixture: &Path) -> &'static str {
+    if fixture.join("stage0.exit").is_file() {
+        "stage0"
+    } else {
+        "expected"
+    }
 }

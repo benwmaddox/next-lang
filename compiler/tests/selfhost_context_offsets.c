@@ -1,5 +1,5 @@
 #define NLC_STACK_MODE_OFFSET 1
-#include "../../runtime/nl_runtime.c"
+#include "../../runtime/stage0/nl_runtime.c"
 
 #include <stddef.h>
 #include <stdio.h>

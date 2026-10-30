@@ -241,7 +241,7 @@ fn runtime_file_output_and_collection_operations_make_no_heap_calls_in_either_st
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler crate has a workspace root");
-    let runtime = root.join("runtime/nl_runtime.c");
+    let runtime = root.join("runtime/stage0/nl_runtime.c");
 
     for mode in ["pointer", "offset"] {
         let _environment = EnvRestore::set("NLC_STACK_MODE", mode);
