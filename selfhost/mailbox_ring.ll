@@ -9,7 +9,7 @@
 ; receiver frees it for position p + capacity. Senders claim positions with a compare-and-swap on the enqueue
 ; position, so any number can send; only the receiver touches the dequeue position. Order is kept per sender.
 
-declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1 immarg)
+; @nl.mem.copy(dst, src, bytes) is the program's memory-copy wrapper (defined where maps and pools define it).
 declare i32 @nl_park(ptr, i32, i64)
 declare void @nl_wake(ptr, i32)
 
@@ -83,7 +83,7 @@ casfail:
   br label %try
 publish:
   %data = getelementptr i8, ptr %slot, i64 8
-  call void @llvm.memcpy.p0.p0.i64(ptr %data, ptr %elem, i64 %size, i1 false)
+  %copied.in = call ptr @nl.mem.copy(ptr %data, ptr %elem, i64 %size)
   %published = add i64 %pos, 1
   store atomic i64 %published, ptr %slot release, align 8
   fence seq_cst
@@ -123,7 +123,7 @@ entry:
   br i1 %ready, label %take, label %empty
 take:
   %data = getelementptr i8, ptr %slot, i64 8
-  call void @llvm.memcpy.p0.p0.i64(ptr %out, ptr %data, i64 %size, i1 false)
+  %copied.out = call ptr @nl.mem.copy(ptr %out, ptr %data, i64 %size)
   %freed = add i64 %pos, %cap
   store atomic i64 %freed, ptr %slot release, align 8
   store i64 %want, ptr %deq.addr, align 8

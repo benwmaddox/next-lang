@@ -22,6 +22,12 @@ STORAGE = 128 + CAPACITY * STRIDE
 HEADER = '; nlc-link-ir 2\n; nlc.build program\n; nlc.stack offset\n; nlc.recursion none\n; nlc.runtime c\nsource_filename = "mailbox"\n'
 
 PROGRAM = RING + f'''
+declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1 immarg)
+define internal ptr @nl.mem.copy(ptr %d, ptr %s, i64 %n) {{
+entry:
+  call void @llvm.memcpy.p0.p0.i64(ptr %d, ptr %s, i64 %n, i1 false)
+  ret ptr %d
+}}
 @entry = private unnamed_addr constant [8 x i8] c"mailbox\\00"
 @mailbox = global [{STORAGE} x i8] zeroinitializer, align 64
 @pause = global i32 0
@@ -134,6 +140,13 @@ class MailboxRing(unittest.TestCase):
             ran = run_program()
             self.assertEqual(ran.returncode, 0, ran.stderr.decode(errors="replace") + ran.stdout.decode(errors="replace"))
             self.assertEqual(ran.stdout.decode().split(), [str(SENDERS * PER_SENDER), "0", "0"], f"attempt {attempt}")
+
+
+class GeneratedSource(unittest.TestCase):
+    def test_compiler_copy_of_the_ring_is_up_to_date(self):
+        checked = subprocess.run(["python3" if os.name != "nt" else "python", str(ROOT / "scripts" / "gen-mailbox-ir.py"), "--check"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(checked.returncode, 0, checked.stderr.decode(errors="replace"))
 
 
 if __name__ == "__main__":
