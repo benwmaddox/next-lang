@@ -85,7 +85,13 @@ jobs:
       - name: The compiler reaches a fixed point (it rebuilds itself to identical IR)
         shell: pwsh
         run: |
-          ./nlc-selfhost.exe build selfhost -o stage2.ll --runtime=c
+          # The seed compiler builds the current sources (stage 1); stage 1 builds them again with the current code
+          # generation (stage 2), and stage 2 must reproduce itself (stage 3).
+          ./nlc-selfhost.exe build selfhost -o stage1.ll --runtime=c
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          clang -O1 -DNLC_STACK_MODE_OFFSET=1 -D_CRT_SECURE_NO_WARNINGS -fuse-ld=lld -o stage1.exe stage1.ll runtime/nl_runtime.c
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          ./stage1.exe build selfhost -o stage2.ll --runtime=c
           if ($LASTEXITCODE -ne 0) { exit 1 }
           clang -O1 -DNLC_STACK_MODE_OFFSET=1 -D_CRT_SECURE_NO_WARNINGS -fuse-ld=lld -o stage2.exe stage2.ll runtime/nl_runtime.c
           if ($LASTEXITCODE -ne 0) { exit 1 }
