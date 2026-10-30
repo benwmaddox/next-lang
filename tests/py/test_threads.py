@@ -110,10 +110,10 @@ def run_ir(body):
         (directory / "threads.ll").write_text(HEADER + body)
         if os.name == "nt":
             link = ["pwsh", "-NoProfile", "-File", str(ROOT / "scripts" / "nlc.ps1"), "link", "threads.ll", "-o", "threads.exe"]
-            program = ["./threads.exe"]
+            program = [str(directory / "threads.exe")]
         else:
             link = [str(ROOT / "scripts" / "nlc"), "link-ir", "threads.ll", "-o", "threads"]
-            program = ["./threads"]
+            program = [str(directory / "threads")]
         linked = subprocess.run(link, cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if linked.returncode != 0:
             raise AssertionError(linked.stderr.decode(errors="replace") + linked.stdout.decode(errors="replace"))
