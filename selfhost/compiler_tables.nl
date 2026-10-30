@@ -172,6 +172,19 @@ struct TypeRecord {
 // E2i locations carry a native-slot origin now; anchor kinds identify an SSA
 // aggregate temp, local, derived address, parameter, hidden result, or helper operand.
 // Offsets and lane fields are reserved for the later region and collection owners.
+// A mailbox, a sender or a receiver is a one-field struct (the address of the ring); this table says which struct
+// type is which, and of what.
+struct MailboxRecord {
+    type_id: long
+    role: long
+    element: long
+    capacity: long
+}
+
+const MAILBOX_ROLE_MAILBOX: long = 1L
+const MAILBOX_ROLE_SENDER: long = 2L
+const MAILBOX_ROLE_RECEIVER: long = 3L
+
 struct StorageLocation {
     origin: long
     anchor_kind: long
@@ -452,6 +465,7 @@ struct CompilerTables {
     functions: list<FunctionRecord, FUNCTION_TABLE_CAPACITY>
     parameters: list<ParameterRecord, BINDING_TABLE_CAPACITY>
     type_records: list<TypeRecord, TYPE_TABLE_CAPACITY>
+    mailbox_types: list<MailboxRecord, 256>
     exit_cleanups: list<ExitCleanupRecord, EXIT_CLEANUP_CAPACITY>
     struct_fields: list<StructFieldRecord, FIELD_TABLE_CAPACITY>
     enum_cases: list<EnumCaseRecord, ENUM_CASE_TABLE_CAPACITY>
@@ -565,6 +579,7 @@ fn empty_compiler_tables() -> CompilerTables {
         functions: list {},
         parameters: list {},
         type_records: list {},
+        mailbox_types: list {},
         exit_cleanups: list {},
         struct_fields: list {},
         enum_cases: list {},
@@ -635,6 +650,7 @@ fn reset_compiler_tables(env: Env, compiler: write CompilerTables) {
     compiler.functions.clear()
     compiler.parameters.clear()
     compiler.type_records.clear()
+    compiler.mailbox_types.clear()
     compiler.exit_cleanups.clear()
     seed_builtin_types(env, compiler.type_records)
     compiler.struct_fields.clear()

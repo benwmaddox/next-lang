@@ -549,6 +549,7 @@ fn emit_map_memory_wrappers(compiler: write CompilerTables, ir: grow Bytes max I
     for type_id in 0L..type_count(compiler) {
         if type_kind(compiler, type_id) == TYPE_KIND_MAP || type_kind(compiler, type_id) == TYPE_KIND_POOL { any_map = true }
     }
+    if compiler.mailbox_types.count() > 0L { any_map = true }
     if !any_map { return }
     ir_write_ascii(compiler, ir, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1 immarg)\ndeclare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1 immarg)\ndeclare void @llvm.memset.p0.i64(ptr, i8, i64, i1 immarg)\n")
     ir_write_ascii(compiler, ir, "define internal ptr @nl.mem.copy(ptr %d, ptr %s, i64 %n) {\nentry:\n  call void @llvm.memcpy.p0.p0.i64(ptr %d, ptr %s, i64 %n, i1 false)\n  ret ptr %d\n}\n")

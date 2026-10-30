@@ -53,6 +53,12 @@ jobs:
         run: |
           $env:NLC_SELFHOST = (Resolve-Path stage2.exe).Path
           python tests/py/test_jobs.py
+      - name: "Mailboxes (ring and language)"
+        shell: pwsh
+        run: |
+          $env:NLC_SELFHOST = (Resolve-Path stage2.exe).Path
+          python tests/py/test_mailbox.py
+          python tests/py/test_mailbox_language.py
       - name: Build and run the c_runtime programs
         shell: pwsh
         run: |

@@ -1223,7 +1223,7 @@ recursive fn parse_named_type(
     if cursor_take(tables, tokens, TokenKind.Lt) {
         parse_type(source, tokens, tables, NodeKind.TypeArgument)?
         argument_count += 1L
-        if (type_name_is(source, tokens, tables, name.token, "list") || type_name_is(source, tokens, tables, name.token, "pool") || type_name_is(source, tokens, tables, name.token, "queue") || type_name_is(source, tokens, tables, name.token, "ring")) && cursor_take(tables, tokens, TokenKind.Comma) {
+        if (type_name_is(source, tokens, tables, name.token, "list") || type_name_is(source, tokens, tables, name.token, "mailbox") || type_name_is(source, tokens, tables, name.token, "pool") || type_name_is(source, tokens, tables, name.token, "queue") || type_name_is(source, tokens, tables, name.token, "ring")) && cursor_take(tables, tokens, TokenKind.Comma) {
             cursor_skip_newlines(tables, tokens)
             parse_expression(source, tokens, tables, 8L)?
             constants += 1L
@@ -2472,7 +2472,7 @@ fn can_start_struct(
     } else {
         ()
     }
-    token_is_word(source, tokens, name_token, tables.state.file_base, "list") || token_is_word(source, tokens, name_token, tables.state.file_base, "pool") || token_is_word(source, tokens, name_token, tables.state.file_base, "map") || token_is_word(source, tokens, name_token, tables.state.file_base, "set") || token_is_word(source, tokens, name_token, tables.state.file_base, "queue") || token_is_word(source, tokens, name_token, tables.state.file_base, "ring") || is_upper_ascii(source[tables.state.file_base + tokens[name_token].start])
+    token_is_word(source, tokens, name_token, tables.state.file_base, "mailbox") || token_is_word(source, tokens, name_token, tables.state.file_base, "list") || token_is_word(source, tokens, name_token, tables.state.file_base, "pool") || token_is_word(source, tokens, name_token, tables.state.file_base, "map") || token_is_word(source, tokens, name_token, tables.state.file_base, "set") || token_is_word(source, tokens, name_token, tables.state.file_base, "queue") || token_is_word(source, tokens, name_token, tables.state.file_base, "ring") || is_upper_ascii(source[tables.state.file_base + tokens[name_token].start])
 }
 
 fn is_upper_ascii(value: byte) -> bool { value >= 65 && value <= 90 }
@@ -2491,7 +2491,7 @@ recursive fn postfix_struct_literal(
         let _ = tables.nodes.pop()
     }
     let is_list = token_is_word(source, tokens, name_token, tables.state.file_base, "list")
-    let is_pool = token_is_word(source, tokens, name_token, tables.state.file_base, "pool")
+    let is_pool = token_is_word(source, tokens, name_token, tables.state.file_base, "pool") || token_is_word(source, tokens, name_token, tables.state.file_base, "mailbox")
     let is_map = token_is_word(source, tokens, name_token, tables.state.file_base, "map")
     let is_set = token_is_word(source, tokens, name_token, tables.state.file_base, "set")
     let is_queue = token_is_word(source, tokens, name_token, tables.state.file_base, "queue")

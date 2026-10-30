@@ -465,7 +465,7 @@ fn check_one_body(
                 continue
             }
             if kind == NodeKind.PoolLiteral {
-                if type_kind(compiler, frame.expected) != TYPE_KIND_POOL {
+                if type_kind(compiler, frame.expected) != TYPE_KIND_POOL && mailbox_role_of_type(compiler, frame.expected) != MAILBOX_ROLE_MAILBOX {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "cannot infer the capacity for 'pool {}'; add a pool<T, N> type annotation")
                 }
                 compiler.facts[node] = NodeFact { ty: frame.expected, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
@@ -1323,8 +1323,9 @@ fn check_one_body(
             for parameter_index in 0L..target.param_count {
                 let parameter = compiler.parameters[target.param_start + parameter_index]
                 let numeric = parameter.ty == TY_INT || parameter.ty == TY_LONG || parameter.ty == TY_BOOL || parameter.ty == TY_BYTE || parameter.ty == TY_DOUBLE
-                if !numeric || (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
-                    fail_at_message(env, files, compiler, file_index, tables.nodes[call].start, "a spawned function takes numbers and bools for now")
+                let handle = mailbox_role_of_type(compiler, parameter.ty) != 0L
+                if (!numeric && !handle) || (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[call].start, "a spawned function takes numbers, bools and mailbox handles for now")
                 }
             }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function: compiler.facts[call].function, literal: 0L }
@@ -1595,6 +1596,41 @@ fn check_one_body(
                     require_type(env, files, compiler, file_index, node, frame.expected, method_result_ty, tables)
                 }
                 compiler.facts[node] = NodeFact { ty: method_result_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: TEXT_METHOD_EMPTY }
+            } else if mailbox_role_of_type(compiler, receiver_ty) != 0L {
+                let record = mailbox_record_of_type(compiler, receiver_ty)
+                var method = 0L
+                if record.role == MAILBOX_ROLE_MAILBOX {
+                    if token_is_word_at(source, tokens, files, file_index, syntax.token, "sender") { method = MAILBOX_METHOD_SENDER }
+                    else if token_is_word_at(source, tokens, files, file_index, syntax.token, "receiver") { method = MAILBOX_METHOD_RECEIVER }
+                    else if token_is_word_at(source, tokens, files, file_index, syntax.token, "close") { method = MAILBOX_METHOD_CLOSE }
+                } else if record.role == MAILBOX_ROLE_SENDER {
+                    if token_is_word_at(source, tokens, files, file_index, syntax.token, "send") { method = MAILBOX_METHOD_SEND }
+                    else if token_is_word_at(source, tokens, files, file_index, syntax.token, "close") { method = MAILBOX_METHOD_CLOSE }
+                } else {
+                    if token_is_word_at(source, tokens, files, file_index, syntax.token, "recv") { method = MAILBOX_METHOD_RECV }
+                    else if token_is_word_at(source, tokens, files, file_index, syntax.token, "recv_wait") { method = MAILBOX_METHOD_RECV_WAIT }
+                }
+                if method == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching mailbox method is available on this value") }
+                let actual_count = count_children(tables, compiler, node) - 1L
+                let wanted_count = if method == MAILBOX_METHOD_SEND { 1L } else { 0L }
+                if actual_count != wanted_count { fail_at_message(env, files, compiler, file_index, syntax.start, "mailbox method has the wrong number of arguments") }
+                var mailbox_result = TY_UNIT
+                if method == MAILBOX_METHOD_SENDER {
+                    mailbox_result = intern_mailbox_type(compiler, MAILBOX_ROLE_SENDER, record.element, 0L, file_index)
+                } else if method == MAILBOX_METHOD_RECEIVER {
+                    mailbox_result = intern_mailbox_type(compiler, MAILBOX_ROLE_RECEIVER, record.element, 0L, file_index)
+                } else if method == MAILBOX_METHOD_SEND {
+                    let message = compiler.child_next[receiver]
+                    require_type(env, files, compiler, file_index, message, record.element, compiler.facts[message].ty, tables)
+                    let full_ty = builtin_full_type_id(compiler)
+                    if full_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "internal capacity error type is unavailable") }
+                    mailbox_result = intern_sum_type(compiler, TYPE_KIND_RESULT, TY_UNIT, full_ty, file_index, node, -1L, -1L)
+                } else if method == MAILBOX_METHOD_RECV || method == MAILBOX_METHOD_RECV_WAIT {
+                    mailbox_result = intern_sum_type(compiler, TYPE_KIND_OPTION, record.element, -1L, file_index, node, -1L, -1L)
+                } else { () }
+                if frame.expected >= 0L && frame.expected != mailbox_result { require_type(env, files, compiler, file_index, node, frame.expected, mailbox_result, tables) }
+                let mailbox_flags = if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }
+                compiler.facts[node] = NodeFact { ty: mailbox_result, flags: mailbox_flags, binding: compiler.facts[receiver].binding, function: -1L, literal: method }
             } else if receiver_kind == TYPE_KIND_MAP {
                 let method = map_method_kind(source, tokens, files, file_index, syntax.token)
                 if method == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching map method is available on this value") }
