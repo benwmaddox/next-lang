@@ -42,7 +42,8 @@ else
 fi
 
 cd "$snapshot"
-ulimit -v 8000000
+# The self-hosted compiler reserves a large data-stack range; 8 GB is too tight for the seed-built one.
+ulimit -v 40000000
 export CARGO_TARGET_DIR="$HOME/.cache/next-lang/target-precommit"
 start=$(date +%s)
 status=0
