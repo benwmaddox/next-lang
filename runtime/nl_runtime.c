@@ -1205,11 +1205,11 @@ static int nl_win_errno(DWORD error) {
    backslashes and ".." segments are refused, as RESOLVE_BENEATH refuses them on Linux. */
 static int nl_win_resolve(const char *path, wchar_t *out, size_t capacity) {
     size_t length = strlen(path);
-    if (length > 0 && (path[0] == '/' || path[0] == '\')) { errno = EPERM; return -1; }
+    if (length > 0 && (path[0] == '/' || path[0] == '\\')) { errno = EPERM; return -1; }
     size_t segment = 0;
     for (size_t i = 0; i <= length; ++i) {
         char c = path[i];
-        if (c == ':' || c == '\') { errno = EPERM; return -1; }
+        if (c == ':' || c == '\\') { errno = EPERM; return -1; }
         if (c == '/' || c == 0) {
             if (i - segment == 2 && path[segment] == '.' && path[segment + 1] == '.') { errno = EPERM; return -1; }
             segment = i + 1;
@@ -1218,10 +1218,10 @@ static int nl_win_resolve(const char *path, wchar_t *out, size_t capacity) {
     if (nl_win_root_length + 2 >= capacity) { errno = ENAMETOOLONG; return -1; }
     memcpy(out, nl_win_root, nl_win_root_length * sizeof(wchar_t));
     size_t at = nl_win_root_length;
-    out[at++] = L'\';
+    out[at++] = L'\\';
     int wide = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, (int)length + 1, out + at, (int)(capacity - at));
     if (wide <= 0) { errno = EINVAL; return -1; }
-    for (wchar_t *p = out + at; *p; ++p) if (*p == L'/') *p = L'\';
+    for (wchar_t *p = out + at; *p; ++p) if (*p == L'/') *p = L'\\';
     return 0;
 }
 
