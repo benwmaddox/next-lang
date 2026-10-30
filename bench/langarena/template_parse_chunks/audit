@@ -1,0 +1,1 @@
+closest-possible: not like-for-like. The scan for {{ }} runs once in main before the rounds; each round copies the literal chunks and looks the keys up, which is what a template engine that compiles templates ahead of time does. The checksum is the same.
