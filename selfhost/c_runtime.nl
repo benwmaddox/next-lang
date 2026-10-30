@@ -7,7 +7,7 @@ fn emit_c_runtime_declarations(compiler: write CompilerTables, ir: grow Bytes ma
     ir_write_ascii(compiler, ir, "declare void @nl_expect_fail_header(i32, i32, i32, ptr)\ndeclare void @nl_expect_fail_left()\ndeclare void @nl_expect_fail_right()\ndeclare void @nl_expect_fail_compare(i32, i32, i32, ptr, i64, i64, i32)\ndeclare void @nl_expect_fail_bool(i32, i32, i32, ptr)\n")
     ir_write_ascii(compiler, ir, "declare void @nl_fs_join(ptr, ptr, i32, i64, ptr, i32, i64, ptr)\ndeclare void @nl_fs_list_with_extension_records(ptr, ptr, i32, i64, ptr, i64, ptr, i64, ptr)\n")
     ir_write_ascii(compiler, ir, "declare i32 @nl_utf8_validate(ptr, i64, ptr, ptr)\ndeclare i32 @nl_utf8_count(ptr, i64, ptr)\ndeclare void @nl_ascii_upper_copy(ptr, ptr, i64)\ndeclare i64 @nl_ascii_format_i64_radix(i64, i32, ptr)\ndeclare i64 @nl_ascii_format_zero_padded_i64(i64, i64, ptr)\ndeclare i64 @nl_pad_copy(ptr, i64, i64, i64, i32, ptr)\ndeclare i32 @nl_parse_integer(ptr, i64, i32, i32, i32, ptr)\n")
-    ir_write_ascii(compiler, ir, "declare i64 @nl_format_fixed(double, i64, ptr, i64)\ndeclare zeroext i1 @nl_parse_double(ptr, i64, ptr)\ndeclare double @llvm.trunc.f64(double)\ndeclare ptr @memcpy(ptr, ptr, i64)\ndeclare ptr @memmove(ptr, ptr, i64)\ndeclare ptr @memset(ptr, i32, i64)\ndeclare i32 @memcmp(ptr, ptr, i64)\ndeclare i32 @bcmp(ptr, ptr, i64)\n\n")
+    ir_write_ascii(compiler, ir, "declare ptr @memcpy(ptr, ptr, i64)\ndeclare ptr @memmove(ptr, ptr, i64)\ndeclare ptr @memset(ptr, i32, i64)\ndeclare i32 @memcmp(ptr, ptr, i64)\ndeclare i32 @bcmp(ptr, ptr, i64)\n\n")
 }
 
 fn emit_c_runtime_context_adapters(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
@@ -55,4 +55,5 @@ fn emit_c_runtime_adapters(compiler: write CompilerTables, ir: grow Bytes max IR
     emit_c_runtime_filesystem_adapters(compiler, ir)
     emit_c_runtime_text_adapters(compiler, ir)
     emit_c_runtime_parse_adapter(compiler, ir)
+    emit_float_text_functions(compiler, ir)
 }

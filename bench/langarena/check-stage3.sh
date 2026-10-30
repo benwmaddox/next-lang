@@ -18,7 +18,7 @@ PY
   rm -f target/langarena-stage3/$p.ll target/langarena-stage3/$p
   msg=$($S3 build $d -o target/langarena-stage3/$p.ll --runtime=c 2>&1 | head -1)
   if [ ! -f target/langarena-stage3/$p.ll ]; then echo "BUILD  $p: $msg"; fail=$((fail+1)); continue; fi
-  clang -O1 -DNLC_STACK_MODE_OFFSET=1 -o target/langarena-stage3/$p target/langarena-stage3/$p.ll runtime/nl_runtime.c -lm 2>/dev/null || { echo "CLANG  $p"; fail=$((fail+1)); continue; }
+  clang -O1 -DNLC_STACK_MODE_OFFSET=1 -o target/langarena-stage3/$p target/langarena-stage3/$p.ll runtime/nl_runtime.c 2>/dev/null || { echo "CLANG  $p"; fail=$((fail+1)); continue; }
   got=$(timeout 20 target/langarena-stage3/$p test 2>&1 | tail -1)
   if [ "$got" = "$want" ]; then pass=$((pass+1)); else echo "WRONG  $p: want $want got ${got:0:80}"; fail=$((fail+1)); fi
 done

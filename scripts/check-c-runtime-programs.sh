@@ -9,7 +9,7 @@ pass=0; fail=0
 for d in tests/c_runtime/*/; do
     name=$(basename "$d")
     "$S3" build "$d" -o "target/c-runtime-programs/$name.ll" --runtime=c 2>&1 | head -3
-    clang -O1 -DNLC_STACK_MODE_OFFSET=1 -o "target/c-runtime-programs/$name" "target/c-runtime-programs/$name.ll" runtime/nl_runtime.c -lm 2>/dev/null
+    clang -O1 -DNLC_STACK_MODE_OFFSET=1 -o "target/c-runtime-programs/$name" "target/c-runtime-programs/$name.ll" runtime/nl_runtime.c 2>/dev/null
     if "target/c-runtime-programs/$name" 2>&1 | cmp -s - "$d/expected.stdout"; then pass=$((pass+1)); else echo "FAIL $name"; fail=$((fail+1)); fi
 done
 echo "pass=$pass fail=$fail"
