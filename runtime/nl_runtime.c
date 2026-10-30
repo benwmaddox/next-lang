@@ -20,6 +20,7 @@
    CreateFileW beneath the working directory. Tests (NLC_TEST_BUILD) are not supported here yet. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>
 #include <io.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -45,6 +46,9 @@ typedef int mode_t;
 /* The native stack is only 1 MiB by default; the compiler recurses deeply. */
 #pragma comment(linker, "/STACK:268435456")
 #pragma comment(lib, "shell32.lib")
+/* The file-system root is the working directory at startup, held as a wide path. */
+static wchar_t nl_win_root[32768];
+static size_t nl_win_root_length;
 #else
 #include <signal.h>
 #include <unistd.h>
@@ -1180,10 +1184,6 @@ static int nl_extract_raw(const void *value, int is_argument, uint64_t capacity,
 }
 
 #if NL_WINDOWS
-/* The file-system root is the working directory at startup, held as a wide path. */
-static wchar_t nl_win_root[32768];
-static size_t nl_win_root_length;
-
 static int nl_win_errno(DWORD error) {
     switch (error) {
     case ERROR_FILE_NOT_FOUND:
