@@ -59,6 +59,7 @@ jobs:
           name="next-lang-${{ inputs.tag }}-linux-x86_64"
           mkdir -p "dist/$name"
           cp dist/seed.ll "dist/$name/seed.ll"
+          cp scripts/nlc "dist/$name/nlc"
           cp target/release/nlc "dist/$name/nlc-stage0"
           cp selfhost-nlc "dist/$name/nlc-selfhost"
           cp -r runtime core "dist/$name/"
@@ -112,7 +113,7 @@ jobs:
         run: |
           $name = "next-lang-${{ inputs.tag }}-windows-x86_64"
           New-Item -ItemType Directory -Force "dist/$name" | Out-Null
-          Copy-Item nlc-selfhost.exe, seed/seed.ll "dist/$name/"
+          Copy-Item nlc-selfhost.exe, seed/seed.ll, scripts/nlc.ps1 "dist/$name/"
           Copy-Item runtime, core -Recurse "dist/$name/"
           @("tag: ${{ inputs.tag }}", "commit: $(git rev-parse HEAD)", (clang --version | Select-Object -First 1), "runner: windows-latest", "Windows build of the self-hosted compiler only (no Rust nlc); compile programs with nlc-selfhost.exe build <dir> -o out.ll --runtime=c, then clang out.ll runtime/nl_runtime.c.") | Set-Content "dist/$name/BUILD-INFO.txt"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"

@@ -88,6 +88,20 @@ class ReferenceResultCache:
         # Stage 0 is identified by its sources and toolchain, not by the built
         # binary: the binary embeds its checkout path, which differs for every
         # pre-commit snapshot.
+        # Recorded results (tests/reference) stand in for the Rust compiler. NLC_REFERENCE=frozen reads
+        # only them, with no Rust toolchain; NLC_RECORD_REFERENCE=1 writes them while running the real one.
+        self.frozen_directory = root / "tests" / "reference"
+        self.frozen_only = os.environ.get("NLC_REFERENCE") == "frozen"
+        self.record = os.environ.get("NLC_RECORD_REFERENCE") == "1"
+        if self.frozen_only:
+            self.reference_hash = "frozen"
+            self.clang_version = "frozen"
+            self.disabled = False
+            self._lock = threading.Lock()
+            self.hits = 0
+            self.misses = 0
+            self.forced = 0
+            return
         self.reference_hash = stage0_source_hash(root)
         clang = subprocess.run(
             ["clang", "--version"],
@@ -163,6 +177,22 @@ class ReferenceResultCache:
         }
         return hashlib.sha256(encoded).hexdigest(), key_inputs
 
+    def _frozen_entry(self, key_inputs: dict[str, object]) -> tuple[str, Path]:
+        # Independent of the Rust sources, the toolchain and clang: what the package is, how it was run.
+        settings = {
+            name: digest
+            for name, digest in key_inputs["environment_variable_hashes"].items()
+            if name.startswith("NLC_") and name not in ("NLC_REFERENCE", "NLC_RECORD_REFERENCE")
+        }
+        identity = {
+            "package_files_sha256": key_inputs["package_files_sha256"],
+            "optimization_level": key_inputs["optimization_level"],
+            "settings": settings,
+            "invocation_sha256": key_inputs["invocation_sha256"],
+        }
+        key = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return key, self.frozen_directory / key[:2] / f"{key}.json"
+
     def get_or_run(
         self,
         root: Path,
@@ -173,6 +203,28 @@ class ReferenceResultCache:
         run: Callable[[], Result],
     ) -> Result:
         key, key_inputs = self._key(root, package, env, level, invocation)
+        frozen_key, frozen_entry = self._frozen_entry(key_inputs)
+        if self.frozen_only:
+            result = self._read(frozen_entry, frozen_key, package)
+            if result is None:
+                raise Mismatch(f"no recorded reference result for {package} at level {level}; re-record with NLC_RECORD_REFERENCE=1")
+            with self._lock:
+                self.hits += 1
+            return result
+        result = self._get_or_run_cached(root, package, key, key_inputs, run)
+        if self.record:
+            frozen_entry.parent.mkdir(parents=True, exist_ok=True)
+            self._write_entry(frozen_entry, frozen_key, package, {}, result)
+        return result
+
+    def _get_or_run_cached(
+        self,
+        root: Path,
+        package: str,
+        key: str,
+        key_inputs: dict[str, object],
+        run: Callable[[], Result],
+    ) -> Result:
         entry = self.directory / f"{key}.json"
         if not self.disabled:
             result = self._read(entry, key, package)
@@ -193,7 +245,7 @@ class ReferenceResultCache:
             stderr=normalize_bytes(result.stderr, root, package),
             build_status=result.build_status,
         )
-        self._write(entry, key, package, key_inputs, normalized)
+        self._write_entry(entry, key, package, key_inputs, normalized)
         return normalized
 
     def _read(self, entry: Path, key: str, package: str) -> Result | None:
@@ -226,7 +278,7 @@ class ReferenceResultCache:
         ):
             return None
 
-    def _write(
+    def _write_entry(
         self,
         entry: Path,
         key: str,
@@ -247,7 +299,7 @@ class ReferenceResultCache:
             },
         }
         descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{key}.", suffix=".tmp", dir=self.directory
+            prefix=f".{key}.", suffix=".tmp", dir=entry.parent
         )
         temporary = Path(temporary_name)
         try:
@@ -290,7 +342,8 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     reference = args.reference.resolve()
-    if not reference.is_file() or not os.access(reference, os.X_OK):
+    frozen_reference = os.environ.get("NLC_REFERENCE") == "frozen"
+    if not frozen_reference and (not reference.is_file() or not os.access(reference, os.X_OK)):
         print(f"reference nlc is not executable: {reference}", file=sys.stderr)
         return 2
     compiler = args.compiler.resolve() if args.compiler is not None else None
@@ -969,11 +1022,13 @@ def run_selfhost(
         return compiled, ir.exists()
     if not ir.is_file():
         return Result(128, b"", b"selfhost build returned success without an IR file\n"), False
+    # Frozen mode has no Rust binary: the shell driver reads the IR header and runs clang the same way.
+    driver = [str(root / "scripts/nlc")] if os.environ.get("NLC_REFERENCE") == "frozen" else [str(reference)]
     if is_test:
-        linked = invoke([str(reference), "test-ir", str(ir)], cwd=cwd, env=env)
+        linked = invoke(driver + ["test-ir", str(ir)], cwd=cwd, env=env)
         ir.unlink(missing_ok=True)
         return linked, True
-    linked = invoke([str(reference), "link-ir", str(ir), "-o", str(exe)], cwd=cwd, env=env)
+    linked = invoke(driver + ["link-ir", str(ir), "-o", str(exe)], cwd=cwd, env=env)
     ir.unlink(missing_ok=True)
     if linked.status != 0:
         return linked, True
@@ -1051,7 +1106,8 @@ def compare_test_package_main(
         built = invoke(command, cwd=root, env=env)
         if built.status != 0:
             raise Mismatch(f"test package {runtime} runtime build was rejected", reference_result, built)
-        linked = invoke([str(reference), "link-ir", str(ir), "-o", str(self_exe)], cwd=root, env=env)
+        driver = [str(root / "scripts/nlc")] if os.environ.get("NLC_REFERENCE") == "frozen" else [str(reference)]
+        linked = invoke(driver + ["link-ir", str(ir), "-o", str(self_exe)], cwd=root, env=env)
         ir.unlink(missing_ok=True)
         actual = linked if linked.status != 0 else invoke([str(self_exe)], cwd=root, env=env)
         self_exe.unlink(missing_ok=True)
