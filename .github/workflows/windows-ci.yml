@@ -1,0 +1,76 @@
+# Checks the Windows runtime. Linux builds the self-hosted compiler's own LLVM IR (the seed); Windows
+# compiles that IR with the Windows runtime into nlc-selfhost.exe, then uses it to rebuild itself
+# (the IR must be identical to the seed) and to build and run the c_runtime test programs.
+name: windows-ci
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/windows-runtime]
+
+jobs:
+  seed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+      - name: Build stage 0 (Rust nlc)
+        run: cargo build --release
+      - name: Self-hosted stage chain (stage 2 == stage 3)
+        run: |
+          ulimit -v 40000000
+          python3 scripts/check-selfhost-stage-chain.py --reference target/release/nlc --opt-level 1 --output-dir stage-chain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seed
+          path: stage-chain/stage3.ll
+
+  windows:
+    needs: seed
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: seed
+          path: seed
+      - name: Tools
+        shell: pwsh
+        run: |
+          clang --version
+          Get-Command clang, lld-link | Format-Table Name, Source
+      - name: Build nlc-selfhost.exe from the seed IR
+        shell: pwsh
+        run: |
+          clang -O1 -DNLC_STACK_MODE_OFFSET=1 -fuse-ld=lld -o nlc-selfhost.exe seed/stage3.ll runtime/nl_runtime.c
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          ./nlc-selfhost.exe 2>&1 | Select-Object -First 3
+      - name: The compiler rebuilds itself (IR identical to the seed)
+        shell: pwsh
+        run: |
+          ./nlc-selfhost.exe build selfhost -o self.ll --runtime=c
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $a = (Get-FileHash seed/stage3.ll).Hash
+          $b = (Get-FileHash self.ll).Hash
+          Write-Host "seed $a"
+          Write-Host "self $b"
+          if ($a -ne $b) { Write-Error "IR differs from the seed"; exit 1 }
+      - name: Build and run the c_runtime programs
+        shell: pwsh
+        run: |
+          $failed = 0
+          foreach ($dir in Get-ChildItem tests/c_runtime -Directory) {
+            $name = $dir.Name
+            ./nlc-selfhost.exe build "tests/c_runtime/$name" -o "$name.ll" --runtime=c
+            clang -O1 -DNLC_STACK_MODE_OFFSET=1 -fuse-ld=lld -o "$name.exe" "$name.ll" runtime/nl_runtime.c
+            $out = (& "./$name.exe") -join "`n"
+            $want = (Get-Content "tests/c_runtime/$name/expected.stdout" -Raw).TrimEnd("`r","`n")
+            if ($out.TrimEnd("`r","`n") -ne $want) { Write-Host "FAIL $name"; $failed++ } else { Write-Host "ok $name" }
+          }
+          if ($failed) { exit 1 }
