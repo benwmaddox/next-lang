@@ -17,14 +17,41 @@ nothing here is implemented yet.
 
 - `mailbox<T, N>`: a ring of `N` slots of a flat, bounded record `T`, plus head and tail counters. Storage is
   allocated once at startup (like shared state) and never grows.
-- Created in `main`; it gives out one `Sender<T>` and one `Receiver<T>`. **One sender per mailbox for now**
-  (single producer, single consumer), so a send needs no compare-and-swap, only ordered stores.
+- Created in `main`; it gives out `Sender<T>` handles (as many as `main` clones) and one `Receiver<T>`.
+  **Many senders, one receiver** (decided 2026-10-30, replacing the earlier single-sender start): a send claims
+  a slot with an atomic increment of the tail and publishes it with a per-slot sequence number (the bounded
+  multi-producer ring), the receiver reads in slot order and needs no atomic read-modify-write.
+- **One mailbox per service, with a tagged message type** (an enum with payloads, e.g. `Get | Put | Evict`), so
+  a sender's own messages stay in order across kinds.
 - A send copies the record in and returns `Result<unit, Full>`; a full mailbox returns `Full` (nothing is overwritten,
   nothing blocks implicitly). A message is ordered with respect to the same sender only.
 - `recv()` returns `Option<T>`; a service job's loop uses `recv_wait()`, which suspends the job so its worker can run
   others.
 - The implementation is generated IR using LLVM atomics. The only operating-system pieces are parking an idle worker
   and waking it (futex on Linux, `WaitOnAddress` on Windows).
+
+## Request and reply
+
+A request that needs an answer carries a reply handle in the message and waits on it:
+
+```
+struct Get { reply: ReplySlot<Found>, key: Ascii max 64 }
+enum CacheMsg { Get(Get), Put(Ascii max 64, Ascii max 512) }
+
+let reply = reply_slot<Found>()            // capacity-1 mailbox owned by this job, from a fixed pool
+cache.send(CacheMsg.Get(Get { reply: reply.sender(), key }))?   // Full => "busy, retry"
+match reply.recv_wait() { some(found) => ..., none => /* service gone */ }
+```
+
+- A reply slot is a mailbox of capacity 1 with exactly one sender at a time (the service answering that request),
+  so replying never contends. The slot is borrowed from a fixed pool when the request job starts and returned
+  when it ends; the pool size is the admission limit.
+- `ReplySlot<T>` in a message is a small handle (pool index and generation), not a pointer, so the message stays
+  flat and copyable, and a late reply to a recycled slot is dropped.
+- The service owns its data as job-local state (for example a `map` with a declared capacity). Nobody else reads
+  it; they send a message and wait.
+- Fan-out: a request waits for several answers by giving each outstanding question its own reply slot and
+  receiving in order. `select` over several mailboxes is not in the first version.
 
 ## Fan-out across cores
 
