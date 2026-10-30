@@ -41,7 +41,7 @@ jobs:
       - name: The PowerShell driver builds and runs a program
         shell: pwsh
         run: |
-          $env:NLC_SELFHOST = (Resolve-Path nlc-selfhost.exe).Path
+          $env:NLC_SELFHOST = (Resolve-Path stage2.exe).Path
           $out = (./scripts/nlc.ps1 run tests/c_runtime/pools) -join "`n"
           $want = (Get-Content tests/c_runtime/pools/expected.stdout -Raw)
           if ($out.TrimEnd() -ne $want.TrimEnd()) { Write-Host $out; Write-Error "driver output differs"; exit 1 }
@@ -51,7 +51,7 @@ jobs:
       - name: "Jobs (spawn)"
         shell: pwsh
         run: |
-          $env:NLC_SELFHOST = (Resolve-Path nlc-selfhost.exe).Path
+          $env:NLC_SELFHOST = (Resolve-Path stage2.exe).Path
           python tests/py/test_jobs.py
       - name: Build and run the c_runtime programs
         shell: pwsh
@@ -59,7 +59,7 @@ jobs:
           $failed = 0
           foreach ($dir in Get-ChildItem tests/c_runtime -Directory) {
             $name = $dir.Name
-            ./nlc-selfhost.exe build "tests/c_runtime/$name" -o "$name.ll" --runtime=c
+            ./stage2.exe build "tests/c_runtime/$name" -o "$name.ll" --runtime=c
             clang -O1 -DNLC_STACK_MODE_OFFSET=1 -D_CRT_SECURE_NO_WARNINGS -fuse-ld=lld -o "$name.exe" "$name.ll" runtime/nl_runtime.c
             $out = (& "./$name.exe") -join "`n"
             $want = (Get-Content "tests/c_runtime/$name/expected.stdout" -Raw).TrimEnd("`r","`n")
