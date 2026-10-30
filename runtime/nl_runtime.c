@@ -446,9 +446,11 @@ uint64_t nl_context_base_offset(void *opaque) {
     return 0;
 }
 
+/* The generated code compares a scope's end with this and calls the grow routine when it is past it,
+   so it reports the bytes that are backed (all of the range on Linux, the committed part on Windows). */
 uint64_t nl_context_reservation_bytes(void *opaque) {
     nl_data_stack_context *context = opaque;
-    return context ? context->reservation_bytes : 0;
+    return context ? context->committed_bytes : 0;
 }
 
 void nl_context_note_peak_offset(void *opaque, uint64_t top_offset) {
