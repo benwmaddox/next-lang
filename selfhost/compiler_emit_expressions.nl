@@ -319,6 +319,10 @@ fn emit_sys_method(
         emit_double_method(tables, compiler, ir, node, collection_operation)
         return
     }
+    if collection_operation >= MAILBOX_METHOD_SENDER && collection_operation <= MAILBOX_METHOD_RECV_WAIT {
+        emit_mailbox_method(tables, compiler, ir, node, collection_operation)
+        return
+    }
     if collection_operation >= COLLECTION_METHOD_LEN && collection_operation <= COLLECTION_METHOD_MAP_CONTAINS {
         emit_collection_method(source, files, tables, compiler, ir, node, file_index, collection_operation)
         return
@@ -1082,7 +1086,11 @@ recursive fn emit_expr_linear(
                 compiler.expr_work[frame_index] = frame
             } else if kind == NodeKind.ListLiteral || kind == NodeKind.QueueLiteral || kind == NodeKind.MapLiteral || kind == NodeKind.PoolLiteral {
                 let list_type = compiler.facts[current].ty
-                emit_collection_zero_storage(compiler, ir, current, list_type, 0L)
+                if mailbox_role_of_type(compiler, list_type) == MAILBOX_ROLE_MAILBOX {
+                    emit_mailbox_literal(compiler, ir, current, list_type)
+                } else {
+                    emit_collection_zero_storage(compiler, ir, current, list_type, 0L)
+                }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             } else if kind == NodeKind.Index {
                 frame.child0 = compiler.child_first[current]

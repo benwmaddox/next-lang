@@ -586,6 +586,10 @@ fn intern_collection_type_syntax(
     let argument_count = syntax.meta1 & 2097151L
     let constant_count = (syntax.meta1 >> 21L) & 2097151L
     let array_count = (syntax.meta1 >> 42L) & 2097151L
+    let mailbox_role = mailbox_type_syntax_role(source, tokens, files, file_index, syntax)
+    if mailbox_role != 0L {
+        return intern_mailbox_type_syntax(env, source, tokens, files, tables, compiler, file_index, node, mailbox_role)
+    }
     let written_kind = collection_type_syntax_kind(source, tokens, files, file_index, syntax)
     let is_list = collection_kind_is_list(written_kind)
     if written_kind == TYPE_KIND_MAP && array_count == 0L {

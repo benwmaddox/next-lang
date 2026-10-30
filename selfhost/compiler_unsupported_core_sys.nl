@@ -321,6 +321,12 @@ fn unsupported_category_for_node(
             (compiler.c_runtime && (
                 token_is_word_at(source, tokens, files, file_index, value.token, "args") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "host") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "send") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "recv") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "recv_wait") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "sender") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "receiver") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "close") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "cores") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "total_cores") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "ram_bytes") ||

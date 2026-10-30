@@ -266,13 +266,18 @@ static uint64_t nl_data_stack_reservation(uint64_t requested_bytes,
    NLC_STACK_RESERVE_BYTES, e.g. under `ulimit -v`. */
 #define NL_OFFSET_STACK_DEFAULT_BYTES (UINT64_C(32) * 1024 * 1024 * 1024)
 
+/* A job's data stack reserves less address space than the main program's: 1 GiB unless NLC_JOB_STACK_RESERVE_BYTES
+   says otherwise. The flag is set (per thread) while a job's context is created. */
+#define NL_JOB_STACK_DEFAULT_BYTES (UINT64_C(1) * 1024 * 1024 * 1024)
+static _Thread_local int nl_creating_job_context;
+
 static uint64_t nl_offset_stack_reservation(uint64_t computed_bytes) {
 #if defined(NLC_TEST_BUILD)
     const char *test_override = getenv("NLC_TEST_DATA_STACK_BYTES");
     if (test_override && *test_override) return computed_bytes;
 #endif
-    uint64_t bytes = NL_OFFSET_STACK_DEFAULT_BYTES;
-    const char *override = getenv("NLC_STACK_RESERVE_BYTES");
+    uint64_t bytes = nl_creating_job_context ? NL_JOB_STACK_DEFAULT_BYTES : NL_OFFSET_STACK_DEFAULT_BYTES;
+    const char *override = getenv(nl_creating_job_context ? "NLC_JOB_STACK_RESERVE_BYTES" : "NLC_STACK_RESERVE_BYTES");
     if (override && *override) {
         errno = 0;
         char *end = NULL;
@@ -440,6 +445,13 @@ __attribute__((noinline)) void nl_recursion_check(void *opaque, uint64_t require
         needed > context->recursion_budget - used) {
         nl_fail(19, file_id, line, col);
     }
+}
+
+void *nl_context_create_job(uint64_t requested_bytes, uint64_t requested_recursion_budget, const char *entry_name) {
+    nl_creating_job_context = 1;
+    void *context = nl_context_create(requested_bytes, requested_recursion_budget, entry_name);
+    nl_creating_job_context = 0;
+    return context;
 }
 
 void *nl_context_base(void *opaque) {
@@ -648,8 +660,33 @@ void nl_expect_fail_bool(int32_t file_id, int32_t line, int32_t col,
     nl_put_text(1, "\n    value: false\n");
 }
 
+/* Once a second thread exists, print output is gathered per thread and written a line at a time, so the pieces
+   of one print statement (digits, then the newline) are never split by another thread's output. */
+static _Thread_local unsigned char nl_line[512];
+static _Thread_local size_t nl_line_length;
+
+static void nl_line_flush(void) {
+    if (!nl_line_length) return;
+    size_t length = nl_line_length;
+    nl_line_length = 0;
+    if (nl_output_write(nl_print_fd, nl_line, length) != 0) nl_fail(20, -1, 0, 0);
+}
+
 static void nl_print_bytes(const unsigned char *bytes, uint64_t length) {
-    if (nl_output_write(nl_print_fd, bytes, length) != 0) nl_fail(20, -1, 0, 0);
+    if (!nl_multithreaded) {
+        if (nl_output_write(nl_print_fd, bytes, length) != 0) nl_fail(20, -1, 0, 0);
+        return;
+    }
+    if (length > sizeof(nl_line) - nl_line_length) {
+        nl_line_flush();
+        if (length >= sizeof(nl_line)) {
+            if (nl_output_write(nl_print_fd, bytes, length) != 0) nl_fail(20, -1, 0, 0);
+            return;
+        }
+    }
+    memcpy(nl_line + nl_line_length, bytes, (size_t)length);
+    nl_line_length += (size_t)length;
+    if (memchr(bytes, '\n', (size_t)length)) nl_line_flush();
 }
 
 void nl_print_ascii(const unsigned char *bytes, uint64_t length) {
@@ -869,7 +906,7 @@ int32_t nl_bytes_are_ascii(const unsigned char *bytes, uint64_t length) {
 }
 
 void nl_print_set_fd(int32_t fd) {
-    if (fd == STDOUT_FILENO || fd == STDERR_FILENO) nl_print_fd = fd;
+    if (fd == STDOUT_FILENO || fd == STDERR_FILENO) { nl_line_flush(); nl_print_fd = fd; }
 }
 
 void nl_print_error_prefix(void) {
@@ -1143,13 +1180,16 @@ static DWORD WINAPI nl_thread_main(LPVOID raw) {
     nl_thread_record *record = (nl_thread_record *)raw;
     nl_pin_current_thread(record->pin);
     record->entry(record->argument);
+    nl_line_flush();
     return 0;
 }
 #else
 static void *nl_thread_main(void *raw) {
     nl_thread_record *record = (nl_thread_record *)raw;
     nl_pin_current_thread(record->pin);
-    return record->entry(record->argument);
+    void *result = record->entry(record->argument);
+    nl_line_flush();
+    return result;
 }
 #endif
 
@@ -1652,6 +1692,7 @@ static int nl_output_write_and_flush_body(int fd, const unsigned char *bytes,
 /* Output is buffered in shared state, so once a second thread exists the public entry points take a recursive
    lock. A single-threaded program never takes it. */
 static int nl_output_flush_all(void) {
+    nl_line_flush();
     nl_output_lock();
     int result = nl_output_flush_all_body();
     nl_output_unlock();
