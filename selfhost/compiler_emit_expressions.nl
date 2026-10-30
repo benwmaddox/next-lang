@@ -2808,6 +2808,10 @@ fn emit_function_definition(
         if files[function.file].name == b"memory.nl" { ir_write_ascii(compiler, ir, " \"no-builtins\"=\"true\"") }
     }
     ir_write_ascii(compiler, ir, " {\nentry:\n")
+    if compiler.c_runtime {
+        emit_parameter_pointer_prologue(compiler, ir, function)
+        emit_parameter_length_prologue(compiler, ir, function)
+    }
     // E3a1 subsection: context-free startup helpers must not capture a process
     // global. The null value only serves checked arithmetic's unreachable
     // fail edges; startup failures themselves use direct syscalls.

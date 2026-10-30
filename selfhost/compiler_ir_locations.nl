@@ -470,6 +470,10 @@ fn emit_location_pointer_materialization(
         else { ir_write_ascii(compiler, ir, "  %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = add i64 %region.offset."); ir_write_number(compiler, ir, slot); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, location.byte_offset); ir_write_ascii(compiler, ir, "\n") }
         ir_write_ascii(compiler, ir, "  %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = call ptr "); emit_context_runtime_symbol(compiler, ir, "nl_context_current_base", "nlc_context_current_base"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n  %loc.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %loc.base."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, ", i64 %loc.offset."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, "\n")
         return serial
+    } else if location.anchor_kind == 3L && !is_indexed_sum_parameter_location(location) && compiler.c_runtime && parameter_has_pointer(compiler, location.anchor_node) {
+        ir_write_ascii(compiler, ir, "  %loc.pointer."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %arg.ptr."); ir_write_number(compiler, ir, location.anchor_node)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, location.byte_offset); ir_push_byte(compiler, ir, 10)
+        return serial
     } else if location.anchor_kind == 3L || location.anchor_kind == 9L {
         if location.anchor_kind == 3L {
             ir_write_ascii(compiler, ir, "  %loc.anchor."); ir_write_number(compiler, ir, serial); ir_write_ascii(compiler, ir, " = select i1 true, ptr %arg.anchor."); ir_write_number(compiler, ir, location.anchor_node); ir_write_ascii(compiler, ir, ", ptr %arg.anchor."); ir_write_number(compiler, ir, location.anchor_node); ir_push_byte(compiler, ir, 10)

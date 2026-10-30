@@ -254,3 +254,52 @@ fn descriptor_geometry(compiler: CompilerTables, ty: long) -> bool {
 fn emit_plain_geometry_tail(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, ty: long) {
     if is_sum_type(compiler, ty) { ir_write_ascii(compiler, ir, ", i64 1, i64 0") }
 }
+
+// A parameter passed as a location (anchor and offset) is the same storage for the whole call, and the
+// data stack no longer moves, so its address is worked out once at entry; every access then adds its
+// own offset to that pointer.
+fn parameter_has_pointer(compiler: CompilerTables, binding: long) -> bool {
+    if binding < 0L || binding >= compiler.bindings.count() || !compiler.bindings[binding].parameter { return false }
+    let ty = compiler.bindings[binding].ty
+    ty != TY_UNIT && (is_aggregate_type(compiler, ty) || (binding_parameter_mode(compiler, binding) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L)
+}
+
+fn emit_parameter_pointer_prologue(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, function: FunctionRecord) {
+    for parameter_index in 0L..function.param_count {
+        let parameter = compiler.parameters[function.param_start + parameter_index]
+        let binding = binding_for_node(compiler, parameter.node)
+        if !parameter_has_pointer(compiler, binding) { continue }
+        ir_write_ascii(compiler, ir, "  %arg.is.stack."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, " = icmp eq ptr %arg.anchor."); ir_write_number(compiler, ir, binding)
+        ir_write_ascii(compiler, ir, ", null\n  %arg.native."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %arg.anchor."); ir_write_number(compiler, ir, binding)
+        ir_write_ascii(compiler, ir, ", i64 %arg.offset."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, "\n  %arg.base."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, " = call ptr ")
+        emit_context_runtime_symbol(compiler, ir, "nl_context_current_base", "nlc_context_current_base")
+        ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n  %arg.stack."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %arg.base."); ir_write_number(compiler, ir, binding)
+        ir_write_ascii(compiler, ir, ", i64 %arg.offset."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, "\n  %arg.ptr."); ir_write_number(compiler, ir, binding)
+        ir_write_ascii(compiler, ir, " = select i1 %arg.is.stack."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", ptr %arg.stack."); ir_write_number(compiler, ir, binding)
+        ir_write_ascii(compiler, ir, ", ptr %arg.native."); ir_write_number(compiler, ir, binding); ir_push_byte(compiler, ir, 10)
+    }
+}
+
+// A read-only text or list parameter cannot change while the function runs, so its length is loaded
+// once at entry and bounds checks and counts use that.
+fn parameter_length_cached(compiler: CompilerTables, binding: long) -> bool {
+    if !parameter_has_pointer(compiler, binding) { return false }
+    if (binding_parameter_mode(compiler, binding) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L { return false }
+    let kind = type_kind(compiler, compiler.bindings[binding].ty)
+    kind == TYPE_KIND_ASCII || kind == TYPE_KIND_BYTES || kind == TYPE_KIND_LIST
+}
+
+fn cached_length_binding(tables: ParseTables, compiler: CompilerTables, receiver: long) -> long {
+    if !compiler.c_runtime || receiver < 0L || tables.nodes[receiver].kind != NodeKind.Name { return -1L }
+    let binding = compiler.facts[receiver].binding
+    if binding >= 0L && parameter_length_cached(compiler, binding) { binding } else { -1L }
+}
+
+fn emit_parameter_length_prologue(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, function: FunctionRecord) {
+    for parameter_index in 0L..function.param_count {
+        let parameter = compiler.parameters[function.param_start + parameter_index]
+        let binding = binding_for_node(compiler, parameter.node)
+        if !parameter_length_cached(compiler, binding) { continue }
+        ir_write_ascii(compiler, ir, "  %arg.len."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, " = load i64, ptr %arg.ptr."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n")
+    }
+}
