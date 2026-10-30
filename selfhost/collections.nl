@@ -1722,12 +1722,12 @@ fn emit_collection_zero_storage(compiler: write CompilerTables, ir: grow Bytes m
         let serial = emit_location_pointer_materialization(compiler, ir, location)
         let map_capacity_value = map_capacity(compiler, type_id)
         let index_start = 16L + map_capacity_value * map_slot_size(compiler, type_id)
-        ir_write_ascii(compiler, ir, "  %map.zero.header."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @memset(ptr ")
+        ir_write_ascii(compiler, ir, "  %map.zero.header."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "  = call ptr @nl.mem.set(ptr ")
         emit_location_pointer_reference(compiler, ir, location, serial)
         ir_write_ascii(compiler, ir, ", i32 0, i64 16)\n  %map.zero.index.pointer."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
         emit_location_pointer_reference(compiler, ir, location, serial)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, index_start)
-        ir_write_ascii(compiler, ir, "\n  %map.zero.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @memset(ptr %map.zero.index.pointer."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "\n  %map.zero.index."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "  = call ptr @nl.mem.set(ptr %map.zero.index.pointer."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i32 0, i64 "); ir_write_number(compiler, ir, map_slot_count(map_capacity_value) * 4L); ir_write_ascii(compiler, ir, ")\n")
         return
     }

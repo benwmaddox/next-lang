@@ -192,7 +192,7 @@ fn emit_map_text_copy(compiler: write CompilerTables, ir: grow Bytes max IR_BUFF
     ir_write_ascii(compiler, ir, "  %tc.len"); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, " = load i64, ptr %"); ir_write_ascii(compiler, ir, source_name)
     ir_write_ascii(compiler, ir, "\n  %tc.n"); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, " = add i64 %tc.len"); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, ", ")
     ir_write_number(compiler, ir, data_offset)
-    ir_write_ascii(compiler, ir, "\n  %tc.c"); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %"); ir_write_ascii(compiler, ir, destination_name)
+    ir_write_ascii(compiler, ir, "\n  %tc.c"); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, " = call ptr @nl.mem.copy(ptr %"); ir_write_ascii(compiler, ir, destination_name)
     ir_write_ascii(compiler, ir, ", ptr %"); ir_write_ascii(compiler, ir, source_name); ir_write_ascii(compiler, ir, ", i64 %tc.n"); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, ")\n")
 }
 
@@ -246,7 +246,7 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
         ir_write_ascii(compiler, ir, "  %la = load i64, ptr %k\n  %lb = load i64, ptr %p\n  %eq = icmp eq i64 %la, %lb\n  br i1 %eq, label %cmp, label %no\ncmp:\n")
         ir_write_ascii(compiler, ir, "  %da = getelementptr i8, ptr %k, i64 "); ir_write_number(compiler, ir, key_data)
         ir_write_ascii(compiler, ir, "\n  %db = getelementptr i8, ptr %p, i64 "); ir_write_number(compiler, ir, key_data)
-        ir_write_ascii(compiler, ir, "\n  %c = call i32 @bcmp(ptr %da, ptr %db, i64 %la)\n  %z = icmp eq i32 %c, 0\n  ret i1 %z\nno:\n  ret i1 false\n}\n\n")
+        ir_write_ascii(compiler, ir, "\n  br label %cmp.loop\ncmp.loop:\n  %ci = phi i64 [ 0, %cmp ], [ %ci1, %cmp.step ]\n  %cdone = icmp uge i64 %ci, %la\n  br i1 %cdone, label %yes, label %cmp.byte\ncmp.byte:\n  %pa = getelementptr i8, ptr %da, i64 %ci\n  %pb = getelementptr i8, ptr %db, i64 %ci\n  %ba = load i8, ptr %pa\n  %bb = load i8, ptr %pb\n  %bsame = icmp eq i8 %ba, %bb\n  br i1 %bsame, label %cmp.step, label %no\ncmp.step:\n  %ci1 = add i64 %ci, 1\n  br label %cmp.loop\nyes:\n  ret i1 true\nno:\n  ret i1 false\n}\n\n")
     } else {
         emit_map_scalar_load(compiler, ir, key_size, "p", "v")
         ir_write_ascii(compiler, ir, "  %z = icmp eq i64 %k, %v\n  ret i1 %z\n}\n\n")
@@ -292,10 +292,10 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
     ir_write_number(compiler, ir, slot_size)
     ir_write_ascii(compiler, ir, "\n  %eo2 = add i64 %eo, 16\n  %ep = getelementptr i8, ptr %map, i64 %eo2\n  %st = load i64, ptr %ep\n  %live = icmp eq i64 %st, 1\n  br i1 %live, label %move, label %latch\nmove:\n  %do = mul i64 %d, ")
     ir_write_number(compiler, ir, slot_size)
-    ir_write_ascii(compiler, ir, "\n  %do2 = add i64 %do, 16\n  %dp = getelementptr i8, ptr %map, i64 %do2\n  %mv = call ptr @memmove(ptr %dp, ptr %ep, i64 "); ir_write_number(compiler, ir, slot_size)
+    ir_write_ascii(compiler, ir, "\n  %do2 = add i64 %do, 16\n  %dp = getelementptr i8, ptr %map, i64 %do2\n  %mv = call ptr @nl.mem.move(ptr %dp, ptr %ep, i64 "); ir_write_number(compiler, ir, slot_size)
     ir_write_ascii(compiler, ir, ")\n  %d1 = add i64 %d, 1\n  br label %latch\nlatch:\n  %d2 = phi i64 [ %d, %body ], [ %d1, %move ]\n  %e1 = add i64 %e, 1\n  br label %loop\nrebuild:\n  store i64 %d, ptr %usedp\n  %ip = getelementptr i8, ptr %map, i64 ")
     ir_write_number(compiler, ir, index_base)
-    ir_write_ascii(compiler, ir, "\n  %clr = call ptr @memset(ptr %ip, i32 0, i64 "); ir_write_number(compiler, ir, slots * 4L)
+    ir_write_ascii(compiler, ir, "\n  %clr = call ptr @nl.mem.set(ptr %ip, i32 0, i64 "); ir_write_number(compiler, ir, slots * 4L)
     ir_write_ascii(compiler, ir, ")\n  br label %relink\nrelink:\n  %r = phi i64 [ 0, %rebuild ], [ %r1, %relink.body ]\n  %rm = icmp ult i64 %r, %d\n  br i1 %rm, label %relink.body, label %done\nrelink.body:\n  %ro = mul i64 %r, ")
     ir_write_number(compiler, ir, slot_size)
     ir_write_ascii(compiler, ir, "\n  %ro2 = add i64 %ro, "); ir_write_number(compiler, ir, 16L + key_offset)
@@ -333,13 +333,13 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
     if value_is_text {
         emit_map_text_copy(compiler, ir, value_data, "out", "tp", 4L)
     } else {
-        ir_write_ascii(compiler, ir, "  %tc = call ptr @memcpy(ptr %out, ptr %tp, i64 "); ir_write_number(compiler, ir, value_size); ir_write_ascii(compiler, ir, ")\n")
+        ir_write_ascii(compiler, ir, "  %tc = call ptr @nl.mem.copy(ptr %out, ptr %tp, i64 "); ir_write_number(compiler, ir, value_size); ir_write_ascii(compiler, ir, ")\n")
     }
     ir_write_ascii(compiler, ir, "  store i64 0, ptr %ep\n  %rc = load i64, ptr %map\n  %rc2 = sub i64 %rc, 1\n  store i64 %rc2, ptr %map\n  ret i1 true\n}\n\n")
 }
 
 fn emit_map_type_functions(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
-    if !compiler.c_runtime { return }
+    emit_map_memory_wrappers(compiler, ir)
     for type_id in 0L..type_count(compiler) {
         if type_kind(compiler, type_id) == TYPE_KIND_MAP && type_state(compiler, type_id) == 2L {
             let key = map_key_type(compiler, type_id)
@@ -464,10 +464,10 @@ fn emit_map_method(
             let data = text_data_offset(compiler, value)
             ir_write_ascii(compiler, ir, "  %map.get.len."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr %map.get."); ir_write_number(compiler, ir, node)
             ir_write_ascii(compiler, ir, "\n  %map.get.n."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %map.get.len."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, data)
-            ir_write_ascii(compiler, ir, "\n  %map.get.copy."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %addr."); ir_write_number(compiler, ir, address)
+            ir_write_ascii(compiler, ir, "\n  %map.get.copy."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @nl.mem.copy(ptr %addr."); ir_write_number(compiler, ir, address)
             ir_write_ascii(compiler, ir, ", ptr %map.get."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 %map.get.n."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ")\n")
         } else {
-            ir_write_ascii(compiler, ir, "  %map.get.copy."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @memcpy(ptr %addr."); ir_write_number(compiler, ir, address)
+            ir_write_ascii(compiler, ir, "  %map.get.copy."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @nl.mem.copy(ptr %addr."); ir_write_number(compiler, ir, address)
             ir_write_ascii(compiler, ir, ", ptr %map.get."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, value_type_size(compiler, value)); ir_write_ascii(compiler, ir, ")\n")
         }
         emit_sum_tag_store(compiler, ir, node, 0L)
@@ -532,13 +532,26 @@ fn intern_map_type_syntax(
 }
 
 fn emit_map_copy_helpers(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
-    if !compiler.c_runtime { return }
     for type_id in 0L..type_count(compiler) {
         if type_kind(compiler, type_id) == TYPE_KIND_MAP && has_type_helper(compiler, type_id, HELPER_COPY) {
             ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY)
-            ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr %destination, ptr %source) {\nentry:\n  %copied = call ptr @memmove(ptr %destination, ptr %source, i64 ")
+            ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr %destination, ptr %source) {\nentry:\n  %copied = call ptr @nl.mem.move(ptr %destination, ptr %source, i64 ")
             ir_write_number(compiler, ir, value_type_size(compiler, type_id))
             ir_write_ascii(compiler, ir, ")\n  ret void\n}\n\n")
         }
     }
+}
+
+// Memory operations through LLVM intrinsics, wrapped so a call can keep the shape of a libc call. The backend
+// turns a large or variable-size one into a call to the platform memcpy, memmove or memset.
+fn emit_map_memory_wrappers(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
+    var any_map = false
+    for type_id in 0L..type_count(compiler) {
+        if type_kind(compiler, type_id) == TYPE_KIND_MAP { any_map = true }
+    }
+    if !any_map { return }
+    ir_write_ascii(compiler, ir, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1 immarg)\ndeclare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1 immarg)\ndeclare void @llvm.memset.p0.i64(ptr, i8, i64, i1 immarg)\n")
+    ir_write_ascii(compiler, ir, "define internal ptr @nl.mem.copy(ptr %d, ptr %s, i64 %n) {\nentry:\n  call void @llvm.memcpy.p0.p0.i64(ptr %d, ptr %s, i64 %n, i1 false)\n  ret ptr %d\n}\n")
+    ir_write_ascii(compiler, ir, "define internal ptr @nl.mem.move(ptr %d, ptr %s, i64 %n) {\nentry:\n  call void @llvm.memmove.p0.p0.i64(ptr %d, ptr %s, i64 %n, i1 false)\n  ret ptr %d\n}\n")
+    ir_write_ascii(compiler, ir, "define internal ptr @nl.mem.set(ptr %d, i32 %v, i64 %n) {\nentry:\n  %b = trunc i32 %v to i8\n  call void @llvm.memset.p0.i64(ptr %d, i8 %b, i64 %n, i1 false)\n  ret ptr %d\n}\n\n")
 }

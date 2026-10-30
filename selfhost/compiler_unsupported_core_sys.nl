@@ -297,6 +297,7 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "clear") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "pop") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "set") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "get") ||
             (compiler.c_runtime && (token_is_word_at(source, tokens, files, file_index, value.token, "to_double") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "parse_double"))) ||
             token_is_word_at(source, tokens, files, file_index, value.token, "empty") ||

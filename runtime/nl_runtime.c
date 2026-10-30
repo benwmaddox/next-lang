@@ -1952,23 +1952,14 @@ static int nl_directory_next(nl_directory_iterator *iterator,
     }
 }
 
-/* Two list layouts: the frozen stage-0 compiler groups names then kinds in columns; the self-hosted
-   compiler stores plain records (name, then kind padded to 8 bytes). */
-#define NL_DIR_RECORD_BYTES UINT64_C(16400)
-
-static unsigned char *nl_dir_name_slot(unsigned char *base, size_t index, int records) {
-    return base + 8 + (uint64_t)index * (records ? NL_DIR_RECORD_BYTES : NL_DIR_NAME_SLOT_BYTES);
-}
-
-static int32_t *nl_dir_kind_slot(unsigned char *base, uint64_t capacity, size_t index, int records) {
-    if (records) return (int32_t *)(nl_dir_name_slot(base, index, 1) + NL_DIR_NAME_SLOT_BYTES);
-    return (int32_t *)(base + 8 + capacity * NL_DIR_NAME_SLOT_BYTES) + index;
+static unsigned char *nl_dir_name_slot(unsigned char *base, size_t index) {
+    return base + 8 + (uint64_t)index * NL_DIR_NAME_SLOT_BYTES;
 }
 
 static int nl_dir_entry_compare(const unsigned char *base, size_t left_index,
-                                size_t right_index, int records) {
-    const unsigned char *left = nl_dir_name_slot((unsigned char *)base, left_index, records);
-    const unsigned char *right = nl_dir_name_slot((unsigned char *)base, right_index, records);
+                                size_t right_index) {
+    const unsigned char *left = nl_dir_name_slot((unsigned char *)base, left_index);
+    const unsigned char *right = nl_dir_name_slot((unsigned char *)base, right_index);
     uint64_t left_length = (uint64_t)*(const int64_t *)left;
     uint64_t right_length = (uint64_t)*(const int64_t *)right;
     const int32_t *left_bytes = (const int32_t *)(left + 8);
@@ -1984,10 +1975,10 @@ static int nl_dir_entry_compare(const unsigned char *base, size_t left_index,
 }
 
 static void nl_dir_entry_swap(unsigned char *base, uint64_t capacity,
-                              size_t left_index, size_t right_index, int records) {
+                              size_t left_index, size_t right_index) {
     if (left_index == right_index) return;
-    unsigned char *left = nl_dir_name_slot(base, left_index, records);
-    unsigned char *right = nl_dir_name_slot(base, right_index, records);
+    unsigned char *left = nl_dir_name_slot(base, left_index);
+    unsigned char *right = nl_dir_name_slot(base, right_index);
     uint64_t left_length = (uint64_t)*(int64_t *)left;
     uint64_t right_length = (uint64_t)*(int64_t *)right;
     int32_t *left_bytes = (int32_t *)(left + 8);
@@ -2002,59 +1993,59 @@ static void nl_dir_entry_swap(unsigned char *base, uint64_t capacity,
     *(int64_t *)left = (int64_t)right_length;
     *(int64_t *)right = (int64_t)left_length;
 
-    int32_t *left_kind = nl_dir_kind_slot(base, capacity, left_index, records);
-    int32_t *right_kind = nl_dir_kind_slot(base, capacity, right_index, records);
-    int32_t kind = *left_kind;
-    *left_kind = *right_kind;
-    *right_kind = kind;
+    int32_t *kinds = (int32_t *)(base + 8 + capacity * NL_DIR_NAME_SLOT_BYTES);
+    int32_t kind = kinds[left_index];
+    kinds[left_index] = kinds[right_index];
+    kinds[right_index] = kind;
 }
 
 static void nl_dir_sift_down(unsigned char *base, uint64_t capacity,
-                             size_t root, size_t count, int records) {
+                             size_t root, size_t count) {
     for (;;) {
         size_t child = root * 2 + 1;
         if (child >= count) return;
         if (child + 1 < count &&
-            nl_dir_entry_compare(base, child, child + 1, records) < 0) {
+            nl_dir_entry_compare(base, child, child + 1) < 0) {
             ++child;
         }
-        if (nl_dir_entry_compare(base, root, child, records) >= 0) return;
-        nl_dir_entry_swap(base, capacity, root, child, records);
+        if (nl_dir_entry_compare(base, root, child) >= 0) return;
+        nl_dir_entry_swap(base, capacity, root, child);
         root = child;
     }
 }
 
 /* Sort the caller's live entries in place without a capacity-sized scratch array. */
-static void nl_dir_sort(unsigned char *base, uint64_t capacity, size_t count, int records) {
+static void nl_dir_sort(unsigned char *base, uint64_t capacity, size_t count) {
     for (size_t start = count / 2; start > 0;) {
         --start;
-        nl_dir_sift_down(base, capacity, start, count, records);
+        nl_dir_sift_down(base, capacity, start, count);
     }
     for (size_t end = count; end > 1;) {
         --end;
-        nl_dir_entry_swap(base, capacity, 0, end, records);
-        nl_dir_sift_down(base, capacity, 0, end, records);
+        nl_dir_entry_swap(base, capacity, 0, end);
+        nl_dir_sift_down(base, capacity, 0, end);
     }
 }
 
 static void nl_dir_entry_store(unsigned char *base, uint64_t capacity,
                                size_t index, const char *name, size_t length,
-                               int kind, int records) {
-    unsigned char *slot = nl_dir_name_slot(base, index, records);
+                               int kind) {
+    unsigned char *slot = nl_dir_name_slot(base, index);
     *(int64_t *)slot = (int64_t)length;
     int32_t *bytes = (int32_t *)(slot + 8);
     for (size_t byte = 0; byte < length; ++byte) {
         bytes[byte] = (unsigned char)name[byte];
     }
-    *nl_dir_kind_slot(base, capacity, index, records) = kind;
+    int32_t *kinds = (int32_t *)(base + 8 + capacity * NL_DIR_NAME_SLOT_BYTES);
+    kinds[index] = kind;
 }
 
-static void nl_fs_list_impl(void *handle, void *path_value, int path_is_argument, uint64_t path_capacity,
-                           void *output, uint64_t capacity, void *result, int records) {
+void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t path_capacity,
+                void *output, uint64_t capacity, void *result) {
     int error_tag = -1, error_code = 0;
     char path[4097];
     if (output) *(int64_t *)output = 0;
-    if (capacity > (SIZE_MAX - 8) / NL_DIR_RECORD_BYTES || !output) { nl_io_error(result, 3, 0); return; }
+    if (capacity > (SIZE_MAX - 8) / 16396 || !output) { nl_io_error(result, 3, 0); return; }
     if (!nl_extract_path(path_value, path_is_argument, path_capacity, path, &error_tag, &error_code)) {
         nl_io_error(result, error_tag, error_code); return;
     }
@@ -2082,14 +2073,14 @@ static void nl_fs_list_impl(void *handle, void *path_value, int path_is_argument
             failure_tag = nl_errno_error(errno); failure_code = errno; break;
         }
         int kind = S_ISREG(status.st_mode) ? 0 : S_ISDIR(status.st_mode) ? 1 : 2;
-        nl_dir_entry_store(base, capacity, count, entry->name, length, kind, records);
+        nl_dir_entry_store(base, capacity, count, entry->name, length, kind);
         count++;
     }
     close(fd);
     if (failure_tag >= 0) {
         nl_io_error(result, failure_tag, failure_code); return;
     }
-    nl_dir_sort(base, capacity, count, records);
+    nl_dir_sort(base, capacity, count);
     *(int64_t *)output = (int64_t)count;
     nl_io_error(result, -1, 0);
 }
@@ -2106,14 +2097,14 @@ static int nl_has_extension(const char *name, size_t name_length,
            (!actual_length || memcmp(name + dot, extension, actual_length) == 0);
 }
 
-static void nl_fs_list_with_extension_impl(void *handle, void *path_value, int path_is_argument,
-                                          uint64_t path_capacity, const unsigned char *extension,
-                                          uint64_t extension_length, void *output,
-                                          uint64_t capacity, void *result, int records) {
+void nl_fs_list_with_extension(void *handle, void *path_value, int path_is_argument,
+                               uint64_t path_capacity, const unsigned char *extension,
+                               uint64_t extension_length, void *output,
+                               uint64_t capacity, void *result) {
     int error_tag = -1, error_code = 0;
     char path[4097];
     if (output) *(int64_t *)output = 0;
-    if (capacity > (SIZE_MAX - 8) / NL_DIR_RECORD_BYTES || !output ||
+    if (capacity > (SIZE_MAX - 8) / 16396 || !output ||
         (extension_length && !extension)) {
         nl_io_error(result, 3, 0);
         return;
@@ -2159,7 +2150,7 @@ static void nl_fs_list_with_extension_impl(void *handle, void *path_value, int p
             failure_tag = 3;
             break;
         }
-        nl_dir_entry_store(base, capacity, count, entry->name, length, kind, records);
+        nl_dir_entry_store(base, capacity, count, entry->name, length, kind);
         ++count;
     }
     close(fd);
@@ -2167,7 +2158,7 @@ static void nl_fs_list_with_extension_impl(void *handle, void *path_value, int p
         nl_io_error(result, failure_tag, failure_code);
         return;
     }
-    nl_dir_sort(base, capacity, count, records);
+    nl_dir_sort(base, capacity, count);
     *(int64_t *)output = (int64_t)count;
     nl_io_error(result, -1, 0);
 }
@@ -2286,32 +2277,3 @@ void nl_print_arg(void *argument) {
     nl_print_bytes((const unsigned char *)argument, (uint64_t)strlen((const char *)argument));
     nl_print_newline();
 }
-
-/* Column layout: what the frozen stage-0 compiler's lists of structs look like. */
-void nl_fs_list(void *handle, void *path_value, int path_is_argument, uint64_t path_capacity,
-                void *output, uint64_t capacity, void *result) {
-    nl_fs_list_impl(handle, path_value, path_is_argument, path_capacity, output, capacity, result, 0);
-}
-
-void nl_fs_list_with_extension(void *handle, void *path_value, int path_is_argument,
-                               uint64_t path_capacity, const unsigned char *extension,
-                               uint64_t extension_length, void *output,
-                               uint64_t capacity, void *result) {
-    nl_fs_list_with_extension_impl(handle, path_value, path_is_argument, path_capacity, extension,
-                                   extension_length, output, capacity, result, 0);
-}
-
-/* Plain-record layout: what the self-hosted compiler's lists of structs look like. */
-void nl_fs_list_records(void *handle, void *path_value, int path_is_argument, uint64_t path_capacity,
-                        void *output, uint64_t capacity, void *result) {
-    nl_fs_list_impl(handle, path_value, path_is_argument, path_capacity, output, capacity, result, 1);
-}
-
-void nl_fs_list_with_extension_records(void *handle, void *path_value, int path_is_argument,
-                                       uint64_t path_capacity, const unsigned char *extension,
-                                       uint64_t extension_length, void *output,
-                                       uint64_t capacity, void *result) {
-    nl_fs_list_with_extension_impl(handle, path_value, path_is_argument, path_capacity, extension,
-                                   extension_length, output, capacity, result, 1);
-}
-
