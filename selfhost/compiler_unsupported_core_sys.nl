@@ -321,6 +321,7 @@ fn unsupported_category_for_node(
             (compiler.c_runtime && (
                 token_is_word_at(source, tokens, files, file_index, value.token, "args") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "host") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "db_query") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "send") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "recv") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "recv_wait") ||

@@ -2301,6 +2301,74 @@ void nl_out_write(void *handle, void *data_value, int data_is_argument, uint64_t
     nl_io_error(result, error ? nl_errno_error(error) : -1, error);
 }
 
+#ifdef NLC_WITH_DB
+/* Env.db_query(sql, key): run one statement with ?1 bound to key on this thread's connection to the SQLite file
+   named by NLC_DB (default app.db). The answer is the first column of the first row, or none. Each thread opens its
+   own connection (WAL mode) and keeps its prepared statements. */
+#include "sqlite3.h"
+
+typedef struct { uint64_t length; char *sql; sqlite3_stmt *statement; } nl_db_statement;
+static _Thread_local sqlite3 *nl_db_connection;
+static _Thread_local nl_db_statement nl_db_statements[64];
+static _Thread_local int nl_db_statement_count;
+
+static sqlite3 *nl_db_open(void) {
+    if (nl_db_connection) return nl_db_connection;
+    const char *path = getenv("NLC_DB");
+    sqlite3 *connection = NULL;
+    if (sqlite3_open_v2(path && *path ? path : "app.db", &connection,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK) {
+        sqlite3_close(connection);
+        return NULL;
+    }
+    sqlite3_busy_timeout(connection, 5000);
+    sqlite3_exec(connection, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
+    nl_db_connection = connection;
+    return connection;
+}
+
+static sqlite3_stmt *nl_db_statement_for(sqlite3 *connection, const unsigned char *sql, uint64_t length) {
+    for (int index = 0; index < nl_db_statement_count; ++index) {
+        if (nl_db_statements[index].length == length && memcmp(nl_db_statements[index].sql, sql, length) == 0)
+            return nl_db_statements[index].statement;
+    }
+    sqlite3_stmt *statement = NULL;
+    if (sqlite3_prepare_v2(connection, (const char *)sql, (int)length, &statement, NULL) != SQLITE_OK) return NULL;
+    if (nl_db_statement_count < 64) {
+        char *copy = (char *)malloc(length ? length : 1);
+        if (copy) {
+            memcpy(copy, sql, length);
+            nl_db_statements[nl_db_statement_count++] = (nl_db_statement){length, copy, statement};
+        }
+    }
+    return statement;
+}
+
+void nl_db_query(void *env, void *descriptor, uint64_t capacity, int64_t key, void *result) {
+    (void)env;
+    unsigned char scratch[4096];
+    const unsigned char *bytes; uint64_t length; int tag = -1, code = 0;
+    *(int32_t *)result = 1;
+    if (!nl_extract_raw(descriptor, 2, capacity, scratch, &bytes, &length, &tag, &code)) return;
+    sqlite3 *connection = nl_db_open();
+    if (!connection) return;
+    sqlite3_stmt *statement = nl_db_statement_for(connection, bytes, length);
+    if (!statement) return;
+    sqlite3_bind_int64(statement, 1, key);
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+        *(int64_t *)((unsigned char *)result + 8) = sqlite3_column_int64(statement, 0);
+        *(int32_t *)result = 0;
+    }
+    sqlite3_reset(statement);
+    sqlite3_clear_bindings(statement);
+}
+#else
+void nl_db_query(void *env, void *descriptor, uint64_t capacity, int64_t key, void *result) {
+    (void)env; (void)descriptor; (void)capacity; (void)key;
+    *(int32_t *)result = 1;
+}
+#endif
+
 void nl_out_arg(void *handle, void *argument, int line, void *result) {
     nl_out_handle *out = (nl_out_handle *)handle;
     const unsigned char *bytes = argument ? (const unsigned char *)argument : (const unsigned char *)"";

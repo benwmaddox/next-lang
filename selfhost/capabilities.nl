@@ -16,6 +16,7 @@ const C_METHOD_HOST_CORES: long = 3013L
 const C_METHOD_HOST_TOTAL_CORES: long = 3014L
 const C_METHOD_HOST_RAM: long = 3015L
 const C_METHOD_HOST_PAGE_SIZE: long = 3016L
+const C_METHOD_ENV_DB_QUERY: long = 3017L
 
 fn emit_context_runtime_symbol(
     compiler: write CompilerTables,
@@ -143,6 +144,7 @@ fn c_runtime_method_kind(
         if token_is_word_at(source, tokens, files, file_index, token, "args") { C_METHOD_ENV_ARGS }
         else if token_is_word_at(source, tokens, files, file_index, token, "exit") { C_METHOD_ENV_EXIT }
         else if token_is_word_at(source, tokens, files, file_index, token, "host") { C_METHOD_ENV_HOST }
+        else if token_is_word_at(source, tokens, files, file_index, token, "db_query") { C_METHOD_ENV_DB_QUERY }
         else { C_METHOD_NONE }
     } else if receiver_type == TY_HOST {
         if token_is_word_at(source, tokens, files, file_index, token, "cores") { C_METHOD_HOST_CORES }
@@ -233,7 +235,14 @@ fn c_runtime_check_method(
     let second = child_at(tables, compiler, node, 2L)
     let third = child_at(tables, compiler, node, 3L)
     var result_type = TY_UNIT
-    if method == C_METHOD_ENV_HOST {
+    if method == C_METHOD_ENV_DB_QUERY {
+        let sql_kind = type_kind(compiler, compiler.facts[first].ty)
+        if sql_kind != TYPE_KIND_ASCII && sql_kind != TYPE_KIND_TEXT {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[first].start, "Env.db_query needs bounded text for the statement")
+        }
+        require_type(env, files, compiler, file_index, second, TY_LONG, compiler.facts[second].ty, tables)
+        result_type = intern_sum_type(compiler, TYPE_KIND_OPTION, TY_LONG, -1L, file_index, node, -1L, -1L)
+    } else if method == C_METHOD_ENV_HOST {
         result_type = TY_HOST
     } else if method == C_METHOD_HOST_CORES || method == C_METHOD_HOST_TOTAL_CORES || method == C_METHOD_HOST_RAM ||
         method == C_METHOD_HOST_PAGE_SIZE {
@@ -368,7 +377,7 @@ fn emit_c_runtime_method_storage(
         }
         return
     }
-    let data_argument = if method == C_METHOD_FS_WRITE { child_at(tables, compiler, node, 2L) }
+    let data_argument = if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_DB_QUERY { child_at(tables, compiler, node, if method == C_METHOD_ENV_DB_QUERY { 1L } else { 2L }) }
         else if method == C_METHOD_OUT_WRITE { child_at(tables, compiler, node, 1L) }
         else { -1L }
     if data_argument >= 0L && compiler.facts[data_argument].ty != TY_ARG {
@@ -687,6 +696,15 @@ fn emit_c_runtime_method_call(
         ir_write_ascii(compiler, ir, "  call void @nl_fs_write(ptr "); ir_write_value_ref(compiler, ir, receiver); ir_write_ascii(compiler, ir, ", ptr ")
         if path_is_arg { ir_write_value_ref(compiler, ir, first) } else { emit_location_pointer_reference(compiler, ir, path_location, path_pointer) }
         ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, if path_is_arg { 1L } else { 0L }); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, if path_is_arg { 0L } else { collection_capacity(compiler, path_type) }); ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i32 2, i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[second].ty)); ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, result_location, result_pointer); ir_write_ascii(compiler, ir, ")\n")
+    } else if method == C_METHOD_ENV_DB_QUERY {
+        let result_location = aggregate_destination_location(compiler, 0L, node)
+        let result_pointer = emit_location_pointer_materialization(compiler, ir, result_location)
+        emit_c_raw_descriptor(tables, compiler, ir, node, first)
+        ir_write_ascii(compiler, ir, "  call void @nl_db_query(ptr "); ir_write_value_ref(compiler, ir, receiver)
+        ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[first].ty))
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, second)
+        ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, result_location, result_pointer); ir_write_ascii(compiler, ir, ")\n")
     } else if method == C_METHOD_OUT_WRITE {
         let result_location = aggregate_destination_location(compiler, 0L, node)
         let result_pointer = emit_location_pointer_materialization(compiler, ir, result_location)
