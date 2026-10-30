@@ -32,7 +32,7 @@ fn next_float(last: write long) -> double {
     (double)last / 139968.0
 }
 
-fn put(data: grow Bytes max 8000000, text: Ascii max 64) {
+fn put(data: grow Bytes max 8000000, text: Ascii max 80) {
     data.try_append(text.bytes()).unwrap()
 }
 
@@ -67,7 +67,7 @@ fn checksum_data(data: Data) -> long {
     hash
 }
 
-fn checksum_text(text: Ascii max 32) -> long {
+fn checksum_text(text: Ascii max 64) -> long {
     var hash = 5381L
     for i: long in 0L..text.len() {
         hash = (hash * 33L + text.bytes()[i].to_long()) % MODULUS

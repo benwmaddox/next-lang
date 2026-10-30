@@ -419,6 +419,7 @@ fn resolve_value_type(
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "long") { return TY_LONG }
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "bool") { return TY_BOOL }
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "byte") { return TY_BYTE }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "double") { return TY_DOUBLE }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Env") { return TY_ENV }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Fs") { return TY_FS }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Out") { return TY_OUT }
