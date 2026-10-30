@@ -60,7 +60,20 @@ link() {
     if [[ "$runtime" == "c" ]]; then
         [[ "$build" == "test" ]] && flags+=("-DNLC_TEST_BUILD=1")
         [[ "$stack" == "offset" ]] && flags+=("-DNLC_STACK_MODE_OFFSET=1")
-        quiet_clang "${flags[@]}" "$ir" "$(find_runtime)/nl_runtime.c" -o "$output"
+        local runtime_dir; runtime_dir="$(find_runtime)"
+        if grep -q 'call void @nl_db_query' "$ir"; then
+            # Env.db_query: SQLite is compiled once into the cache and linked in.
+            local cache="${NLC_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/next-lang}" object
+            mkdir -p "$cache"
+            object="$cache/sqlite3-3500400.o"
+            if [[ ! -f "$object" ]]; then
+                quiet_clang -O2 -c -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 \
+                    "$runtime_dir/sqlite/sqlite3.c" -o "$object.$$" && mv "$object.$$" "$object"
+            fi
+            quiet_clang "${flags[@]}" -DNLC_WITH_DB=1 -I"$runtime_dir/sqlite" "$ir" "$runtime_dir/nl_runtime.c" "$object" -lpthread -lm -o "$output"
+        else
+            quiet_clang "${flags[@]}" "$ir" "$runtime_dir/nl_runtime.c" -o "$output"
+        fi
     elif [[ "$runtime" == "core" ]]; then
         flags+=(-nostdlib -static -Wl,-e,_start -Wl,-no-pie -Wl,--build-id=none)
         quiet_clang "${flags[@]}" "$ir" -o "$output"

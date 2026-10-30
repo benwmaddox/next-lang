@@ -1323,9 +1323,9 @@ fn check_one_body(
             for parameter_index in 0L..target.param_count {
                 let parameter = compiler.parameters[target.param_start + parameter_index]
                 let numeric = parameter.ty == TY_INT || parameter.ty == TY_LONG || parameter.ty == TY_BOOL || parameter.ty == TY_BYTE || parameter.ty == TY_DOUBLE
-                let handle = mailbox_role_of_type(compiler, parameter.ty) != 0L
+                let handle = mailbox_role_of_type(compiler, parameter.ty) != 0L || parameter.ty == TY_ENV
                 if (!numeric && !handle) || (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
-                    fail_at_message(env, files, compiler, file_index, tables.nodes[call].start, "a spawned function takes numbers, bools and mailbox handles for now")
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[call].start, "a spawned function takes numbers, bools, mailbox handles and the env for now")
                 }
             }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function: compiler.facts[call].function, literal: 0L }
