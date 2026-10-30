@@ -1268,8 +1268,13 @@ fn emit_collection_index_address(
     ir_write_ascii(compiler, ir, "  %coll.index.negative."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt i64 "); ir_write_value_ref(compiler, ir, index); ir_write_ascii(compiler, ir, ", 0\n")
     if is_text_bytes {
         ir_write_ascii(compiler, ir, "  %text.index.length."); ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial)
-        ir_write_ascii(compiler, ir, ", align 1\n  %coll.index.high."); ir_write_number(compiler, ir, node)
+        let cached_binding = cached_length_binding(tables, compiler, receiver)
+        if cached_binding >= 0L {
+            ir_write_ascii(compiler, ir, " = add i64 0, %arg.len."); ir_write_number(compiler, ir, cached_binding)
+        } else {
+            ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1")
+        }
+        ir_write_ascii(compiler, ir, "\n  %coll.index.high."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = icmp sge i64 "); ir_write_value_ref(compiler, ir, index)
         ir_write_ascii(compiler, ir, ", %text.index.length."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
     } else if collection_kind_is_list(kind) {
