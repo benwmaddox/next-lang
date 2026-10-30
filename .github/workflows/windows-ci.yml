@@ -50,6 +50,17 @@ jobs:
         run: |
           clang -O1 -DNLC_STACK_MODE_OFFSET=1 -D_CRT_SECURE_NO_WARNINGS -fuse-ld=lld -o nlc-selfhost.exe seed/stage3.ll runtime/nl_runtime.c
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Smoke test
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          cmd /c "nlc-selfhost.exe 2>&1"
+          Write-Host "usage exit code $LASTEXITCODE"
+          cmd /c "nlc-selfhost.exe build tests/c_runtime/floats -o floats.ll --runtime=c 2>&1"
+          Write-Host "build floats exit code $LASTEXITCODE"
+          Get-Item floats.ll -ErrorAction SilentlyContinue | Select-Object Name, Length
+          cmd /c "nlc-selfhost.exe build selfhost -o self.ll --runtime=c 2>&1"
+          Write-Host "build selfhost exit code $LASTEXITCODE"
       - name: The compiler rebuilds itself (IR identical to the seed)
         shell: pwsh
         run: |
