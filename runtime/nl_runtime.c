@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <errno.h>
 #include <limits.h>
 #include <time.h>
@@ -2300,6 +2301,181 @@ void nl_out_write(void *handle, void *data_value, int data_is_argument, uint64_t
     }
     nl_io_error(result, error ? nl_errno_error(error) : -1, error);
 }
+
+/* Net and HTTP for Env.net_listen / net_accept / http_read / http_write / net_close. A connection is its file
+   descriptor; whoever holds it (one job at a time) reads requests and writes responses. HTTP/1.1 with keep-alive:
+   http_read returns the method (1 GET, 2 POST, 3 other) and copies the request target into the caller's Bytes, or
+   returns -1 when the peer closed or sent something unusable. Linux only for now. */
+#if !NL_WINDOWS
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+
+#define NL_HTTP_CONNECTIONS 65536
+#define NL_HTTP_BUFFER 8192
+
+typedef struct { uint32_t length; unsigned char data[NL_HTTP_BUFFER]; } nl_http_buffer;
+static nl_http_buffer *nl_http_buffers[NL_HTTP_CONNECTIONS];
+
+int64_t nl_net_listen(void *env, int64_t port) {
+    (void)env;
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    int on = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0 || listen(fd, 1024) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+int64_t nl_net_accept(void *env, int64_t listener) {
+    (void)env;
+    for (;;) {
+        int fd = accept4((int)listener, NULL, NULL, SOCK_CLOEXEC);
+        if (fd < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        int on = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+        return fd;
+    }
+}
+
+int64_t nl_net_close(void *env, int64_t fd) {
+    (void)env;
+    if (fd >= 0 && fd < NL_HTTP_CONNECTIONS && nl_http_buffers[fd]) {
+        free(nl_http_buffers[fd]);
+        nl_http_buffers[fd] = NULL;
+    }
+    return close((int)fd);
+}
+
+static const unsigned char *nl_http_find(const unsigned char *data, uint32_t length, const char *needle, uint32_t needle_length) {
+    if (length < needle_length) return NULL;
+    for (uint32_t index = 0; index + needle_length <= length; ++index) {
+        if (data[index] == (unsigned char)needle[0] && memcmp(data + index, needle, needle_length) == 0) return data + index;
+    }
+    return NULL;
+}
+
+static int64_t nl_http_content_length(const unsigned char *headers, uint32_t length) {
+    for (uint32_t index = 0; index + 16 <= length; ++index) {
+        if (headers[index] == '\n' && (headers[index + 1] | 32) == 'c' && strncasecmp((const char *)headers + index + 1, "content-length:", 15) == 0) {
+            int64_t value = 0;
+            for (uint32_t at = index + 16; at < length && headers[at] != '\r'; ++at) {
+                if (headers[at] >= '0' && headers[at] <= '9') value = value * 10 + (headers[at] - '0');
+            }
+            return value;
+        }
+    }
+    return 0;
+}
+
+int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capacity, int64_t *target_length) {
+    (void)env;
+    if (fd < 0 || fd >= NL_HTTP_CONNECTIONS) return -1;
+    nl_http_buffer *buffer = nl_http_buffers[fd];
+    if (!buffer) {
+        buffer = (nl_http_buffer *)calloc(1, sizeof(*buffer));
+        if (!buffer) return -1;
+        nl_http_buffers[fd] = buffer;
+    }
+    const unsigned char *end = NULL;
+    for (;;) {
+        end = nl_http_find(buffer->data, buffer->length, "\r\n\r\n", 4);
+        if (end) break;
+        if (buffer->length >= NL_HTTP_BUFFER) return -1;
+        ssize_t got = recv((int)fd, buffer->data + buffer->length, NL_HTTP_BUFFER - buffer->length, 0);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) return -1;
+        buffer->length += (uint32_t)got;
+    }
+    uint32_t head = (uint32_t)(end - buffer->data) + 4;
+    /* request line: METHOD SP target SP version */
+    int64_t method = 3;
+    uint32_t at = 0;
+    if (head > 4 && memcmp(buffer->data, "GET ", 4) == 0) { method = 1; at = 4; }
+    else if (head > 5 && memcmp(buffer->data, "POST ", 5) == 0) { method = 2; at = 5; }
+    else { while (at < head && buffer->data[at] != ' ') ++at; ++at; }
+    uint32_t start = at;
+    while (at < head && buffer->data[at] != ' ' && buffer->data[at] != '\r') ++at;
+    uint32_t size = at - start;
+    if (at >= head || size > capacity) return -1;
+    memcpy(target, buffer->data + start, size);
+    *target_length = (int64_t)size;
+    int64_t body = nl_http_content_length(buffer->data, head);
+    uint32_t consumed = head;
+    /* a request body is read and dropped */
+    while (body > 0) {
+        uint32_t have = buffer->length - consumed;
+        if (have == 0) {
+            buffer->length = 0;
+            consumed = 0;
+            ssize_t got = recv((int)fd, buffer->data, NL_HTTP_BUFFER, 0);
+            if (got < 0 && errno == EINTR) continue;
+            if (got <= 0) return -1;
+            buffer->length = (uint32_t)got;
+            have = buffer->length;
+        }
+        uint32_t take = (int64_t)have < body ? have : (uint32_t)body;
+        consumed += take;
+        body -= take;
+    }
+    memmove(buffer->data, buffer->data + consumed, buffer->length - consumed);
+    buffer->length -= consumed;
+    return method;
+}
+
+int64_t nl_http_write(void *env, int64_t fd, int64_t status, int64_t kind, void *body_descriptor, uint64_t capacity) {
+    (void)env;
+    unsigned char scratch[4096];
+    const unsigned char *bytes; uint64_t length; int tag = -1, code = 0;
+    if (!nl_extract_raw(body_descriptor, 2, capacity, scratch, &bytes, &length, &tag, &code)) return -1;
+    const char *reason = status == 200 ? "OK" : status == 404 ? "Not Found" : status == 503 ? "Service Unavailable" : status == 400 ? "Bad Request" : "Status";
+    const char *type = kind == 1 ? "application/json" : kind == 2 ? "text/plain; charset=utf-8" : "text/html; charset=utf-8";
+    char head[256];
+    int head_length = snprintf(head, sizeof(head), "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\n\r\n",
+                               (int)status, reason, type, (unsigned long long)length);
+    struct iovec parts[2] = {{head, (size_t)head_length}, {(void *)bytes, (size_t)length}};
+    size_t total = (size_t)head_length + (size_t)length, sent = 0;
+    int first = 0;
+    while (sent < total) {
+        struct msghdr message;
+        memset(&message, 0, sizeof(message));
+        message.msg_iov = parts + first;
+        message.msg_iovlen = (size_t)(2 - first);
+        ssize_t wrote = sendmsg((int)fd, &message, MSG_NOSIGNAL);
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) return -1;
+        sent += (size_t)wrote;
+        size_t skip = (size_t)wrote;
+        while (first < 2 && skip >= parts[first].iov_len) { skip -= parts[first].iov_len; ++first; }
+        if (first < 2) { parts[first].iov_base = (char *)parts[first].iov_base + skip; parts[first].iov_len -= skip; }
+    }
+    return 0;
+}
+#else
+int64_t nl_net_listen(void *env, int64_t port) { (void)env; (void)port; return -1; }
+int64_t nl_net_accept(void *env, int64_t listener) { (void)env; (void)listener; return -1; }
+int64_t nl_net_close(void *env, int64_t fd) { (void)env; (void)fd; return -1; }
+int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capacity, int64_t *target_length) {
+    (void)env; (void)fd; (void)target; (void)capacity; (void)target_length; return -1;
+}
+int64_t nl_http_write(void *env, int64_t fd, int64_t status, int64_t kind, void *body_descriptor, uint64_t capacity) {
+    (void)env; (void)fd; (void)status; (void)kind; (void)body_descriptor; (void)capacity; return -1;
+}
+#endif
 
 #ifdef NLC_WITH_DB
 /* Env.db_query(sql, key): run one statement with ?1 bound to key on this thread's connection to the SQLite file
