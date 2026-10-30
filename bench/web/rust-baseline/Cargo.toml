@@ -1,0 +1,10 @@
+[package]
+name = "web-baseline"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+opt-level = 3
