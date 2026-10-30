@@ -26,6 +26,17 @@ class MailboxLanguage(unittest.TestCase):
             # 200 orders; the weights are 2 * (0 + ... + 199) = 39800
             self.assertEqual(ran.stdout.decode().split(), ["200", "39800", "true", "true"], f"attempt {attempt}")
 
+    def test_cache_and_database_jobs_answer_four_clients(self):
+        ran = run_program("pipeline")
+        self.assertEqual(ran.returncode, 0, ran.stderr.decode(errors="replace"))
+        lines = ran.stdout.decode().split()
+        # each client prints a checksum and a hit count (lines of different clients may interleave); the checksums
+        # do not depend on timing, the hit counts do
+        numbers = sorted(int(line) for line in lines)
+        self.assertEqual(len(numbers), 8)
+        self.assertEqual(numbers[4:], [1003069, 1012864, 1019386, 1035530])
+        self.assertTrue(all(0 < number < 2000 for number in numbers[:4]))
+
 
 if __name__ == "__main__":
     unittest.main()
