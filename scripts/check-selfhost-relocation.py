@@ -104,7 +104,7 @@ def link_ir(reference: Path, root: Path, ir: Path, exe: Path, level: int, env: d
     link_env = env.copy()
     link_env["NLC_OPT_LEVEL"] = str(level)
     linked = invoke(
-        [str(reference), "link-ir", ir.relative_to(root).as_posix(), "-o", exe.relative_to(root).as_posix()],
+        [str(reference) if reference else str(root / "scripts" / "nlc"), "link-ir", ir.relative_to(root).as_posix(), "-o", exe.relative_to(root).as_posix()],
         root,
         link_env,
     )
@@ -299,12 +299,12 @@ def check_package(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--reference", required=True, type=Path)
+    parser.add_argument("--reference", type=Path, help="Rust nlc; without it scripts/nlc links and the seed builds the compiler")
     add_filter_arguments(parser)
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
-    reference = args.reference.resolve()
-    if not reference.is_file() or not os.access(reference, os.X_OK):
+    reference = args.reference.resolve() if args.reference else None
+    if reference is not None and (not reference.is_file() or not os.access(reference, os.X_OK)):
         raise CheckError(f"reference nlc is not executable: {reference}")
 
     env = os.environ.copy()
@@ -352,7 +352,7 @@ def main() -> int:
     generated_bytes = generated_path.read_bytes() if had_generated else b""
     try:
         cached = subprocess.run(
-            [sys.executable, str(root / "scripts/build-selfhost-cached.py"), "--reference", str(reference)],
+            [sys.executable, str(root / "scripts/build-selfhost-cached.py")] + (["--reference", str(reference)] if reference else []),
             cwd=root,
             env=env,
             stdout=subprocess.PIPE,

@@ -1,0 +1,127 @@
+# Builds the self-hosted compiler from the checked-in seed IR for Linux and Windows, tests it on Linux, and
+# publishes both archives as a GitHub Release. Manual only; the tag must already exist.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag to build and release (it must already exist)"
+        required: true
+      run_tests:
+        description: "Run the full test suite before publishing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Toolchain (clang 18, as on the development machine)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+          clang --version
+
+      - name: Test
+        if: ${{ inputs.run_tests }}
+        run: scripts/run-tests.sh
+
+      - name: Build the compiler from the seed, and check it reproduces itself
+        run: |
+          ulimit -v 40000000
+          scripts/update-seed.sh
+          git diff --stat seed/ || true
+          compiler="$(python3 scripts/build-selfhost-cached.py)"
+          mkdir -p dist
+          cp "$compiler" dist/nlc-selfhost
+
+      - name: Package
+        run: |
+          name="next-lang-${{ inputs.tag }}-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp dist/nlc-selfhost "dist/$name/nlc-selfhost"
+          zcat seed/seed.ll.gz > "dist/$name/seed.ll"
+          cp scripts/nlc "dist/$name/nlc"
+          cp -r runtime core "dist/$name/"
+          {
+            echo "tag: ${{ inputs.tag }}"
+            echo "commit: $(git rev-parse HEAD)"
+            clang --version | head -1
+            echo "runner: ubuntu-24.04"
+          } > "dist/$name/BUILD-INFO.txt"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          sha256sum "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Build nlc-selfhost.exe from the seed IR
+        shell: pwsh
+        run: |
+          python -c "import gzip,shutil; shutil.copyfileobj(gzip.open('seed/seed.ll.gz','rb'), open('seed.ll','wb'))"
+          clang -O1 -DNLC_STACK_MODE_OFFSET=1 -D_CRT_SECURE_NO_WARNINGS -fuse-ld=lld -o nlc-selfhost.exe seed.ll runtime/nl_runtime.c
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: The compiler rebuilds itself (IR identical to the seed)
+        shell: pwsh
+        run: |
+          ./nlc-selfhost.exe build selfhost -o self.ll --runtime=c
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ((Get-FileHash seed.ll).Hash -ne (Get-FileHash self.ll).Hash) { Write-Error "IR differs from the seed"; exit 1 }
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "next-lang-${{ inputs.tag }}-windows-x86_64"
+          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+          Copy-Item nlc-selfhost.exe, seed.ll, scripts/nlc.ps1 "dist/$name/"
+          Copy-Item runtime, core -Recurse "dist/$name/"
+          @("tag: ${{ inputs.tag }}", "commit: $(git rev-parse HEAD)", (clang --version | Select-Object -First 1), "runner: windows-latest", "Windows build of the self-hosted compiler; compile programs with nlc.ps1 build <dir> -o out.exe") | Set-Content "dist/$name/BUILD-INFO.txt"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" | Set-Content "dist/$name.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.zip
+            dist/*.sha256
+
+  publish:
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "${{ inputs.tag }}" dist/* \
+            --title "${{ inputs.tag }}" \
+            --notes "The self-hosted next-lang compiler (nlc-selfhost) with both runtimes' C source, the core library, the driver script (nlc / nlc.ps1) and seed.ll, the compiler's own LLVM IR (build it with clang and runtime/nl_runtime.c). Linux x86_64 and Windows x86_64. Each archive has BUILD-INFO.txt."

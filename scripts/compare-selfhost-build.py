@@ -182,7 +182,7 @@ class ReferenceResultCache:
         settings = {
             name: digest
             for name, digest in key_inputs["environment_variable_hashes"].items()
-            if name.startswith("NLC_") and name not in ("NLC_REFERENCE", "NLC_RECORD_REFERENCE")
+            if name in ("NLC_OPT_LEVEL", "NLC_STACK_MODE", "NLC_FRONTEND")
         }
         identity = {
             "package_files_sha256": key_inputs["package_files_sha256"],
@@ -327,7 +327,7 @@ def status_code(code: int | None) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--reference", required=True, type=Path)
+    parser.add_argument("--reference", type=Path, help="Rust nlc for recording (git tag rust-stage0-final); default: the recorded results in tests/reference")
     parser.add_argument(
         "--compiler",
         type=Path,
@@ -341,7 +341,9 @@ def main() -> int:
     add_filter_arguments(parser)
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
-    reference = args.reference.resolve()
+    if args.reference is None:
+        os.environ["NLC_REFERENCE"] = "frozen"
+    reference = args.reference.resolve() if args.reference else Path("/nonexistent/nlc")
     frozen_reference = os.environ.get("NLC_REFERENCE") == "frozen"
     if not frozen_reference and (not reference.is_file() or not os.access(reference, os.X_OK)):
         print(f"reference nlc is not executable: {reference}", file=sys.stderr)
