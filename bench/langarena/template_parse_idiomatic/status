@@ -1,0 +1,1 @@
+variant-idiomatic: appends each literal run with one slice copy instead of a byte at a time
