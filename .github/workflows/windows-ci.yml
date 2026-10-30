@@ -35,6 +35,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
+      - name: Keep LF line endings (the seed was built from LF sources)
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
@@ -70,7 +72,11 @@ jobs:
           $b = (Get-FileHash self.ll).Hash
           Write-Host "seed $a"
           Write-Host "self $b"
-          if ($a -ne $b) { Write-Error "IR differs from the seed"; exit 1 }
+          if ($a -ne $b) {
+            Write-Host ("sizes: seed {0}, self {1}" -f (Get-Item seed/stage3.ll).Length, (Get-Item self.ll).Length)
+            python -c "import sys; a=open('seed/stage3.ll','rb').read().split(b'\n'); b=open('self.ll','rb').read().split(b'\n'); i=next((i for i in range(min(len(a),len(b))) if a[i]!=b[i]), None); print('first difference at line', i, 'of', len(a), len(b)); print(a[i][:200] if i is not None else ''); print(b[i][:200] if i is not None else '')"
+            Write-Error "IR differs from the seed"; exit 1
+          }
       - name: Build and run the c_runtime programs
         shell: pwsh
         run: |
