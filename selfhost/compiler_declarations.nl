@@ -679,7 +679,7 @@ fn require_text_read_argument(
 }
 
 fn is_unsuffixed_integer(tables: ParseTables, node: long) -> bool {
-    node >= 0L && tables.nodes[node].kind == NodeKind.Integer && (tables.nodes[node].flags & FLAG_LONG_SUFFIX) == 0L
+    node >= 0L && tables.nodes[node].kind == NodeKind.Integer && (tables.nodes[node].flags & (FLAG_LONG_SUFFIX | FLAG_FLOAT)) == 0L
 }
 
 recursive fn natural_node_type(
@@ -695,7 +695,7 @@ recursive fn natural_node_type(
     if node < 0L { return -1L }
     let value = tables.nodes[node]
     match value.kind {
-        NodeKind.Integer => if (value.flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else { TY_INT },
+        NodeKind.Integer => if (value.flags & FLAG_FLOAT) != 0L { TY_DOUBLE } else if (value.flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else { TY_INT },
         NodeKind.Bool => TY_BOOL,
         NodeKind.Unit => TY_UNIT,
         NodeKind.Name => {

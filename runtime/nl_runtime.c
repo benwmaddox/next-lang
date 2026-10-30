@@ -3,7 +3,6 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
@@ -2316,34 +2315,3 @@ void nl_fs_list_with_extension_records(void *handle, void *path_value, int path_
                                    extension_length, output, capacity, result, 1);
 }
 
-/* ---- doubles --------------------------------------------------------------------------------- */
-
-/* Text of x with `digits` digits after the point (Rust's {:.N}: the exact value rounded to nearest,
-   ties to even). Returns the length written, or -1 if it does not fit `capacity` or `digits` is not
-   in 0..30. */
-int64_t nl_format_fixed(double x, int64_t digits, unsigned char *out, int64_t capacity) {
-    if (digits < 0 || digits > 30 || capacity <= 0) return -1;
-    char buffer[400];
-    int written = snprintf(buffer, sizeof buffer, "%.*f", (int)digits, x);
-    if (written < 0 || written >= (int)sizeof buffer || written > capacity) return -1;
-    memcpy(out, buffer, (size_t)written);
-    return written;
-}
-
-/* Parse decimal text (digits, one point, an exponent, a sign) to a finite double. Returns 0 for
-   anything else, so the caller can answer none. */
-_Bool nl_parse_double(const unsigned char *bytes, int64_t length, double *out) {
-    char buffer[128];
-    if (length <= 0 || length >= (int64_t)sizeof buffer) return 0;
-    for (int64_t index = 0; index < length; ++index) {
-        unsigned char c = bytes[index];
-        if (!((c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-')) return 0;
-        buffer[index] = (char)c;
-    }
-    buffer[length] = '\0';
-    char *end = NULL;
-    double value = strtod(buffer, &end);
-    if (end != buffer + length || !isfinite(value)) return 0;
-    *out = value;
-    return 1;
-}

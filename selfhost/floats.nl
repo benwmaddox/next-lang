@@ -122,17 +122,19 @@ fn emit_double_cast(
         return
     }
     // double to an integer: truncate toward zero, then fail unless the result fits
-    let low: Ascii max 32 = if target_ty == TY_LONG { "-9.223372036854775808e18" } else if target_ty == TY_INT { "-2147483648.0" } else { "0.0" }
+    // fptosi truncates toward zero; the value fits when it lies strictly between the neighbours of the type range.
+    let low_predicate: Ascii max 8 = if target_ty == TY_LONG { "oge" } else { "ogt" }
+    let low: Ascii max 32 = if target_ty == TY_LONG { "-9.223372036854775808e18" } else if target_ty == TY_INT { "-2147483649.0" } else { "-1.0" }
     let high: Ascii max 32 = if target_ty == TY_LONG { "9.223372036854775808e18" } else if target_ty == TY_INT { "2147483648.0" } else { "256.0" }
-    ir_write_ascii(compiler, ir, "  %cast.trunc."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call double @llvm.trunc.f64(double "); ir_write_value_ref(compiler, ir, operand)
-    ir_write_ascii(compiler, ir, ")\n  %cast.low."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fcmp oge double %cast.trunc."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ")
+    ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fcmp "); ir_write_ascii(compiler, ir, low_predicate)
+    ir_write_ascii(compiler, ir, " double "); ir_write_value_ref(compiler, ir, operand); ir_write_ascii(compiler, ir, ", ")
     ir_write_ascii(compiler, ir, low)
-    ir_write_ascii(compiler, ir, "\n  %cast.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fcmp olt double %cast.trunc."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ")
+    ir_write_ascii(compiler, ir, "\n  %cast.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fcmp olt double "); ir_write_value_ref(compiler, ir, operand); ir_write_ascii(compiler, ir, ", ")
     ir_write_ascii(compiler, ir, high)
     ir_write_ascii(compiler, ir, "\n  %cast.fits."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, "\n  %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = xor i1 %cast.fits."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", true\n")
     emit_runtime_failure(files, tables, compiler, ir, node, file_index, 10L)
-    ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fptosi double %cast.trunc."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to ")
+    ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fptosi double "); ir_write_value_ref(compiler, ir, operand); ir_write_ascii(compiler, ir, " to ")
     ir_write_ascii(compiler, ir, llvm_type_name(target_ty)); ir_push_byte(compiler, ir, 10)
 }
 

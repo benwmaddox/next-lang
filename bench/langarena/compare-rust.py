@@ -126,7 +126,7 @@ with open(lock_path, "w") as lock:
             if b3.returncode == 0 and ir3.is_file():
                 exe3 = work / (pkg + ".s3")
                 l3 = subprocess.run(["clang", "-O3", "-DNLC_STACK_MODE_OFFSET=1", str(ir3), str(repo / "runtime/nl_runtime.c"),
-                                     "-o", str(exe3), "-lm"], capture_output=True, text=True)
+                                     "-o", str(exe3)], capture_output=True, text=True)
                 if l3.returncode != 0:
                     print(f"{pkg:26} STAGE3 CLANG FAILED {l3.stderr[:200]}")
                     exe3 = None
