@@ -109,15 +109,6 @@ fn emit_location_descriptor_argument(
         if location.index_node != -1L && !include_geometry { ir_write_ascii(compiler, ir, "%write.offset."); ir_write_number(compiler, ir, descriptor_node) }
         else { ir_write_number(compiler, ir, location.byte_offset) }
     }
-    if include_geometry {
-        ir_write_ascii(compiler, ir, ", i64 ")
-        if location.copies == -1L { ir_write_ascii(compiler, ir, "%arg.copies."); ir_write_number(compiler, ir, location.anchor_node) }
-        else { ir_write_number(compiler, ir, location.copies) }
-        ir_write_ascii(compiler, ir, ", i64 ")
-        if location.index_node != -1L { emit_location_index_value(compiler, ir, location) }
-        else if location.index == -1L { ir_write_ascii(compiler, ir, "%arg.index."); ir_write_number(compiler, ir, location.anchor_node) }
-        else { ir_write_number(compiler, ir, location.index) }
-    }
 }
 
 fn emit_location_descriptor_parameter(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, prefix: Ascii max 32, binding: long) {
@@ -144,10 +135,17 @@ fn emit_location_parameter(
     binding: long,
 ) {
     emit_location_descriptor_parameter(compiler, ir, "arg", binding)
-    if is_aggregate_type(compiler, compiler.bindings[binding].ty) {
+    // A read-only Text parameter also receives its length and code point count; every other parameter
+    // is just an anchor and an offset.
+    if binding_is_text_read_view(compiler, binding) {
         ir_write_ascii(compiler, ir, ", i64 %arg.copies."); ir_write_number(compiler, ir, binding)
         ir_write_ascii(compiler, ir, ", i64 %arg.index."); ir_write_number(compiler, ir, binding)
     }
+}
+
+fn binding_is_text_read_view(compiler: CompilerTables, binding: long) -> bool {
+    type_kind(compiler, compiler.bindings[binding].ty) == TYPE_KIND_TEXT &&
+        (binding_parameter_mode(compiler, binding) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) == 0L
 }
 // E3a1 end
 
@@ -170,7 +168,6 @@ fn emit_hidden_destination_parameter(compiler: write CompilerTables, ir: grow By
 // E3a1 begin
 fn emit_hidden_descriptor_parameter(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
     emit_location_descriptor_parameter(compiler, ir, "nl.dest", 0L)
-    ir_write_ascii(compiler, ir, ", i64 %nl.dest.copies, i64 %nl.dest.index")
 }
 // E3a1 end
 
@@ -252,7 +249,21 @@ fn descriptor_geometry(compiler: CompilerTables, ty: long) -> bool {
 }
 
 fn emit_plain_geometry_tail(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, ty: long) {
-    if is_aggregate_type(compiler, ty) { ir_write_ascii(compiler, ir, ", i64 1, i64 0") }
+    // Nothing: an argument that is not a read-only Text is only an anchor and an offset.
+}
+
+// The function body still names a parameter's copy count and index in a few places; for a parameter that
+// no longer receives them, they are the constants 1 and 0.
+fn emit_parameter_geometry_prologue(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, function: FunctionRecord) {
+    for parameter_index in 0L..function.param_count {
+        let parameter = compiler.parameters[function.param_start + parameter_index]
+        let binding = binding_for_node(compiler, parameter.node)
+        if binding < 0L || parameter.ty == TY_UNIT || !is_aggregate_type(compiler, parameter.ty) { continue }
+        if binding_is_text_read_view(compiler, binding) { continue }
+        ir_write_ascii(compiler, ir, "  %arg.copies."); ir_write_number(compiler, ir, binding)
+        ir_write_ascii(compiler, ir, " = add i64 0, 1\n  %arg.index."); ir_write_number(compiler, ir, binding)
+        ir_write_ascii(compiler, ir, " = add i64 0, 0\n")
+    }
 }
 
 // A parameter passed as a location (anchor and offset) is the same storage for the whole call, and the
