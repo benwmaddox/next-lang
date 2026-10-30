@@ -46,7 +46,7 @@ quiet_clang() {
 # link <ll> <output>: read the "; nlc.*" header and run clang the way the Rust driver does.
 link() {
     local ir="$1" output="$2"
-    local runtime="" build="" stack=""
+    local runtime="c" build="" stack=""   # IR from before the runtime line existed is C-runtime IR
     while IFS= read -r line; do
         case "$line" in
             "; nlc.runtime "*) runtime="${line#; nlc.runtime }" ;;

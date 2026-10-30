@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Pre-commit check (Ben, 2026-10-27): run the selfhost suite on exactly what is
-# staged, and include the Rust suite when compiler implementation files changed.
-# Commits that change only docs (*.md, docs/), bench/ or these hook scripts skip it. Install with
-# scripts/install-hooks.sh. Works from Git for Windows (re-runs itself in WSL)
+# Pre-commit check (Ben, 2026-10-27): run the selfhost suite on exactly what is staged
+# (scripts/run-tests.sh: the compiler is built from the checked-in seed, the build comparison reads the recorded
+# reference results, then the Python tests run). Commits that change only docs (*.md, docs/), bench/ or these
+# hook scripts skip it. Install with scripts/install-hooks.sh. Works from Git for Windows (re-runs itself in WSL)
 # or directly inside WSL.
 set -euo pipefail
 
@@ -13,52 +13,34 @@ if [[ "$(uname -s)" != Linux ]]; then
 fi
 
 changed="$(git diff --cached --name-only)"
-# bench/ isn't used by any cargo test, so benchmark-only commits skip too.
 if [[ -z "$changed" ]] || ! grep -qvE '^docs/|^bench/|\.md$|^scripts/(precommit-full|install-hooks)\.sh$' <<<"$changed"; then
-    echo "pre-commit: only docs, benchmarks or hook scripts changed, skipping the full suites"
+    echo "pre-commit: only docs, benchmarks or hook scripts changed, skipping the full suite"
     exit 0
 fi
 
-# Concurrent commits (main checkout and worktrees) share one build directory;
-# take turns so one suite never runs a binary built for another snapshot.
+# Concurrent commits (main checkout and worktrees) share one cache directory; take turns.
 mkdir -p "$HOME/.cache/next-lang"
 exec 9>"$HOME/.cache/next-lang/precommit.lock"
 if ! flock -n 9; then
-    echo "pre-commit: waiting for another commit's suites to finish ..."
+    echo "pre-commit: waiting for another commit's suite to finish ..."
     flock 9
 fi
 
 snapshot="$(mktemp -d /tmp/next-lang-precommit.XXXXXX)"
 trap 'rm -rf -- "$snapshot"' EXIT
 git checkout-index -a -f --prefix="$snapshot/"
-run_rust=0
-if grep -qE '^compiler/src/|^compiler/Cargo\.toml$|^compiler/build\.rs$' <<<"$changed"; then
-    run_rust=1
-fi
-if (( run_rust )); then
-    echo "pre-commit: running the selfhost and Rust suites on the staged tree in $snapshot (limit 1 hour) ..."
-else
-    echo "pre-commit: running the selfhost suite on the staged tree in $snapshot (limit 1 hour) ..."
-fi
+echo "pre-commit: running the selfhost suite on the staged tree in $snapshot (limit 1 hour) ..."
 
 cd "$snapshot"
-# The self-hosted compiler reserves a large data-stack range; 8 GB is too tight for the seed-built one.
-ulimit -v 40000000
-export CARGO_TARGET_DIR="$HOME/.cache/next-lang/target-precommit"
+export CARGO_TARGET_DIR="$HOME/.cache/next-lang/cache-precommit"   # where the compiler cache lives
 start=$(date +%s)
 status=0
-# Integration tests only: the library's unit tests cover frozen stage 0 and run
-# with the Rust suite when compiler sources change.
-suite_command="NLC_FRONTEND=selfhost cargo test --offline --release -q --test '*'"
-if (( run_rust )); then
-    suite_command+=' && NLC_FRONTEND=rust cargo test --offline --release -q'
-fi
-timeout --foreground 3600 bash -c "$suite_command" || status=$?
+timeout --foreground 3600 scripts/run-tests.sh || status=$?
 elapsed=$(( $(date +%s) - start ))
 if (( status == 124 )); then
-    echo "pre-commit: FAILED: the full suites passed the one-hour limit (${elapsed} s)"
+    echo "pre-commit: FAILED: the suite passed the one-hour limit (${elapsed} s)"
 elif (( status != 0 )); then
-    echo "pre-commit: FAILED: the full suites failed (status $status, ${elapsed} s)"
+    echo "pre-commit: FAILED: the suite failed (status $status, ${elapsed} s)"
 else
     echo "pre-commit: selected suites passed in ${elapsed} s"
 fi

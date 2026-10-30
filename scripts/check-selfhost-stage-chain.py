@@ -255,8 +255,8 @@ def run_chain(args: argparse.Namespace) -> tuple[int, Path]:
     if sys.platform != "linux":
         raise ChainFailure("the C-runtime stage-chain runner requires Linux")
 
-    reference = args.reference.resolve()
-    if not reference.is_file() or not os.access(reference, os.X_OK):
+    reference = args.reference.resolve() if args.reference else None
+    if reference is not None and (not reference.is_file() or not os.access(reference, os.X_OK)):
         raise ChainFailure(f"reference nlc is not executable: {reference}")
     output = checked_output_directory(root, args.output_dir)
     environment = clean_environment(root, args.opt_level)
@@ -268,7 +268,7 @@ def run_chain(args: argparse.Namespace) -> tuple[int, Path]:
         "failure": None,
         "repository": str(root),
         "output_directory": str(output),
-        "reference": str(reference),
+        "reference": str(reference) if reference else None,
         "optimization_level": args.opt_level,
         "tools": {"python": platform.python_version()},
         "source_sha256": None,
@@ -280,9 +280,7 @@ def run_chain(args: argparse.Namespace) -> tuple[int, Path]:
     report["seed_build_cache_command"] = [
         sys.executable,
         str(root / "scripts/build-selfhost-cached.py"),
-        "--reference",
-        str(reference),
-    ]
+    ] + (["--reference", str(reference)] if reference else [])
 
     try:
         report["source_sha256"] = source_hash(root)
@@ -297,17 +295,18 @@ def run_chain(args: argparse.Namespace) -> tuple[int, Path]:
         )
         require_success("clang version check", clang_version)
         report["tools"]["clang"] = clang_version.stdout.decode("utf-8", "replace").strip()
-        rustc_version = run_command(
-            "tool-rustc-version",
-            ["rustc", "--version", "--verbose"],
-            root,
-            output,
-            report,
-            environment,
-            timeout=TOOL_TIMEOUT_SECONDS,
-        )
-        require_success("rustc version check", rustc_version)
-        report["tools"]["rustc"] = rustc_version.stdout.decode("utf-8", "replace").strip()
+        if reference is not None:
+            rustc_version = run_command(
+                "tool-rustc-version",
+                ["rustc", "--version", "--verbose"],
+                root,
+                output,
+                report,
+                environment,
+                timeout=TOOL_TIMEOUT_SECONDS,
+            )
+            require_success("rustc version check", rustc_version)
+            report["tools"]["rustc"] = rustc_version.stdout.decode("utf-8", "replace").strip()
 
         helper = report["seed_build_cache_command"]
         seed_result = run_command(
@@ -384,7 +383,7 @@ def run_chain(args: argparse.Namespace) -> tuple[int, Path]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--reference", type=Path, required=True, help="executable frozen Rust nlc used only to build the seed")
+    parser.add_argument("--reference", type=Path, help="Rust nlc to build the seed with (default: the checked-in seed IR)")
     parser.add_argument("--clang", default="clang", help="clang executable used for both C-runtime links")
     parser.add_argument("--opt-level", choices=("1", "3"), default="1")
     parser.add_argument("--output-dir", type=Path, help="empty repository subdirectory for retained artifacts and report")

@@ -1,6 +1,0 @@
-[toolchain]
-# Stage 0 (Rust nlc) is frozen; this pins the compiler that builds it, so the
-# freeze can be rebuilt exactly. See docs/PLAN.md "Stage 0 freeze".
-channel = "1.93.0"
-profile = "minimal"
-components = ["rustfmt"]

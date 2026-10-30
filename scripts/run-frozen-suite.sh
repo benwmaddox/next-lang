@@ -9,5 +9,5 @@ shift
 cd "$repo_root"
 # The compiler needs a large address space (the data stack reserves 16 GiB).
 ulimit -v 40000000 2>/dev/null || true
-NLC_REFERENCE=frozen exec python3 scripts/compare-selfhost-build.py --reference /nonexistent/nlc \
+NLC_REFERENCE=frozen exec python3 scripts/compare-selfhost-build.py \
     --compiler "$(cd "$(dirname "$compiler")" && pwd)/$(basename "$compiler")" "$@"

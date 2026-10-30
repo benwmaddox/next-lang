@@ -1,0 +1,21 @@
+# The selfhost suite on Linux: the compiler is built from the checked-in seed, then scripts/run-tests.sh runs the
+# build comparison against the recorded reference results and the Python tests.
+name: linux-ci
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  suite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+      - name: Suite
+        run: scripts/run-tests.sh
