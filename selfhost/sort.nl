@@ -162,8 +162,8 @@ fn emit_sort_function(
         ir_write_ascii(compiler, ir, "  %va = load "); ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, ", ptr %pa\n  %vb = load ")
         ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, ", ptr %pb\n  %less = icmp slt "); ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, " %va, %vb\n")
     } else {
-        var left_argument: Ascii max 48 = "ptr %pa, i64 0, i64 1, i64 0"
-        var right_argument: Ascii max 48 = "ptr %pb, i64 0, i64 1, i64 0"
+        var left_argument: Ascii max 48 = "ptr %pa, i64 0"
+        var right_argument: Ascii max 48 = "ptr %pb, i64 0"
         if sort_element_is_number(element) {
             ir_write_ascii(compiler, ir, "  %va = load "); ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, ", ptr %pa\n  %vb = load "); ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, ", ptr %pb\n")
             left_argument = "i32 %va"

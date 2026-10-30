@@ -2828,6 +2828,7 @@ fn emit_function_definition(
         if files[function.file].name == b"memory.nl" { ir_write_ascii(compiler, ir, " \"no-builtins\"=\"true\"") }
     }
     ir_write_ascii(compiler, ir, " {\nentry:\n")
+    emit_parameter_geometry_prologue(compiler, ir, function)
     if compiler.c_runtime {
         emit_parameter_pointer_prologue(compiler, ir, function)
         emit_parameter_length_prologue(compiler, ir, function)
