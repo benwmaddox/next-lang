@@ -1079,6 +1079,53 @@ void nl_env_destroy(void *value) {
     free(environment);
 }
 
+/* Host facts for main. The thread grant is the processors the program may use, capped by NLC_CORES; the RAM
+   figure is the machine's physical memory and is advisory. The handle is the environment itself. */
+static int64_t nl_host_total_core_count(void) {
+#if NL_WINDOWS
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    return (int64_t)info.dwNumberOfProcessors;
+#else
+    long online = sysconf(_SC_NPROCESSORS_ONLN);
+#if defined(__linux__) && defined(CPU_COUNT)
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+        int count = CPU_COUNT(&set);
+        if (count > 0) return (int64_t)count;
+    }
+#endif
+    return online > 0 ? (int64_t)online : 1;
+#endif
+}
+
+void *nl_env_host(void *value) { return value; }
+int64_t nl_host_total_cores(void *host) { (void)host; return nl_host_total_core_count(); }
+int64_t nl_host_cores(void *host) {
+    (void)host;
+    int64_t total = nl_host_total_core_count();
+    const char *limit = getenv("NLC_CORES");
+    if (limit && *limit) {
+        char *end = NULL;
+        long long wanted = strtoll(limit, &end, 10);
+        if (end != limit && !*end && wanted >= 1 && wanted < total) return (int64_t)wanted;
+    }
+    return total;
+}
+int64_t nl_host_ram_bytes(void *host) {
+    (void)host;
+#if NL_WINDOWS
+    MEMORYSTATUSEX status;
+    status.dwLength = sizeof(status);
+    return GlobalMemoryStatusEx(&status) ? (int64_t)status.ullTotalPhys : 0;
+#else
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page = sysconf(_SC_PAGESIZE);
+    return pages > 0 && page > 0 ? (int64_t)pages * (int64_t)page : 0;
+#endif
+}
+int64_t nl_host_page_size(void *host) { (void)host; return (int64_t)nl_page_size(); }
+
 void *nl_env_args(void *value) { return &((nl_environment *)value)->args; }
 void *nl_env_fs(void *value) { return &((nl_environment *)value)->fs; }
 void *nl_env_out(void *value, int fd) {

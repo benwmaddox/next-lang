@@ -11,6 +11,11 @@ const C_METHOD_FS_JOIN: long = 3008L
 const C_METHOD_FS_READ: long = 3009L
 const C_METHOD_FS_WRITE: long = 3010L
 const C_METHOD_OUT_WRITE: long = 3011L
+const C_METHOD_ENV_HOST: long = 3012L
+const C_METHOD_HOST_CORES: long = 3013L
+const C_METHOD_HOST_TOTAL_CORES: long = 3014L
+const C_METHOD_HOST_RAM: long = 3015L
+const C_METHOD_HOST_PAGE_SIZE: long = 3016L
 
 fn emit_context_runtime_symbol(
     compiler: write CompilerTables,
@@ -137,6 +142,13 @@ fn c_runtime_method_kind(
     if receiver_type == TY_ENV {
         if token_is_word_at(source, tokens, files, file_index, token, "args") { C_METHOD_ENV_ARGS }
         else if token_is_word_at(source, tokens, files, file_index, token, "exit") { C_METHOD_ENV_EXIT }
+        else if token_is_word_at(source, tokens, files, file_index, token, "host") { C_METHOD_ENV_HOST }
+        else { C_METHOD_NONE }
+    } else if receiver_type == TY_HOST {
+        if token_is_word_at(source, tokens, files, file_index, token, "cores") { C_METHOD_HOST_CORES }
+        else if token_is_word_at(source, tokens, files, file_index, token, "total_cores") { C_METHOD_HOST_TOTAL_CORES }
+        else if token_is_word_at(source, tokens, files, file_index, token, "ram_bytes") { C_METHOD_HOST_RAM }
+        else if token_is_word_at(source, tokens, files, file_index, token, "page_size") { C_METHOD_HOST_PAGE_SIZE }
         else { C_METHOD_NONE }
     } else if receiver_type == TY_ARGS {
         if token_is_word_at(source, tokens, files, file_index, token, "count") { C_METHOD_ARGS_COUNT }
@@ -209,7 +221,9 @@ fn c_runtime_check_method(
     let method = c_runtime_method_kind(source, tokens, files, compiler, file_index, method_token, receiver_type)
     if method == C_METHOD_NONE { return -1L }
     let actual_count = count_children(tables, compiler, node) - 1L
-    let wanted_count = if method == C_METHOD_ENV_ARGS || method == C_METHOD_ARGS_COUNT || method == C_METHOD_ARG_LENGTH { 0L }
+    let wanted_count = if method == C_METHOD_ENV_ARGS || method == C_METHOD_ARGS_COUNT || method == C_METHOD_ARG_LENGTH ||
+        method == C_METHOD_ENV_HOST || method == C_METHOD_HOST_CORES || method == C_METHOD_HOST_TOTAL_CORES ||
+        method == C_METHOD_HOST_RAM || method == C_METHOD_HOST_PAGE_SIZE { 0L }
         else if method == C_METHOD_ENV_EXIT || method == C_METHOD_ARGS_GET || method == C_METHOD_ARG_BYTE || method == C_METHOD_OUT_WRITE { 1L }
         else if method == C_METHOD_FS_LIST { 3L } else { 2L }
     if actual_count != wanted_count {
@@ -219,7 +233,12 @@ fn c_runtime_check_method(
     let second = child_at(tables, compiler, node, 2L)
     let third = child_at(tables, compiler, node, 3L)
     var result_type = TY_UNIT
-    if method == C_METHOD_ENV_ARGS {
+    if method == C_METHOD_ENV_HOST {
+        result_type = TY_HOST
+    } else if method == C_METHOD_HOST_CORES || method == C_METHOD_HOST_TOTAL_CORES || method == C_METHOD_HOST_RAM ||
+        method == C_METHOD_HOST_PAGE_SIZE {
+        result_type = TY_LONG
+    } else if method == C_METHOD_ENV_ARGS {
         result_type = TY_ARGS
     } else if method == C_METHOD_ENV_EXIT {
         require_type(env, files, compiler, file_index, first, TY_INT, compiler.facts[first].ty, tables)
@@ -551,7 +570,17 @@ fn emit_c_runtime_method_call(
     let first = child_at(tables, compiler, node, 1L)
     let second = child_at(tables, compiler, node, 2L)
     let third = child_at(tables, compiler, node, 3L)
-    if method == C_METHOD_ENV_ARGS {
+    if method == C_METHOD_ENV_HOST {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call ptr @nl_env_host(ptr "); ir_write_value_ref(compiler, ir, receiver); ir_write_ascii(compiler, ir, ")\n")
+    } else if method == C_METHOD_HOST_CORES || method == C_METHOD_HOST_TOTAL_CORES || method == C_METHOD_HOST_RAM ||
+        method == C_METHOD_HOST_PAGE_SIZE {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call i64 @nl_host_")
+        ir_write_ascii(compiler, ir, if method == C_METHOD_HOST_CORES { "cores" } else if method == C_METHOD_HOST_TOTAL_CORES { "total_cores" }
+            else if method == C_METHOD_HOST_RAM { "ram_bytes" } else { "page_size" })
+        ir_write_ascii(compiler, ir, "(ptr "); ir_write_value_ref(compiler, ir, receiver); ir_write_ascii(compiler, ir, ")\n")
+    } else if method == C_METHOD_ENV_ARGS {
         ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = call ptr @nl_env_args(ptr "); ir_write_value_ref(compiler, ir, receiver); ir_write_ascii(compiler, ir, ")\n")
     } else if method == C_METHOD_ENV_EXIT {
