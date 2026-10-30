@@ -4,7 +4,8 @@
 #   nlc.ps1 link  <file.ll> -o out.exe      link IR the compiler already wrote
 # NLC_SELFHOST names the compiler (default: nlc-selfhost.exe next to this script or in the parent directory);
 # NLC_RUNTIME_DIR names the directory holding nl_runtime.c (default: ..\runtime or .\runtime);
-# NLC_OPT_LEVEL is 1 (default) or 3. `test` is not available on Windows yet.
+# NLC_OPT_LEVEL is 1 (default) or 3. `test` is not available on Windows yet. The package path must be
+# relative to the current directory (the compiler's file access is confined beneath it).
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
@@ -55,19 +56,21 @@ switch ($command) {
         }
         if (-not $package) { throw 'usage: nlc.ps1 build <package> [-o out.exe]' }
         if (-not $output) { $output = (Split-Path -Leaf $package) + '.exe' }
-        $ir = "$output.ll"
-        Compile-Package $package $ir
-        Link-Ir $ir $output
-        Remove-Item $ir
+        # The compiler reads and writes only beneath the current directory, so the IR goes there.
+        $ir = ".nlc-build-$PID.ll"
+        try {
+            Compile-Package $package $ir
+            Link-Ir $ir $output
+        } finally { Remove-Item -ErrorAction SilentlyContinue $ir }
     }
     'run' {
         if ($rest.Count -lt 1) { throw 'usage: nlc.ps1 run <package> [args...]' }
-        $work = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+        $work = ".nlc-run-$PID"
         New-Item -ItemType Directory $work | Out-Null
         try {
-            Compile-Package $rest[0] "$work\program.ll"
-            Link-Ir "$work\program.ll" "$work\program.exe"
-            & "$work\program.exe" @($rest | Select-Object -Skip 1)
+            Compile-Package $rest[0] "$work/program.ll"
+            Link-Ir "$work/program.ll" "$work/program.exe"
+            & ".\$work\program.exe" @($rest | Select-Object -Skip 1)
             exit $LASTEXITCODE
         } finally { Remove-Item -Recurse -Force $work }
     }

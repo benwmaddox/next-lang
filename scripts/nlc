@@ -6,7 +6,8 @@
 #   nlc link  <file.ll> -o out                         link IR the compiler already wrote
 # NLC_SELFHOST names the compiler (default: nlc-selfhost next to this script, then in ../); NLC_RUNTIME_DIR
 # names the directory holding nl_runtime.c (default: ../runtime or ./runtime next to the script);
-# NLC_OPT_LEVEL is 1 (default) or 3.
+# NLC_OPT_LEVEL is 1 (default) or 3. The package path must be relative to the current directory (the
+# compiler's file access is confined beneath it), and the output may be anywhere.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +30,19 @@ find_runtime() {
     exit 2
 }
 
+# clang prints warnings about the IR's target triple on success; show its output only when it fails.
+quiet_clang() {
+    local log status=0
+    log="$(mktemp "${TMPDIR:-/tmp}/nlc-clang.XXXXXX")"
+    clang "$@" > "$log" 2>&1 || status=$?
+    if [[ $status -ne 0 ]]; then
+        echo "nlc: tool failure: clang failed" >&2
+        cat "$log" >&2
+    fi
+    rm -f "$log"
+    return $status
+}
+
 # link <ll> <output>: read the "; nlc.*" header and run clang the way the Rust driver does.
 link() {
     local ir="$1" output="$2"
@@ -46,21 +60,62 @@ link() {
     if [[ "$runtime" == "c" ]]; then
         [[ "$build" == "test" ]] && flags+=("-DNLC_TEST_BUILD=1")
         [[ "$stack" == "offset" ]] && flags+=("-DNLC_STACK_MODE_OFFSET=1")
-        clang "${flags[@]}" "$ir" "$(find_runtime)/nl_runtime.c" -o "$output"
+        quiet_clang "${flags[@]}" "$ir" "$(find_runtime)/nl_runtime.c" -o "$output"
     elif [[ "$runtime" == "core" ]]; then
         flags+=(-nostdlib -static -Wl,-e,_start -Wl,-no-pie -Wl,--build-id=none)
-        clang "${flags[@]}" "$ir" -o "$output"
+        quiet_clang "${flags[@]}" "$ir" -o "$output"
     else
         echo "nlc: $ir has no '; nlc.runtime' header line" >&2
         exit 2
     fi
 }
 
-# compile <package> <ll> <extra compiler flags...>
+# compile <package> <ll> <extra compiler flags...>: the C runtime unless a --runtime flag says otherwise.
 compile() {
     local package="$1" ir="$2"
     shift 2
-    "$(find_compiler)" build "$package" -o "$ir" "$@"
+    local runtime="--runtime=c" flags=()
+    for flag in "$@"; do
+        case "$flag" in --runtime=*) runtime="$flag" ;; *) flags+=("$flag") ;; esac
+    done
+    "$(find_compiler)" build "$package" -o "$ir" "$runtime" "${flags[@]}"
+}
+
+# run_test_ir <ll> <workdir>: link a test-mode IR file and run each test in its own process, printing
+# "ok   name" / "FAIL name", the test's output, and a summary, as the Rust driver's test-ir did.
+run_test_ir() {
+    local ir="$1" work="$2"
+    local names=() passed=0 failed=0 line rest hex index name code
+    while IFS= read -r line; do
+        case "$line" in
+            "; nlc.test "*)
+                rest="${line#; nlc.test }"
+                hex="${rest#* }"
+                names+=("$(printf "$(echo "$hex" | sed 's/../\\x&/g')")")
+                ;;
+            "; "*) ;;
+            *) break ;;
+        esac
+    done < "$ir"
+    if [[ ${#names[@]} -eq 0 ]]; then echo "0 passed, 0 failed"; return 0; fi
+    link "$ir" "$work/tests"
+    passed=0 failed=0
+    for index in "${!names[@]}"; do
+        name="${names[$index]}"
+        set +e
+        { NLC_TEST_INDEX="$index" "$work/tests" > "$work/out" 2> "$work/err"; code=$?; } 2>/dev/null
+        set -e
+        if [[ $code -eq 0 ]]; then echo "ok   $name"; passed=$((passed + 1)); else
+            echo "FAIL $name"; failed=$((failed + 1))
+            [[ $code -eq 70 ]] && echo "  test '$name' ended with a runtime failure (exit code 70)"
+            if [[ $code -gt 128 ]]; then echo "  test '$name' terminated abnormally"
+            elif [[ $code -ne 1 && $code -ne 70 ]]; then echo "  test '$name' exited with code $code"; fi
+        fi
+        cat "$work/out"
+        cat "$work/err" >&2
+    done
+    echo "$passed passed, $failed failed"
+    [[ $failed -eq 0 ]]
 }
 
 command="${1:-}"
@@ -77,16 +132,17 @@ case "$command" in
         done
         [[ -n "$package" ]] || { echo "usage: nlc build <package> [-o out] [--runtime=c|core]" >&2; exit 2; }
         output="${output:-$(basename "$package")}"
-        ir="$output.ll"
+        # The compiler reads and writes only beneath the current directory, so the IR goes there.
+        ir=".nlc-build-$$.ll"
+        trap 'rm -f "$ir"' EXIT
         compile "$package" "$ir" "${extra[@]}"
         link "$ir" "$output"
-        rm -f "$ir"
         ;;
     run)
         package="${1:?usage: nlc run <package> [-- args...]}"
         shift
         [[ "${1:-}" == "--" ]] && shift
-        work="$(mktemp -d)"
+        work="$(mktemp -d ./.nlc-run.XXXXXX)"
         trap 'rm -rf "$work"' EXIT
         compile "$package" "$work/program.ll"
         link "$work/program.ll" "$work/program"
@@ -94,48 +150,24 @@ case "$command" in
         ;;
     test)
         package="${1:?usage: nlc test <package>}"
-        work="$(mktemp -d)"
+        work="$(mktemp -d ./.nlc-test.XXXXXX)"
         trap 'rm -rf "$work"' EXIT
         compile "$package" "$work/tests.ll" --test
-        names=()
-        while IFS= read -r line; do
-            case "$line" in
-                "; nlc.test "*)
-                    rest="${line#; nlc.test }"
-                    hex="${rest#* }"
-                    names+=("$(printf "$(echo "$hex" | sed 's/../\\x&/g')")")
-                    ;;
-                "; "*) ;;
-                *) break ;;
-            esac
-        done < "$work/tests.ll"
-        if [[ ${#names[@]} -eq 0 ]]; then echo "0 passed, 0 failed"; exit 0; fi
-        link "$work/tests.ll" "$work/tests"
-        passed=0 failed=0
-        for index in "${!names[@]}"; do
-            name="${names[$index]}"
-            set +e
-            NLC_TEST_INDEX="$index" "$work/tests" > "$work/out" 2> "$work/err"
-            code=$?
-            set -e
-            if [[ $code -eq 0 ]]; then echo "ok   $name"; passed=$((passed + 1)); else
-                echo "FAIL $name"; failed=$((failed + 1))
-                [[ $code -eq 70 ]] && echo "  test '$name' ended with a runtime failure (exit code 70)"
-                [[ $code -ne 1 && $code -ne 70 ]] && echo "  test '$name' exited with code $code"
-            fi
-            cat "$work/out"
-            cat "$work/err" >&2
-        done
-        echo "$passed passed, $failed failed"
-        [[ $failed -eq 0 ]]
+        run_test_ir "$work/tests.ll" "$work"
         ;;
-    link)
+    test-ir)
+        ir="${1:?usage: nlc test-ir <file.ll>}"
+        work="$(mktemp -d "${TMPDIR:-/tmp}/nlc-test.XXXXXX")"
+        trap 'rm -rf "$work"' EXIT
+        run_test_ir "$ir" "$work"
+        ;;
+    link-ir|link)
         ir="${1:?usage: nlc link <file.ll> -o out}"
         [[ "${2:-}" == "-o" ]] || { echo "usage: nlc link <file.ll> -o out" >&2; exit 2; }
         link "$ir" "${3:?missing output}"
         ;;
     *)
-        echo "usage: nlc build|run|test|link ... (see the header of this script)" >&2
+        echo "usage: nlc build|run|test|test-ir|link ... (see the header of this script)" >&2
         exit 2
         ;;
 esac
