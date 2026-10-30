@@ -40,6 +40,9 @@ jobs:
           $out = (./scripts/nlc.ps1 run tests/c_runtime/pools) -join "`n"
           $want = (Get-Content tests/c_runtime/pools/expected.stdout -Raw)
           if ($out.TrimEnd() -ne $want.TrimEnd()) { Write-Host $out; Write-Error "driver output differs"; exit 1 }
+      - name: "Threads (start, join, park and wake, locked output)"
+        shell: pwsh
+        run: python tests/py/test_threads.py
       - name: Build and run the c_runtime programs
         shell: pwsh
         run: |

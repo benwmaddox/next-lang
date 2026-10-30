@@ -46,6 +46,7 @@ typedef int mode_t;
 /* The native stack is only 1 MiB by default; the compiler recurses deeply. */
 #pragma comment(linker, "/STACK:268435456")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "synchronization.lib")
 /* The file-system root is the working directory at startup, held as a wide path. */
 static wchar_t nl_win_root[32768];
 static size_t nl_win_root_length;
@@ -65,6 +66,18 @@ static size_t nl_win_root_length;
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <pthread.h>
+#endif
+
+/* Threads. nl_multithreaded becomes 1 when the first extra thread starts and stays 1. */
+static volatile int nl_multithreaded;
+#if NL_WINDOWS
+static CRITICAL_SECTION nl_output_mutex;
+static void nl_output_lock(void) { if (nl_multithreaded) EnterCriticalSection(&nl_output_mutex); }
+static void nl_output_unlock(void) { if (nl_multithreaded) LeaveCriticalSection(&nl_output_mutex); }
+#else
+static pthread_mutex_t nl_output_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+static void nl_output_lock(void) { if (nl_multithreaded) pthread_mutex_lock(&nl_output_mutex); }
+static void nl_output_unlock(void) { if (nl_multithreaded) pthread_mutex_unlock(&nl_output_mutex); }
 #endif
 
 static const char **nl_files;
@@ -1079,6 +1092,142 @@ void nl_env_destroy(void *value) {
     free(environment);
 }
 
+/* ---- Threads ----
+   A thread runs `entry(argument)` with its own native stack. The generated code builds the job context inside
+   the entry it passes (nl_context_create and nl_context_destroy), so a thread's data stack is its own. `pin` is a
+   position in the processors this process may use (-1: leave it to the system). Park and wake are the
+   operating system's wait-on-an-address calls; everything above them (rings, counters) is generated IR. */
+typedef struct {
+    void *(*entry)(void *);
+    void *argument;
+    int64_t pin;
+#if NL_WINDOWS
+    HANDLE handle;
+#else
+    pthread_t handle;
+#endif
+} nl_thread_record;
+
+static void nl_pin_current_thread(int64_t position) {
+    if (position < 0) return;
+#if NL_WINDOWS
+    DWORD_PTR mask = 0, process_mask = 0, system_mask = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask)) return;
+    int64_t seen = 0;
+    for (int bit = 0; bit < 64; ++bit) {
+        if (!(process_mask & ((DWORD_PTR)1 << bit))) continue;
+        if (seen++ == position % (int64_t)__builtin_popcountll((unsigned long long)process_mask)) { mask = (DWORD_PTR)1 << bit; break; }
+    }
+    if (mask) SetThreadAffinityMask(GetCurrentThread(), mask);
+#elif defined(__linux__) && defined(CPU_COUNT)
+    cpu_set_t allowed;
+    if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) return;
+    int count = CPU_COUNT(&allowed);
+    if (count <= 0) return;
+    int64_t wanted = position % count, seen = 0;
+    for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+        if (!CPU_ISSET(cpu, &allowed)) continue;
+        if (seen++ == wanted) {
+            cpu_set_t one;
+            CPU_ZERO(&one);
+            CPU_SET(cpu, &one);
+            (void)sched_setaffinity(0, sizeof(one), &one);
+            return;
+        }
+    }
+#endif
+}
+
+#if NL_WINDOWS
+static DWORD WINAPI nl_thread_main(LPVOID raw) {
+    nl_thread_record *record = (nl_thread_record *)raw;
+    nl_pin_current_thread(record->pin);
+    record->entry(record->argument);
+    return 0;
+}
+#else
+static void *nl_thread_main(void *raw) {
+    nl_thread_record *record = (nl_thread_record *)raw;
+    nl_pin_current_thread(record->pin);
+    return record->entry(record->argument);
+}
+#endif
+
+void *nl_thread_start(void *(*entry)(void *), void *argument, uint64_t native_stack_bytes, int64_t pin) {
+    nl_thread_record *record = (nl_thread_record *)calloc(1, sizeof(*record));
+    if (!record) return NULL;
+    record->entry = entry;
+    record->argument = argument;
+    record->pin = pin;
+    if (!nl_multithreaded) {
+#if NL_WINDOWS
+        InitializeCriticalSection(&nl_output_mutex);
+#endif
+        nl_multithreaded = 1;
+    }
+#if NL_WINDOWS
+    record->handle = CreateThread(NULL, (SIZE_T)native_stack_bytes, nl_thread_main, record,
+                                  native_stack_bytes ? STACK_SIZE_PARAM_IS_A_RESERVATION : 0, NULL);
+    if (!record->handle) { free(record); return NULL; }
+#else
+    pthread_attr_t attributes;
+    pthread_attr_init(&attributes);
+    if (native_stack_bytes) pthread_attr_setstacksize(&attributes, (size_t)native_stack_bytes);
+    int failed = pthread_create(&record->handle, &attributes, nl_thread_main, record);
+    pthread_attr_destroy(&attributes);
+    if (failed) { free(record); return NULL; }
+#endif
+    return record;
+}
+
+/* Wait for a thread to finish and release its record. Returns 0 on success. */
+int64_t nl_thread_join(void *raw) {
+    nl_thread_record *record = (nl_thread_record *)raw;
+    if (!record) return -1;
+#if NL_WINDOWS
+    WaitForSingleObject(record->handle, INFINITE);
+    CloseHandle(record->handle);
+#else
+    pthread_join(record->handle, NULL);
+#endif
+    free(record);
+    return 0;
+}
+
+/* Sleep while *address == expected, until woken or the timeout (nanoseconds, negative: none) passes. Returns 1 on
+   timeout and 0 otherwise (woken, or the value had already changed). Spurious returns are possible. */
+int32_t nl_park(volatile int32_t *address, int32_t expected, int64_t timeout_nanos) {
+#if NL_WINDOWS
+    DWORD milliseconds = timeout_nanos < 0 ? INFINITE : (DWORD)((timeout_nanos + 999999) / 1000000);
+    if (WaitOnAddress(address, &expected, sizeof(expected), milliseconds)) return 0;
+    return GetLastError() == ERROR_TIMEOUT ? 1 : 0;
+#elif defined(__linux__) && defined(SYS_futex)
+    struct timespec limit;
+    struct timespec *limit_pointer = NULL;
+    if (timeout_nanos >= 0) {
+        limit.tv_sec = (time_t)(timeout_nanos / 1000000000);
+        limit.tv_nsec = (long)(timeout_nanos % 1000000000);
+        limit_pointer = &limit;
+    }
+    long result = syscall(SYS_futex, address, 128 /* FUTEX_WAIT_PRIVATE */, expected, limit_pointer, NULL, 0);
+    return result < 0 && errno == ETIMEDOUT ? 1 : 0;
+#else
+    (void)address; (void)expected; (void)timeout_nanos;
+    return 0;
+#endif
+}
+
+/* Wake up to `count` threads parked on the address. */
+void nl_wake(volatile int32_t *address, int32_t count) {
+#if NL_WINDOWS
+    if (count == 1) WakeByAddressSingle((PVOID)address); else WakeByAddressAll((PVOID)address);
+#elif defined(__linux__) && defined(SYS_futex)
+    (void)syscall(SYS_futex, address, 129 /* FUTEX_WAKE_PRIVATE */, count, NULL, NULL, 0);
+#else
+    (void)address; (void)count;
+#endif
+}
+
 /* Host facts for main. The thread grant is the processors the program may use, capped by NLC_CORES; the RAM
    figure is the machine's physical memory and is advisory. The handle is the environment itself. */
 static int64_t nl_host_total_core_count(void) {
@@ -1400,7 +1549,7 @@ static int nl_output_flush_index(int index) {
     return 0;
 }
 
-static int nl_output_flush_all(void) {
+static int nl_output_flush_all_body(void) {
     int shared_terminal = nl_output_uses_same_terminal();
     int first = 0;
     int second = 1;
@@ -1416,7 +1565,7 @@ static int nl_output_flush_all(void) {
     return error ? error : other_error;
 }
 
-static int nl_output_write(int fd, const unsigned char *bytes, uint64_t length) {
+static int nl_output_write_body(int fd, const unsigned char *bytes, uint64_t length) {
     int index = nl_output_index(fd);
     if (index < 0) return nl_write_all(fd, bytes, length);
     int other = index == 0 ? 1 : 0;
@@ -1455,8 +1604,8 @@ static int nl_output_write(int fd, const unsigned char *bytes, uint64_t length) 
     return 0;
 }
 
-static int nl_output_write_and_flush(int fd, const unsigned char *bytes,
-                                     uint64_t length) {
+static int nl_output_write_and_flush_body(int fd, const unsigned char *bytes,
+                                          uint64_t length) {
     int index = nl_output_index(fd);
     int error = nl_output_write(fd, bytes, length);
     if (!error && index >= 0) error = nl_output_flush_index(index);
@@ -1465,6 +1614,29 @@ static int nl_output_write_and_flush(int fd, const unsigned char *bytes,
         nl_output_lengths[index] = 0;
     }
     return error;
+}
+
+/* Output is buffered in shared state, so once a second thread exists the public entry points take a recursive
+   lock. A single-threaded program never takes it. */
+static int nl_output_flush_all(void) {
+    nl_output_lock();
+    int result = nl_output_flush_all_body();
+    nl_output_unlock();
+    return result;
+}
+
+static int nl_output_write(int fd, const unsigned char *bytes, uint64_t length) {
+    nl_output_lock();
+    int result = nl_output_write_body(fd, bytes, length);
+    nl_output_unlock();
+    return result;
+}
+
+static int nl_output_write_and_flush(int fd, const unsigned char *bytes, uint64_t length) {
+    nl_output_lock();
+    int result = nl_output_write_and_flush_body(fd, bytes, length);
+    nl_output_unlock();
+    return result;
 }
 
 static int nl_write_byte_list(int fd, const void *value, uint64_t capacity) {
