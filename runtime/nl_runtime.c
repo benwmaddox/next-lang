@@ -40,13 +40,6 @@ static int nl_output_write(int fd, const unsigned char *bytes, uint64_t length);
 static int nl_output_write_and_flush(int fd, const unsigned char *bytes,
                                      uint64_t length);
 
-#define NL_TEST_VAR_STORAGE_CAPACITY 131072
-static const void *nl_test_var_descriptors[NL_TEST_VAR_STORAGE_CAPACITY];
-static const void *nl_test_var_data[NL_TEST_VAR_STORAGE_CAPACITY];
-static uint64_t nl_test_var_lengths[NL_TEST_VAR_STORAGE_CAPACITY];
-static unsigned char *nl_test_var_metadata[NL_TEST_VAR_STORAGE_CAPACITY];
-static uint64_t nl_test_var_metadata_sizes[NL_TEST_VAR_STORAGE_CAPACITY];
-static size_t nl_test_var_count;
 
 typedef struct {
     void *header_mapping;
@@ -80,18 +73,48 @@ _Static_assert(offsetof(nl_data_stack_context, base) == 56, "generated code read
 _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col);
 static int nl_write_all(int fd, const unsigned char *bytes, uint64_t length);
 
+/* Diagnostics go straight to the file descriptor with write(2); no stdio. */
+static void nl_put_text(int fd, const char *text) {
+    size_t length = 0;
+    while (text[length]) ++length;
+    (void)nl_write_all(fd, (const unsigned char *)text, length);
+}
+
+static void nl_put_unsigned(int fd, unsigned long long value) {
+    char digits[24];
+    int at = 24;
+    do {
+        digits[--at] = (char)('0' + value % 10);
+        value /= 10;
+    } while (value != 0);
+    (void)nl_write_all(fd, (const unsigned char *)digits + at, (uint64_t)(24 - at));
+}
+
+static void nl_put_signed(int fd, long long value) {
+    if (value < 0) {
+        nl_put_text(fd, "-");
+        nl_put_unsigned(fd, 0ULL - (unsigned long long)value);
+    } else {
+        nl_put_unsigned(fd, (unsigned long long)value);
+    }
+}
+
 static void nl_stack_startup_failure(const char *message) {
-    fprintf(stderr, "nlc: data stack startup failure: %s\n", message);
+    nl_put_text(2, "nlc: data stack startup failure: ");
+    nl_put_text(2, message);
+    nl_put_text(2, "\n");
     exit(1);
 }
 
 static void nl_stack_startup_failure_for(const char *entry_name, uint64_t bytes,
                                          const char *message) {
-    fprintf(stderr,
-            "nlc: data stack startup failure for entry '%s' (reservation %llu bytes): %s\n",
-            entry_name ? entry_name : "<unknown>",
-            (unsigned long long)bytes,
-            message);
+    nl_put_text(2, "nlc: data stack startup failure for entry '");
+    nl_put_text(2, entry_name ? entry_name : "<unknown>");
+    nl_put_text(2, "' (reservation ");
+    nl_put_unsigned(2, bytes);
+    nl_put_text(2, " bytes): ");
+    nl_put_text(2, message);
+    nl_put_text(2, "\n");
     exit(1);
 }
 
@@ -378,31 +401,6 @@ void nl_context_destroy(void *opaque) {
     if (nl_output_flush_all() != 0) nl_fail(20, -1, 0, 0);
 #if defined(NLC_STACK_MODE_OFFSET)
 #endif
-#if defined(NLC_TEST_BUILD)
-    /* Test-only resident-page reporting; this allocation is outside program operations. */
-    const char *report = getenv("NLC_TEST_REPORT_STACK_RESIDENT");
-    if (report && strcmp(report, "1") == 0) {
-        long page = sysconf(_SC_PAGESIZE);
-        if (page > 0) {
-            size_t pages = (size_t)(context->reservation_bytes / (uint64_t)page);
-            unsigned char *residency = calloc(pages ? pages : 1, 1);
-            if (residency && mincore(context->mapping, (size_t)context->reservation_bytes,
-                                     residency) == 0) {
-                uint64_t resident_bytes = 0;
-                for (size_t index = 0; index < pages; ++index) {
-                    if (residency[index] & 1) resident_bytes += (uint64_t)page;
-                }
-                fprintf(stderr,
-                        "nlc stack entry '%s': reserved=%llu bytes resident=%llu bytes peak_used=%llu bytes\n",
-                        context->entry_name ? context->entry_name : "<unknown>",
-                        (unsigned long long)context->reservation_bytes,
-                        (unsigned long long)resident_bytes,
-                        (unsigned long long)context->peak_used_bytes);
-            }
-            free(residency);
-        }
-    }
-#endif
     munmap(context->mapping, context->mapping_bytes);
     void *header_mapping = context->header_mapping;
     size_t header_bytes = context->header_bytes;
@@ -436,68 +434,7 @@ int32_t nl_test_selected_index(void) {
 }
 
 void nl_set_test_mode(void) {
-    nl_test_var_count = 0;
     nl_test_mode = 1;
-}
-
-void nl_test_var_storage_reset(void) {
-    if (!nl_test_mode) return;
-    /* Test-only snapshots verify that one growing field leaves other lanes alone. */
-    for (size_t index = 0; index < nl_test_var_count; ++index) {
-        free(nl_test_var_metadata[index]);
-        nl_test_var_metadata[index] = NULL;
-        nl_test_var_metadata_sizes[index] = 0;
-    }
-    nl_test_var_count = 0;
-}
-
-void nl_test_var_storage_note(const void *descriptor, const void *data, uint64_t length,
-                              uint64_t metadata_size) {
-    if (!nl_test_mode || !descriptor) return;
-    if (metadata_size > 128) {
-        fprintf(stderr, "test failure: variable-size lane metadata exceeds 128 bytes\n");
-        exit(70);
-    }
-    size_t current = nl_test_var_count;
-    for (size_t index = 0; index < nl_test_var_count; ++index) {
-        if (nl_test_var_descriptors[index] == descriptor) {
-            current = index;
-            break;
-        }
-    }
-    for (size_t index = 0; index < nl_test_var_count; ++index) {
-        if (index == current) continue;
-        if (memcmp(nl_test_var_descriptors[index], nl_test_var_metadata[index],
-                   nl_test_var_metadata_sizes[index]) != 0) {
-            fprintf(stderr,
-                    "test failure: updating one variable-size field changed another field's lane\n");
-            exit(70);
-        }
-    }
-    if (current < nl_test_var_count && length < nl_test_var_lengths[current] &&
-        data != nl_test_var_data[current]) {
-        fprintf(stderr,
-                "test failure: shrinking a variable-size field moved it to a different slot\n");
-        exit(70);
-    }
-    if (current == nl_test_var_count) {
-        if (nl_test_var_count == NL_TEST_VAR_STORAGE_CAPACITY) {
-            fprintf(stderr, "test failure: variable-size storage test hook capacity exceeded\n");
-            exit(70);
-        }
-        nl_test_var_descriptors[current] = descriptor;
-        /* Test-only metadata snapshot; never used by normal program operations. */
-        nl_test_var_metadata[current] = malloc((size_t)metadata_size);
-        if (!nl_test_var_metadata[current]) {
-            fprintf(stderr, "test failure: cannot allocate variable-size metadata snapshot\n");
-            exit(70);
-        }
-        ++nl_test_var_count;
-    }
-    nl_test_var_data[current] = data;
-    nl_test_var_lengths[current] = length;
-    nl_test_var_metadata_sizes[current] = metadata_size;
-    memcpy(nl_test_var_metadata[current], descriptor, (size_t)metadata_size);
 }
 
 static const char *nl_file_name(int32_t file_id) {
@@ -507,8 +444,6 @@ static const char *nl_file_name(int32_t file_id) {
 
 _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col) {
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    (void)fflush(stderr);
     const char *file = nl_file_name(file_id);
     const char *message = "runtime failure";
     switch (kind) {
@@ -537,38 +472,48 @@ _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col)
         case 19: message = "recursion budget exhausted"; break;
         case 20: message = "standard output write failed"; break;
     }
-    fprintf(stderr, "%s:%d:%d: %s\n", file, line, col, message);
+    nl_put_text(2, file);
+    nl_put_text(2, ":");
+    nl_put_signed(2, line);
+    nl_put_text(2, ":");
+    nl_put_signed(2, col);
+    nl_put_text(2, ": ");
+    nl_put_text(2, message);
+    nl_put_text(2, "\n");
     exit(nl_test_mode ? 70 : 1);
 }
 
 void nl_expect_fail_compare(int32_t file_id, int32_t line, int32_t col,
                             const char *source, int64_t left, int64_t right,
                             int32_t is_bool) {
-    char left_text[32];
-    char right_text[32];
-    if (is_bool) {
-        snprintf(left_text, sizeof(left_text), "%s", left ? "true" : "false");
-        snprintf(right_text, sizeof(right_text), "%s", right ? "true" : "false");
-    } else {
-        snprintf(left_text, sizeof(left_text), "%lld", (long long)left);
-        snprintf(right_text, sizeof(right_text), "%lld", (long long)right);
-    }
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    (void)fflush(stderr);
-    printf("  %s:%d:%d: %s\n    left:  %s\n    right: %s\n",
-           nl_file_name(file_id), line, col, source, left_text, right_text);
-    (void)fflush(stdout);
+    nl_put_text(1, "  ");
+    nl_put_text(1, nl_file_name(file_id));
+    nl_put_text(1, ":");
+    nl_put_signed(1, line);
+    nl_put_text(1, ":");
+    nl_put_signed(1, col);
+    nl_put_text(1, ": ");
+    nl_put_text(1, source);
+    nl_put_text(1, "\n    left:  ");
+    if (is_bool) nl_put_text(1, left ? "true" : "false"); else nl_put_signed(1, left);
+    nl_put_text(1, "\n    right: ");
+    if (is_bool) nl_put_text(1, right ? "true" : "false"); else nl_put_signed(1, right);
+    nl_put_text(1, "\n");
 }
 
 void nl_expect_fail_bool(int32_t file_id, int32_t line, int32_t col,
                          const char *source) {
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    (void)fflush(stderr);
-    printf("  %s:%d:%d: %s\n    value: false\n",
-           nl_file_name(file_id), line, col, source);
-    (void)fflush(stdout);
+    nl_put_text(1, "  ");
+    nl_put_text(1, nl_file_name(file_id));
+    nl_put_text(1, ":");
+    nl_put_signed(1, line);
+    nl_put_text(1, ":");
+    nl_put_signed(1, col);
+    nl_put_text(1, ": ");
+    nl_put_text(1, source);
+    nl_put_text(1, "\n    value: false\n");
 }
 
 static void nl_print_bytes(const unsigned char *bytes, uint64_t length) {
@@ -1026,22 +971,23 @@ void nl_print_newline(void) {
 void nl_expect_fail_header(int32_t file_id, int32_t line, int32_t col,
                            const char *source) {
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    (void)fflush(stderr);
-    printf("  %s:%d:%d: %s\n", nl_file_name(file_id), line, col, source);
-    (void)fflush(stdout);
+    nl_put_text(1, "  ");
+    nl_put_text(1, nl_file_name(file_id));
+    nl_put_text(1, ":");
+    nl_put_signed(1, line);
+    nl_put_text(1, ":");
+    nl_put_signed(1, col);
+    nl_put_text(1, ": ");
+    nl_put_text(1, source);
+    nl_put_text(1, "\n");
 }
 void nl_expect_fail_left(void) {
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    fputs("    left:  ", stdout);
-    (void)fflush(stdout);
+    nl_put_text(1, "    left:  ");
 }
 void nl_expect_fail_right(void) {
     (void)nl_output_flush_all();
-    (void)fflush(stdout);
-    fputs("    right: ", stdout);
-    (void)fflush(stdout);
+    nl_put_text(1, "    right: ");
 }
 
 typedef struct { int root_fd; } nl_fs_handle;
@@ -1077,7 +1023,9 @@ static int nl_errno_error(int error) {
 }
 
 static void nl_args_startup_failure(const char *message) {
-    fprintf(stderr, "nlc: startup argument failure: %s\n", message);
+    nl_put_text(2, "nlc: startup argument failure: ");
+    nl_put_text(2, message);
+    nl_put_text(2, "\n");
     exit(1);
 }
 
@@ -1092,10 +1040,13 @@ static void nl_remove_tree(const char *path) {
     struct dirent *entry;
     while ((entry = readdir(directory)) != NULL) {
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
-        size_t length = strlen(path) + strlen(entry->d_name) + 2;
-        char *child = (char *)malloc(length);
+        size_t path_length = strlen(path);
+        size_t name_length = strlen(entry->d_name);
+        char *child = (char *)malloc(path_length + name_length + 2);
         if (!child) continue;
-        snprintf(child, length, "%s/%s", path, entry->d_name);
+        memcpy(child, path, path_length);
+        child[path_length] = '/';
+        memcpy(child + path_length + 1, entry->d_name, name_length + 1);
         struct stat status;
         if (lstat(child, &status) == 0 && S_ISDIR(status.st_mode)) nl_remove_tree(child);
         else unlink(child);
@@ -1162,10 +1113,10 @@ void *nl_env_out(void *value, int fd) {
 
 _Noreturn void nl_env_exit(int32_t code) {
     if (nl_output_flush_all() != 0) nl_fail(20, -1, 0, 0);
-    (void)fflush(stdout);
-    (void)fflush(stderr);
     if (nl_test_mode) {
-        fprintf(stderr, "Env.exit(%d) cannot be used in a test; this test process failed\n", code);
+        nl_put_text(2, "Env.exit(");
+        nl_put_signed(2, code);
+        nl_put_text(2, ") cannot be used in a test; this test process failed\n");
         exit(70);
     }
     exit(code);
