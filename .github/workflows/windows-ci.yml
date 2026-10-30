@@ -1,5 +1,5 @@
 # Checks the Windows runtime: clang compiles the checked-in seed IR with the Windows runtime into
-# nlc-selfhost.exe, which rebuilds itself (the IR must be identical to the seed), runs the PowerShell
+# nlc-selfhost.exe, which reaches a fixed point (rebuilds itself to identical IR), runs the PowerShell
 # driver and builds and runs the c_runtime test programs.
 name: windows-ci
 
@@ -22,17 +22,16 @@ jobs:
           python -c "import gzip,shutil; shutil.copyfileobj(gzip.open('seed/seed.ll.gz','rb'), open('seed.ll','wb'))"
           clang -O1 -DNLC_STACK_MODE_OFFSET=1 -D_CRT_SECURE_NO_WARNINGS -fuse-ld=lld -o nlc-selfhost.exe seed.ll runtime/nl_runtime.c
           if ($LASTEXITCODE -ne 0) { exit 1 }
-      - name: The compiler rebuilds itself (IR identical to the seed)
+      - name: The compiler reaches a fixed point (it rebuilds itself to identical IR)
         shell: pwsh
         run: |
-          ./nlc-selfhost.exe build selfhost -o self.ll --runtime=c
+          ./nlc-selfhost.exe build selfhost -o stage2.ll --runtime=c
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          $a = (Get-FileHash seed.ll).Hash
-          $b = (Get-FileHash self.ll).Hash
-          if ($a -ne $b) {
-            python -c "a=open('seed.ll','rb').read().split(b'\n'); b=open('self.ll','rb').read().split(b'\n'); i=next((i for i in range(min(len(a),len(b))) if a[i]!=b[i]), None); print('first difference at line', i, 'of', len(a), len(b))"
-            Write-Error "IR differs from the seed"; exit 1
-          }
+          clang -O1 -DNLC_STACK_MODE_OFFSET=1 -D_CRT_SECURE_NO_WARNINGS -fuse-ld=lld -o stage2.exe stage2.ll runtime/nl_runtime.c
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          ./stage2.exe build selfhost -o stage3.ll --runtime=c
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ((Get-FileHash stage2.ll).Hash -ne (Get-FileHash stage3.ll).Hash) { Write-Error "stage 2 and stage 3 IR differ"; exit 1 }
       - name: The PowerShell driver builds and runs a program
         shell: pwsh
         run: |
