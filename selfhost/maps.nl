@@ -547,7 +547,7 @@ fn emit_map_copy_helpers(compiler: write CompilerTables, ir: grow Bytes max IR_B
 fn emit_map_memory_wrappers(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
     var any_map = false
     for type_id in 0L..type_count(compiler) {
-        if type_kind(compiler, type_id) == TYPE_KIND_MAP { any_map = true }
+        if type_kind(compiler, type_id) == TYPE_KIND_MAP || type_kind(compiler, type_id) == TYPE_KIND_POOL { any_map = true }
     }
     if !any_map { return }
     ir_write_ascii(compiler, ir, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1 immarg)\ndeclare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1 immarg)\ndeclare void @llvm.memset.p0.i64(ptr, i8, i64, i1 immarg)\n")

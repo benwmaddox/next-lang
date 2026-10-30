@@ -241,11 +241,26 @@ fn unsupported_category_for_node(
             return UNSUPPORTED_TYPE_FORM
         } else { () }
     }
+    // Pools are supported for one pool variable (a local or a parameter) with add, get and count. Anything
+    // that could mix two pools' ids, store or copy a pool, or iterate one is refused until owners are checked.
+    if is_type_node(value.kind) && value.token >= 0L && token_is_word_at(source, tokens, files, file_index, value.token, "pool") {
+
+        if value.kind != NodeKind.Annotation && value.kind != NodeKind.ParameterType { return UNSUPPORTED_POOL_USE }
+        if value.kind == NodeKind.Annotation {
+            for earlier in 0L..node {
+                if tables.nodes[earlier].kind == NodeKind.Annotation && tables.nodes[earlier].token >= 0L &&
+                    node_file_index(tables.nodes, files, earlier) == file_index &&
+                    token_is_word_at(source, tokens, files, file_index, tables.nodes[earlier].token, "pool") { return UNSUPPORTED_POOL_USE }
+            }
+        }
+    }
+    if is_type_node(value.kind) && (value.meta1 & 2097151L) == 1L && value.token >= 0L &&
+        token_is_word_at(source, tokens, files, file_index, value.token, "Id") { return 0L }
     match value.kind {
         NodeKind.Program => 0L,
         NodeKind.Enum => 0L,
         // E3a1 begin: large struct and sum values use data-stack regions.
-        NodeKind.Struct => if value.aux > 0L { UNSUPPORTED_NODE } else { 0L },
+        NodeKind.Struct => 0L,
         // E3a1 end
         NodeKind.StructField => 0L,
         NodeKind.EnumCase => 0L,
@@ -298,6 +313,7 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "pop") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "set") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "get") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "add") ||
             (compiler.c_runtime && (token_is_word_at(source, tokens, files, file_index, value.token, "to_double") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "parse_double"))) ||
             token_is_word_at(source, tokens, files, file_index, value.token, "empty") ||
@@ -328,7 +344,7 @@ fn unsupported_category_for_node(
         NodeKind.InitializerField => 0L,
         NodeKind.ArrayLiteral => 0L,
         NodeKind.ListLiteral => 0L,
-        NodeKind.PoolLiteral => UNSUPPORTED_NODE,
+        NodeKind.PoolLiteral => 0L,
         NodeKind.MapLiteral => 0L,
         NodeKind.SetLiteral => UNSUPPORTED_NODE,
         NodeKind.QueueLiteral => 0L,
@@ -401,7 +417,7 @@ fn unsupported_category_for_node(
             }
         },
         NodeKind.Function => {
-            if !is_top_level_function(tables, compiler, node) || value.aux > 0L { UNSUPPORTED_NODE }
+            if !is_top_level_function(tables, compiler, node) { UNSUPPORTED_NODE }
             else { 0L }
         },
         NodeKind.Parameter => 0L,
@@ -544,6 +560,8 @@ fn report_unsupported(
         match env.err.write(b"iterating or indexing a queue") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_FLOAT {
         match env.err.write(b"floating-point numbers on the core runtime") { ok(_) => (), err(_) => env.exit(3) }
+    } else if hit.category == UNSUPPORTED_POOL_USE {
+        match env.err.write(b"pools beyond one pool variable with add, get and count") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_MAP_USE {
         match env.err.write(b"iterating a map") { ok(_) => (), err(_) => env.exit(3) }
     } else if hit.category == UNSUPPORTED_MAP_ELEMENT {
@@ -584,6 +602,11 @@ fn check_package_eligibility(
         if !is_type_node(tables.nodes[node].kind) { continue }
         let file_index = node_file_index(tables.nodes, files, node)
         let type_id = resolve_value_type(source, tokens, files, tables, compiler, file_index, node)
+        if type_id >= 0L && type_kind(compiler, type_id) == TYPE_KIND_LIST && compiler.child_first[node] >= 0L &&
+            type_contains_pool(compiler, collection_element_type(compiler, type_id), 0L) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[compiler.child_first[node]].start,
+                "pools cannot appear inside array or list elements; each repeated element would need a distinct owner")
+        }
         if type_id >= 0L && type_state(compiler, type_id) == TYPE_STATE_LAYOUT_OVERFLOW {
             fail_at_message(env, files, compiler, file_index, tables.nodes[node].start,
                 "collection size overflows long; reduce a capacity or the nested element size")

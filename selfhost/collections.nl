@@ -12,9 +12,16 @@ const COLLECTION_METHOD_REMOVE: long = 1005L
 const COLLECTION_METHOD_CLEAR: long = 1006L
 const COLLECTION_METHOD_POP: long = 1007L
 const COLLECTION_METHOD_PEEK: long = 1008L
+const COLLECTION_METHOD_POOL_ADD: long = 1009L
+const COLLECTION_METHOD_POOL_GET: long = 1010L
+
+// A pool written with a capacity parameter (`pool<T, N, P>`) is the type of a parameter that accepts a pool
+// of any capacity. The capacity then comes from the pool's own header word at run time.
+const POOL_ANY_CAPACITY: long = -1L
 
 // List-like collections share layout, copying and zero-initialisation: a count word, then the
-// elements. A queue also keeps the index of its oldest element and uses the elements as a ring.
+// elements. A queue also keeps the index of its oldest element and uses the elements as a ring. A pool
+// keeps its capacity in the second header word, so code that does not know the capacity can still add.
 // A text value stored inside a collection element is copied, compared and printed through its
 // type's helpers (it has a length and a variable number of live bytes), never as a scalar.
 fn collection_text_leaf(kind: long) -> bool {
@@ -28,7 +35,11 @@ fn collection_helper_leaf(kind: long) -> bool {
 }
 
 fn collection_kind_is_list(kind: long) -> bool {
-    kind == TYPE_KIND_LIST || kind == TYPE_KIND_QUEUE
+    kind == TYPE_KIND_LIST || kind == TYPE_KIND_QUEUE || kind == TYPE_KIND_POOL
+}
+
+fn collection_header_size(kind: long) -> long {
+    if kind == TYPE_KIND_QUEUE || kind == TYPE_KIND_POOL { 16L } else { 8L }
 }
 
 fn collection_method_kind(
@@ -50,6 +61,9 @@ fn collection_method_kind(
     else if receiver_kind == TYPE_KIND_QUEUE && token_is_word_at(source, tokens, files, file_index, method_token, "push") { COLLECTION_METHOD_PUSH }
     else if receiver_kind == TYPE_KIND_QUEUE && token_is_word_at(source, tokens, files, file_index, method_token, "pop") { COLLECTION_METHOD_POP }
     else if receiver_kind == TYPE_KIND_QUEUE && token_is_word_at(source, tokens, files, file_index, method_token, "peek") { COLLECTION_METHOD_PEEK }
+    else if receiver_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, method_token, "count") { COLLECTION_METHOD_COUNT }
+    else if receiver_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, method_token, "add") { COLLECTION_METHOD_POOL_ADD }
+    else if receiver_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, method_token, "get") { COLLECTION_METHOD_POOL_GET }
     else { 0L }
 }
 
@@ -553,6 +567,8 @@ fn collection_type_syntax_kind(
         TYPE_KIND_QUEUE
     } else if syntax.token >= 0L && token_is_word_at(source, tokens, files, file_index, syntax.token, "map") {
         TYPE_KIND_MAP
+    } else if syntax.token >= 0L && token_is_word_at(source, tokens, files, file_index, syntax.token, "pool") {
+        TYPE_KIND_POOL
     } else { 0L }
 }
 
@@ -581,6 +597,30 @@ fn intern_collection_type_syntax(
 
     var type_id = -1L
     var child = compiler.child_first[node]
+    if written_kind == TYPE_KIND_POOL {
+        // `pool<T, N>`, or `pool<T, N, P>` with an owner; a capacity that is a name rather than a constant
+        // (`pool<T, N, P>` in a generic parameter) stands for any capacity.
+        if child < 0L || tables.nodes[child].kind != NodeKind.TypeArgument { return -1L }
+        if (compiler.facts[child].flags & FACT_RESOLVED_TYPE) == 0L { return -1L }
+        let element_type = compiler.facts[child].ty
+        let capacity_node = compiler.child_next[child]
+        if capacity_node < 0L { return -1L }
+        var pool_capacity = POOL_ANY_CAPACITY
+        if constant_count > 0L && tables.nodes[capacity_node].kind != NodeKind.Name {
+            let capacity_value = evaluate_collection_capacity(tables, compiler, capacity_node, 0L)
+            if !capacity_value.constant {
+                let unsupported = unsupported_collection_capacity_constant(tables, compiler, capacity_node, 0L)
+                if unsupported >= 0L { return -1L }
+                return -1L
+            }
+            if !capacity_value.valid { return -1L }
+            // Ids carry a 32-bit slot; larger pools are left to the frozen compiler for now.
+            if capacity_value.value > 4294967295L || capacity_value.value <= 0L { return -1L }
+            pool_capacity = capacity_value.value
+        }
+        let pool_name_id = compiler.token_name_ids[syntax.token]
+        return intern_collection_type(compiler, TYPE_KIND_POOL, element_type, pool_capacity, file_index, node, pool_name_id, syntax.token)
+    }
     if is_list {
         if argument_count != 1L || constant_count != 1L || child < 0L || tables.nodes[child].kind != NodeKind.TypeArgument {
             if written_kind == TYPE_KIND_QUEUE {
@@ -813,10 +853,11 @@ recursive fn type_group_size(compiler: CompilerTables, type_id: long, copies: lo
         let element_size = type_group_size(compiler, record.field_start, 1L)
         if element_size < 0L { element_size } else { checked_size_product(record.field_count, element_size) }
     } else if collection_kind_is_list(kind) {
-        let header_size = if kind == TYPE_KIND_QUEUE { 16L } else { 8L }
+        let header_size = collection_header_size(kind)
         let element_align = value_type_align(compiler, record.field_start)
         let element_size = type_group_size(compiler, record.field_start, 1L)
-        let payload_size = if element_size < 0L { element_size } else { checked_size_product(record.field_count, element_size) }
+        let slot_count = if record.field_count < 0L { 0L } else { record.field_count }
+        let payload_size = if element_size < 0L { element_size } else { checked_size_product(slot_count, element_size) }
         if payload_size == -2L || element_size == -2L { -2L }
         else if element_align < 0L || element_size < 0L || payload_size < 0L { -1L }
         else {
@@ -846,7 +887,7 @@ fn collection_element_base_offset(compiler: CompilerTables, type_id: long) -> lo
     else if kind == TYPE_KIND_ARRAY { 0L }
     else if collection_kind_is_list(kind) {
         let element_type = collection_element_type(compiler, type_id)
-        size_align_saturated(if kind == TYPE_KIND_QUEUE { 16L } else { 8L }, value_type_align(compiler, element_type))
+        size_align_saturated(collection_header_size(kind), value_type_align(compiler, element_type))
     } else { -1L }
 }
 
@@ -1736,6 +1777,9 @@ fn emit_collection_zero_storage(compiler: write CompilerTables, ir: grow Bytes m
         let location = aggregate_destination_location(compiler, 0L, node)
         let serial = emit_location_pointer_materialization(compiler, ir, location)
         ir_write_ascii(compiler, ir, "  %coll.zero.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial); ir_write_ascii(compiler, ir, ", i64 0\n  store i64 "); ir_write_number(compiler, ir, live_count); ir_write_ascii(compiler, ir, ", ptr %coll.zero.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+        if type_kind(compiler, type_id) == TYPE_KIND_POOL {
+            ir_write_ascii(compiler, ir, "  %coll.zero.capacity."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial); ir_write_ascii(compiler, ir, ", i64 8\n  store i64 "); ir_write_number(compiler, ir, collection_capacity(compiler, type_id)); ir_write_ascii(compiler, ir, ", ptr %coll.zero.capacity."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+        }
         if type_kind(compiler, type_id) == TYPE_KIND_QUEUE {
             ir_write_ascii(compiler, ir, "  %coll.zero.head."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial); ir_write_ascii(compiler, ir, ", i64 8\n  store i64 0, ptr %coll.zero.head."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
         }
@@ -1837,13 +1881,23 @@ fn emit_collection_method(
         emit_queue_method(compiler, ir, node, method, location, pointer_serial, argument, element, capacity, stride, base_offset)
         return
     }
-    if method == COLLECTION_METHOD_PUSH {
+    if method == COLLECTION_METHOD_POOL_GET {
+        emit_pool_get(tables, compiler, ir, node, location, pointer_serial, element, stride, base_offset)
+        return
+    }
+    if method == COLLECTION_METHOD_PUSH || method == COLLECTION_METHOD_POOL_ADD {
         let proven = (compiler.facts[node].flags & FACT_PROVEN_SUCCESS) != 0L
+        let is_pool_add = method == COLLECTION_METHOD_POOL_ADD
+        if is_pool_add {
+            ir_write_ascii(compiler, ir, "  %coll.push.capacity.address."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 8\n  %coll.push.capacity."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr %coll.push.capacity.address."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+        }
         ir_write_ascii(compiler, ir, "  %coll.push.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1\n")
         if proven {
             ir_write_ascii(compiler, ir, "  br label %coll.push.add."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
         } else {
-            ir_write_ascii(compiler, ir, "  %coll.push.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.push.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, capacity); ir_write_ascii(compiler, ir, "\n  br i1 %coll.push.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.push.add."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.push.full."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
+            ir_write_ascii(compiler, ir, "  %coll.push.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp ult i64 %coll.push.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ")
+            if is_pool_add { ir_write_ascii(compiler, ir, "%coll.push.capacity."); ir_write_number(compiler, ir, node) } else { ir_write_number(compiler, ir, capacity) }
+            ir_write_ascii(compiler, ir, "\n  br i1 %coll.push.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.push.add."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %coll.push.full."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
         }
         ir_write_ascii(compiler, ir, "coll.push.add."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.push.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.push.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.push.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.push.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.push.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.push.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         if is_aggregate_type(compiler, element) {
@@ -1862,6 +1916,12 @@ fn emit_collection_method(
         }
         ir_write_ascii(compiler, ir, "  %coll.push.next."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.push.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  store i64 %coll.push.next."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
         emit_collection_capacity_result_tag(compiler, ir, node, 0L)
+        if is_pool_add {
+            let id_payload = sum_payload_record(compiler, compiler.facts[node].ty, 0L, 0L)
+            let id_address = enum_temporary_address(node, MAX_TREE_NODES * 3L + 3L)
+            emit_layout_address(compiler, ir, id_address, storage_location_with_offset(aggregate_destination_location(compiler, 0L, node), id_payload.offset))
+            ir_write_ascii(compiler, ir, "  store i64 %coll.push.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, id_address); ir_write_ascii(compiler, ir, ", align 1\n")
+        }
         ir_write_ascii(compiler, ir, "  br label %coll.push.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
         if !proven {
             ir_write_ascii(compiler, ir, "coll.push.full."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")

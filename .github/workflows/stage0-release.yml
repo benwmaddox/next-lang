@@ -1,5 +1,6 @@
-# Builds the frozen stage-0 compiler (Rust nlc) and the self-hosted compiler,
-# tests them, and publishes the binaries as a GitHub Release. Manual only.
+# Builds the Rust nlc (stage 0, used to build and drive clang) and the self-hosted compiler,
+# tests them, and publishes the binaries as a GitHub Release. Manual only. Linux only: the
+# runtimes use mmap, pthreads and signals; a Windows release waits for a Windows runtime.
 name: stage0-release
 
 on:
@@ -69,4 +70,4 @@ jobs:
         run: |
           gh release create "${{ inputs.tag }}" dist/*.tar.gz dist/*.sha256 \
             --title "${{ inputs.tag }}" \
-            --notes "Frozen stage-0 compiler (Rust nlc) and the self-hosted compiler built from it, with the C runtime (for stage 0) and the next-lang core library. See BUILD-INFO.txt inside the archive for exact toolchain versions."
+            --notes "Rust nlc (frozen stage 0) and the self-hosted compiler (nlc-selfhost) built from it, with the C runtimes (runtime/ for the self-hosted compiler, runtime/stage0/ for stage 0) and the next-lang core library. Linux x86_64 only. See BUILD-INFO.txt inside the archive for exact toolchain versions."

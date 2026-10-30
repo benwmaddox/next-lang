@@ -464,6 +464,14 @@ fn check_one_body(
                 match compiler.work.pop() { some(_) => (), none() => () }
                 continue
             }
+            if kind == NodeKind.PoolLiteral {
+                if type_kind(compiler, frame.expected) != TYPE_KIND_POOL {
+                    fail_at_message(env, files, compiler, file_index, syntax.start, "cannot infer the capacity for 'pool {}'; add a pool<T, N> type annotation")
+                }
+                compiler.facts[node] = NodeFact { ty: frame.expected, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+                match compiler.work.pop() { some(_) => (), none() => () }
+                continue
+            }
             if kind == NodeKind.MapLiteral {
                 if type_kind(compiler, frame.expected) != TYPE_KIND_MAP {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "cannot infer the key and value types for 'map {}'; add a map<K, V, N> type annotation")
@@ -925,6 +933,9 @@ fn check_one_body(
             if collection_kind == TYPE_KIND_QUEUE {
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: frame.child0, offset: tables.nodes[frame.child0].start, category: UNSUPPORTED_QUEUE_USE, token: tables.nodes[frame.child0].token })
             }
+            if collection_kind == TYPE_KIND_POOL {
+                report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: frame.child0, offset: tables.nodes[frame.child0].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[frame.child0].token })
+            }
             if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST &&
                 collection_kind != TYPE_KIND_ASCII && collection_kind != TYPE_KIND_BYTES {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "for-each loops require an array, list, Ascii, or Bytes")
@@ -1116,6 +1127,9 @@ fn check_one_body(
         if kind == NodeKind.Let {
             let value = frame.child0
             let value_fact = compiler.facts[value]
+            if type_kind(compiler, value_fact.ty) == TYPE_KIND_POOL && tables.nodes[value].kind != NodeKind.PoolLiteral {
+                report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: value, offset: tables.nodes[value].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[value].token })
+            }
             if is_bytes_view_value(tables, compiler, value) {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[value].start,
                     "a .bytes() view is temporary and cannot be stored or returned")
@@ -1217,6 +1231,9 @@ fn check_one_body(
             if target < 0L || (tables.nodes[target].kind != NodeKind.Name && tables.nodes[target].kind != NodeKind.Field && tables.nodes[target].kind != NodeKind.Index) { fail_at_message(env, files, compiler, file_index, syntax.start, "assignment target must be a local name, field path, or collection element") }
             let target_fact = compiler.facts[target]
             let binding = target_fact.binding
+            if type_kind(compiler, target_fact.ty) == TYPE_KIND_POOL {
+                report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: target, offset: tables.nodes[target].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[target].token })
+            }
             if binding < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "assignment target must be a writable local, field, or collection element") }
             if !compiler.bindings[binding].mutable { fail_assignment_error(env, source, files, tokens, tables, compiler, file_index, node, binding) }
             // A text field cannot be replaced through a loop view (stage 0 refuses it too); scalar fields can.
@@ -1298,7 +1315,8 @@ fn check_one_body(
             let value = frame.child0
             if value < 0L || tables.nodes[value].kind != NodeKind.MethodCall ||
                 (compiler.facts[value].literal != COLLECTION_METHOD_PUSH && compiler.facts[value].literal != COLLECTION_METHOD_INSERT &&
-                    compiler.facts[value].literal != TEXT_METHOD_TRY_APPEND && compiler.facts[value].literal != TEXT_METHOD_PUSH) {
+                    compiler.facts[value].literal != TEXT_METHOD_TRY_APPEND && compiler.facts[value].literal != TEXT_METHOD_PUSH &&
+                    compiler.facts[value].literal != COLLECTION_METHOD_POOL_ADD) {
                 fail_at_message(env, files, compiler, file_index, syntax.start, "discard accepts only built-in operations whose Result error is capacity Full")
             }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if (compiler.facts[value].flags & FACT_FALLS_THROUGH) != 0L { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: 0L }
@@ -1311,6 +1329,9 @@ fn check_one_body(
                     (operation == COLLECTION_METHOD_PUSH || operation == COLLECTION_METHOD_INSERT)
                 let is_builder_capacity_result = frame.child0 >= 0L && tables.nodes[frame.child0].kind == NodeKind.MethodCall &&
                     (operation == TEXT_METHOD_TRY_APPEND || operation == TEXT_METHOD_PUSH)
+                if frame.child0 >= 0L && tables.nodes[frame.child0].kind == NodeKind.MethodCall && operation == COLLECTION_METHOD_POOL_ADD {
+                    report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: frame.child0, offset: tables.nodes[frame.child0].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[frame.child0].token })
+                }
                 let message: Ascii max 160 = if is_collection_capacity_result { "collection Result with error Full is unused; handle it or write 'discard' to drop Full" }
                     else if is_builder_capacity_result { "builder Result with error Full is unused; handle it or write 'discard' to drop Full" }
                     else { "this Result value is unused; handle it with '?', 'match', or '??' where supported" }
@@ -1591,6 +1612,9 @@ fn check_one_body(
                 compiler.facts[node] = NodeFact { ty: operation_result_type, flags: map_fact_flags, binding: compiler.facts[receiver].binding, function: -1L, literal: method }
             } else if receiver_kind == TYPE_KIND_ARRAY || collection_kind_is_list(receiver_kind) {
                 let method = collection_method_kind(source, tokens, files, file_index, syntax.token, receiver_kind)
+                if method == 0L && receiver_kind == TYPE_KIND_POOL {
+                    report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node, offset: syntax.start, category: UNSUPPORTED_POOL_USE, token: syntax.token })
+                }
                 if method == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching array or list method is available on this value") }
                 if receiver_kind == TYPE_KIND_QUEUE && method != COLLECTION_METHOD_COUNT {
                     let queue_element = collection_element_type(compiler, receiver_ty)
@@ -1599,7 +1623,7 @@ fn check_one_body(
                     }
                 }
                 let actual_count = count_children(tables, compiler, node) - 1L
-                let wanted_count = if method == COLLECTION_METHOD_PUSH || method == COLLECTION_METHOD_REMOVE { 1L }
+                let wanted_count = if method == COLLECTION_METHOD_PUSH || method == COLLECTION_METHOD_REMOVE || method == COLLECTION_METHOD_POOL_ADD || method == COLLECTION_METHOD_POOL_GET { 1L }
                     else if method == COLLECTION_METHOD_INSERT { 2L } else { 0L }
                 if actual_count != wanted_count { fail_at_message(env, files, compiler, file_index, syntax.start, "collection method has the wrong number of arguments") }
                 var argument = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
@@ -1614,6 +1638,19 @@ fn check_one_body(
                         fail_view_live_method(env, source, files, tokens, compiler, file_index, syntax.anchor, receiver_ty, syntax.token)
                     }
                     operation_result_type = collection_element_type(compiler, receiver_ty)
+                } else if method == COLLECTION_METHOD_POOL_GET {
+                    if argument < 0L || compiler.facts[argument].ty != TY_LONG { fail_at_message(env, files, compiler, file_index, if argument >= 0L { tables.nodes[argument].start } else { syntax.start }, "a pool is looked up by id; pass the id that add returned") }
+                    operation_result_type = intern_sum_type(compiler, TYPE_KIND_OPTION, collection_element_type(compiler, receiver_ty), -1L, file_index, node, -1L, -1L)
+                } else if method == COLLECTION_METHOD_POOL_ADD {
+                    let receiver_binding = compiler.facts[receiver].binding
+                    if receiver_binding < 0L || !compiler.bindings[receiver_binding].mutable {
+                        report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node, offset: syntax.start, category: UNSUPPORTED_POOL_USE, token: syntax.token })
+                    }
+                    if argument < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "pool.add is missing its element") }
+                    require_type(env, files, compiler, file_index, argument, collection_element_type(compiler, receiver_ty), compiler.facts[argument].ty, tables)
+                    let full_ty = builtin_full_type_id(compiler)
+                    if full_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "internal capacity error type is unavailable") }
+                    operation_result_type = intern_sum_type(compiler, TYPE_KIND_RESULT, TY_LONG, full_ty, file_index, node, -1L, -1L)
                 } else if method == COLLECTION_METHOD_PEEK {
                     operation_result_type = intern_sum_type(compiler, TYPE_KIND_OPTION, collection_element_type(compiler, receiver_ty), -1L, file_index, node, -1L, -1L)
                 } else if method == COLLECTION_METHOD_POP {
@@ -1655,6 +1692,7 @@ fn check_one_body(
                         if proven { set_binding_collection_count(compiler, receiver_binding, compiler.bindings[receiver_binding].collection_count + 1L) }
                         else { set_binding_collection_count(compiler, receiver_binding, collection_capacity(compiler, receiver_ty)) }
                     } else if method == COLLECTION_METHOD_CLEAR { set_binding_collection_count(compiler, receiver_binding, 0L) }
+                    else if method == COLLECTION_METHOD_POOL_ADD { set_binding_collection_count(compiler, receiver_binding, -1L) }
                     else if method == COLLECTION_METHOD_INSERT || method == COLLECTION_METHOD_POP || method == COLLECTION_METHOD_REMOVE {
                         set_binding_collection_count(compiler, receiver_binding, -1L)
                     } else { () }
@@ -1988,6 +2026,9 @@ fn check_one_body(
             }
             if frame.expected == TY_UNIT && can_reach && has_tail && tail_ty != TY_UNIT && tail_ty != TY_NEVER {
                 if type_kind(compiler, tail_ty) == TYPE_KIND_RESULT {
+                    if tables.nodes[last].kind == NodeKind.MethodCall && compiler.facts[last].literal == COLLECTION_METHOD_POOL_ADD {
+                        report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: last, offset: tables.nodes[last].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[last].token })
+                    }
                     fail_at_message(env, files, compiler, file_index, tables.nodes[last].start, "this Result value is unused; handle it with '?', 'match', or '??' where supported")
                 }
                 let message: Ascii max 160 = "block value must be discarded or returned as unit"

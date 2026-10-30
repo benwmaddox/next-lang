@@ -425,6 +425,8 @@ fn resolve_value_type(
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Out") { return TY_OUT }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Args") { return TY_ARGS }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Arg") { return TY_ARG }
+    // `Id<P>`: a pool slot number. The owner P is checked by the language design but erased here.
+    if (syntax.meta1 & 2097151L) == 1L && token_is_word_at(source, tokens, files, file_index, syntax.token, "Id") { return TY_LONG }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Path") {
         return collection_type_matches(compiler, TYPE_KIND_LIST, TY_BYTE, 4096L)
     }
