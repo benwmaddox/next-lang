@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <errno.h>
 #include <limits.h>
 #include <time.h>
@@ -2307,6 +2306,7 @@ void nl_out_write(void *handle, void *data_value, int data_is_argument, uint64_t
    http_read returns the method (1 GET, 2 POST, 3 other) and copies the request target into the caller's Bytes, or
    returns -1 when the peer closed or sent something unusable. Linux only for now. */
 #if !NL_WINDOWS
+#include <strings.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
