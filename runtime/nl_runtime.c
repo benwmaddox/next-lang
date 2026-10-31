@@ -1814,7 +1814,9 @@ static int nl_job_count;
 #define NL_BLOCK_HEADER 16
 typedef struct nl_block_header { uint32_t class_index; uint32_t pad; struct nl_block_header *next; } nl_block_header;
 static nl_block_header *nl_block_free_lists[NL_BLOCK_CLASSES];
-static pthread_mutex_t nl_block_lock = PTHREAD_MUTEX_INITIALIZER;
+static volatile int32_t nl_block_lock;   /* a spin lock: the critical sections are a few instructions, and it works on every platform */
+static void nl_block_lock_take(void) { while (__atomic_exchange_n(&nl_block_lock, 1, __ATOMIC_ACQUIRE)) { while (__atomic_load_n(&nl_block_lock, __ATOMIC_RELAXED)) {} } }
+static void nl_block_lock_drop(void) { __atomic_store_n(&nl_block_lock, 0, __ATOMIC_RELEASE); }
 
 void *nl_job_args_alloc(uint64_t bytes) {
     uint32_t class_index = 0;
@@ -1822,10 +1824,10 @@ void *nl_job_args_alloc(uint64_t bytes) {
     while (class_bytes < bytes && class_index < NL_BLOCK_CLASSES) { class_bytes <<= 1; ++class_index; }
     nl_block_header *header = NULL;
     if (class_index < NL_BLOCK_CLASSES) {
-        pthread_mutex_lock(&nl_block_lock);
+        nl_block_lock_take();
         header = nl_block_free_lists[class_index];
         if (header) nl_block_free_lists[class_index] = header->next;
-        pthread_mutex_unlock(&nl_block_lock);
+        nl_block_lock_drop();
     }
     if (!header) {
         header = (nl_block_header *)malloc(NL_BLOCK_HEADER + (class_index < NL_BLOCK_CLASSES ? (size_t)class_bytes : (size_t)bytes));
@@ -1841,10 +1843,10 @@ void nl_job_args_free(void *block) {
     if (!block) return;
     nl_block_header *header = (nl_block_header *)((unsigned char *)block - NL_BLOCK_HEADER);
     if (header->class_index >= NL_BLOCK_CLASSES) { free(header); return; }
-    pthread_mutex_lock(&nl_block_lock);
+    nl_block_lock_take();
     header->next = nl_block_free_lists[header->class_index];
     nl_block_free_lists[header->class_index] = header;
-    pthread_mutex_unlock(&nl_block_lock);
+    nl_block_lock_drop();
 }
 
 /* How long a receiver spins on its mailbox before it sleeps (NLC_SPIN, ring checks; none by default, because a spinning
