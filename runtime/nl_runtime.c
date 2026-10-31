@@ -3264,61 +3264,91 @@ int64_t nl_db_text(void *env, void *descriptor, uint64_t capacity, int64_t key, 
     sqlite3_clear_bindings(statement);
     return result;
 }
-/* Env.db_row: `select <field names> <rest>` bound to key, the first row decoded into the struct by the layout the
-   compiler wrote (layout[0] is the names' length, then kind, offset and capacity for each field: 1 long, 2 int, 3 bool,
-   4 Bytes with its count at the offset and its data 8 bytes on). Returns 1 when a row was found. A NULL column leaves
-   its field as it was; text longer than a Bytes field's capacity is left out (count 0). */
+/* Env.db_row / Env.db_rows: `select <field names> <rest>` bound to key, decoded into a struct (one row) or into the elements of
+   a list (several, at most the list's capacity; the list's count is set). The layout the compiler wrote: layout[0] is the
+   names' length, then kind, offset and capacity for each field (1 long, 2 int, 3 bool, 4 Bytes with its count at the offset
+   and its data 8 bytes on). A NULL column leaves its field as it was; text longer than a Bytes field's capacity is left out
+   (count 0). The query is a literal, so a call site's layout table identifies its statement: prepared once per thread. */
+static sqlite3_stmt *nl_db_site_statement(sqlite3 *connection, void *descriptor, uint64_t capacity, const int64_t *layout, const char *names) {
+    for (int index = 0; index < nl_db_site_count; ++index) {
+        if (nl_db_sites[index].layout == layout) return nl_db_sites[index].statement;
+    }
+    unsigned char scratch[4096];
+    const unsigned char *rest; uint64_t rest_length; int tag = -1, code = 0;
+    if (!nl_extract_raw(descriptor, 2, capacity, scratch, &rest, &rest_length, &tag, &code)) return NULL;
+    uint64_t names_length = (uint64_t)layout[0];
+    if (7 + names_length + 1 + rest_length > 8192) return NULL;
+    char sql[8192];
+    memcpy(sql, "select ", 7);
+    memcpy(sql + 7, names, names_length);
+    sql[7 + names_length] = ' ';
+    memcpy(sql + 8 + names_length, rest, rest_length);
+    sqlite3_stmt *statement = NULL;
+    if (sqlite3_prepare_v2(connection, sql, (int)(8 + names_length + rest_length), &statement, NULL) != SQLITE_OK) return NULL;
+    if (nl_db_site_count < 64) nl_db_sites[nl_db_site_count++] = (nl_db_site){layout, statement};
+    return statement;
+}
+
+static void nl_db_decode_row(sqlite3_stmt *statement, unsigned char *row, const int64_t *layout, int64_t fields) {
+    for (int64_t field = 0; field < fields; ++field) {
+        int64_t kind = layout[1 + field * 3], offset = layout[2 + field * 3], field_capacity = layout[3 + field * 3];
+        if (sqlite3_column_type(statement, (int)field) == SQLITE_NULL) continue;
+        if (kind == 1) *(int64_t *)(row + offset) = sqlite3_column_int64(statement, (int)field);
+        else if (kind == 2) *(int32_t *)(row + offset) = (int32_t)sqlite3_column_int64(statement, (int)field);
+        else if (kind == 3) *(unsigned char *)(row + offset) = sqlite3_column_int64(statement, (int)field) != 0;
+        else if (kind == 4) {
+            int size = sqlite3_column_bytes(statement, (int)field);
+            const void *text = sqlite3_column_blob(statement, (int)field);
+            if (text && size >= 0 && (int64_t)size <= field_capacity) {
+                memcpy(row + offset + 8, text, (size_t)size);
+                *(int64_t *)(row + offset) = size;
+            } else {
+                *(int64_t *)(row + offset) = 0;
+            }
+        }
+    }
+}
+
 int64_t nl_db_row(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *row,
                   const int64_t *layout, int64_t fields, const char *names) {
     (void)env;
     sqlite3 *connection = nl_db_open();
     if (!connection) return 0;
-    /* The query is a literal, so a call site's layout table identifies its statement: prepared once per thread. */
-    sqlite3_stmt *statement = NULL;
-    for (int index = 0; index < nl_db_site_count; ++index) {
-        if (nl_db_sites[index].layout == layout) { statement = nl_db_sites[index].statement; break; }
-    }
-    if (!statement) {
-        unsigned char scratch[4096];
-        const unsigned char *rest; uint64_t rest_length; int tag = -1, code = 0;
-        if (!nl_extract_raw(descriptor, 2, capacity, scratch, &rest, &rest_length, &tag, &code)) return 0;
-        uint64_t names_length = (uint64_t)layout[0];
-        if (7 + names_length + 1 + rest_length > 8192) return 0;
-        char sql[8192];
-        memcpy(sql, "select ", 7);
-        memcpy(sql + 7, names, names_length);
-        sql[7 + names_length] = ' ';
-        memcpy(sql + 8 + names_length, rest, rest_length);
-        if (sqlite3_prepare_v2(connection, sql, (int)(8 + names_length + rest_length), &statement, NULL) != SQLITE_OK) return 0;
-        if (nl_db_site_count < 64) nl_db_sites[nl_db_site_count++] = (nl_db_site){layout, statement};
-    }
+    sqlite3_stmt *statement = nl_db_site_statement(connection, descriptor, capacity, layout, names);
+    if (!statement) return 0;
     sqlite3_bind_int64(statement, 1, key);
     int64_t found = 0;
     if (sqlite3_step(statement) == SQLITE_ROW) {
         found = 1;
-        for (int64_t field = 0; field < fields; ++field) {
-            int64_t kind = layout[1 + field * 3], offset = layout[2 + field * 3], field_capacity = layout[3 + field * 3];
-            if (sqlite3_column_type(statement, (int)field) == SQLITE_NULL) continue;
-            if (kind == 1) *(int64_t *)(row + offset) = sqlite3_column_int64(statement, (int)field);
-            else if (kind == 2) *(int32_t *)(row + offset) = (int32_t)sqlite3_column_int64(statement, (int)field);
-            else if (kind == 3) *(unsigned char *)(row + offset) = sqlite3_column_int64(statement, (int)field) != 0;
-            else if (kind == 4) {
-                int size = sqlite3_column_bytes(statement, (int)field);
-                const void *text = sqlite3_column_blob(statement, (int)field);
-                if (text && size >= 0 && (int64_t)size <= field_capacity) {
-                    memcpy(row + offset + 8, text, (size_t)size);
-                    *(int64_t *)(row + offset) = size;
-                } else {
-                    *(int64_t *)(row + offset) = 0;
-                }
-            }
-        }
+        nl_db_decode_row(statement, row, layout, fields);
     }
     sqlite3_reset(statement);
     sqlite3_clear_bindings(statement);
     return found;
 }
 
+int64_t nl_db_rows(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *list,
+                   const int64_t *layout, int64_t fields, const char *names,
+                   int64_t first_element, int64_t stride, int64_t list_capacity) {
+    (void)env;
+    *(int64_t *)list = 0;
+    sqlite3 *connection = nl_db_open();
+    if (!connection) return 0;
+    sqlite3_stmt *statement = nl_db_site_statement(connection, descriptor, capacity, layout, names);
+    if (!statement) return 0;
+    sqlite3_bind_int64(statement, 1, key);
+    int64_t count = 0;
+    while (count < list_capacity && sqlite3_step(statement) == SQLITE_ROW) {
+        unsigned char *row = list + first_element + count * stride;
+        memset(row, 0, (size_t)stride);
+        nl_db_decode_row(statement, row, layout, fields);
+        ++count;
+    }
+    *(int64_t *)list = count;
+    sqlite3_reset(statement);
+    sqlite3_clear_bindings(statement);
+    return count;
+}
 #else
 int64_t nl_db_text(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *data, uint64_t data_capacity, int64_t *count) {
     (void)env; (void)descriptor; (void)capacity; (void)key; (void)data; (void)data_capacity; (void)count;
@@ -3327,6 +3357,14 @@ int64_t nl_db_text(void *env, void *descriptor, uint64_t capacity, int64_t key, 
 int64_t nl_db_row(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *row,
                   const int64_t *layout, int64_t fields, const char *names) {
     (void)env; (void)descriptor; (void)capacity; (void)key; (void)row; (void)layout; (void)fields; (void)names;
+    return 0;
+}
+int64_t nl_db_rows(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *list,
+                   const int64_t *layout, int64_t fields, const char *names,
+                   int64_t first_element, int64_t stride, int64_t list_capacity) {
+    (void)env; (void)descriptor; (void)capacity; (void)key; (void)layout; (void)fields; (void)names;
+    (void)first_element; (void)stride; (void)list_capacity;
+    *(int64_t *)list = 0;
     return 0;
 }
 void nl_db_query(void *env, void *descriptor, uint64_t capacity, int64_t key, void *result) {

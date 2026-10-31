@@ -20,6 +20,13 @@ Fixed in the language (tests in `tests/py/test_friction.py`):
 Still open: 3 (`try_send` for a fire-and-forget send is now `discard x.send(v)`; probably done), 4, 6, 9 (generators), 10, 11,
 12, 14.
 
+## Campfire slice 1 so far
+
+| # | Snag | Where | Hits | Fix class and idea |
+| --- | --- | --- | --- | --- |
+| 15 | `none` as a variable name is refused (collides with the bare enum case); hit again naming the "no rows" count in a test (4th hit of #4) | test programs | 4 | L: allow shadowing of a bare case by a local, or an error text that suggests a name |
+| 16 | The compiler's own sources cannot use a language feature the seed does not have (`while` was enabled for programs, but `selfhost/*.nl` had to keep `for ... break` until the seed is refreshed with scripts/update-seed.sh) | compiler work | 1 | T: say so in the error ("the seed compiler does not support X; use Y or refresh the seed"), or refresh the seed after each language change |
+
 ## Seeded from the web work so far (bench/web, services, templates), 2026-10-31
 
 | # | Snag | Where | Hits | Fix class and idea |
