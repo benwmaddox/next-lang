@@ -61,3 +61,26 @@ core, `none` leaves placement to the kernel. `NLC_SPIN` sets the receiver's spin
 - Spinning with kernel placement on four cores matches round-robin on eight (67.7k): round-robin pinning on a core
   count equal to the worker count fights the kernel for no gain.
 - Rust baseline on four cores: 82k req/s, p50 43 us.
+
+## Suspend on I/O (jobs are coroutines on a few worker threads)
+
+`spawn` now starts a coroutine (Linux). A pool of worker threads (one per granted core, or `NLC_WORKERS`) runs ready
+jobs; a job that waits switches back to its worker. What suspends a job: `recv_wait` with nothing to receive, a full
+mailbox on `send` (it yields before reporting Full), `net_accept` / `http_read` / `http_write` that would block
+(epoll, one-shot). Wake-ups: `nl_wake` from senders, epoll events. Plain threads (main, `nl_thread_start`) still use
+futexes and poll(). Each job has a 1 MiB native stack and a 64 MiB data-stack reservation (`NLC_JOB_STACK_RESERVE_BYTES`),
+touched only as used. `main.nl` now has an acceptor job spawning one `serve` job per connection.
+
+Server on 4 cores (8-11), load generator on 10 other cores, 4 s runs:
+
+| connections | req/s | p50 | p99 | max |
+| --- | --- | --- | --- | --- |
+| 4 | 68,900 | 46 us | 155 us | 6 ms |
+| 64 | 107,600 | 496 us | 1.3 ms | 6 ms |
+| 1000 | 88,200 | 11 ms | 16 ms | 57 ms |
+
+Every connection is served; before, connections beyond the fourth waited for a worker (maximum latency 5 s). The Rust
+baseline is a thread-per-worker server that also serves four at a time (82k req/s at 4 and 64 connections); an
+async Rust server would be the fairer comparison for 64+ connections and is not measured yet.
+Limits: a job that computes without waiting holds its worker (cooperative scheduling); SQLite calls block their
+worker for their duration; a mailbox's memory is not returned when its job ends.

@@ -12,6 +12,7 @@
 ; @nl.mem.copy(dst, src, bytes) is the program's memory-copy wrapper (defined where maps and pools define it).
 declare i32 @nl_park(ptr, i32, i64)
 @nl_mbox_spin = external global i64
+declare void @nl_yield()
 declare void @nl_wake(ptr, i32)
 
 define internal void @nl.mbox.init(ptr %mb, i64 %capacity, i64 %elem_size) {
@@ -100,6 +101,7 @@ notify:
 sent:
   ret i1 true
 full.exit:
+  call void @nl_yield()
   ret i1 false
 }
 

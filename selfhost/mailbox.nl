@@ -4,7 +4,6 @@
 
 fn emit_mailbox_functions(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
     ir_write_ascii(compiler, ir, "\n")
-    ir_write_ascii(compiler, ir, "@nl_mbox_spin = external global i64\n")
     ir_write_ascii(compiler, ir, "\n")
     ir_write_ascii(compiler, ir, "define internal void @nl.mbox.init(ptr %mb, i64 %capacity, i64 %elem_size) {\n")
     ir_write_ascii(compiler, ir, "entry:\n")
@@ -91,6 +90,7 @@ fn emit_mailbox_functions(compiler: write CompilerTables, ir: grow Bytes max IR_
     ir_write_ascii(compiler, ir, "sent:\n")
     ir_write_ascii(compiler, ir, "  ret i1 true\n")
     ir_write_ascii(compiler, ir, "full.exit:\n")
+    ir_write_ascii(compiler, ir, "  call void @nl_yield()\n")
     ir_write_ascii(compiler, ir, "  ret i1 false\n")
     ir_write_ascii(compiler, ir, "}\n")
     ir_write_ascii(compiler, ir, "\n")

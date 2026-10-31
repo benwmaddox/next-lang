@@ -266,9 +266,9 @@ static uint64_t nl_data_stack_reservation(uint64_t requested_bytes,
    NLC_STACK_RESERVE_BYTES, e.g. under `ulimit -v`. */
 #define NL_OFFSET_STACK_DEFAULT_BYTES (UINT64_C(32) * 1024 * 1024 * 1024)
 
-/* A job's data stack reserves less address space than the main program's: 1 GiB unless NLC_JOB_STACK_RESERVE_BYTES
+/* A job's data stack reserves less address space than the main program's: 64 MiB unless NLC_JOB_STACK_RESERVE_BYTES
    says otherwise. The flag is set (per thread) while a job's context is created. */
-#define NL_JOB_STACK_DEFAULT_BYTES (UINT64_C(1) * 1024 * 1024 * 1024)
+#define NL_JOB_STACK_DEFAULT_BYTES (UINT64_C(64) * 1024 * 1024)
 static _Thread_local int nl_creating_job_context;
 
 static uint64_t nl_offset_stack_reservation(uint64_t computed_bytes) {
@@ -306,6 +306,10 @@ static uintptr_t nl_current_stack_pointer(void) {
 #endif
 }
 
+#if defined(__linux__) && !NL_WINDOWS
+static int nl_coroutine_stack_bounds(uintptr_t *low, uint64_t *bytes);
+#endif
+
 static void nl_native_stack_setup(nl_data_stack_context *context,
                                   uint64_t requested_budget) {
     uintptr_t stack_low = 0;
@@ -318,6 +322,17 @@ static void nl_native_stack_setup(nl_data_stack_context *context,
     stack_bytes = (uint64_t)(stack_ceiling - stack_floor);
 #else
     pthread_attr_t attributes;
+#if defined(__linux__)
+    if (nl_coroutine_stack_bounds(&stack_low, &stack_bytes)) {
+        uintptr_t current_in_job = nl_current_stack_pointer();
+        context->native_stack_limit = stack_low;
+        context->native_stack_start = current_in_job;
+        const uint64_t job_safety = UINT64_C(80) * 1024;
+        uint64_t job_budget = stack_bytes > job_safety ? stack_bytes - job_safety : stack_bytes / 2;
+        context->recursion_budget = requested_budget ? (requested_budget < job_budget ? requested_budget : job_budget) : job_budget;
+        return;
+    }
+#endif
     if (pthread_getattr_np(pthread_self(), &attributes) != 0) {
         nl_stack_startup_failure("could not determine the native stack bounds");
     }
@@ -1234,6 +1249,286 @@ int64_t nl_thread_join(void *raw) {
     return 0;
 }
 
+int64_t nl_host_cores(void *host);
+
+/* ---- Coroutines: jobs that suspend instead of blocking a thread (Linux) ----
+   A job is a coroutine with a native stack of its own (and its data stack from its context). A few worker threads
+   (one per granted core) run ready jobs. A job that has to wait, for a mailbox message, for a socket to become
+   readable or writable, or for room in a full mailbox, switches back to its worker, which runs another job. Wake-ups
+   (nl_wake from a sender, epoll events from the kernel) put the job back on the ready queue. Plain threads (main,
+   threads from nl_thread_start) keep using futexes and poll(). */
+#if defined(__linux__) && !NL_WINDOWS
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <ucontext.h>
+#include <poll.h>
+#include <sched.h>
+#include <stdatomic.h>
+
+enum { NL_CORO_RUNNING = 0, NL_CORO_PARKING, NL_CORO_PARKED, NL_CORO_WOKEN, NL_CORO_READY };
+
+typedef struct nl_coro {
+    ucontext_t context;
+    void *(*entry)(void *);
+    void *argument;
+    void *stack;
+    size_t stack_bytes;
+    _Atomic int state;
+    int finished;
+    volatile int32_t *wait_address;
+    struct nl_coro *next;
+} nl_coro;
+
+#define NL_CORO_NATIVE_STACK_BYTES (UINT64_C(1) * 1024 * 1024)
+#define NL_WAITER_BUCKETS 256
+
+static _Thread_local nl_coro *nl_running_coro;
+static _Thread_local ucontext_t nl_scheduler_context;
+
+static pthread_mutex_t nl_ready_lock = PTHREAD_MUTEX_INITIALIZER;
+static nl_coro *nl_ready_head, *nl_ready_tail;
+static int nl_idle_workers;
+static int nl_epoll_fd = -1, nl_wake_fd = -1;
+static pthread_mutex_t nl_waiters_lock = PTHREAD_MUTEX_INITIALIZER;
+static nl_coro *nl_waiters[NL_WAITER_BUCKETS];
+static pthread_mutex_t nl_stack_lock = PTHREAD_MUTEX_INITIALIZER;
+static void *nl_free_stacks[1024];
+static int nl_free_stack_count;
+static volatile int32_t nl_live_jobs;
+static int nl_workers_started;
+
+static __attribute__((noinline)) nl_coro *nl_current_coro(void) { return nl_running_coro; }
+static __attribute__((noinline)) ucontext_t *nl_scheduler_ptr(void) { return &nl_scheduler_context; }
+
+static void nl_ready_push(nl_coro *coro) {
+    pthread_mutex_lock(&nl_ready_lock);
+    coro->next = NULL;
+    if (nl_ready_tail) nl_ready_tail->next = coro; else nl_ready_head = coro;
+    nl_ready_tail = coro;
+    int notify = nl_idle_workers > 0;
+    pthread_mutex_unlock(&nl_ready_lock);
+    if (notify) { uint64_t one = 1; ssize_t ignored = write(nl_wake_fd, &one, sizeof(one)); (void)ignored; }
+}
+
+/* Called by whoever makes a parked job runnable (a waker, or the event loop). */
+static void nl_coro_make_ready(nl_coro *coro) {
+    for (;;) {
+        int state = atomic_load(&coro->state);
+        if (state == NL_CORO_PARKED) {
+            if (atomic_compare_exchange_weak(&coro->state, &state, NL_CORO_READY)) { nl_ready_push(coro); return; }
+        } else if (state == NL_CORO_PARKING) {
+            /* still switching out: the worker finishes the hand-over */
+            if (atomic_compare_exchange_weak(&coro->state, &state, NL_CORO_WOKEN)) return;
+        } else {
+            return;
+        }
+    }
+}
+
+static __attribute__((noinline)) void nl_coro_switch_out(nl_coro *coro) {
+    nl_line_flush();
+    swapcontext(&coro->context, nl_scheduler_ptr());
+}
+
+static void nl_coro_entry(void) {
+    nl_coro *coro = nl_current_coro();
+    coro->entry(coro->argument);
+    nl_line_flush();
+    coro->finished = 1;
+    nl_coro_switch_out(coro);
+}
+
+static void *nl_stack_get(size_t bytes) {
+    pthread_mutex_lock(&nl_stack_lock);
+    void *stack = nl_free_stack_count ? nl_free_stacks[--nl_free_stack_count] : NULL;
+    pthread_mutex_unlock(&nl_stack_lock);
+    if (stack) return stack;
+    stack = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_STACK, -1, 0);
+    if (stack == MAP_FAILED) return NULL;
+    mprotect(stack, 4096, PROT_NONE); /* guard page at the low end */
+    return stack;
+}
+
+static void nl_stack_put(void *stack, size_t bytes) {
+    pthread_mutex_lock(&nl_stack_lock);
+    if (nl_free_stack_count < 1024) { nl_free_stacks[nl_free_stack_count++] = stack; stack = NULL; }
+    pthread_mutex_unlock(&nl_stack_lock);
+    if (stack) munmap(stack, bytes);
+}
+
+static nl_coro *nl_ready_pop_or_wait(void) {
+    struct epoll_event events[64];
+    for (;;) {
+        pthread_mutex_lock(&nl_ready_lock);
+        nl_coro *coro = nl_ready_head;
+        if (coro) {
+            nl_ready_head = coro->next;
+            if (!nl_ready_head) nl_ready_tail = NULL;
+            int more = nl_ready_head != NULL && nl_idle_workers > 0;
+            pthread_mutex_unlock(&nl_ready_lock);
+            if (more) { uint64_t one = 1; ssize_t ignored = write(nl_wake_fd, &one, sizeof(one)); (void)ignored; }
+            return coro;
+        }
+        nl_idle_workers++;
+        pthread_mutex_unlock(&nl_ready_lock);
+        int count = epoll_wait(nl_epoll_fd, events, 64, -1);
+        pthread_mutex_lock(&nl_ready_lock);
+        nl_idle_workers--;
+        pthread_mutex_unlock(&nl_ready_lock);
+        for (int index = 0; index < count; ++index) {
+            if (events[index].data.ptr == NULL) {
+                uint64_t drained;
+                ssize_t ignored = read(nl_wake_fd, &drained, sizeof(drained)); (void)ignored;
+            } else {
+                nl_coro_make_ready((nl_coro *)events[index].data.ptr);
+            }
+        }
+    }
+}
+
+static void *nl_worker_main(void *unused) {
+    (void)unused;
+    for (;;) {
+        nl_coro *coro = nl_ready_pop_or_wait();
+        atomic_store(&coro->state, NL_CORO_RUNNING);
+        nl_running_coro = coro;
+        swapcontext(nl_scheduler_ptr(), &coro->context);
+        nl_running_coro = NULL;
+        if (coro->finished) {
+            nl_stack_put(coro->stack, coro->stack_bytes);
+            free(coro);
+            if (__atomic_sub_fetch(&nl_live_jobs, 1, __ATOMIC_SEQ_CST) == 0) {
+                syscall(SYS_futex, &nl_live_jobs, 129 /* FUTEX_WAKE_PRIVATE */, 2147483647, NULL, NULL, 0);
+            }
+        } else {
+            int expected = NL_CORO_PARKING;
+            if (!atomic_compare_exchange_strong(&coro->state, &expected, NL_CORO_PARKED)) {
+                atomic_store(&coro->state, NL_CORO_READY);
+                nl_ready_push(coro);
+            }
+        }
+    }
+    return NULL;
+}
+
+static int nl_coroutine_stack_bounds(uintptr_t *low, uint64_t *bytes) {
+    nl_coro *coro = nl_current_coro();
+    if (!coro) return 0;
+    *low = (uintptr_t)coro->stack + 4096; /* above the guard page */
+    *bytes = coro->stack_bytes - 4096;
+    return 1;
+}
+
+/* Let other jobs run; returns at once when this is not a job. */
+void nl_yield(void) {
+    nl_coro *coro = nl_current_coro();
+    if (!coro) { sched_yield(); return; }
+    atomic_store(&coro->state, NL_CORO_WOKEN);
+    nl_coro_switch_out(coro);
+}
+
+static int32_t nl_coro_park(volatile int32_t *address, int32_t expected, int64_t timeout_nanos) {
+    nl_coro *coro = nl_current_coro();
+    if (timeout_nanos >= 0) { nl_yield(); return 1; }
+    pthread_mutex_lock(&nl_waiters_lock);
+    if (*address != expected) { pthread_mutex_unlock(&nl_waiters_lock); return 0; }
+    unsigned bucket = (unsigned)(((uintptr_t)address >> 4) % NL_WAITER_BUCKETS);
+    coro->wait_address = address;
+    atomic_store(&coro->state, NL_CORO_PARKING);
+    coro->next = nl_waiters[bucket];
+    nl_waiters[bucket] = coro;
+    pthread_mutex_unlock(&nl_waiters_lock);
+    nl_coro_switch_out(coro);
+    return 0;
+}
+
+static void nl_coro_wake(volatile int32_t *address, int32_t count) {
+    unsigned bucket = (unsigned)(((uintptr_t)address >> 4) % NL_WAITER_BUCKETS);
+    nl_coro *woken[16];
+    int found = 0;
+    pthread_mutex_lock(&nl_waiters_lock);
+    nl_coro **link = &nl_waiters[bucket];
+    while (*link && found < 16 && found < count) {
+        nl_coro *coro = *link;
+        if (coro->wait_address == address) { *link = coro->next; woken[found++] = coro; }
+        else link = &coro->next;
+    }
+    pthread_mutex_unlock(&nl_waiters_lock);
+    for (int index = 0; index < found; ++index) nl_coro_make_ready(woken[index]);
+}
+
+/* Wait until fd is ready for the events (EPOLLIN or EPOLLOUT). A job suspends; a plain thread polls. */
+void nl_wait_fd(int fd, uint32_t events) {
+    nl_coro *coro = nl_current_coro();
+    if (!coro) {
+        struct pollfd entry = { fd, (short)((events & EPOLLIN) ? POLLIN : POLLOUT), 0 };
+        while (poll(&entry, 1, -1) < 0 && errno == EINTR) {}
+        return;
+    }
+    atomic_store(&coro->state, NL_CORO_PARKING);
+    struct epoll_event event;
+    event.events = events | EPOLLONESHOT;
+    event.data.ptr = coro;
+    if (epoll_ctl(nl_epoll_fd, EPOLL_CTL_MOD, fd, &event) != 0) epoll_ctl(nl_epoll_fd, EPOLL_CTL_ADD, fd, &event);
+    nl_coro_switch_out(coro);
+}
+
+static void nl_workers_start(void) {
+    nl_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    nl_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    struct epoll_event event;
+    event.events = EPOLLIN;
+    event.data.ptr = NULL;
+    epoll_ctl(nl_epoll_fd, EPOLL_CTL_ADD, nl_wake_fd, &event);
+    int64_t cores = nl_host_cores(NULL);
+    const char *override = getenv("NLC_WORKERS");
+    int64_t workers = override && *override ? atoll(override) : cores;
+    if (workers < 1) workers = 1;
+    const char *pin = getenv("NLC_JOB_PIN");
+    for (int64_t index = 0; index < workers; ++index) {
+        int64_t where = pin && strcmp(pin, "none") == 0 ? -1 : pin && strcmp(pin, "same") == 0 ? 0 : index;
+        if (!nl_thread_start(nl_worker_main, NULL, 0, where)) nl_stack_startup_failure("cannot start a worker thread");
+    }
+    nl_workers_started = 1;
+}
+
+/* spawn: a new job on the ready queue. */
+static void nl_coro_spawn(void *(*entry)(void *), void *argument) {
+    if (!nl_workers_started) nl_workers_start();
+    nl_coro *coro = (nl_coro *)calloc(1, sizeof(*coro));
+    if (!coro) nl_stack_startup_failure("cannot start a job");
+    coro->entry = entry;
+    coro->argument = argument;
+    coro->stack_bytes = NL_CORO_NATIVE_STACK_BYTES;
+    coro->stack = nl_stack_get(coro->stack_bytes);
+    if (!coro->stack) nl_stack_startup_failure("cannot allocate a job's stack");
+    getcontext(&coro->context);
+    coro->context.uc_stack.ss_sp = coro->stack;
+    coro->context.uc_stack.ss_size = coro->stack_bytes;
+    coro->context.uc_link = NULL;
+    makecontext(&coro->context, nl_coro_entry, 0);
+    atomic_store(&coro->state, NL_CORO_READY);
+    __atomic_add_fetch(&nl_live_jobs, 1, __ATOMIC_SEQ_CST);
+    nl_ready_push(coro);
+}
+
+static void nl_coro_join_all(void) {
+    for (;;) {
+        int32_t live = nl_live_jobs;
+        if (live == 0) return;
+        syscall(SYS_futex, &nl_live_jobs, 128 /* FUTEX_WAIT_PRIVATE */, live, NULL, NULL, 0);
+    }
+}
+#endif
+
+#if !(defined(__linux__) && !NL_WINDOWS)
+void nl_yield(void) {
+#if NL_WINDOWS
+    SwitchToThread();
+#endif
+}
+#endif
+
 /* Sleep while *address == expected, until woken or the timeout (nanoseconds, negative: none) passes. Returns 1 on
    timeout and 0 otherwise (woken, or the value had already changed). Spurious returns are possible. */
 int32_t nl_park(volatile int32_t *address, int32_t expected, int64_t timeout_nanos) {
@@ -1242,6 +1537,7 @@ int32_t nl_park(volatile int32_t *address, int32_t expected, int64_t timeout_nan
     if (WaitOnAddress(address, &expected, sizeof(expected), milliseconds)) return 0;
     return GetLastError() == ERROR_TIMEOUT ? 1 : 0;
 #elif defined(__linux__) && defined(SYS_futex)
+    if (nl_current_coro()) return nl_coro_park(address, expected, timeout_nanos);
     struct timespec limit;
     struct timespec *limit_pointer = NULL;
     if (timeout_nanos >= 0) {
@@ -1262,6 +1558,7 @@ void nl_wake(volatile int32_t *address, int32_t count) {
 #if NL_WINDOWS
     if (count == 1) WakeByAddressSingle((PVOID)address); else WakeByAddressAll((PVOID)address);
 #elif defined(__linux__) && defined(SYS_futex)
+    nl_coro_wake(address, count);
     (void)syscall(SYS_futex, address, 129 /* FUTEX_WAKE_PRIVATE */, count, NULL, NULL, 0);
 #else
     (void)address; (void)count;
@@ -1294,6 +1591,16 @@ void nl_job_args_free(void *block) { free(block); }
 int64_t nl_mbox_spin = 15000;
 
 void nl_job_start(void *(*entry)(void *), void *arguments) {
+#if defined(__linux__) && !NL_WINDOWS
+    static int spin_configured;
+    if (!spin_configured) {
+        const char *spin_text = getenv("NLC_SPIN");
+        if (spin_text && *spin_text) nl_mbox_spin = atoll(spin_text);
+        spin_configured = 1;
+    }
+    nl_coro_spawn(entry, arguments);
+    return;
+#endif
     if (nl_job_count >= NL_JOB_LIMIT) nl_stack_startup_failure("too many jobs");
     static int configured;
     static int pin_mode;  /* 0 rr, 1 same, 2 none */
@@ -1313,6 +1620,9 @@ void nl_job_start(void *(*entry)(void *), void *arguments) {
 }
 
 void nl_jobs_join_all(void) {
+#if defined(__linux__) && !NL_WINDOWS
+    nl_coro_join_all();
+#endif
     for (int index = 0; index < nl_job_count; ++index) (void)nl_thread_join(nl_jobs[index]);
     nl_job_count = 0;
 }
@@ -2337,7 +2647,7 @@ static nl_http_buffer *nl_http_buffers[NL_HTTP_CONNECTIONS];
 
 int64_t nl_net_listen(void *env, int64_t port) {
     (void)env;
-    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd < 0) return -1;
     int on = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -2357,9 +2667,10 @@ int64_t nl_net_listen(void *env, int64_t port) {
 int64_t nl_net_accept(void *env, int64_t listener) {
     (void)env;
     for (;;) {
-        int fd = accept4((int)listener, NULL, NULL, SOCK_CLOEXEC);
+        int fd = accept4((int)listener, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
         if (fd < 0) {
             if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) { nl_wait_fd((int)listener, EPOLLIN); continue; }
             return -1;
         }
         int on = 1;
@@ -2414,6 +2725,7 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
         if (buffer->length >= NL_HTTP_BUFFER) return -1;
         ssize_t got = recv((int)fd, buffer->data + buffer->length, NL_HTTP_BUFFER - buffer->length, 0);
         if (got < 0 && errno == EINTR) continue;
+        if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { nl_wait_fd((int)fd, EPOLLIN); continue; }
         if (got <= 0) return -1;
         buffer->length += (uint32_t)got;
     }
@@ -2440,6 +2752,7 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
             consumed = 0;
             ssize_t got = recv((int)fd, buffer->data, NL_HTTP_BUFFER, 0);
             if (got < 0 && errno == EINTR) continue;
+            if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { nl_wait_fd((int)fd, EPOLLIN); continue; }
             if (got <= 0) return -1;
             buffer->length = (uint32_t)got;
             have = buffer->length;
@@ -2473,6 +2786,7 @@ int64_t nl_http_write(void *env, int64_t fd, int64_t status, int64_t kind, void 
         message.msg_iovlen = (size_t)(2 - first);
         ssize_t wrote = sendmsg((int)fd, &message, MSG_NOSIGNAL);
         if (wrote < 0 && errno == EINTR) continue;
+        if (wrote < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { nl_wait_fd((int)fd, EPOLLOUT); continue; }
         if (wrote <= 0) return -1;
         sent += (size_t)wrote;
         size_t skip = (size_t)wrote;
