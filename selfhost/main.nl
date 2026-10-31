@@ -145,7 +145,13 @@ fn main(env: Env) {
             match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
         }
         if compiler.ir_overflow {
-            fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded")
+            if compiler.ir_overflow_function >= 0L {
+                // point at the function whose code filled the buffer: usually it holds something emitted without end
+                let culprit = compiler.functions[compiler.ir_overflow_function]
+                fail_at_message(env, files, compiler, culprit.file, tables.nodes[culprit.node].start,
+                    "the generated code filled the compiler's output buffer in this function (look for a very large value, or a construct that is expanded again and again)")
+            }
+            fail_parse_limit(env, files[0].name, "self-hosted LLVM IR buffer limit exceeded (after the functions, in the type helpers or the globals)")
         }
         match env.fs.write(output_path, ir) {
             ok(_) => (),

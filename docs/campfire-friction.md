@@ -38,6 +38,23 @@ Observed (negative, counted in the table below): the quoting of backslashes in m
 times this stretch (#12 now 11+ hits): the tests directory needs a helper that writes files verbatim, and the Edit tool should be the
 default for anything with escapes.
 
+## Friction fixes after slice 1 (2026-10-31)
+
+- **16** the seed is refreshed (`scripts/update-seed.sh`), so `selfhost/*.nl` can use `while`, struct arguments in `spawn` and the
+  rest; refresh it after every language change the compiler's own code wants to use. Still worth: an error naming the seed.
+- **17** the "IR buffer limit exceeded" error now points at the function whose code filled the buffer ("the generated code filled
+  the compiler's output buffer in this function (look for a very large value, or a construct that is expanded again and again)").
+  Plumbing only; I could not provoke an overflow to see it fire (60,000-element array literals are fine).
+- **18** the error for a stored `.bytes()` view now says what to do instead (`name[i]`, `name.len()`; **`Ascii` and `Bytes` can be
+  indexed directly**, which the app now uses). A view in a `let` is still refused.
+- **14** needed no change: struct field defaults already exist (`id: long = 0L`, `name: Bytes max 32 = Bytes.empty()`) and give
+  `User {}`; the app uses them, and the template generator now ignores defaults when it reads the types.
+- **15** the message already says "choose a different name"; left as is.
+Still open: 3 (done by `discard`), 4, 6 (string interpolation), 9 (generators into the compiler), 10, 11, 12, 21 (redirects), and a
+new one, **23**: SQL queries are single-line literals of 300+ characters (a literal cannot span lines, and `db_row` requires a
+literal so it can be checked when built). Options: a line continuation in string literals, adjacent literals joined, or named
+queries in a `.sql` file referenced by name. It needs a decision, because the build-time check reads the literal's text.
+
 ## Campfire slice 1: the room page
 
 | # | Snag | Where | Hits | Fix class and idea |

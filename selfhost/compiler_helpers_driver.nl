@@ -1494,6 +1494,8 @@ fn compile_selfhost_package(
     if compiler.c_runtime { emit_c_runtime_adapters(compiler, ir) }
     for function_id in 0L..compiler.functions.count() {
         emit_function_definition(source, files, tokens, tables, compiler, ir, function_id)
+        // remember which function the output buffer filled up in, for the error message
+        if compiler.ir_overflow && compiler.ir_overflow_function < 0L { compiler.ir_overflow_function = function_id }
     }
     for test_index in 0L..compiler.tests.count() {
         emit_test_definition(source, files, tokens, tables, compiler, ir, test_index)

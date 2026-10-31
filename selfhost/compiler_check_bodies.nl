@@ -1132,7 +1132,7 @@ fn check_one_body(
             }
             if is_bytes_view_value(tables, compiler, value) {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[value].start,
-                    "a .bytes() view is temporary and cannot be stored or returned")
+                    "a .bytes() view is temporary and cannot be stored or returned; index and count the Ascii or Bytes itself (name[i], name.len()) or call .bytes() where it is used")
             }
             if value_fact.ty == TY_NEVER {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[value].start, "a binding needs a value; functions and if expressions used here must return int, long, or bool")
@@ -1276,7 +1276,7 @@ fn check_one_body(
             } else { () }
             if is_bytes_view_value(tables, compiler, value) {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[value].start,
-                    "a .bytes() view is temporary and cannot be stored or returned")
+                    "a .bytes() view is temporary and cannot be stored or returned; index and count the Ascii or Bytes itself (name[i], name.len()) or call .bytes() where it is used")
             }
             if op == 0L {
                 require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables)
@@ -1305,7 +1305,7 @@ fn check_one_body(
             } else {
                 if is_bytes_view_value(tables, compiler, frame.child0) {
                     fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start,
-                        "a .bytes() view is temporary and cannot be stored or returned")
+                        "a .bytes() view is temporary and cannot be stored or returned; index and count the Ascii or Bytes itself (name[i], name.len()) or call .bytes() where it is used")
                 }
                 let actual = compiler.facts[frame.child0].ty
                 require_type(env, files, compiler, file_index, frame.child0, result_ty, actual, tables)
