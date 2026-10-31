@@ -166,3 +166,9 @@ an aggregate handle that was a function parameter or a struct field (fixed in `s
   (how many ticks it skipped). Tested at 20 ms for about 210 ms: 7 to 11 ticks, under 3 missed.
 - Coroutine records are now reused rather than freed (so a stale timer entry never touches freed memory).
 Still not built: pools, caller-owned reply slots, method syntax, `on idle`.
+
+## As built: the context pool (2026-10-31)
+
+Not the instance pool of this design (declared capacity, `Full` when exhausted) but the part of it that cost something on
+the web path: a finished job's data-stack context goes to a pool (up to 4096) and the next job takes it, so starting a
+job maps nothing. See `bench/web/README.md`. The declared instance pool still needs the language side.

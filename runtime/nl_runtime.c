@@ -124,6 +124,8 @@ typedef struct {
     /* Bytes of the stack range (from base) that are backed by memory. Linux backs all of it lazily;
        Windows commits as the stack grows. */
     uint64_t committed_bytes;
+    /* A job's context is kept for the next job instead of unmapped (Linux): see nl_context_destroy. */
+    int is_job;
 } nl_data_stack_context;
 
 /* The generated code reads the stack base straight from the context (selfhost/c_runtime.nl,
@@ -367,6 +369,38 @@ static void nl_native_stack_setup(nl_data_stack_context *context,
         : default_budget;
 }
 
+#if defined(__linux__) && defined(NLC_STACK_MODE_OFFSET)
+/* Finished jobs give their context back to a pool (up to 4096), so starting a job on a busy server maps nothing:
+   the address range is reserved once and reused. A context that grew past 256 KiB gives the touched pages back. */
+#define NL_CONTEXT_POOL_LIMIT 4096
+static nl_data_stack_context *nl_context_pool[NL_CONTEXT_POOL_LIMIT];
+static int nl_context_pool_count;
+static pthread_mutex_t nl_context_pool_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static nl_data_stack_context *nl_context_pool_take(uint64_t bytes, uint64_t requested_bytes) {
+    nl_data_stack_context *found = NULL;
+    pthread_mutex_lock(&nl_context_pool_lock);
+    for (int index = nl_context_pool_count - 1; index >= 0; --index) {
+        nl_data_stack_context *candidate = nl_context_pool[index];
+        if (candidate->reservation_bytes <= bytes && candidate->reservation_bytes >= requested_bytes) {
+            found = candidate;
+            nl_context_pool[index] = nl_context_pool[--nl_context_pool_count];
+            break;
+        }
+    }
+    pthread_mutex_unlock(&nl_context_pool_lock);
+    return found;
+}
+
+static int nl_context_pool_give(nl_data_stack_context *context) {
+    int taken = 0;
+    pthread_mutex_lock(&nl_context_pool_lock);
+    if (nl_context_pool_count < NL_CONTEXT_POOL_LIMIT) { nl_context_pool[nl_context_pool_count++] = context; taken = 1; }
+    pthread_mutex_unlock(&nl_context_pool_lock);
+    return taken;
+}
+#endif
+
 void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_budget,
                         const char *entry_name) {
 #if defined(__linux__) || NL_WINDOWS
@@ -391,6 +425,19 @@ void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_b
     if (page_size > SIZE_MAX / 2 || bytes > SIZE_MAX - 2 * page_size) {
         nl_stack_startup_failure_for(entry_name, bytes, "requested reservation is too large");
     }
+#if defined(__linux__) && defined(NLC_STACK_MODE_OFFSET)
+    if (nl_creating_job_context) {
+        nl_data_stack_context *reused = nl_context_pool_take(bytes, requested_bytes);
+        if (reused) {
+            reused->entry_name = entry_name;
+            reused->top = reused->base;
+            reused->top_offset = 0;
+            reused->peak_used_bytes = 0;
+            nl_native_stack_setup(reused, requested_recursion_budget);
+            return reused;
+        }
+    }
+#endif
     /* Keep the context in a stable header page before the movable stack mapping. */
     size_t total = (size_t)bytes + 2 * (size_t)page_size;
     void *mapping = nl_map_reserve(total);
@@ -418,6 +465,9 @@ void *nl_context_create(uint64_t requested_bytes, uint64_t requested_recursion_b
     }
     nl_data_stack_context *context = (nl_data_stack_context *)mapping;
     memset(context, 0, sizeof(*context));
+#if defined(NLC_STACK_MODE_OFFSET)
+    context->is_job = nl_creating_job_context;
+#endif
     context->header_mapping = mapping;
     context->header_bytes = (size_t)page_size;
     context->mapping = base;
@@ -556,6 +606,16 @@ void nl_context_destroy(void *opaque) {
     if (!context) return;
 #if defined(__linux__) || NL_WINDOWS
     if (nl_output_flush_all() != 0) nl_fail(20, -1, 0, 0);
+#if defined(__linux__) && defined(NLC_STACK_MODE_OFFSET)
+    if (context->is_job) {
+        /* A reused stack must look like a fresh one (zeroed): clear what was used, or hand large ranges back to the system. */
+        size_t touched = (size_t)((context->peak_used_bytes + 4095) & ~(uint64_t)4095);
+        if (touched > context->reservation_bytes) touched = (size_t)context->reservation_bytes;
+        if (context->peak_used_bytes > 256 * 1024) madvise(context->base, touched, MADV_DONTNEED);
+        else memset(context->base, 0, touched);
+        if (nl_context_pool_give(context)) return;
+    }
+#endif
 #if NL_WINDOWS
     nl_map_release(context->header_mapping, 0);
 #else

@@ -198,3 +198,18 @@ The cache and database jobs are now services (docs/design/job-modules.md): state
 no message structs. A miss forwards the caller's reply handle to the database service, which answers the caller and
 fills the cache. Same machine and method: 340-350k req/s at 64 connections (before: 314k), 261-275k at 1000 (249k), 58k
 at 4. The connection is a task that calls `Cache_get`, and gets none (the 503) when the cache's mailbox is full.
+
+## Connection churn and the context pool
+
+A job's data-stack context (a 64 MiB reservation) used to be mapped when the job started and unmapped when it ended, so a
+server taking many short connections spent its time in `mmap`/`munmap`. Finished jobs now give their context to a pool
+of up to 4096 (zeroed first: the used part is cleared, or handed back to the system if it passed 256 KiB), and a new job
+takes one. Loadgen with a new connection every N requests (`loadgen port 64 4 5000 N`), 64 connections, four cores:
+
+| requests per connection | before | after |
+| --- | --- | --- |
+| 1 | 19.1k req/s, p50 2.3 ms | 21.1k req/s, p50 **0.44 ms** |
+| 10 | 150k | 168k |
+| keep-alive | 298k | 323k |
+
+What is left in the one-request-per-connection case is mostly the kernel's connect, accept and close work.
