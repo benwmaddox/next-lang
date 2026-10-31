@@ -270,7 +270,7 @@ fn unsupported_category_for_node(
         NodeKind.Const => if (compiler.facts[node].flags & FACT_CONSTANT_EVALUATED) != 0L { 0L } else { UNSUPPORTED_NODE },
         NodeKind.Global => UNSUPPORTED_NODE,
         NodeKind.ForEach => 0L,
-        NodeKind.While => if compiler.c_runtime { UNSUPPORTED_NODE } else { 0L },
+        NodeKind.While => 0L,
         NodeKind.Discard => 0L,
         NodeKind.Spawn => if compiler.c_runtime { 0L } else { UNSUPPORTED_NODE },
         NodeKind.Match => 0L,

@@ -1323,19 +1323,24 @@ fn check_one_body(
             for parameter_index in 0L..target.param_count {
                 let parameter = compiler.parameters[target.param_start + parameter_index]
                 let numeric = parameter.ty == TY_INT || parameter.ty == TY_LONG || parameter.ty == TY_BOOL || parameter.ty == TY_BYTE || parameter.ty == TY_DOUBLE
-                let handle = mailbox_role_of_type(compiler, parameter.ty) != 0L || parameter.ty == TY_ENV
+                let handle = mailbox_role_of_type(compiler, parameter.ty) != 0L || parameter.ty == TY_ENV ||
+                    (type_kind(compiler, parameter.ty) == TYPE_KIND_STRUCT && job_copyable_type(compiler, parameter.ty))
                 if (!numeric && !handle) || (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
-                    fail_at_message(env, files, compiler, file_index, tables.nodes[call].start, "a spawned function takes numbers, bools, mailbox handles and the env for now")
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[call].start, "a spawned function takes numbers, bools, the env, mailbox handles and structs of plain data (no pools or maps inside)")
                 }
             }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function: compiler.facts[call].function, literal: 0L }
         } else if kind == NodeKind.Discard {
             let value = frame.child0
-            if value < 0L || tables.nodes[value].kind != NodeKind.MethodCall ||
+            // discard drops a number, a bool or other plain value outright, and the built-in operations whose only error is Full
+            // (collection adds, try_append, a mailbox send); it never drops an arbitrary Result or Option
+            let dropped_kind = if value >= 0L { type_kind(compiler, compiler.facts[value].ty) } else { TYPE_KIND_RESULT }
+            let plain_value = value >= 0L && dropped_kind != TYPE_KIND_RESULT && dropped_kind != TYPE_KIND_OPTION
+            if value < 0L || (!plain_value && (tables.nodes[value].kind != NodeKind.MethodCall ||
                 (compiler.facts[value].literal != COLLECTION_METHOD_PUSH && compiler.facts[value].literal != COLLECTION_METHOD_INSERT &&
                     compiler.facts[value].literal != TEXT_METHOD_TRY_APPEND && compiler.facts[value].literal != TEXT_METHOD_PUSH &&
-                    compiler.facts[value].literal != COLLECTION_METHOD_POOL_ADD) {
-                fail_at_message(env, files, compiler, file_index, syntax.start, "discard accepts only built-in operations whose Result error is capacity Full")
+                    compiler.facts[value].literal != COLLECTION_METHOD_POOL_ADD && compiler.facts[value].literal != MAILBOX_METHOD_SEND))) {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "discard drops a plain value or a built-in operation whose only error is Full (a collection add, try_append, a mailbox send), not an arbitrary Result or Option")
             }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if (compiler.facts[value].flags & FACT_FALLS_THROUGH) != 0L { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.ExpressionStatement {

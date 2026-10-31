@@ -2056,6 +2056,8 @@ recursive fn parse_direct_call(
     }
     cursor_skip_newlines(tables, tokens)
     var arg_count = 0L
+    let call_old_allow = tables.state.allow_struct_literals
+    tables.state.allow_struct_literals = true
     if cursor_peek(tables, tokens, 0L).kind != TokenKind.RParen {
         for step in 0L..MAX_TOKENS_PER_FILE {
             let argument = parse_expression(source, tokens, tables, 0L)
@@ -2073,6 +2075,7 @@ recursive fn parse_direct_call(
             if cursor_peek(tables, tokens, 0L).kind == TokenKind.RParen { break }
         }
     }
+    tables.state.allow_struct_literals = call_old_allow
     if !cursor_take(tables, tokens, TokenKind.RParen) {
         if root_print { tables.state.expression_depth_adjustment -= 1L }
         return err(cursor_error(tables, tokens, ParseProblemKind.ExpectedCloseParen))
@@ -2393,6 +2396,8 @@ recursive fn postfix_call(
     }
     cursor_skip_newlines(tables, tokens)
     var arg_count = 0L
+    let call_old_allow = tables.state.allow_struct_literals
+    tables.state.allow_struct_literals = true
     if cursor_peek(tables, tokens, 0L).kind != TokenKind.RParen {
         for step in 0L..MAX_TOKENS_PER_FILE {
             let argument = parse_expression(source, tokens, tables, 0L)
@@ -2410,6 +2415,7 @@ recursive fn postfix_call(
             if cursor_peek(tables, tokens, 0L).kind == TokenKind.RParen { break }
         }
     }
+    tables.state.allow_struct_literals = call_old_allow
     if !cursor_take(tables, tokens, TokenKind.RParen) {
         if root_print { tables.state.expression_depth_adjustment -= 1L }
         return err(cursor_error(tables, tokens, ParseProblemKind.ExpectedCloseParen))
@@ -2443,6 +2449,9 @@ recursive fn parse_arguments(
     cursor_expect(tables, tokens, TokenKind.LParen, ParseProblemKind.ExpectedCallOpen)?
     cursor_skip_newlines(tables, tokens)
     var item_count = 0L
+    // inside the parentheses of a call a struct literal is unambiguous, even in a match head or a condition
+    let arguments_old_allow = tables.state.allow_struct_literals
+    tables.state.allow_struct_literals = true
     if cursor_peek(tables, tokens, 0L).kind != TokenKind.RParen {
         for step in 0L..MAX_TOKENS_PER_FILE {
             parse_expression(source, tokens, tables, 0L)?
@@ -2453,6 +2462,7 @@ recursive fn parse_arguments(
             if cursor_peek(tables, tokens, 0L).kind == TokenKind.RParen { break }
         }
     }
+    tables.state.allow_struct_literals = arguments_old_allow
     cursor_expect(tables, tokens, TokenKind.RParen, ParseProblemKind.ExpectedCloseParen)?
     ok(item_count)
 }
@@ -2594,6 +2604,9 @@ recursive fn parse_arguments_after_open(
 ) -> Result<long, ParseError> {
     cursor_skip_newlines(tables, tokens)
     var item_count = 0L
+    // inside the parentheses of a call a struct literal is unambiguous, even in a match head or a condition
+    let arguments_old_allow = tables.state.allow_struct_literals
+    tables.state.allow_struct_literals = true
     if cursor_peek(tables, tokens, 0L).kind != TokenKind.RParen {
         for step in 0L..MAX_TOKENS_PER_FILE {
             parse_expression(source, tokens, tables, 0L)?
@@ -2604,6 +2617,7 @@ recursive fn parse_arguments_after_open(
             if cursor_peek(tables, tokens, 0L).kind == TokenKind.RParen { break }
         }
     }
+    tables.state.allow_struct_literals = arguments_old_allow
     cursor_expect(tables, tokens, TokenKind.RParen, ParseProblemKind.ExpectedCloseParen)?
     ok(item_count)
 }

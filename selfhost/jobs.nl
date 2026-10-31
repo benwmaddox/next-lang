@@ -5,6 +5,23 @@
 
 const JOB_ARGUMENT_BYTES: long = 8L
 
+// Bytes a parameter takes in the argument block: eight for a number or a handle, a struct's size rounded up to eight.
+fn job_slot_bytes(compiler: CompilerTables, ty: long) -> long {
+    if is_aggregate_type(compiler, ty) {
+        let size = value_type_size(compiler, ty)
+        if size <= 0L { JOB_ARGUMENT_BYTES } else { ((size + 7L) / 8L) * 8L }
+    } else { JOB_ARGUMENT_BYTES }
+}
+
+// Where parameter `index` starts in the block, and the block's whole size (index = param_count).
+fn job_slot_offset(compiler: CompilerTables, target: FunctionRecord, index: long) -> long {
+    var offset = 0L
+    for parameter_index in 0L..index {
+        offset += job_slot_bytes(compiler, compiler.parameters[target.param_start + parameter_index].ty)
+    }
+    offset
+}
+
 fn job_call_node(tables: ParseTables, compiler: CompilerTables, spawn: long) -> long {
     compiler.child_first[spawn]
 }
@@ -42,21 +59,24 @@ recursive fn emit_spawn_statement(
         argument = compiler.child_next[argument]
     }
     ir_write_ascii(compiler, ir, "  %spawn.args."); ir_write_number(compiler, ir, node)
-    ir_write_ascii(compiler, ir, " = call ptr @nl_job_args_alloc(i64 "); ir_write_number(compiler, ir, target.param_count * JOB_ARGUMENT_BYTES)
+    ir_write_ascii(compiler, ir, " = call ptr @nl_job_args_alloc(i64 "); ir_write_number(compiler, ir, job_slot_offset(compiler, target, target.param_count))
     ir_write_ascii(compiler, ir, ")\n")
     argument = compiler.child_first[call]
     for parameter_index in 0L..target.param_count {
         let parameter = compiler.parameters[target.param_start + parameter_index]
         ir_write_ascii(compiler, ir, "  %spawn.slot."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, parameter_index)
         ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %spawn.args."); ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, parameter_index * JOB_ARGUMENT_BYTES)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, job_slot_offset(compiler, target, parameter_index))
         if is_aggregate_type(compiler, parameter.ty) {
-            // A mailbox handle is one 64-bit word.
+            // A struct (a mailbox handle is one 64-bit word) is copied into its slot as it is.
             let source_location = aggregate_source_location_for_node(tables, compiler, argument)
             let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
-            ir_write_ascii(compiler, ir, "\n  %spawn.handle."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, parameter_index)
-            ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, source_location, source_pointer)
-            ir_write_ascii(compiler, ir, ", align 1\n  store i64 %spawn.handle."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, parameter_index)
+            ir_write_ascii(compiler, ir, "\n  %spawn.copy."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, parameter_index)
+            ir_write_ascii(compiler, ir, " = call ptr @memmove(ptr %spawn.slot."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, parameter_index)
+            ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, source_location, source_pointer)
+            ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, value_type_size(compiler, parameter.ty)); ir_write_ascii(compiler, ir, ")\n")
+            argument = compiler.child_next[argument]
+            continue
         } else {
             ir_write_ascii(compiler, ir, "\n  store "); ir_write_ascii(compiler, ir, llvm_type_name(parameter.ty)); ir_push_byte(compiler, ir, 32)
             ir_write_value_ref(compiler, ir, argument)
@@ -94,7 +114,7 @@ fn emit_job_entries(
         for parameter_index in 0L..target.param_count {
             let parameter = compiler.parameters[target.param_start + parameter_index]
             ir_write_ascii(compiler, ir, "  %slot."); ir_write_number(compiler, ir, parameter_index)
-            ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %args, i64 "); ir_write_number(compiler, ir, parameter_index * JOB_ARGUMENT_BYTES)
+            ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %args, i64 "); ir_write_number(compiler, ir, job_slot_offset(compiler, target, parameter_index))
             if !is_aggregate_type(compiler, parameter.ty) {
                 ir_write_ascii(compiler, ir, "\n  %a."); ir_write_number(compiler, ir, parameter_index)
                 ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(parameter.ty))
@@ -115,4 +135,20 @@ fn emit_job_entries(
         }
         ir_write_ascii(compiler, ir, ")\n  call void @nl_context_destroy(ptr %ctx)\n  call void @nl_job_args_free(ptr %args)\n  ret ptr null\n}\n\n")
     }
+}
+
+// A value `spawn` may copy into a job's argument block: plain records (numbers, enums, text and bytes, and structs, arrays
+// and lists of them). Pools, maps and the like stay with their owner.
+recursive fn job_copyable_type(compiler: CompilerTables, type_id: long) -> bool {
+    let kind = type_kind(compiler, type_id)
+    if kind == TYPE_KIND_SCALAR || kind == TYPE_KIND_ENUM || kind == TYPE_KIND_ASCII || kind == TYPE_KIND_TEXT || kind == TYPE_KIND_BYTES { return true }
+    if kind == TYPE_KIND_STRUCT {
+        let record = type_record(compiler, type_id)
+        for field_offset in 0L..record.field_count {
+            if !job_copyable_type(compiler, compiler.struct_fields[record.field_start + field_offset].ty) { return false }
+        }
+        true
+    } else if kind == TYPE_KIND_ARRAY || kind == TYPE_KIND_LIST {
+        job_copyable_type(compiler, collection_element_type(compiler, type_id))
+    } else { false }
 }

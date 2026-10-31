@@ -149,9 +149,9 @@ def indent(text, spaces):
 
 def generate(service, path, known=()):
     name = service.name
-    # a config field typed as another service is passed to the job as that service's raw sender
+    # a config field typed as another service is a struct of a sender, which spawn now accepts as it is
     def raw_type(type_):
-        return f"Sender<{type_}Message>" if type_ in known else type_
+        return type_
     if not service.handlers:
         raise ServiceError(f"{path}:{service.line}: service {name} has no `on` handler")
     if service.tick_ms and ("env", "Env") not in service.config:
@@ -205,7 +205,7 @@ def generate(service, path, known=()):
     # run loop
     run_params = [("inbox", f"Receiver<{message}>"), ("self_inbox", f"Sender<{message}>")] + [(n, raw_type(t)) for n, t in service.config]
     state_init = ", ".join(f"{n}: {i}" for n, _, i in service.state) if service.state else "unused: 0L"
-    config_init = ", ".join((f"{n}: {t} {{ inbox: {n} }}" if t in known else f"{n}: {n}") for n, t in service.config) if service.config else "unused: 0L"
+    config_init = ", ".join(f"{n}: {n}" for n, t in service.config) if service.config else "unused: 0L"
     arms = []
     for handler in service.handlers:
         call_args = ["state", "config", "me"] + [f"args.{n}" for n, _ in handler.params] + (["args.reply"] if handler.reply else [])
@@ -226,7 +226,7 @@ def generate(service, path, known=()):
         return [f"{pad}match {var} {{"] + [pad + arm.strip().join(["    ", ""]) for arm in arms] + [f"{pad}}}"]
 
     idle_call = f"{name}_on_idle(state, config, me)"
-    body = ["    for svc_turn in 0L..4000000000L {"]
+    body = ["    while true {"]
     if service.tick_ms:
         period = service.tick_ms
         run.append(f"    var next_tick = config.env.now_ms() + {period}L")
@@ -266,7 +266,7 @@ def generate(service, path, known=()):
     out.append("\n".join(run))
     # start
     start_params = ", ".join(f"{n}: {t}" for n, t in service.config)
-    start_args = ", ".join((f"{n}.inbox" if t in known else n) for n, t in service.config)
+    start_args = ", ".join(n for n, t in service.config)
     out.append(f"fn {name}_start({start_params}) -> {name} {{\n"
                f"    var box: mailbox<{message}, {service.mailbox}> = mailbox {{}}\n"
                f"    spawn {name}_run(box.receiver(), box.sender()" + (", " + start_args if start_args else "") + ")\n"
