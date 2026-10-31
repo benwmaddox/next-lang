@@ -14,13 +14,16 @@ import unittest
 from support import ROOT, selfhost
 
 
+PASSWORD_DIGEST = "$2a$04$dcz.lzds.VCqQ5p7isC1l.H1xOKqPl1yyxP5kt5VQq3EbJn4Rocn."   # bcrypt of "secret"
+
+
 def make_database(path):
     connection = sqlite3.connect(path)
     connection.executescript((ROOT / "apps" / "campfire" / "schema.sql").read_text())
     now = "2026-03-02 15:00:00"
     users = [(1, "Ada <b>", 0), (2, "Bob", 0), (3, "Cy", 0), (4, "Dee", 1)]   # Dee is deactivated (status 1)
-    connection.executemany("insert into users (id, name, role, status, created_at, updated_at) values (?,?,1,?,?,?)",
-                           [(i, n, s, now, now) for i, n, s in users])
+    connection.executemany("insert into users (id, name, role, status, email_address, password_digest, created_at, updated_at) values (?,?,1,?,?,?,?,?)",
+                           [(i, n, s, f"{n.split()[0].lower()}@example.com", PASSWORD_DIGEST, now, now) for i, n, s in users])
     connection.executemany("insert into rooms (id, creator_id, name, type, created_at, updated_at) values (?,?,?,?,?,?)",
                            [(10, 1, "Lobby", "Rooms::Open", now, now), (11, 1, "Secret", "Rooms::Closed", now, now), (12, 1, None, "Rooms::Direct", now, now)])
     connection.executemany("insert into memberships (room_id, user_id, created_at, updated_at) values (?,?,?,?)",
@@ -115,14 +118,69 @@ class Campfire(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("<h1>Cy</h1>", body)
 
-    def test_not_a_member_is_a_404_and_no_session_is_a_401(self):
+    def send(self, method, target, body=None, headers=None):
+        connection = http.client.HTTPConnection("127.0.0.1", 18090, timeout=5)
+        connection.request(method, target, body=body, headers=headers or {})
+        answer = connection.getresponse()
+        return answer.status, answer.getheaders(), answer.read().decode()
+
+    def sign_in(self, email, password):
+        from urllib.parse import urlencode
+        return self.send("POST", "/session", urlencode({"email_address": email, "password": password}),
+                         {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "test-agent"})
+
+    def test_signing_in_makes_a_session_and_a_cookie(self):
+        status, headers, body = self.sign_in("bob@example.com", "secret")
+        self.assertEqual(status, 303)
+        self.assertEqual(dict(headers)["Location"], "/")
+        cookie = dict(headers)["Set-Cookie"]
+        match = re.fullmatch(r"session_token=([1-9A-HJ-NP-Za-km-z]{32}); HttpOnly; Path=/; SameSite=Lax", cookie)
+        self.assertTrue(match, cookie)
+        status, page = self.get("/", match.group(1))
+        self.assertEqual(status, 200)
+        self.assertIn("<h1>Bob</h1>", page)
+        stored = sqlite3.connect(os.path.join(self.directory.name, "campfire.db")).execute(
+            "select user_id, ip_address, user_agent from sessions where token = ?", (match.group(1),)).fetchone()
+        self.assertEqual(stored, (2, "127.0.0.1", "test-agent"))
+
+    def test_a_form_with_encoded_characters(self):
+        status, headers, body = self.send("POST", "/session", "password=secret&email_address=cy%40example.com&x=1",
+                                          {"Content-Type": "application/x-www-form-urlencoded"})
+        self.assertEqual((status, dict(headers)["Location"]), (303, "/"))
+
+    def test_wrong_password_unknown_user_and_deactivated_user_are_sent_back(self):
+        for email, password in [("bob@example.com", "wrong"), ("nobody@example.com", "secret"), ("dee@example.com", "secret"),
+                                ("", "secret"), ("bob@example.com", "")]:
+            status, headers, body = self.sign_in(email, password)
+            self.assertEqual(status, 303, (email, password))
+            self.assertEqual(dict(headers)["Location"], "/session/new?failed=1")
+            self.assertNotIn("Set-Cookie", dict(headers))
+
+    def test_the_sign_in_form(self):
+        status, page = self.get("/session/new")
+        self.assertEqual(status, 200)
+        self.assertIn('<form action="/session" method="post">', page)
+        self.assertNotIn("Try another", page)
+        status, page = self.get("/session/new?failed=1")
+        self.assertIn("Try another", page)
+        self.assertEqual(self.send("GET", "/session/new", headers={"Cookie": "session_token=ada-token"})[0:2][0], 303)   # already in
+
+    def test_signing_out_removes_the_session(self):
+        token = re.search(r"session_token=(\w+)", dict(self.sign_in("ada@example.com", "secret")[1])["Set-Cookie"]).group(1)
+        self.assertEqual(self.get("/", token)[0], 200)
+        status, headers, body = self.send("DELETE", "/session", headers={"Cookie": f"session_token={token}"})
+        self.assertEqual((status, dict(headers)["Location"]), (303, "/session/new"))
+        self.assertIn("Max-Age=0", dict(headers)["Set-Cookie"])
+        self.assertEqual(self.get("/", token)[0], 303)
+
+    def test_not_a_member_is_a_404_and_no_session_is_a_redirect_to_sign_in(self):
         self.assertEqual(self.get("/rooms/11", "bob-token")[0], 404)         # Bob is not in Secret
         self.assertEqual(self.get("/rooms/10", "cy-token")[0], 404)          # Cy is in no room
         self.assertEqual(self.get("/rooms/99999", "ada-token")[0], 404)      # no such room
-        self.assertEqual(self.get("/rooms/10")[0], 401)                      # no cookie
-        self.assertEqual(self.get("/rooms/10", "nope")[0], 401)              # unknown token
-        self.assertEqual(self.get("/", cookie="session_token=")[0], 401)     # empty token
-        self.assertEqual(self.get("/rooms/10", "dee-token")[0], 401)         # deactivated user
+        self.assertEqual(self.get("/rooms/10")[0], 303)                      # no cookie
+        self.assertEqual(self.get("/rooms/10", "nope")[0], 303)              # unknown token
+        self.assertEqual(self.get("/", cookie="session_token=")[0], 303)     # empty token
+        self.assertEqual(self.get("/rooms/10", "dee-token")[0], 303)         # deactivated user
         self.assertEqual(self.get("/rooms/abc", "ada-token")[0], 404)
         self.assertEqual(self.get("/elsewhere", "ada-token")[0], 404)
 

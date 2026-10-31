@@ -103,7 +103,7 @@ references' 366-464 KB, so the comparison is by bytes written, not yet like for 
 
 Generic capabilities added along the way (each with its own tests): `Env.db_rows` (several rows into a list, limit checked
 when built), query parameters as a struct (`token = ?1 and active = ?2`, text bound as text), template loops and the `raw`
-filter, `Env.http_header`, writable struct and list parameters as query destinations. Not done: redirects and response headers
+filter, `Env.http_header`, writable struct and list parameters as query destinations. Done after: redirects and response headers (round 3), sign in and out (round 4). Not done:
 (slice 2), everything that writes (slice 3). Friction found is in `docs/campfire-friction.md` (entries 15-22).
 
 Developer-experience measures for the slice: edit-build-run is under a second for the app (compile 0.3 s, link about 1 s, the
