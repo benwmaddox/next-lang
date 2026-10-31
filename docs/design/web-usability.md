@@ -109,3 +109,14 @@ startup. What the web workload did and what it does now:
 - Rule for new features: size what they need at build time (a declared capacity, a bound from the types), take it from a pool
   or a table made at startup, and make exhaustion a visible result (`Full`, a 503), never a hidden allocation. The declared
   instance pools in `job-modules.md` are the language-level form of this.
+
+### How close we are to build-time pool sizes (measured 2026-10-31; decision: leave as is)
+
+Peak live blocks of the web service with 4, 64 and 1,000 keep-alive connections (temporary counters, not kept):
+job-argument blocks (64 B) 7 / 67 / 1,003, which is live jobs plus the three service jobs; reply mailboxes (256 B)
+4 / 64 / 256, bounded by calls in flight, here limited by the cache mailbox; service mailboxes (16 and 32 KiB) 1 each at every
+load; data-stack contexts 4 / 64 / 1,000; timer heap 0. Block sizes are known exactly at build time; the counts all follow
+from one number the program does not declare, the most jobs alive at once. The system allocator is already silent after
+startup, so preallocating would only keep the first burst of connections off it and fix the memory use up front. If wanted
+later: a startup setting (`NLC_MAX_JOBS`) that preallocates the per-job pools, or the declared instance pools of
+`job-modules.md`, which give the compiler the number. Ben chose to leave it as is.
