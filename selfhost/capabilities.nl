@@ -25,6 +25,7 @@ const C_METHOD_NET_CLOSE: long = 3022L
 const C_METHOD_ENV_DB_TEXT: long = 3023L
 const C_METHOD_ENV_CACHE_GET: long = 3024L
 const C_METHOD_ENV_CACHE_PUT: long = 3025L
+const C_METHOD_ENV_DB_ROW: long = 3026L
 
 fn emit_context_runtime_symbol(
     compiler: write CompilerTables,
@@ -160,6 +161,7 @@ fn c_runtime_method_kind(
         else if token_is_word_at(source, tokens, files, file_index, token, "net_close") { C_METHOD_NET_CLOSE }
         else if token_is_word_at(source, tokens, files, file_index, token, "db_text") { C_METHOD_ENV_DB_TEXT }
         else if token_is_word_at(source, tokens, files, file_index, token, "cache_get") { C_METHOD_ENV_CACHE_GET }
+        else if token_is_word_at(source, tokens, files, file_index, token, "db_row") { C_METHOD_ENV_DB_ROW }
         else if token_is_word_at(source, tokens, files, file_index, token, "cache_put") { C_METHOD_ENV_CACHE_PUT }
         else { C_METHOD_NONE }
     } else if receiver_type == TY_HOST {
@@ -245,7 +247,7 @@ fn c_runtime_check_method(
         else if method == C_METHOD_ENV_EXIT || method == C_METHOD_ARGS_GET || method == C_METHOD_ARG_BYTE || method == C_METHOD_OUT_WRITE ||
             method == C_METHOD_NET_LISTEN || method == C_METHOD_NET_ACCEPT || method == C_METHOD_NET_CLOSE { 1L }
         else if method == C_METHOD_HTTP_WRITE { 4L }
-        else if method == C_METHOD_ENV_DB_TEXT { 3L }
+        else if method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_DB_ROW { 3L }
         else if method == C_METHOD_FS_LIST { 3L } else { 2L }
     if actual_count != wanted_count {
         fail_at_message(env, files, compiler, file_index, tables.nodes[node].start, "C-runtime capability method has the wrong number of arguments")
@@ -257,6 +259,31 @@ fn c_runtime_check_method(
     if method == C_METHOD_NET_LISTEN || method == C_METHOD_NET_ACCEPT || method == C_METHOD_NET_CLOSE {
         require_type(env, files, compiler, file_index, first, TY_LONG, compiler.facts[first].ty, tables)
         result_type = TY_LONG
+    } else if method == C_METHOD_ENV_DB_ROW {
+        let from_kind = type_kind(compiler, compiler.facts[first].ty)
+        if tokens[tables.nodes[first].token].kind != TokenKind.String {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[first].start, "Env.db_row's query must be a string literal, so it is fixed when the program is built")
+        }
+        if from_kind != TYPE_KIND_ASCII && from_kind != TYPE_KIND_TEXT {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[first].start, "Env.db_row needs bounded text for the rest of the query (from ... where ...)")
+        }
+        require_type(env, files, compiler, file_index, second, TY_LONG, compiler.facts[second].ty, tables)
+        if type_kind(compiler, compiler.facts[third].ty) != TYPE_KIND_STRUCT {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.db_row needs a struct to fill: its fields are the columns")
+        }
+        if !c_runtime_writable_argument(tables, compiler, third) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.db_row needs a writable struct")
+        }
+        if active_view_overlaps_place(tables, compiler, scope, third) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "cannot replace storage that contains a live collection view")
+        }
+        let row_record = type_record(compiler, compiler.facts[third].ty)
+        for field_offset in 0L..row_record.field_count {
+            if db_row_field_kind(compiler, compiler.struct_fields[row_record.field_start + field_offset].ty) == 0L {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.db_row fills long, int, bool and Bytes fields only")
+            }
+        }
+        result_type = TY_BOOL
     } else if method == C_METHOD_ENV_CACHE_GET {
         require_type(env, files, compiler, file_index, first, TY_LONG, compiler.facts[first].ty, tables)
         if type_kind(compiler, compiler.facts[second].ty) != TYPE_KIND_BYTES {
@@ -456,7 +483,7 @@ fn emit_c_runtime_method_storage(
         }
         return
     }
-    let data_argument = if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_DB_QUERY || method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_CACHE_PUT { child_at(tables, compiler, node, if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_CACHE_PUT { 2L } else { 1L }) }
+    let data_argument = if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_DB_QUERY || method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_DB_ROW || method == C_METHOD_ENV_CACHE_PUT { child_at(tables, compiler, node, if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_CACHE_PUT { 2L } else { 1L }) }
         else if method == C_METHOD_HTTP_WRITE { child_at(tables, compiler, node, 4L) }
         else if method == C_METHOD_OUT_WRITE { child_at(tables, compiler, node, 1L) }
         else { -1L }
@@ -782,6 +809,21 @@ fn emit_c_runtime_method_call(
         ir_write_ascii(compiler, ir, if method == C_METHOD_NET_LISTEN { "net_listen" } else if method == C_METHOD_NET_ACCEPT { "net_accept" } else { "net_close" })
         ir_write_ascii(compiler, ir, "(ptr "); ir_write_value_ref(compiler, ir, receiver)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, first); ir_write_ascii(compiler, ir, ")\n")
+    } else if method == C_METHOD_ENV_DB_ROW {
+        let row_location = c_runtime_writable_output_location(tables, compiler, ir, third)
+        let row_pointer = emit_location_pointer_materialization(compiler, ir, row_location)
+        emit_c_raw_descriptor(tables, compiler, ir, node, first)
+        let row_record = type_record(compiler, compiler.facts[third].ty)
+        ir_write_ascii(compiler, ir, "  %c.dbrow.found."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call i64 @nl_db_row(ptr "); ir_write_value_ref(compiler, ir, receiver)
+        ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[first].ty))
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, second)
+        ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, row_location, row_pointer)
+        ir_write_ascii(compiler, ir, ", ptr @nl.dbrow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ".layout, i64 ")
+        ir_write_number(compiler, ir, row_record.field_count)
+        ir_write_ascii(compiler, ir, ", ptr @nl.dbrow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ".names)\n  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = icmp ne i64 %c.dbrow.found."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
     } else if method == C_METHOD_ENV_CACHE_GET {
         let destination_location = c_runtime_writable_output_location(tables, compiler, ir, second)
         let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination_location)

@@ -59,3 +59,22 @@ not to grow it into a general DSL kernel.
    Returns whether a row was found. Missing or NULL columns leave the field as it was.
 2. Use it in `bench/web` (one query instead of three) and measure a cache miss and the whole workload.
 3. Then: a query declaration syntax that names the query and its result type once, and the build-time schema check.
+
+## Principle: as much as possible at compile time (Ben, 2026-10-31)
+
+Everything above is a way to move work from run time to build time, and each new feature should be judged by what it
+can fix before the program runs:
+
+- **Queries are literals.** `Env.db_row` takes a string literal; the compiler writes the select list from the struct's
+  fields, so the full statement is known when the program is built and each call site prepares it once (a constant
+  identifies it; no text is built or compared per call). Next: the build prepares every query against the schema, so a
+  missing column, a wrong type or a table scan is a build error (`EXPLAIN QUERY PLAN`, crudspec's `QUERY_UNINDEXED`).
+- **Templates are straight-line code**: the constant text is static bytes, the output's maximum size is a sum known at
+  build time, and a value is escaped by the context it sits in, chosen by the compiler.
+- **Routes are a table**: patterns, parameter types and links are parsed and checked at build time; the program only
+  matches and converts.
+- **Topology is static**: the mailbox graph is known from `main`, so deadlock-prone cycles, unhandled Full results and
+  unclosed ends are build errors.
+- **Sizes carry through**: a field's declared maximum is the SQLite column check, the buffer size and the template's
+  bound.
+- **Read sets for caches** are computed from the declared queries, so invalidation needs no hand-written rules.

@@ -153,3 +153,16 @@ than one job alone). Now readers only read; a writer makes the slot's sequence n
 that overlapped a writer copies again. `tests/py/programs/cache_race` checks that two writers and two readers on one
 key never produce a half-written value. Known weaknesses of the design: a collision evicts (direct-mapped, no
 associativity), a value is at most 512 bytes and is copied out (not borrowed), and nothing expires.
+
+## Typed rows: `env.db_row` (one statement instead of three)
+
+`load_row` now fills a struct from one statement: `env.db_row("from items where id = ?1", key, data)` where `data` is an
+`ItemData { v, price, name }`. The compiler writes `select v,price,name` from the struct's fields (the struct is the
+projection), the query must be a literal, and each call site prepares its statement once. Same machine and method:
+
+| connections | variant | before (3 calls) | after (1 row) |
+| --- | --- | --- | --- |
+| 64 | nocache (every request reads SQLite) | 144k req/s | **211k** (+46%) |
+| 1000 | nocache | 130k | **174k** (+34%) |
+| 64 | cache job (misses only) | 275k | 321k (+17%) |
+| 1000 | cache job | 226k | 241k (+7%) |

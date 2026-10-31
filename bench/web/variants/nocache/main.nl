@@ -10,23 +10,17 @@ struct Row {
 }
 
 
+// The columns this page reads: the struct is the projection, and the query is one statement.
+struct ItemData {
+    v: long
+    price: long
+    name: Bytes max 32
+}
+
 fn load_row(env: Env, key: long) -> Row {
-    var row = Row { key: key, found: false, v: 0L, price: 0L, name: Bytes.empty() }
-    match env.db_query("select v from items where id = ?1", key) {
-        some(value) => {
-            row.found = true
-            row.v = value
-        },
-        none => {},
-    }
-    if row.found {
-        match env.db_query("select price from items where id = ?1", key) {
-            some(value) => { row.price = value },
-            none => {},
-        }
-        let length = env.db_text("select name from items where id = ?1", key, row.name)
-    }
-    row
+    var data = ItemData { v: 0L, price: 0L, name: Bytes.empty() }
+    let found = env.db_row("from items where id = ?1", key, data)
+    Row { key: key, found: found, v: data.v, price: data.price, name: data.name }
 }
 
 
