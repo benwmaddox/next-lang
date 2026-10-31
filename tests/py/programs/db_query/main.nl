@@ -1,4 +1,5 @@
-// Env.db_query runs a prepared statement with the key bound to ?1 and returns the first column of the first row.
+// Env.db_query runs a prepared statement with the key bound to ?1 and returns the first column of the first row;
+// Env.db_text returns that column as text. Mailboxes give their memory back with release().
 fn main(env: Env) {
     let missing = env.db_query("select v from t where id = ?1", 99L)
     match env.db_query("select v from t where id = ?1", 7L) {
@@ -9,4 +10,21 @@ fn main(env: Env) {
         some(value) => { print(value) },
         none => { print(-2L) },
     }
+    var name: Bytes max 16 = Bytes.empty()
+    let length = env.db_text("select name from t where id = ?1", 7L, name)
+    print(length)
+    print(name.count())
+    print(name[0].to_long())
+    let none_length = env.db_text("select name from t where id = ?1", 99L, name)
+    print(none_length)
+    var box: mailbox<long, 4> = mailbox {}
+    match box.sender().send(5L) {
+        ok(_) => {},
+        err(_) => { print(-4L) },
+    }
+    match box.receiver().recv() {
+        some(value) => { print(value) },
+        none => { print(-3L) },
+    }
+    box.release()
 }

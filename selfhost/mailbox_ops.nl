@@ -35,6 +35,11 @@ fn emit_mailbox_method(
         ir_write_ascii(compiler, ir, "  call void @nl.mbox.close(ptr %mb.ring."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ")\n")
         return
     }
+    if method == MAILBOX_METHOD_RELEASE {
+        // The owner gives the ring's memory back; no handle to it may be used afterwards.
+        ir_write_ascii(compiler, ir, "  call void @nl_job_args_free(ptr %mb.ring."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ")\n")
+        return
+    }
     if method == MAILBOX_METHOD_SENDER || method == MAILBOX_METHOD_RECEIVER {
         // The same address, in the other handle type.
         let destination = aggregate_destination_location(compiler, 0L, node)

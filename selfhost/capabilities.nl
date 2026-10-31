@@ -22,6 +22,7 @@ const C_METHOD_NET_ACCEPT: long = 3019L
 const C_METHOD_HTTP_READ: long = 3020L
 const C_METHOD_HTTP_WRITE: long = 3021L
 const C_METHOD_NET_CLOSE: long = 3022L
+const C_METHOD_ENV_DB_TEXT: long = 3023L
 
 fn emit_context_runtime_symbol(
     compiler: write CompilerTables,
@@ -155,6 +156,7 @@ fn c_runtime_method_kind(
         else if token_is_word_at(source, tokens, files, file_index, token, "http_read") { C_METHOD_HTTP_READ }
         else if token_is_word_at(source, tokens, files, file_index, token, "http_write") { C_METHOD_HTTP_WRITE }
         else if token_is_word_at(source, tokens, files, file_index, token, "net_close") { C_METHOD_NET_CLOSE }
+        else if token_is_word_at(source, tokens, files, file_index, token, "db_text") { C_METHOD_ENV_DB_TEXT }
         else { C_METHOD_NONE }
     } else if receiver_type == TY_HOST {
         if token_is_word_at(source, tokens, files, file_index, token, "cores") { C_METHOD_HOST_CORES }
@@ -239,6 +241,7 @@ fn c_runtime_check_method(
         else if method == C_METHOD_ENV_EXIT || method == C_METHOD_ARGS_GET || method == C_METHOD_ARG_BYTE || method == C_METHOD_OUT_WRITE ||
             method == C_METHOD_NET_LISTEN || method == C_METHOD_NET_ACCEPT || method == C_METHOD_NET_CLOSE { 1L }
         else if method == C_METHOD_HTTP_WRITE { 4L }
+        else if method == C_METHOD_ENV_DB_TEXT { 3L }
         else if method == C_METHOD_FS_LIST { 3L } else { 2L }
     if actual_count != wanted_count {
         fail_at_message(env, files, compiler, file_index, tables.nodes[node].start, "C-runtime capability method has the wrong number of arguments")
@@ -249,6 +252,22 @@ fn c_runtime_check_method(
     var result_type = TY_UNIT
     if method == C_METHOD_NET_LISTEN || method == C_METHOD_NET_ACCEPT || method == C_METHOD_NET_CLOSE {
         require_type(env, files, compiler, file_index, first, TY_LONG, compiler.facts[first].ty, tables)
+        result_type = TY_LONG
+    } else if method == C_METHOD_ENV_DB_TEXT {
+        let text_kind = type_kind(compiler, compiler.facts[first].ty)
+        if text_kind != TYPE_KIND_ASCII && text_kind != TYPE_KIND_TEXT {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[first].start, "Env.db_text needs bounded text for the statement")
+        }
+        require_type(env, files, compiler, file_index, second, TY_LONG, compiler.facts[second].ty, tables)
+        if type_kind(compiler, compiler.facts[third].ty) != TYPE_KIND_BYTES {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.db_text needs a Bytes destination")
+        }
+        if !c_runtime_writable_argument(tables, compiler, third) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.db_text needs a writable Bytes destination")
+        }
+        if active_view_overlaps_place(tables, compiler, scope, third) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "cannot replace storage that contains a live collection view")
+        }
         result_type = TY_LONG
     } else if method == C_METHOD_HTTP_READ {
         require_type(env, files, compiler, file_index, first, TY_LONG, compiler.facts[first].ty, tables)
@@ -414,7 +433,7 @@ fn emit_c_runtime_method_storage(
         }
         return
     }
-    let data_argument = if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_DB_QUERY { child_at(tables, compiler, node, if method == C_METHOD_ENV_DB_QUERY { 1L } else { 2L }) }
+    let data_argument = if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_DB_QUERY || method == C_METHOD_ENV_DB_TEXT { child_at(tables, compiler, node, if method == C_METHOD_FS_WRITE { 2L } else { 1L }) }
         else if method == C_METHOD_HTTP_WRITE { child_at(tables, compiler, node, 4L) }
         else if method == C_METHOD_OUT_WRITE { child_at(tables, compiler, node, 1L) }
         else { -1L }
@@ -740,6 +759,19 @@ fn emit_c_runtime_method_call(
         ir_write_ascii(compiler, ir, if method == C_METHOD_NET_LISTEN { "net_listen" } else if method == C_METHOD_NET_ACCEPT { "net_accept" } else { "net_close" })
         ir_write_ascii(compiler, ir, "(ptr "); ir_write_value_ref(compiler, ir, receiver)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, first); ir_write_ascii(compiler, ir, ")\n")
+    } else if method == C_METHOD_ENV_DB_TEXT {
+        let destination_location = c_runtime_writable_output_location(tables, compiler, ir, third)
+        let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination_location)
+        emit_c_raw_descriptor(tables, compiler, ir, node, first)
+        ir_write_ascii(compiler, ir, "  %c.dbtext.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr inbounds i8, ptr "); emit_location_pointer_reference(compiler, ir, destination_location, destination_pointer); ir_write_ascii(compiler, ir, ", i64 8\n")
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call i64 @nl_db_text(ptr "); ir_write_value_ref(compiler, ir, receiver)
+        ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[first].ty))
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, second)
+        ir_write_ascii(compiler, ir, ", ptr %c.dbtext.data."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[third].ty))
+        ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, destination_location, destination_pointer); ir_write_ascii(compiler, ir, ")\n")
     } else if method == C_METHOD_HTTP_READ {
         let destination_location = c_runtime_writable_output_location(tables, compiler, ir, second)
         let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination_location)

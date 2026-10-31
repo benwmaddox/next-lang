@@ -2917,7 +2917,37 @@ void nl_db_query(void *env, void *descriptor, uint64_t capacity, int64_t key, vo
     sqlite3_reset(statement);
     sqlite3_clear_bindings(statement);
 }
+/* Env.db_text(sql, key, out): the first column of the first row as text into `out` (a Bytes: count at offset 0, data
+   at `data`); returns its length, or -1 when there is no row, the value is NULL or it does not fit. */
+int64_t nl_db_text(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *data, uint64_t data_capacity, int64_t *count) {
+    (void)env;
+    unsigned char scratch[4096];
+    const unsigned char *bytes; uint64_t length; int tag = -1, code = 0;
+    if (!nl_extract_raw(descriptor, 2, capacity, scratch, &bytes, &length, &tag, &code)) return -1;
+    sqlite3 *connection = nl_db_open();
+    if (!connection) return -1;
+    sqlite3_stmt *statement = nl_db_statement_for(connection, bytes, length);
+    if (!statement) return -1;
+    sqlite3_bind_int64(statement, 1, key);
+    int64_t result = -1;
+    if (sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_type(statement, 0) != SQLITE_NULL) {
+        int size = sqlite3_column_bytes(statement, 0);
+        const unsigned char *text = sqlite3_column_text(statement, 0);
+        if (text && size >= 0 && (uint64_t)size <= data_capacity) {
+            memcpy(data, text, (size_t)size);
+            *count = size;
+            result = size;
+        }
+    }
+    sqlite3_reset(statement);
+    sqlite3_clear_bindings(statement);
+    return result;
+}
 #else
+int64_t nl_db_text(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *data, uint64_t data_capacity, int64_t *count) {
+    (void)env; (void)descriptor; (void)capacity; (void)key; (void)data; (void)data_capacity; (void)count;
+    return -1;
+}
 void nl_db_query(void *env, void *descriptor, uint64_t capacity, int64_t key, void *result) {
     (void)env; (void)descriptor; (void)capacity; (void)key;
     *(int32_t *)result = 1;

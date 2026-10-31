@@ -7,6 +7,7 @@ const MAILBOX_METHOD_CLOSE: long = 4003L
 const MAILBOX_METHOD_SEND: long = 4004L
 const MAILBOX_METHOD_RECV: long = 4005L
 const MAILBOX_METHOD_RECV_WAIT: long = 4006L
+const MAILBOX_METHOD_RELEASE: long = 4007L
 
 fn mailbox_role_of_type(compiler: CompilerTables, type_id: long) -> long {
     for index in 0L..compiler.mailbox_types.count() {
