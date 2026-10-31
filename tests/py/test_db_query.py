@@ -15,8 +15,8 @@ class DbQuery(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="nl-db-") as directory:
             path = os.path.join(directory, "test.db")
             connection = sqlite3.connect(path)
-            connection.execute("create table t (id integer primary key, v integer, name text)")
-            connection.execute("insert into t values (7, 4242, 'widget')")
+            connection.execute("create table t (id integer primary key, v integer, name text, small integer, flag integer)")
+            connection.execute("insert into t values (7, 4242, 'widget', 31, 1)")
             connection.commit()
             connection.close()
             os.environ["NLC_DB"] = path
@@ -25,7 +25,7 @@ class DbQuery(unittest.TestCase):
             finally:
                 del os.environ["NLC_DB"]
             self.assertEqual(ran.returncode, 0, ran.stderr.decode(errors="replace"))
-            self.assertEqual(ran.stdout.decode().split(), ["4242", "-2", "6", "6", "119", "-1", "5"])
+            self.assertEqual(ran.stdout.decode().split(), ["true", "4242", "6", "31", "true", "false", "4242", "-2", "6", "6", "119", "-1", "5"])
 
 
 if __name__ == "__main__":
