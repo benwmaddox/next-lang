@@ -18,6 +18,24 @@ ONCE Campfire (37signals, MIT), Rails commit 90b3300. References already in `D:\
 crudspec's server side is 1,828 lines against Rails' 6,964 and the Rust port's 49,143. Its speed is 79x Rails with no cache, 156x with
 a full-page cache (WSL2, 4 cores, the Campfire room page).
 
+## Why we are doing it (Ben, 2026-10-31)
+
+The process is to test whether the language is **useful** and has a **good developer experience**. Campfire is the test
+subject, not the product. So alongside "does it match Rails and is it fast" each slice reports developer-experience measures,
+and a snag is a finding even when the code ends up working:
+
+- **Edit-build-run loop:** seconds from saving a change to seeing it run (the compiler, the generators, linking), and the
+  time of the test run.
+- **Error quality:** for each mistake made while writing (and a few made on purpose), whether the message names the place,
+  says what is wrong and what to do; a bad message is logged like any other snag.
+- **Size and shape:** lines of next-lang per slice against crudspec's and Rails' for the same behaviour, how many generated or
+  non-next-lang files are needed (Python generators, shell, SQL), how many places a change touches.
+- **Repeated fixes:** the same mistake or workaround appearing again is counted; three hits means a language or library fix.
+- **Confidence:** what the compiler caught before the program ran (build-time query check, template bounds, service checks)
+  against what was found by running it.
+- **Findings feed back:** the friction log is read at the end of each slice and the top items are fixed in the language before the
+  next slice starts, as was done for the first six.
+
 ## How to judge it
 
 - **Behaviour:** the 42 oracle scenarios. They are data (setup rows, actors, actions) with Rails' answers as goldens, and crudspec's
