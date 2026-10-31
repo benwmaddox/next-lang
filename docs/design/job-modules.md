@@ -179,3 +179,18 @@ job maps nothing. See `bench/web/README.md`. The declared instance pool still ne
 to do. A turn polls the mailbox first (messages always come first), runs the idle step when it is empty, and waits only when
 the step says it is done (with a `tick`, the wait is limited to the next tick). One step should do bounded work. Tested with
 a backlog of 5000 steps worked off between five messages.
+
+## Status after the first implementation round (2026-10-31)
+
+Built: services front end (`tools/svc.py`), the checks (handlers never wait, replies answered or passed on, message graph),
+timers and `tick`, `idle`, `recv_for` / `is_closed` / `now_ms`, the pooled job contexts.
+
+Not built, with the reason:
+- **Method syntax** (`cache.get(k)` for `Cache_get(cache, k)`). A general rule "`x.m(args)` on a struct calls `Type_m(x, args)`"
+  would be tidy, but the checker resolves calls by the name token in a long state machine (`compiler_check_bodies.nl`), so it is
+  not a small change; it wants its own piece of work in the compiler, not another generator.
+- **Declared instance pools** (`service Conn pool 10000`, `Full` when exhausted): needs a language-level instance count and
+  `spawn` returning a result; the context pool already removes the mapping cost they were meant to save.
+- **Caller-owned reply slots**: a reply mailbox is allocated and released per call (about 160 bytes, one `calloc`/`free`);
+  fixing that needs state that belongs to a task, which tasks do not have yet.
+- **Stackless services**: the scheduler still gives every service a stack.
