@@ -57,7 +57,9 @@ int main(int argc, char **argv) {
                 const char *declared = sqlite3_column_decltype(statement, index);
                 if (declared) {
                     int integer = strcasestr(declared, "INT") != NULL || strcasestr(declared, "BOOL") != NULL;
-                    int text = strcasestr(declared, "CHAR") || strcasestr(declared, "TEXT") || strcasestr(declared, "CLOB") || strcasestr(declared, "BLOB");
+                    /* SQLite stores dates and times as text (Rails' datetime columns are); a Bytes field takes them */
+                    int text = strcasestr(declared, "CHAR") || strcasestr(declared, "TEXT") || strcasestr(declared, "CLOB") || strcasestr(declared, "BLOB") ||
+                               strcasestr(declared, "DATE") || strcasestr(declared, "TIME");
                     if ((kind <= 3 && !integer) || (kind == 4 && !text)) {
                         fprintf(stderr, "nlc: query error: column %s is declared %s but the struct field wants %s\n  %s\n",
                                 sqlite3_column_name(statement, index), declared, kind == 4 ? "text" : "an integer", sql);
@@ -81,7 +83,8 @@ int main(int argc, char **argv) {
             sqlite3_bind_int64(statement, 1, 1);
             while (sqlite3_step(statement) == SQLITE_ROW) {
                 const char *detail = (const char *)sqlite3_column_text(statement, 3);
-                if (detail && strncmp(detail, "SCAN ", 5) == 0 && !strstr(detail, "INDEX")) {
+                /* a scan of a subquery's result (SCAN (subquery-1)) is not a table scan */
+                if (detail && strncmp(detail, "SCAN ", 5) == 0 && !strstr(detail, "INDEX") && strncmp(detail, "SCAN (subquery", 14) != 0) {
                     fprintf(stderr, "nlc: warning: this query reads a whole table (%s); add an index?\n  %s\n", detail, sql);
                 }
             }

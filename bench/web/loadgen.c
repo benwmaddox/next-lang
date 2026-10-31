@@ -28,7 +28,9 @@ static void *run(void *arg) {
     int on = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
     if (connect(fd, (struct sockaddr *)&address, sizeof(address)) != 0) { stats->errors++; return NULL; }
     unsigned seed = (unsigned)(uintptr_t)arg ^ (unsigned)now_ns();
-    char request[128], buffer[4096];
+    const size_t buffer_size = 1 << 20;
+    char request[1024], *buffer = malloc(buffer_size);
+    const char *fixed_path = getenv("LOADGEN_PATH"), *cookie = getenv("LOADGEN_COOKIE");   /* a fixed page, with a session cookie */
     int served = 0;
     while (!stop) {
         if (per_connection && served >= per_connection) {  /* a new connection every N requests */
@@ -40,12 +42,14 @@ static void *run(void *arg) {
         }
         served++;
         uint64_t u = (uint64_t)(rand_r(&seed) % keys), key = u * u / keys;
-        int length = snprintf(request, sizeof(request), "GET /item/%llu HTTP/1.1\r\nHost: x\r\n\r\n", (unsigned long long)key);
+        int length = fixed_path
+            ? snprintf(request, sizeof(request), "GET %s HTTP/1.1\r\nHost: x\r\n%s%s%s\r\n", fixed_path, cookie ? "Cookie: " : "", cookie ? cookie : "", cookie ? "\r\n" : "")
+            : snprintf(request, sizeof(request), "GET /item/%llu HTTP/1.1\r\nHost: x\r\n\r\n", (unsigned long long)key);
         uint64_t start = now_ns();
         if (send(fd, request, length, MSG_NOSIGNAL) != length) { stats->errors++; break; }
         size_t have = 0; ssize_t want = -1; size_t head = 0;
         for (;;) {
-            ssize_t got = recv(fd, buffer + have, sizeof(buffer) - have - 1, 0);
+            ssize_t got = recv(fd, buffer + have, buffer_size - have - 1, 0);
             if (got <= 0) { stats->errors++; close(fd); return NULL; }
             have += (size_t)got; buffer[have] = 0;
             char *end = strstr(buffer, "\r\n\r\n");

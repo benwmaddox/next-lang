@@ -402,13 +402,17 @@ def parse_body(template, structs, path):
                     expression, _, filter_ = inside.partition("|")
                     expression, filter_ = expression.strip(), filter_.strip()
                     type_ = resolve(expression, line)
-                    if filter_ not in ("", "money"):
-                        raise TemplateError(f"{path}:{line}: unknown filter `{filter_}` (the only one is `money`)")
+                    if filter_ not in ("", "money", "raw"):
+                        raise TemplateError(f"{path}:{line}: unknown filter `{filter_}` (the filters are `money` and `raw`)")
+                    if filter_ == "raw" and type_[0] not in ("bytes", "ascii"):
+                        raise TemplateError(f"{path}:{line}: `raw` writes text as it is, and `{expression}` is not text")
                     if filter_ == "money" and type_[0] != "long":
                         raise TemplateError(f"{path}:{line}: `money` writes a long number of cents")
                     where = f"{path}:{line}"
                     if template.kind == "html":
                         context = html_context(state, where)
+                        if filter_ == "raw" and context != "html_text":
+                            raise TemplateError(f"{where}: `raw` is only allowed in HTML text, not inside a tag or attribute")
                     else:
                         context = "json_string" if state.in_string else "json_value"
                     nodes.append(Hole(expression, type_, filter_, context, line))
@@ -431,6 +435,8 @@ def hole_size(hole):
     kind, limit = hole.type
     if hole.filter == "money":
         return 22
+    if hole.filter == "raw":
+        return hole.type[1]
     if kind == "long":
         return 20
     if kind == "int":
@@ -593,6 +599,8 @@ class Emitter:
                 expression = node.path
                 if node.filter == "money":
                     lines.append(f"{pad}{self.money(size)}(out, {expression})")
+                elif node.filter == "raw":
+                    lines.append(f"{pad}discard out.try_append({expression}{'.bytes()' if kind == 'ascii' else ''})")
                 elif kind == "long":
                     lines.append(f"{pad}{self.number(size)}(out, {expression})")
                 elif kind == "int":

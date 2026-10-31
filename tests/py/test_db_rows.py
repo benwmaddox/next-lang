@@ -29,7 +29,7 @@ class DbRows(unittest.TestCase):
                 del os.environ["NLC_DB"]
             self.assertEqual(ran.returncode, 0, ran.stderr.decode(errors="replace"))
             # room 2 has 7 rows but the limit is 5: ids 1..5, v 10+20+30+40+50 = 150, "n1" has 2 bytes, items[2].id is 3
-            self.assertEqual(ran.stdout.decode().split(), ["5", "5", "150", "2", "3", "0", "0"])
+            self.assertEqual(ran.stdout.decode().split(), ["5", "5", "150", "2", "3", "4", "0", "0"])
 
     def build(self, query, capacity=5):
         package = ROOT / ".rows-test"

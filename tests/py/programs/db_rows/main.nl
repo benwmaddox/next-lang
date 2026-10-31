@@ -15,6 +15,8 @@ fn main(env: Env) {
     print(total)
     print(items[0].name.count())
     print(items[2].id)
+    // another call site with the same row type but a different query must run its own statement
+    print(env.db_rows("from items where room = ?1 and id > 3 order by id limit 5", 2L, items))
     let missing = env.db_rows("from items where room = ?1 order by id limit 5", 9L, items)
     print(missing)
     print(items.count())
