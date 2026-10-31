@@ -112,3 +112,28 @@ reply mailbox back (`release()`) when it ends. `tests/py/test_web.py` checks all
 
 Throughput on `/item` with these richer rows (4 cores, same method): 59-64k req/s at 4 connections, 278-281k at 64,
 225-238k at 1000 (p99 at 1000: 6 ms).
+
+## Should the cache be a job behind a mailbox?
+
+Four ways to cache, same service, same method (4 cores; variants in `bench/web/variants`):
+
+- **job** (`main.nl`): one cache job holds rows; connection jobs ask it through mailboxes.
+- **nocache**: every request reads SQLite itself.
+- **sharded**: four cache jobs, key % 4 picks one.
+- **shared**: a process-wide table in the runtime (`env.cache_get` / `env.cache_put`, direct-mapped, one tiny lock per
+  slot), holding the *rendered response body*; a hit never leaves the connection job. (It also skips rendering on a hit,
+  which the other variants do not; part of its gain is that.)
+
+| connections | job | nocache | sharded | shared |
+| --- | --- | --- | --- | --- |
+| 4 | 59.9k | 62.3k | 58.6k | 58.2k |
+| 64 | 275k (p50 222 us) | 144k (434 us) | 267k (229 us) | **331k** (189 us) |
+| 1000 | 226k | 130k | 216k | 222k |
+
+- The cache matters: without it throughput halves (144k at 64).
+- Sharding the cache job gains nothing: the single cache job was not the bottleneck at these rates.
+- A shared table in the runtime is 20% faster at 64 connections (no hop, no render on a hit) and equal at 1000, where
+  the kernel's socket work and the scheduler dominate for all variants. At 4 connections everything is latency bound.
+- Reading: use the shared table for plain memoizing of small values (reads dominate, no policy). Keep a cache *job*
+  when the cache has logic: eviction or expiry policy, invalidation, write-behind, ordering with other messages, a
+  value too big to copy per hit. The job's cost is one park/wake round trip per request, about 20% at medium load.
