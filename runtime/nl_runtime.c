@@ -1251,6 +1251,26 @@ int64_t nl_thread_join(void *raw) {
 
 int64_t nl_host_cores(void *host);
 
+/* A monotonic clock in nanoseconds (not tied to the calendar), and in milliseconds for programs (Env.now_ms). */
+int64_t nl_now_ns(void) {
+#if NL_WINDOWS
+    LARGE_INTEGER counter, frequency;
+    QueryPerformanceCounter(&counter);
+    QueryPerformanceFrequency(&frequency);
+    return (int64_t)((counter.QuadPart / frequency.QuadPart) * INT64_C(1000000000) +
+                     (counter.QuadPart % frequency.QuadPart) * INT64_C(1000000000) / frequency.QuadPart);
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * INT64_C(1000000000) + (int64_t)now.tv_nsec;
+#endif
+}
+
+int64_t nl_now_ms(void *env) {
+    (void)env;
+    return nl_now_ns() / 1000000;
+}
+
 /* ---- Coroutines: jobs that suspend instead of blocking a thread (Linux) ----
    A job is a coroutine with a native stack of its own (and its data stack from its context). A few worker threads
    (one per granted core) run ready jobs. A job that has to wait, for a mailbox message, for a socket to become
@@ -1293,8 +1313,22 @@ typedef struct nl_coro {
     _Atomic int state;
     int finished;
     volatile int32_t *wait_address;
+    uint64_t wait_serial;   /* identifies the current wait, so a timer for an earlier wait is ignored */
+    int timed_out;
     struct nl_coro *next;
 } nl_coro;
+
+/* Timers: a min-heap of (deadline, job, wait serial). A job that parks with a timeout is both a waiter on its address and
+   a timer; whichever finds it first (a waker or the timer) takes it off the waiter list, so only one resumes it.
+   Records are never freed (only reused), so a timer entry that outlives its job's wait or its job is harmless. */
+typedef struct { int64_t deadline; nl_coro *coro; uint64_t serial; } nl_timer;
+static pthread_mutex_t nl_timer_lock = PTHREAD_MUTEX_INITIALIZER;
+static nl_timer *nl_timer_heap;
+static size_t nl_timer_count, nl_timer_capacity;
+static volatile int64_t nl_timer_earliest = INT64_MAX;
+static volatile uint64_t nl_wait_serial_counter;
+static nl_coro *nl_free_coros;
+static pthread_mutex_t nl_coro_pool_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #define NL_CORO_NATIVE_STACK_BYTES (UINT64_C(1) * 1024 * 1024)
 #define NL_WAITER_BUCKETS 256
@@ -1324,6 +1358,9 @@ static __attribute__((noinline)) nl_coro *nl_current_coro(void) { return nl_runn
 #if !defined(NL_CORO_ASM_SWITCH)
 static __attribute__((noinline)) ucontext_t *nl_scheduler_ptr(void) { return &nl_scheduler_context; }
 #endif
+
+static void nl_timer_add(int64_t deadline, nl_coro *coro, uint64_t serial);
+static void nl_timers_fire(void);
 
 static void nl_ready_push(nl_coro *coro) {
     pthread_mutex_lock(&nl_ready_lock);
@@ -1385,9 +1422,70 @@ static void nl_stack_put(void *stack, size_t bytes) {
     if (stack) munmap(stack, bytes);
 }
 
+static void nl_timer_swap(size_t a, size_t b) { nl_timer t = nl_timer_heap[a]; nl_timer_heap[a] = nl_timer_heap[b]; nl_timer_heap[b] = t; }
+
+static void nl_timer_add(int64_t deadline, nl_coro *coro, uint64_t serial) {
+    pthread_mutex_lock(&nl_timer_lock);
+    if (nl_timer_count == nl_timer_capacity) {
+        nl_timer_capacity = nl_timer_capacity ? nl_timer_capacity * 2 : 256;
+        nl_timer_heap = (nl_timer *)realloc(nl_timer_heap, nl_timer_capacity * sizeof(nl_timer));
+        if (!nl_timer_heap) nl_stack_startup_failure("cannot allocate the timer heap");
+    }
+    size_t at = nl_timer_count++;
+    nl_timer_heap[at] = (nl_timer){deadline, coro, serial};
+    while (at > 0 && nl_timer_heap[(at - 1) / 2].deadline > nl_timer_heap[at].deadline) { nl_timer_swap(at, (at - 1) / 2); at = (at - 1) / 2; }
+    int64_t previous = nl_timer_earliest;
+    nl_timer_earliest = nl_timer_heap[0].deadline;
+    pthread_mutex_unlock(&nl_timer_lock);
+    if (deadline < previous) {
+        pthread_mutex_lock(&nl_ready_lock);
+        int notify = nl_idle_workers > 0;
+        pthread_mutex_unlock(&nl_ready_lock);
+        if (notify) { uint64_t one = 1; ssize_t ignored = write(nl_wake_fd, &one, sizeof(one)); (void)ignored; }
+    }
+}
+
+/* Resume the jobs whose deadline has passed (those still waiting for the wait the timer was made for). */
+static void nl_timers_fire(void) {
+    int64_t now = nl_now_ns();
+    for (;;) {
+        pthread_mutex_lock(&nl_timer_lock);
+        if (nl_timer_count == 0 || nl_timer_heap[0].deadline > now) {
+            nl_timer_earliest = nl_timer_count ? nl_timer_heap[0].deadline : INT64_MAX;
+            pthread_mutex_unlock(&nl_timer_lock);
+            return;
+        }
+        nl_timer entry = nl_timer_heap[0];
+        nl_timer_heap[0] = nl_timer_heap[--nl_timer_count];
+        size_t at = 0;
+        for (;;) {
+            size_t left = at * 2 + 1, right = left + 1, smallest = at;
+            if (left < nl_timer_count && nl_timer_heap[left].deadline < nl_timer_heap[smallest].deadline) smallest = left;
+            if (right < nl_timer_count && nl_timer_heap[right].deadline < nl_timer_heap[smallest].deadline) smallest = right;
+            if (smallest == at) break;
+            nl_timer_swap(at, smallest);
+            at = smallest;
+        }
+        pthread_mutex_unlock(&nl_timer_lock);
+        nl_coro *coro = entry.coro;
+        int claimed = 0;
+        pthread_mutex_lock(&nl_waiters_lock);
+        if (coro->wait_serial == entry.serial && coro->wait_address) {
+            unsigned bucket = (unsigned)(((uintptr_t)coro->wait_address >> 4) % NL_WAITER_BUCKETS);
+            for (nl_coro **link = &nl_waiters[bucket]; *link; link = &(*link)->next) {
+                if (*link == coro) { *link = coro->next; claimed = 1; break; }
+            }
+            if (claimed) { coro->timed_out = 1; coro->wait_address = NULL; }
+        }
+        pthread_mutex_unlock(&nl_waiters_lock);
+        if (claimed) nl_coro_make_ready(coro);
+    }
+}
+
 static nl_coro *nl_ready_pop_or_wait(void) {
     struct epoll_event events[64];
     for (;;) {
+        if (nl_timer_earliest != INT64_MAX) nl_timers_fire();
         pthread_mutex_lock(&nl_ready_lock);
         nl_coro *coro = nl_ready_head;
         if (coro) {
@@ -1400,7 +1498,13 @@ static nl_coro *nl_ready_pop_or_wait(void) {
         }
         nl_idle_workers++;
         pthread_mutex_unlock(&nl_ready_lock);
-        int count = epoll_wait(nl_epoll_fd, events, 64, -1);
+        int timeout_ms = -1;
+        int64_t earliest = nl_timer_earliest;
+        if (earliest != INT64_MAX) {
+            int64_t wait_ns = earliest - nl_now_ns();
+            timeout_ms = wait_ns <= 0 ? 0 : (wait_ns > INT64_C(1000000000000) ? 1000000 : (int)((wait_ns + 999999) / 1000000));
+        }
+        int count = epoll_wait(nl_epoll_fd, events, 64, timeout_ms);
         pthread_mutex_lock(&nl_ready_lock);
         nl_idle_workers--;
         pthread_mutex_unlock(&nl_ready_lock);
@@ -1429,7 +1533,11 @@ static void *nl_worker_main(void *unused) {
         nl_running_coro = NULL;
         if (coro->finished) {
             nl_stack_put(coro->stack, coro->stack_bytes);
-            free(coro);
+            pthread_mutex_lock(&nl_coro_pool_lock);
+            coro->wait_address = NULL;
+            coro->next = nl_free_coros;
+            nl_free_coros = coro;
+            pthread_mutex_unlock(&nl_coro_pool_lock);
             if (__atomic_sub_fetch(&nl_live_jobs, 1, __ATOMIC_SEQ_CST) == 0) {
                 syscall(SYS_futex, &nl_live_jobs, 129 /* FUTEX_WAKE_PRIVATE */, 2147483647, NULL, NULL, 0);
             }
@@ -1462,17 +1570,20 @@ void nl_yield(void) {
 
 static int32_t nl_coro_park(volatile int32_t *address, int32_t expected, int64_t timeout_nanos) {
     nl_coro *coro = nl_current_coro();
-    if (timeout_nanos >= 0) { nl_yield(); return 1; }
     pthread_mutex_lock(&nl_waiters_lock);
     if (*address != expected) { pthread_mutex_unlock(&nl_waiters_lock); return 0; }
     unsigned bucket = (unsigned)(((uintptr_t)address >> 4) % NL_WAITER_BUCKETS);
     coro->wait_address = address;
+    coro->timed_out = 0;
+    uint64_t serial = __atomic_add_fetch(&nl_wait_serial_counter, 1, __ATOMIC_SEQ_CST);
+    coro->wait_serial = serial;
     atomic_store(&coro->state, NL_CORO_PARKING);
     coro->next = nl_waiters[bucket];
     nl_waiters[bucket] = coro;
     pthread_mutex_unlock(&nl_waiters_lock);
+    if (timeout_nanos >= 0) nl_timer_add(nl_now_ns() + timeout_nanos, coro, serial);
     nl_coro_switch_out(coro);
-    return 0;
+    return coro->timed_out ? 1 : 0;
 }
 
 static void nl_coro_wake(volatile int32_t *address, int32_t count) {
@@ -1528,7 +1639,18 @@ static void nl_workers_start(void) {
 /* spawn: a new job on the ready queue. */
 static void nl_coro_spawn(void *(*entry)(void *), void *argument) {
     if (!nl_workers_started) nl_workers_start();
-    nl_coro *coro = (nl_coro *)calloc(1, sizeof(*coro));
+    pthread_mutex_lock(&nl_coro_pool_lock);
+    nl_coro *coro = nl_free_coros;
+    if (coro) nl_free_coros = coro->next;
+    pthread_mutex_unlock(&nl_coro_pool_lock);
+    if (coro) {
+        void *keep_stack = NULL; (void)keep_stack;
+        uint64_t serial = coro->wait_serial;   /* kept: an old timer entry must still not match */
+        memset(coro, 0, sizeof(*coro));
+        coro->wait_serial = serial;
+    } else {
+        coro = (nl_coro *)calloc(1, sizeof(*coro));
+    }
     if (!coro) nl_stack_startup_failure("cannot start a job");
     coro->entry = entry;
     coro->argument = argument;

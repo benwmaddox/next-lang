@@ -74,6 +74,9 @@ class Service:
         self.state = []      # (name, type, initial)
         self.mailbox = 64
         self.init = ""
+        self.tick_ms = 0
+        self.tick_body = ""
+        self.tick_line = 0
         self.handlers = []
 
 
@@ -107,7 +110,7 @@ def read_services(path):
         if match:
             service.mailbox = int(match.group(1))
             continue
-        header = re.fullmatch(r"(init|on\s+(\w+)\s*\((.*)\)(?:\s*->\s*(.+?))?)\s*\{\s*", line)
+        header = re.fullmatch(r"(init|tick\s+every\s+(\d+)\s*(ms|s)|on\s+(\w+)\s*\((.*)\)(?:\s*->\s*(.+?))?)\s*\{\s*", line)
         if header:
             body = []
             while index < len(lines) and lines[index] != "}":
@@ -119,12 +122,16 @@ def read_services(path):
             text = "\n".join(body)
             if header.group(1) == "init":
                 service.init = text
+            elif header.group(1).startswith("tick"):
+                service.tick_ms = int(header.group(2)) * (1000 if header.group(3) == "s" else 1)
+                service.tick_body = text
+                service.tick_line = number
             else:
                 params = []
-                for item in split_top(header.group(3)):
+                for item in split_top(header.group(5)):
                     pname, _, ptype = item.partition(":")
                     params.append((pname.strip(), ptype.strip()))
-                service.handlers.append(Handler(header.group(2), params, header.group(4).strip() if header.group(4) else None, text, number))
+                service.handlers.append(Handler(header.group(4), params, header.group(6).strip() if header.group(6) else None, text, number))
             continue
         raise ServiceError(f"{path}:{number}: unexpected `{line.strip()}`")
     return services
@@ -142,6 +149,8 @@ def generate(service, path, known=()):
         return f"Sender<{type_}Message>" if type_ in known else type_
     if not service.handlers:
         raise ServiceError(f"{path}:{service.line}: service {name} has no `on` handler")
+    if service.tick_ms and ("env", "Env") not in service.config:
+        raise ServiceError(f"{path}:{service.tick_line}: a service with `tick` needs `config env: Env` (the clock)")
     seen = set()
     for handler in service.handlers:
         if handler.name in seen or handler.name == "Stop":
@@ -183,6 +192,8 @@ def generate(service, path, known=()):
             out.append(f"fn {name}_answer_{snake(handler.name)}(to: Sender<{handler.reply}>, value: {handler.reply}) {{\n"
                        f"    match to.send(value) {{\n        ok(_) => {{}},\n        err(_) => {{}},\n    }}\n}}\n")
         out.append(f"fn {name}_on_{snake(handler.name)}({', '.join(f'{n}: {t}' for n, t in params)}) {{\n{body}\n}}\n")
+    if service.tick_ms:
+        out.append(f"fn {name}_on_tick(state: write {name}State, config: {name}Config, me: {name}, missed: long) {{\n{service.tick_body}\n}}\n")
     # run loop
     run_params = [("inbox", f"Receiver<{message}>"), ("self_inbox", f"Sender<{message}>")] + [(n, raw_type(t)) for n, t in service.config]
     state_init = ", ".join(f"{n}: {i}" for n, _, i in service.state) if service.state else "unused: 0L"
@@ -200,11 +211,29 @@ def generate(service, path, known=()):
            f"    let me = {name} {{ inbox: self_inbox }}"]
     if service.init:
         run.append("    // init\n" + service.init)
-    run += ["    for svc_turn in 0L..4000000000L {",
-            "        match inbox.recv_wait() {",
-            "            some(message) => {",
-            "                match message {"] + arms + [
-            "                }", "            },", "            none => { break },", "        }", "    }", "}\n"]
+    if service.tick_ms:
+        period = service.tick_ms
+        run += [f"    var next_tick = config.env.now_ms() + {period}L",
+                "    for svc_turn in 0L..4000000000L {",
+                "        var wait = next_tick - config.env.now_ms()",
+                "        if wait < 0L { wait = 0L }",
+                "        match inbox.recv_for(wait) {",
+                "            some(message) => {",
+                "                match message {"] + arms + [
+                "                }", "            },",
+                "            none => { if inbox.is_closed() { break } },", "        }",
+                "        let after = config.env.now_ms()",
+                "        if after >= next_tick {",
+                f"            let missed = (after - next_tick) / {period}L",
+                f"            {name}_on_tick(state, config, me, missed)",
+                f"            next_tick = next_tick + (missed + 1L) * {period}L",
+                "        }", "    }", "}\n"]
+    else:
+        run += ["    for svc_turn in 0L..4000000000L {",
+                "        match inbox.recv_wait() {",
+                "            some(message) => {",
+                "                match message {"] + arms + [
+                "                }", "            },", "            none => { break },", "        }", "    }", "}\n"]
     out.append("\n".join(run))
     # start
     start_params = ", ".join(f"{n}: {t}" for n, t in service.config)
@@ -241,6 +270,46 @@ def generate(service, path, known=()):
     return "\n".join(out)
 
 
+def check_services(parsed):
+    """Whole-package checks: handlers never wait, replies are answered, and the message graph is printed on request."""
+    services = {service.name: service for _, services in parsed for service in services}
+    waits = {}   # sender function -> service, for calls that wait for a reply
+    sends = {}   # sender function -> service, for fire-and-forget sends
+    for service in services.values():
+        for handler in service.handlers:
+            function = f"{service.name}_{snake(handler.name)}"
+            (waits if handler.reply else sends)[function] = service.name
+    edges = []
+    for path, found in parsed:
+        for service in found:
+            bodies = [(handler, handler.body, handler.line, f"{service.name}.{handler.name}") for handler in service.handlers]
+            if service.tick_ms:
+                bodies.append((None, service.tick_body, service.tick_line, f"{service.name}.tick"))
+            for handler, handler_body, handler_line, label in bodies:
+                handler = handler or Handler("tick", [], None, handler_body, handler_line)
+                body = re.sub(r"//[^\n]*", "", handler.body)
+                where = f"{path}:{handler.line}"
+                for function, target in waits.items():
+                    if re.search(rf"\b{function}\s*\(", body):
+                        raise ServiceError(f"{where}: handler {service.name}.{handler.name} calls {function} and would wait for the answer; "
+                                           f"a service handler never waits. Pass `reply` (or a sender) on to the other service instead")
+                for function, target in list(sends.items()) + list(waits.items()):
+                    if re.search(rf"\b{function}\s*\(", body):
+                        edges.append((service.name, handler.name, target, function))
+                if handler.reply:
+                    answers = re.search(r"\breply\s*\(", body) or re.search(r"\breply\s*[,)]", body)
+                    if not answers:
+                        raise ServiceError(f"{where}: handler {service.name}.{handler.name} declares a reply (-> {handler.reply}) but never answers: "
+                                           f"call reply(value), or pass `reply` on to another service")
+                elif re.search(r"\breply\b", body):
+                    raise ServiceError(f"{where}: handler {service.name}.{handler.name} uses `reply` but declares none; add `-> Type`")
+    return edges
+
+
+def graph_text(edges):
+    return "\n".join(f"{source}.{handler} -> {target} ({function})" for source, handler, target, function in sorted(set(edges)))
+
+
 def compile_package(directory):
     sources = [name for name in sorted(os.listdir(directory)) if name.endswith(".svc")]
     if not sources:
@@ -248,10 +317,13 @@ def compile_package(directory):
     pieces = ["// Generated by tools/svc.py from the package's .svc files; do not edit.\n"]
     parsed = [(os.path.join(directory, name), read_services(os.path.join(directory, name))) for name in sources]
     known = {service.name for _, services in parsed for service in services}
+    edges = check_services(parsed)
     for path, services in parsed:
         for service in services:
             pieces.append(generate(service, path, known))
     output = "\n".join(pieces)
+    if edges:
+        output += "\n// message graph (service.handler -> target service):\n" + "\n".join("// " + line for line in graph_text(edges).split("\n")) + "\n"
     target = os.path.join(directory, "services.gen.nl")
     previous = open(target, encoding="utf-8").read() if os.path.exists(target) else None
     if previous != output:

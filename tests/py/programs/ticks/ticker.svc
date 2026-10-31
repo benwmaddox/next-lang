@@ -1,0 +1,19 @@
+// A service with a fixed-rate tick: counts ticks, and how many it missed.
+service Ticker
+config env: Env
+state ticks: long = 0L
+state missed_total: long = 0L
+mailbox 8
+
+tick every 20 ms {
+    state.ticks += 1L
+    state.missed_total += missed
+}
+
+on Count() -> long {
+    reply(state.ticks)
+}
+
+on Missed() -> long {
+    reply(state.missed_total)
+}
