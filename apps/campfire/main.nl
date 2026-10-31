@@ -84,11 +84,22 @@ fn current_user(env: Env, connection: long, user: write User) -> bool {
     if env.http_header(connection, "Cookie", cookie) < 0L { return false }
     let token = Token { value: cookie_value(cookie, "session_token") }
     if token.value.count() == 0L { return false }
-    env.db_row("from (select u.id as id, u.name as name from sessions s join users u on u.id = s.user_id where s.token = ?1 and u.status = 0)", token, user)
+    env.db_row("""
+        from (select u.id as id, u.name as name
+              from sessions s join users u on u.id = s.user_id
+              where s.token = ?1 and u.status = 0)
+    """, token, user)
 }
 
+// The rooms the user is in, by name (a room with no name is a direct room).
 fn rooms_of(env: Env, user: User, rooms: write list<Room, 100>) {
-    discard env.db_rows("from (select r.id as id, coalesce(r.name, 'Direct') as name, r.type as kind from rooms r join memberships m on m.room_id = r.id where m.user_id = ?1 order by r.name) limit 100", user.id, rooms)
+    discard env.db_rows("""
+        from (select r.id as id, coalesce(r.name, 'Direct') as name, r.type as kind
+              from rooms r join memberships m on m.room_id = r.id
+              where m.user_id = ?1
+              order by r.name)
+        limit 100
+    """, user.id, rooms)
 }
 
 fn reply(env: Env, connection: long, status: long, kind: long, body: Page) -> bool {
@@ -119,11 +130,29 @@ fn serve(env: Env, connection: long) {
             var room = Room {}
             let member = RoomAndUser { room_id: id, user_id: user.id }
             var membership = Membership {}
-            if env.db_row("from (select id, coalesce(name, 'Direct') as name, type as kind from rooms) where id = ?1", id, room) && env.db_row("from memberships where room_id = ?1 and user_id = ?2", member, membership) {
+            let found_room = env.db_row("""
+                from (select id, coalesce(name, 'Direct') as name, type as kind from rooms)
+                where id = ?1
+            """, id, room)
+            let is_member = env.db_row("from memberships where room_id = ?1 and user_id = ?2", member, membership)
+            if found_room && is_member {
                 var rooms: list<Room, 100> = list {}
                 rooms_of(env, user, rooms)
                 var messages: list<Message, 40> = list {}
-                discard env.db_rows("from (select id, client_message_id, created_at, creator_id, author, body from (select m.id as id, m.client_message_id as client_message_id, m.created_at as created_at, m.creator_id as creator_id, u.name as author, coalesce(r.body, '') as body from messages m join users u on u.id = m.creator_id left join action_text_rich_texts r on r.record_id = m.id and r.record_type = 'Message' and r.name = 'body' where m.room_id = ?1 order by m.id desc limit 40) order by id asc) limit 40", id, messages)
+                // the room's last 40 messages, oldest first, each with its author and its rich-text body
+                discard env.db_rows("""
+                    from (select m.id as id, m.client_message_id as client_message_id, m.created_at as created_at,
+                                 m.creator_id as creator_id, u.name as author, coalesce(r.body, '') as body
+                          from messages m
+                          join users u on u.id = m.creator_id
+                          left join action_text_rich_texts r
+                            on r.record_id = m.id and r.record_type = 'Message' and r.name = 'body'
+                          where m.room_id = ?1
+                          order by m.id desc
+                          limit 40)
+                    order by id asc
+                    limit 40
+                """, id, messages)
                 render_room(page, user, room, rooms, messages)
             } else {
                 status = 404L

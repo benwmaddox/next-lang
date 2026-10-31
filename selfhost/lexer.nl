@@ -247,6 +247,67 @@ fn lex_file(
             }
             continue
         }
+        if value == 34 && pos + 2L < length && source[absolute + 1L] == 34 && source[absolute + 2L] == 34 {
+            // A multi-line string: """ ... """. Newlines are part of the text, the escapes are the ordinary ones, and a lone
+            // quote or two in a row is just text. The token is made to look like an ordinary string whose content is
+            // the text (it starts at the third opening quote and ends with the first closing one), so everything that
+            // reads a string's content reads this one the same way.
+            let long_start = pos
+            let long_line = line
+            let long_col = col
+            pos += 3L
+            col += 3L
+            var long_closed = false
+            var content_end = pos
+            for long_step in 0L..length {
+                if pos >= length { break }
+                let current = source[base + pos]
+                if current == 34 && pos + 2L < length + 0L && source[base + pos + 1L] == 34 && source[base + pos + 2L] == 34 {
+                    content_end = pos
+                    pos += 3L
+                    col += 3L
+                    long_closed = true
+                    break
+                }
+                if current == 92 {
+                    pos += 1L
+                    col += 1L
+                    if pos >= length { break }
+                    let escaped = source[base + pos]
+                    if escaped == 120 {
+                        if pos + 2L >= length || !is_hex_digit(source[base + pos + 1L]) || !is_hex_digit(source[base + pos + 2L]) {
+                            return err(token_error(LexProblemKind.InvalidHexEscape, long_start, long_line, long_col, 0))
+                        }
+                        pos += 3L
+                        col += 3L
+                        continue
+                    }
+                    if escaped == 34 || escaped == 92 || escaped == 110 || escaped == 116 || escaped == 48 {
+                        pos += 1L
+                        col += 1L
+                        continue
+                    }
+                    return err(token_error(LexProblemKind.UnsupportedEscape, long_start, long_line, long_col, 0))
+                }
+                if current == 10 {
+                    pos += 1L
+                    line += 1L
+                    col = 1L
+                    continue
+                }
+                let long_width = utf8_width(current)
+                pos += long_width
+                col += long_width
+            }
+            if !long_closed {
+                return err(token_error(LexProblemKind.UnclosedString, long_start, long_line, long_col, 0))
+            }
+            match emit_token(tokens, file_token_count, TokenKind.String, long_start + 2L, content_end - long_start - 1L, long_line, long_col) {
+                ok(_) => { last_kind = TokenKind.String },
+                err(problem) => return err(problem),
+            }
+            continue
+        }
         if value == 34 {
             pos += 1L
             col += 1L
