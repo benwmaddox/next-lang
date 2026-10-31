@@ -282,7 +282,7 @@ fn lex_file(
                         col += 3L
                         continue
                     }
-                    if escaped == 34 || escaped == 92 || escaped == 110 || escaped == 116 || escaped == 48 {
+                    if escaped == 34 || escaped == 92 || escaped == 110 || escaped == 114 || escaped == 116 || escaped == 48 {
                         pos += 1L
                         col += 1L
                         continue
@@ -334,7 +334,7 @@ fn lex_file(
                         col += 3L
                         continue
                     }
-                    if escaped == 34 || escaped == 92 || escaped == 110 || escaped == 116 || escaped == 48 {
+                    if escaped == 34 || escaped == 92 || escaped == 110 || escaped == 114 || escaped == 116 || escaped == 48 {
                         pos += 1L
                         col += 1L
                         continue

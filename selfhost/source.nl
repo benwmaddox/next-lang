@@ -143,7 +143,7 @@ fn write_lex_diagnostic(
     } else {
         let message: Ascii max 160 = match problem.kind {
             LexProblemKind.UnexpectedCharacter => "unexpected character",
-            LexProblemKind.UnsupportedEscape => "unsupported string escape; use \", \\\\, \\n, \\t, \\0, or \\xNN",
+            LexProblemKind.UnsupportedEscape => "unsupported string escape; use \", \\\\, \\n, \\r, \\t, \\0, or \\xNN",
             LexProblemKind.InvalidHexEscape => "\\x escape needs exactly two hexadecimal digits",
             LexProblemKind.NewlineInString => "string literals cannot contain a newline; escape it as \\n",
             LexProblemKind.UnclosedString => "unclosed string literal; add a closing quote",

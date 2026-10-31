@@ -388,6 +388,7 @@ fn decode_string_token(
             if escape == 34 { value.push(34).unwrap(); index += 2L }
             else if escape == 92 { value.push(92).unwrap(); index += 2L }
             else if escape == 110 { value.push(10).unwrap(); index += 2L }
+            else if escape == 114 { value.push(13).unwrap(); index += 2L }
             else if escape == 116 { value.push(9).unwrap(); index += 2L }
             else if escape == 48 { value.push(0).unwrap(); index += 2L }
             else {

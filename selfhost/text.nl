@@ -224,7 +224,7 @@ fn decoded_string_token_byte_length(
         } else {
             if index + 1L >= end { return -1L }
             let escape = source[index + 1L]
-            if escape == 34 || escape == 92 || escape == 110 || escape == 116 || escape == 48 {
+            if escape == 34 || escape == 92 || escape == 110 || escape == 114 || escape == 116 || escape == 48 {
                 length += 1L
                 index += 2L
             } else {

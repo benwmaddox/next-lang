@@ -2908,7 +2908,12 @@ void nl_out_write(void *handle, void *data_value, int data_is_argument, uint64_t
 #define NL_HTTP_BUFFER 8192
 
 /* `head` keeps the request line and headers of the request last returned by http_read, for Env.http_header. */
-typedef struct { uint32_t length; uint32_t head_length; unsigned char data[NL_HTTP_BUFFER]; unsigned char head[NL_HTTP_BUFFER]; } nl_http_buffer;
+#define NL_HTTP_OUT_HEADERS 2048
+typedef struct {
+    uint32_t length; uint32_t head_length; uint32_t out_length;
+    unsigned char data[NL_HTTP_BUFFER]; unsigned char head[NL_HTTP_BUFFER];
+    unsigned char out[NL_HTTP_OUT_HEADERS];   /* header lines for the next response, each ending in CRLF */
+} nl_http_buffer;
 static nl_http_buffer *nl_http_buffers[NL_HTTP_CONNECTIONS];
 
 int64_t nl_net_listen(void *env, int64_t port) {
@@ -2948,7 +2953,7 @@ int64_t nl_net_accept(void *env, int64_t listener) {
 int64_t nl_net_close(void *env, int64_t fd) {
     (void)env;
     /* the connection's buffer stays with its descriptor number for the next connection that gets it (no free) */
-    if (fd >= 0 && fd < NL_HTTP_CONNECTIONS && nl_http_buffers[fd]) { nl_http_buffers[fd]->length = 0; nl_http_buffers[fd]->head_length = 0; }
+    if (fd >= 0 && fd < NL_HTTP_CONNECTIONS && nl_http_buffers[fd]) { nl_http_buffers[fd]->length = 0; nl_http_buffers[fd]->head_length = 0; nl_http_buffers[fd]->out_length = 0; }
     return close((int)fd);
 }
 
@@ -3062,16 +3067,52 @@ int64_t nl_http_header(void *env, int64_t fd, void *name_descriptor, uint64_t na
     return -1;
 }
 
+/* Add a header line (for example "Location: /rooms/1" or "Set-Cookie: session_token=abc; HttpOnly; Path=/") to the next response
+   on the connection; they are sent by the next http_write and then forgotten. Refused (-1) when the line has a line break in it
+   (header injection), is empty, or does not fit. */
+int64_t nl_http_set_header(void *env, int64_t fd, void *line_descriptor, uint64_t capacity) {
+    (void)env;
+    unsigned char scratch[4096];
+    const unsigned char *line; uint64_t length; int tag = -1, code = 0;
+    if (fd < 0 || fd >= NL_HTTP_CONNECTIONS) return -1;
+    if (!nl_extract_raw(line_descriptor, 2, capacity, scratch, &line, &length, &tag, &code) || length == 0) return -1;
+    for (uint64_t index = 0; index < length; ++index) if (line[index] == '\r' || line[index] == '\n' || line[index] == 0) return -1;
+    if (!memchr(line, ':', (size_t)length)) return -1;
+    nl_http_buffer *buffer = nl_http_buffers[fd];
+    if (!buffer) {
+        buffer = (nl_http_buffer *)calloc(1, sizeof(*buffer));
+        if (!buffer) return -1;
+        nl_http_buffers[fd] = buffer;
+    }
+    if (buffer->out_length + length + 2 > NL_HTTP_OUT_HEADERS) return -1;
+    memcpy(buffer->out + buffer->out_length, line, (size_t)length);
+    buffer->out_length += (uint32_t)length;
+    buffer->out[buffer->out_length++] = '\r';
+    buffer->out[buffer->out_length++] = '\n';
+    return 0;
+}
+
 int64_t nl_http_write(void *env, int64_t fd, int64_t status, int64_t kind, void *body_descriptor, uint64_t capacity) {
     (void)env;
     unsigned char scratch[4096];
     const unsigned char *bytes; uint64_t length; int tag = -1, code = 0;
     if (!nl_extract_raw(body_descriptor, 2, capacity, scratch, &bytes, &length, &tag, &code)) return -1;
-    const char *reason = status == 200 ? "OK" : status == 404 ? "Not Found" : status == 503 ? "Service Unavailable" : status == 400 ? "Bad Request" : "Status";
+    const char *reason = status == 200 ? "OK" : status == 201 ? "Created" : status == 204 ? "No Content" : status == 302 ? "Found" :
+        status == 303 ? "See Other" : status == 400 ? "Bad Request" : status == 401 ? "Unauthorized" : status == 403 ? "Forbidden" :
+        status == 404 ? "Not Found" : status == 422 ? "Unprocessable Content" : status == 429 ? "Too Many Requests" :
+        status == 503 ? "Service Unavailable" : "Status";
     const char *type = kind == 1 ? "application/json" : kind == 2 ? "text/plain; charset=utf-8" : "text/html; charset=utf-8";
-    char head[256];
-    int head_length = snprintf(head, sizeof(head), "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\n\r\n",
+    char head[400 + NL_HTTP_OUT_HEADERS];
+    int head_length = snprintf(head, 400, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\n",
                                (int)status, reason, type, (unsigned long long)length);
+    nl_http_buffer *pending = fd >= 0 && fd < NL_HTTP_CONNECTIONS ? nl_http_buffers[fd] : NULL;
+    if (pending && pending->out_length) {
+        memcpy(head + head_length, pending->out, pending->out_length);
+        head_length += (int)pending->out_length;
+        pending->out_length = 0;
+    }
+    head[head_length++] = '\r';
+    head[head_length++] = '\n';
     struct iovec parts[2] = {{head, (size_t)head_length}, {(void *)bytes, (size_t)length}};
     size_t total = (size_t)head_length + (size_t)length, sent = 0;
     int first = 0;
@@ -3103,6 +3144,9 @@ int64_t nl_http_write(void *env, int64_t fd, int64_t status, int64_t kind, void 
 }
 int64_t nl_http_header(void *env, int64_t fd, void *name_descriptor, uint64_t name_capacity, unsigned char *out, uint64_t out_capacity, int64_t *count) {
     (void)env; (void)fd; (void)name_descriptor; (void)name_capacity; (void)out; (void)out_capacity; (void)count; return -1;
+}
+int64_t nl_http_set_header(void *env, int64_t fd, void *line_descriptor, uint64_t capacity) {
+    (void)env; (void)fd; (void)line_descriptor; (void)capacity; return -1;
 }
 #endif
 
