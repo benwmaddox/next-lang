@@ -43,6 +43,9 @@ def parse_type(text):
     match = re.fullmatch(r"(Bytes|Ascii)\s+max\s+(\d+)", text)
     if match:
         return (match.group(1).lower(), int(match.group(2)))
+    match = re.fullmatch(r"list\s*<\s*(\w+)\s*,\s*(\d+)\s*>", text)
+    if match:
+        return ("list", match.group(1), int(match.group(2)))
     return ("struct", text)
 
 
@@ -83,6 +86,11 @@ class If:
         self.path, self.then, self.other, self.line = path, then, other, line
 
 
+class For:
+    def __init__(self, name, path, element, count, body, line):
+        self.name, self.path, self.element, self.count, self.body, self.line = name, path, element, count, body, line
+
+
 class Template:
     def __init__(self, kind, name, params, size, body, line):
         self.kind, self.name, self.params, self.size, self.body, self.line = kind, name, params, size, body, line
@@ -96,6 +104,10 @@ def split_params(text):
     depth = 0
     current = ""
     for char in text:
+        if char == "<":
+            depth += 1
+        elif char == ">":
+            depth -= 1
         if char == "," and depth == 0:
             params.append(current)
             current = ""
@@ -157,6 +169,8 @@ class HtmlState:
         return other
 
     def key(self):
+        if self.mode == "text":
+            return ("text",)   # what was seen of earlier tags does not matter once back in the text
         return (self.mode, self.tag, self.attr, self.value, self.raw_until)
 
     def feed(self, text):
@@ -272,6 +286,7 @@ class JsonState:
 
 def parse_body(template, structs, path):
     params = {name: parse_type(type_) for name, type_ in template.params}
+    loop_scopes = []    # loop variable name -> struct type, innermost last
     where_base = f"{path}:{template.line}"
     state = HtmlState() if template.kind == "html" else JsonState()
     text = template.body
@@ -279,15 +294,36 @@ def parse_body(template, structs, path):
 
     def resolve(expression, line):
         parts = expression.split(".")
-        if parts[0] not in params:
-            raise TemplateError(f"{path}:{line}: `{parts[0]}` is not a parameter of template {template.name}")
-        type_ = params[parts[0]]
+        type_ = None
+        for scope in reversed(loop_scopes):
+            if parts[0] in scope:
+                type_ = ("struct", scope[parts[0]])
+                break
+        if type_ is None:
+            if parts[0] not in params:
+                raise TemplateError(f"{path}:{line}: `{parts[0]}` is not a parameter of template {template.name}")
+            type_ = params[parts[0]]
         for field in parts[1:]:
             if type_[0] != "struct" or type_[1] not in structs or field not in structs[type_[1]]:
                 raise TemplateError(f"{path}:{line}: `{expression}` names no field `{field}`")
             type_ = structs[type_[1]][field]
         if type_[0] == "struct":
             raise TemplateError(f"{path}:{line}: `{expression}` is a struct; name one of its fields")
+        if type_[0] == "list":
+            raise TemplateError(f"{path}:{line}: `{expression}` is a list; loop over it with {{#for item in {expression}}}")
+        return type_
+
+    def resolve_list(expression, line):
+        parts = expression.split(".")
+        type_ = params.get(parts[0])
+        for field in parts[1:]:
+            if type_ is None or type_[0] != "struct" or type_[1] not in structs or field not in structs[type_[1]]:
+                raise TemplateError(f"{path}:{line}: `{expression}` names no field `{field}`")
+            type_ = structs[type_[1]][field]
+        if type_ is None or type_[0] != "list":
+            raise TemplateError(f"{path}:{line}: `{{#for}}` needs a list<Row, N>, and `{expression}` is not one")
+        if type_[1] not in structs:
+            raise TemplateError(f"{path}:{line}: the list's element type `{type_[1]}` is not a struct of the package")
         return type_
 
     def line_at(offset):
@@ -325,7 +361,20 @@ def parse_body(template, structs, path):
                         flush()
                         position = end + 1
                         return nodes, word[0]
-                    if word[0] == "#if" and len(word) == 2:
+                    if word[0] == "#for" and len(word) == 4 and word[2] == "in":
+                        flush()
+                        position = end + 1
+                        list_type = resolve_list(word[3], line)
+                        before = state.copy()
+                        loop_scopes.append({word[1]: list_type[1]})
+                        body, tag = parse_nodes({"#end"})
+                        loop_scopes.pop()
+                        if tag != "#end":
+                            raise TemplateError(f"{path}:{line}: `{{#for}}` has no `{{#end}}`")
+                        if state.key() != before.key():
+                            raise TemplateError(f"{path}:{line}: the body of this `{{#for}}` leaves the {template.kind} in a different place than it found it (an open tag or string); close it in every round")
+                        nodes.append(For(word[1], word[3], list_type[1], list_type[2], body, line))
+                    elif word[0] == "#if" and len(word) == 2:
                         flush()
                         position = end + 1
                         type_ = resolve(word[1], line)
@@ -404,6 +453,8 @@ def max_size(nodes):
             total += len(node.text)
         elif isinstance(node, Hole):
             total += hole_size(node)
+        elif isinstance(node, For):
+            total += node.count * max_size(node.body)
         else:
             total += max(max_size(node.then), max_size(node.other))
     return total
@@ -550,6 +601,10 @@ class Emitter:
                     lines.append(f"{pad}{self.boolean(size)}(out, {expression})")
                 else:
                     lines.append(f"{pad}{self.escape(node.context, kind, limit, size)}(out, {expression})")
+            elif isinstance(node, For):
+                lines.append(f"{pad}for {node.name} in {node.path} {{")
+                self.write_nodes(node.body, size, indent + 1, lines)
+                lines.append(f"{pad}}}")
             else:
                 lines.append(f"{pad}if {node.path} {{")
                 self.write_nodes(node.then, size, indent + 1, lines)

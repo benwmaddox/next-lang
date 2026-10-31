@@ -4,3 +4,5 @@ html template page(row: Row, taxed: long) max 400
 {#if row.found}<p>${taxed|money}</p>{#else}<p>gone</p>{#end}
 json template item(row: Row) max 300
 {{"id":{row.key},"name":{row.name},"note":"a {row.name} b","ok":{row.found}}}
+html template rows(items: list<Row, 3>) max 600
+<ul>{#for r in items}<li class="n{r.key}">{r.name}</li>{#end}</ul>

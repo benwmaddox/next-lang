@@ -48,11 +48,25 @@ class Generator(unittest.TestCase):
 
     def test_the_two_sides_of_an_if_must_leave_the_html_in_the_same_place(self):
         with self.assertRaises(tmpl.TemplateError):
-            compile_template("html template t(row: Row) max 2000\n{#if row.found}<b>{#else}<i>{#end}x\n")
+            compile_template("html template t(row: Row) max 2000\n{#if row.found}<b class=\"{#else}<i>{#end}x\n")
 
     def test_non_ascii_text_is_refused(self):
         with self.assertRaises(tmpl.TemplateError):
             compile_template("html template t(row: Row) max 2000\n<p>café</p>\n")
+
+    def test_loops_over_lists_bound_the_output_by_the_count(self):
+        # 3 rows of  <li>  +  16 bytes of name at up to 6 bytes each  +  </li>  =  4 + 96 + 5 = 105 per row, and 4 + 5 for the list
+        generated = compile_template("html template t(items: list<Row, 3>) max 330\n<ul>{#for r in items}<li>{r.name}</li>{#end}</ul>\n")
+        self.assertIn("for r in items {", generated)
+        with self.assertRaises(tmpl.TemplateError) as caught:
+            compile_template("html template t(items: list<Row, 3>) max 300\n<ul>{#for r in items}<li>{r.name}</li>{#end}</ul>\n")
+        self.assertIn("can write up to 324 bytes", str(caught.exception))
+
+    def test_loop_errors(self):
+        for body in ["{#for r in row}x{#end}", "{#for r in items}{r}{#end}", "{#for r in items}{r.nothing}{#end}", "{#for r in items}x",
+                     "{#for r in items}<b class=\"{#end}", "{#for r in nothing}x{#end}"]:
+            with self.assertRaises(tmpl.TemplateError, msg=body):
+                compile_template(f"html template t(row: Row, items: list<Row, 3>) max 2000\n{body}\n")
 
     def test_json_text_outside_quotes_is_quoted(self):
         generated = compile_template('json template t(row: Row) max 400\n{{"a":{row.name},"b":"x{row.name}"}}\n')
@@ -74,6 +88,8 @@ class Program(unittest.TestCase):
         self.assertEqual(lines[4], "<h1></h1><a href=\"/item/-7\" title=\"\">item -7</a>")
         self.assertEqual(lines[5], "<p>gone</p>")
         self.assertEqual(lines[6], r'''{"id":42,"name":"a<b>&\"c'\\ \n","note":"a a<b>&\"c'\\ \n b","ok":true}''')
+        self.assertEqual(lines[7], r'''<ul><li class="n42">a&lt;b&gt;&amp;&quot;c&#39;\ ''')
+        self.assertEqual(lines[8], '</li><li class="n8"></li></ul>')
 
 
 if __name__ == "__main__":

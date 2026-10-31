@@ -28,6 +28,7 @@ const C_METHOD_ENV_CACHE_PUT: long = 3025L
 const C_METHOD_ENV_DB_ROW: long = 3026L
 const C_METHOD_ENV_NOW_MS: long = 3027L
 const C_METHOD_ENV_DB_ROWS: long = 3028L
+const C_METHOD_HTTP_HEADER: long = 3029L
 
 fn emit_context_runtime_symbol(
     compiler: write CompilerTables,
@@ -160,6 +161,7 @@ fn c_runtime_method_kind(
         else if token_is_word_at(source, tokens, files, file_index, token, "net_accept") { C_METHOD_NET_ACCEPT }
         else if token_is_word_at(source, tokens, files, file_index, token, "http_read") { C_METHOD_HTTP_READ }
         else if token_is_word_at(source, tokens, files, file_index, token, "http_write") { C_METHOD_HTTP_WRITE }
+        else if token_is_word_at(source, tokens, files, file_index, token, "http_header") { C_METHOD_HTTP_HEADER }
         else if token_is_word_at(source, tokens, files, file_index, token, "net_close") { C_METHOD_NET_CLOSE }
         else if token_is_word_at(source, tokens, files, file_index, token, "db_text") { C_METHOD_ENV_DB_TEXT }
         else if token_is_word_at(source, tokens, files, file_index, token, "cache_get") { C_METHOD_ENV_CACHE_GET }
@@ -251,7 +253,7 @@ fn c_runtime_check_method(
         else if method == C_METHOD_ENV_EXIT || method == C_METHOD_ARGS_GET || method == C_METHOD_ARG_BYTE || method == C_METHOD_OUT_WRITE ||
             method == C_METHOD_NET_LISTEN || method == C_METHOD_NET_ACCEPT || method == C_METHOD_NET_CLOSE { 1L }
         else if method == C_METHOD_HTTP_WRITE { 4L }
-        else if method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_DB_ROW || method == C_METHOD_ENV_DB_ROWS { 3L }
+        else if method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_DB_ROW || method == C_METHOD_ENV_DB_ROWS || method == C_METHOD_HTTP_HEADER { 3L }
         else if method == C_METHOD_FS_LIST { 3L } else { 2L }
     if actual_count != wanted_count {
         fail_at_message(env, files, compiler, file_index, tables.nodes[node].start, "C-runtime capability method has the wrong number of arguments")
@@ -290,6 +292,22 @@ fn c_runtime_check_method(
             }
         }
         result_type = TY_BOOL
+    } else if method == C_METHOD_HTTP_HEADER {
+        require_type(env, files, compiler, file_index, first, TY_LONG, compiler.facts[first].ty, tables)
+        let header_name_kind = type_kind(compiler, compiler.facts[second].ty)
+        if header_name_kind != TYPE_KIND_ASCII && header_name_kind != TYPE_KIND_TEXT {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[second].start, "Env.http_header needs bounded text for the header name")
+        }
+        if type_kind(compiler, compiler.facts[third].ty) != TYPE_KIND_BYTES {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.http_header needs a Bytes destination for the value")
+        }
+        if !c_runtime_writable_argument(tables, compiler, third) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.http_header needs a writable Bytes destination")
+        }
+        if active_view_overlaps_place(tables, compiler, scope, third) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "cannot replace storage that contains a live collection view")
+        }
+        result_type = TY_LONG
     } else if method == C_METHOD_ENV_DB_ROWS {
         let rows_kind = type_kind(compiler, compiler.facts[first].ty)
         if tokens[tables.nodes[first].token].kind != TokenKind.String {
@@ -528,7 +546,7 @@ fn emit_c_runtime_method_storage(
         }
         return
     }
-    let data_argument = if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_DB_QUERY || method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_DB_ROW || method == C_METHOD_ENV_DB_ROWS || method == C_METHOD_ENV_CACHE_PUT { child_at(tables, compiler, node, if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_CACHE_PUT { 2L } else { 1L }) }
+    let data_argument = if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_DB_QUERY || method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_DB_ROW || method == C_METHOD_ENV_DB_ROWS || method == C_METHOD_ENV_CACHE_PUT || method == C_METHOD_HTTP_HEADER { child_at(tables, compiler, node, if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_CACHE_PUT || method == C_METHOD_HTTP_HEADER { 2L } else { 1L }) }
         else if method == C_METHOD_HTTP_WRITE { child_at(tables, compiler, node, 4L) }
         else if method == C_METHOD_OUT_WRITE { child_at(tables, compiler, node, 1L) }
         else { -1L }
@@ -872,6 +890,19 @@ fn emit_c_runtime_method_call(
         ir_write_number(compiler, ir, row_record.field_count)
         ir_write_ascii(compiler, ir, ", ptr @nl.dbrow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ".names)\n  %v"); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = icmp ne i64 %c.dbrow.found."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
+    } else if method == C_METHOD_HTTP_HEADER {
+        let header_location = c_runtime_writable_output_location(tables, compiler, ir, third)
+        let header_pointer = emit_location_pointer_materialization(compiler, ir, header_location)
+        emit_c_raw_descriptor(tables, compiler, ir, node, second)
+        ir_write_ascii(compiler, ir, "  %c.header.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr inbounds i8, ptr "); emit_location_pointer_reference(compiler, ir, header_location, header_pointer); ir_write_ascii(compiler, ir, ", i64 8\n")
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call i64 @nl_http_header(ptr "); ir_write_value_ref(compiler, ir, receiver)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, first)
+        ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[second].ty))
+        ir_write_ascii(compiler, ir, ", ptr %c.header.data."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[third].ty))
+        ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, header_location, header_pointer); ir_write_ascii(compiler, ir, ")\n")
     } else if method == C_METHOD_ENV_DB_ROWS {
         let rows_location = c_runtime_writable_output_location(tables, compiler, ir, third)
         let rows_pointer = emit_location_pointer_materialization(compiler, ir, rows_location)

@@ -2907,7 +2907,8 @@ void nl_out_write(void *handle, void *data_value, int data_is_argument, uint64_t
 #define NL_HTTP_CONNECTIONS 65536
 #define NL_HTTP_BUFFER 8192
 
-typedef struct { uint32_t length; unsigned char data[NL_HTTP_BUFFER]; } nl_http_buffer;
+/* `head` keeps the request line and headers of the request last returned by http_read, for Env.http_header. */
+typedef struct { uint32_t length; uint32_t head_length; unsigned char data[NL_HTTP_BUFFER]; unsigned char head[NL_HTTP_BUFFER]; } nl_http_buffer;
 static nl_http_buffer *nl_http_buffers[NL_HTTP_CONNECTIONS];
 
 int64_t nl_net_listen(void *env, int64_t port) {
@@ -2947,7 +2948,7 @@ int64_t nl_net_accept(void *env, int64_t listener) {
 int64_t nl_net_close(void *env, int64_t fd) {
     (void)env;
     /* the connection's buffer stays with its descriptor number for the next connection that gets it (no free) */
-    if (fd >= 0 && fd < NL_HTTP_CONNECTIONS && nl_http_buffers[fd]) nl_http_buffers[fd]->length = 0;
+    if (fd >= 0 && fd < NL_HTTP_CONNECTIONS && nl_http_buffers[fd]) { nl_http_buffers[fd]->length = 0; nl_http_buffers[fd]->head_length = 0; }
     return close((int)fd);
 }
 
@@ -3006,6 +3007,8 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
     memcpy(target, buffer->data + start, size);
     *target_length = (int64_t)size;
     int64_t body = nl_http_content_length(buffer->data, head);
+    memcpy(buffer->head, buffer->data, head);
+    buffer->head_length = head;
     uint32_t consumed = head;
     /* a request body is read and dropped */
     while (body > 0) {
@@ -3027,6 +3030,36 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
     memmove(buffer->data, buffer->data + consumed, buffer->length - consumed);
     buffer->length -= consumed;
     return method;
+}
+
+/* The value of a header of the request last read on the connection (case-insensitive name), into `out` (count at *count);
+   returns its length, or -1 when there is no such header or it does not fit. */
+int64_t nl_http_header(void *env, int64_t fd, void *name_descriptor, uint64_t name_capacity, unsigned char *out, uint64_t out_capacity, int64_t *count) {
+    (void)env;
+    unsigned char scratch[4096];
+    const unsigned char *name; uint64_t name_length; int tag = -1, code = 0;
+    if (fd < 0 || fd >= NL_HTTP_CONNECTIONS || !nl_http_buffers[fd]) return -1;
+    if (!nl_extract_raw(name_descriptor, 2, name_capacity, scratch, &name, &name_length, &tag, &code) || name_length == 0) return -1;
+    const nl_http_buffer *buffer = nl_http_buffers[fd];
+    uint32_t at = 0;
+    while (at < buffer->head_length && buffer->head[at] != '\n') ++at;          /* skip the request line */
+    for (++at; at + name_length + 1 < buffer->head_length; ) {
+        uint32_t line_end = at;
+        while (line_end < buffer->head_length && buffer->head[line_end] != '\n') ++line_end;
+        if (line_end > at + name_length && buffer->head[at + name_length] == ':' &&
+            strncasecmp((const char *)buffer->head + at, (const char *)name, (size_t)name_length) == 0) {
+            uint32_t value = at + (uint32_t)name_length + 1;
+            while (value < line_end && (buffer->head[value] == ' ' || buffer->head[value] == '\t')) ++value;
+            uint32_t value_end = line_end;
+            while (value_end > value && (buffer->head[value_end - 1] == '\r' || buffer->head[value_end - 1] == ' ')) --value_end;
+            if ((uint64_t)(value_end - value) > out_capacity) return -1;
+            memcpy(out, buffer->head + value, value_end - value);
+            *count = value_end - value;
+            return value_end - value;
+        }
+        at = line_end + 1;
+    }
+    return -1;
 }
 
 int64_t nl_http_write(void *env, int64_t fd, int64_t status, int64_t kind, void *body_descriptor, uint64_t capacity) {
@@ -3067,6 +3100,9 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
 }
 int64_t nl_http_write(void *env, int64_t fd, int64_t status, int64_t kind, void *body_descriptor, uint64_t capacity) {
     (void)env; (void)fd; (void)status; (void)kind; (void)body_descriptor; (void)capacity; return -1;
+}
+int64_t nl_http_header(void *env, int64_t fd, void *name_descriptor, uint64_t name_capacity, unsigned char *out, uint64_t out_capacity, int64_t *count) {
+    (void)env; (void)fd; (void)name_descriptor; (void)name_capacity; (void)out; (void)out_capacity; (void)count; return -1;
 }
 #endif
 

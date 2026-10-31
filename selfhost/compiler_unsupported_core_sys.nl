@@ -332,6 +332,7 @@ fn unsupported_category_for_node(
                 token_is_word_at(source, tokens, files, file_index, value.token, "net_close") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "http_read") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "http_write") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "http_header") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "send") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "recv") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "recv_wait") ||
