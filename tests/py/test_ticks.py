@@ -13,7 +13,7 @@ class Ticks(unittest.TestCase):
         for attempt in range(3):
             ran = run_program("ticks")
             self.assertEqual(ran.returncode, 0, ran.stderr.decode(errors="replace"))
-            self.assertEqual(ran.stdout.decode().split(), ["0", "true", "false", "7", "true", "true", "true"], f"attempt {attempt}")
+            self.assertEqual(ran.stdout.decode().split(), ["0", "true", "false", "7", "true", "true", "true", "5000000005"], f"attempt {attempt}")
 
 
 if __name__ == "__main__":

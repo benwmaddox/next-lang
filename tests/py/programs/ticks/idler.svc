@@ -1,0 +1,23 @@
+// A service with an idle step: it works through a backlog only while its mailbox is empty, and messages come first.
+service Idler
+config env: Env
+state backlog: long = 5000L
+state done: long = 0L
+state messages: long = 0L
+mailbox 8
+
+idle {
+    if state.backlog > 0L {
+        state.backlog -= 1L
+        state.done += 1L
+    }
+    state.backlog > 0L
+}
+
+on Note() {
+    state.messages += 1L
+}
+
+on Report() -> long {
+    reply(state.done * 1000000L + state.messages)
+}
