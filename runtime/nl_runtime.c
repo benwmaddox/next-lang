@@ -1288,10 +1288,26 @@ void *nl_job_args_alloc(uint64_t bytes) {
 
 void nl_job_args_free(void *block) { free(block); }
 
+/* How long a receiver spins on its mailbox before it sleeps (NLC_SPIN, ring checks), and where jobs are pinned
+   (NLC_JOB_PIN: rr, the default, spreads jobs over the granted cores; same puts them all on the first; none leaves
+   placement to the system). Both are tuning knobs while the defaults are measured. */
+int64_t nl_mbox_spin = 15000;
+
 void nl_job_start(void *(*entry)(void *), void *arguments) {
     if (nl_job_count >= NL_JOB_LIMIT) nl_stack_startup_failure("too many jobs");
+    static int configured;
+    static int pin_mode;  /* 0 rr, 1 same, 2 none */
+    if (!configured) {
+        const char *spin = getenv("NLC_SPIN");
+        if (spin && *spin) nl_mbox_spin = atoll(spin);
+        const char *pin = getenv("NLC_JOB_PIN");
+        if (pin && strcmp(pin, "same") == 0) pin_mode = 1;
+        else if (pin && strcmp(pin, "none") == 0) pin_mode = 2;
+        configured = 1;
+    }
     int64_t cores = nl_host_cores(NULL);
-    void *record = nl_thread_start(entry, arguments, NL_JOB_NATIVE_STACK_BYTES, cores > 0 ? nl_job_count % cores : -1);
+    int64_t where = pin_mode == 2 ? -1 : pin_mode == 1 ? 0 : (cores > 0 ? nl_job_count % cores : -1);
+    void *record = nl_thread_start(entry, arguments, NL_JOB_NATIVE_STACK_BYTES, where);
     if (!record) nl_stack_startup_failure("cannot start a job");
     nl_jobs[nl_job_count++] = record;
 }

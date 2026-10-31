@@ -11,6 +11,7 @@
 
 ; @nl.mem.copy(dst, src, bytes) is the program's memory-copy wrapper (defined where maps and pools define it).
 declare i32 @nl_park(ptr, i32, i64)
+@nl_mbox_spin = external global i64
 declare void @nl_wake(ptr, i32)
 
 define internal void @nl.mbox.init(ptr %mb, i64 %capacity, i64 %elem_size) {
@@ -151,7 +152,8 @@ spin:
   br i1 %spin.got, label %yes, label %spin.again
 spin.again:
   %spin.next = add i64 %spin.i, 1
-  %spin.more = icmp ult i64 %spin.next, 15000
+  %spin.limit = load i64, ptr @nl_mbox_spin, align 8
+  %spin.more = icmp ult i64 %spin.next, %spin.limit
   br i1 %spin.more, label %spin, label %prepare
 prepare:
   %wake.addr = getelementptr i8, ptr %mb, i64 72

@@ -37,3 +37,27 @@ at a time (four blocking workers). Baseline: `bench/web/rust-baseline` (`cargo b
 - Reading: a service job that parks costs a wake-up per request; a spinning one costs a core. Spinning needs the
   jobs to have cores to themselves (the host grant says how many), so the next step is to let main say which jobs
   are hot (spin) and which are not, and to size the spin from the grant.
+
+## Placement (NLC_JOB_PIN) and spin (NLC_SPIN), 4 connections, 4 s runs
+
+`NLC_JOB_PIN`: `rr` pins job i to the i-th granted core (the default), `same` puts every job on the first granted
+core, `none` leaves placement to the kernel. `NLC_SPIN` sets the receiver's spin in ring checks.
+
+| granted cores | pin | spin | req/s | p50 us | p99 us |
+| --- | --- | --- | --- | --- | --- |
+| 4 | rr | 0 | 54,300 | 70 | 153 |
+| 4 | rr | 15000 | 56,000 | 57 | 306 |
+| 4 | same | 0 | 62,200 | 61 | 103 |
+| 4 | same | 15000 | 15,100 | 245 | 491 |
+| 4 | none | 0 | 49,100 | 75 | 154 |
+| 4 | none | 15000 | 67,700 | 45 | 219 |
+| 8 | rr | 15000 | 68,000 | 54 | 116 |
+| 8 | same | 0 | 62,400 | 61 | 103 |
+| 8 | none | 15000 | 67,800 | 54 | 116 |
+
+- All six jobs on one core without spinning gives 62k req/s, 14% above round-robin without spin, because a wake-up
+  on the same core is a context switch instead of a cross-core interrupt. It also has the best p99. Spinning on a
+  shared core is the worst case (15k): the spinner holds the core its sender needs.
+- Spinning with kernel placement on four cores matches round-robin on eight (67.7k): round-robin pinning on a core
+  count equal to the worker count fights the kernel for no gain.
+- Rust baseline on four cores: 82k req/s, p50 43 us.
