@@ -2856,6 +2856,78 @@ int64_t nl_http_write(void *env, int64_t fd, int64_t status, int64_t kind, void 
 }
 #endif
 
+/* Env.cache_get / Env.cache_put: one process-wide direct-mapped cache of byte strings (up to 512 bytes) keyed by a
+   long, shared by every job. Each slot has its own tiny lock, held only while bytes are copied, so jobs on different
+   keys never wait for each other. NLC_CACHE_SLOTS sets the number of slots (default 65536). */
+#define NL_CACHE_VALUE_BYTES 512
+typedef struct {
+    volatile int32_t lock;
+    int32_t length;
+    int64_t key;
+    unsigned char data[NL_CACHE_VALUE_BYTES];
+} nl_cache_slot;
+
+static nl_cache_slot *nl_cache_slots;
+static uint64_t nl_cache_slot_count;
+
+static nl_cache_slot *nl_cache_slot_for(int64_t key) {
+    if (!nl_cache_slots) {
+        static volatile int32_t creating;
+        while (__atomic_exchange_n(&creating, 1, __ATOMIC_ACQUIRE)) {}
+        if (!nl_cache_slots) {
+            const char *text = getenv("NLC_CACHE_SLOTS");
+            uint64_t count = text && *text ? (uint64_t)atoll(text) : 65536;
+            if (count < 1) count = 1;
+            nl_cache_slot *slots = (nl_cache_slot *)calloc(count, sizeof(nl_cache_slot));
+            if (!slots) nl_stack_startup_failure("cannot allocate the cache");
+            nl_cache_slot_count = count;
+            for (uint64_t index = 0; index < count; ++index) slots[index].key = -1;
+            __atomic_store_n(&nl_cache_slots, slots, __ATOMIC_RELEASE);
+        }
+        __atomic_store_n(&creating, 0, __ATOMIC_RELEASE);
+    }
+    uint64_t index = (uint64_t)key % nl_cache_slot_count;
+    return &nl_cache_slots[index];
+}
+
+static void nl_cache_lock(nl_cache_slot *slot) {
+    while (__atomic_exchange_n(&slot->lock, 1, __ATOMIC_ACQUIRE)) {
+        while (__atomic_load_n(&slot->lock, __ATOMIC_RELAXED)) {}
+    }
+}
+
+static void nl_cache_unlock(nl_cache_slot *slot) { __atomic_store_n(&slot->lock, 0, __ATOMIC_RELEASE); }
+
+/* The bytes for the key into `data` (count stored at `count`); returns the length, or -1 when absent or too long. */
+int64_t nl_cache_get(void *env, int64_t key, unsigned char *data, uint64_t capacity, int64_t *count) {
+    (void)env;
+    nl_cache_slot *slot = nl_cache_slot_for(key);
+    int64_t result = -1;
+    nl_cache_lock(slot);
+    if (slot->key == key && (uint64_t)slot->length <= capacity) {
+        memcpy(data, slot->data, (size_t)slot->length);
+        *count = slot->length;
+        result = slot->length;
+    }
+    nl_cache_unlock(slot);
+    return result;
+}
+
+/* Store bytes under the key, replacing whatever shared the slot; returns 0, or -1 when they are too long. */
+int64_t nl_cache_put(void *env, int64_t key, void *descriptor, uint64_t capacity) {
+    (void)env;
+    unsigned char scratch[4096];
+    const unsigned char *bytes; uint64_t length; int tag = -1, code = 0;
+    if (!nl_extract_raw(descriptor, 2, capacity, scratch, &bytes, &length, &tag, &code) || length > NL_CACHE_VALUE_BYTES) return -1;
+    nl_cache_slot *slot = nl_cache_slot_for(key);
+    nl_cache_lock(slot);
+    memcpy(slot->data, bytes, (size_t)length);
+    slot->length = (int32_t)length;
+    slot->key = key;
+    nl_cache_unlock(slot);
+    return 0;
+}
+
 #ifdef NLC_WITH_DB
 /* Env.db_query(sql, key): run one statement with ?1 bound to key on this thread's connection to the SQLite file
    named by NLC_DB (default app.db). The answer is the first column of the first row, or none. Each thread opens its
