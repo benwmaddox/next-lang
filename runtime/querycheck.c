@@ -49,6 +49,10 @@ int main(int argc, char **argv) {
             failures++;
             continue;
         }
+        if (kinds[0] == 'x') {   /* an Env.db_exec statement: prepared, nothing more to check */
+            sqlite3_finalize(statement);
+            continue;
+        }
         int columns = sqlite3_column_count(statement), index = 0;
         for (const char *at = kinds; *at; ) {
             int kind = atoi(at);

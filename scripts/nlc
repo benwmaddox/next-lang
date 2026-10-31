@@ -61,12 +61,15 @@ link() {
         [[ "$build" == "test" ]] && flags+=("-DNLC_TEST_BUILD=1")
         [[ "$stack" == "offset" ]] && flags+=("-DNLC_STACK_MODE_OFFSET=1")
         local runtime_dir; runtime_dir="$(find_runtime)"
-        if grep -qE 'call (void|i64) @nl_db_(query|text|row)' "$ir"; then
+        # Env.password_verify uses the system's crypt (bcrypt in libxcrypt): linked only when a program calls it
+        local crypt_flags=() crypt_libs=()
+        if grep -q 'call i64 @nl_password_verify' "$ir"; then crypt_flags=(-DNLC_WITH_CRYPT=1); crypt_libs=(-lcrypt); fi
+        if grep -qE 'call (void|i64) @nl_db_(query|text|row|rows|exec)' "$ir"; then
             # Env.db_query: SQLite is compiled once into the cache and linked in.
             local object; object="$(sqlite_object)"
-            quiet_clang "${flags[@]}" -DNLC_WITH_DB=1 -I"$runtime_dir/sqlite" "$ir" "$runtime_dir/nl_runtime.c" "$object" -lpthread -lm -o "$output"
+            quiet_clang "${flags[@]}" "${crypt_flags[@]}" -DNLC_WITH_DB=1 -I"$runtime_dir/sqlite" "$ir" "$runtime_dir/nl_runtime.c" "$object" -lpthread -lm "${crypt_libs[@]}" -o "$output"
         else
-            quiet_clang "${flags[@]}" "$ir" "$runtime_dir/nl_runtime.c" -o "$output"
+            quiet_clang "${flags[@]}" "${crypt_flags[@]}" "$ir" "$runtime_dir/nl_runtime.c" "${crypt_libs[@]}" -o "$output"
         fi
     elif [[ "$runtime" == "core" ]]; then
         flags+=(-nostdlib -static -Wl,-e,_start -Wl,-no-pie -Wl,--build-id=none)
