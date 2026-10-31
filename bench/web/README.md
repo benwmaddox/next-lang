@@ -137,3 +137,19 @@ Four ways to cache, same service, same method (4 cores; variants in `bench/web/v
 - Reading: use the shared table for plain memoizing of small values (reads dominate, no policy). Keep a cache *job*
   when the cache has logic: eviction or expiry policy, invalidation, write-behind, ordering with other messages, a
   value too big to copy per hit. The job's cost is one park/wake round trip per request, about 20% at medium load.
+
+## Is a lookup by key efficient? (shared cache, 100-byte value, 4 cores)
+
+The table is direct-mapped: the key picks one slot (key modulo the slot count), so a lookup touches one slot, with no
+searching and no allocation. Measured with a loop of `cache_get` calls in jobs:
+
+| | one job | four jobs, aggregate per lookup |
+| --- | --- | --- |
+| first version, a lock per slot | 15 ns | spread over 4096 keys: 7 ns; **one hot key: 103 ns** |
+| seqlock (readers never write the slot) | 11 ns | spread: 3.1 ns; one hot key: **2.9 ns** |
+
+With a lock, jobs reading the same hot key took turns and bounced the slot's cache line between cores (6 times slower
+than one job alone). Now readers only read; a writer makes the slot's sequence number odd while it copies, and a reader
+that overlapped a writer copies again. `tests/py/programs/cache_race` checks that two writers and two readers on one
+key never produce a half-written value. Known weaknesses of the design: a collision evicts (direct-mapped, no
+associativity), a value is at most 512 bytes and is copied out (not borrowed), and nothing expires.
