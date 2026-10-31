@@ -27,6 +27,17 @@ fn show_json(env: Env, body: Bytes max 300) {
     }
 }
 
+fn show_listing(env: Env, body: Bytes max 600) {
+    match env.out.write(body) {
+        ok(_) => {},
+        err(_) => {},
+    }
+    match env.out.write("\n") {
+        ok(_) => {},
+        err(_) => {},
+    }
+}
+
 fn main(env: Env) {
     var name: Bytes max 16 = Bytes.empty()
     discard name.try_append("a<b>&\"c'\\ \n".bytes())
@@ -40,4 +51,10 @@ fn main(env: Env) {
     var json: Bytes max 300 = Bytes.empty()
     render_item(json, row)
     show_json(env, json)
+    var items: list<Row, 3> = list {}
+    discard items.push(row)
+    discard items.push(Row { key: 8L, found: true, name: Bytes.empty() })
+    var listing: Bytes max 600 = Bytes.empty()
+    render_rows(listing, items)
+    show_listing(env, listing)
 }

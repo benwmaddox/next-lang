@@ -20,6 +20,24 @@ Fixed in the language (tests in `tests/py/test_friction.py`):
 Still open: 3 (`try_send` for a fire-and-forget send is now `discard x.send(v)`; probably done), 4, 6, 9 (generators), 10, 11,
 12, 14.
 
+## Campfire slice 1 so far
+
+| # | Snag | Where | Hits | Fix class and idea |
+| --- | --- | --- | --- | --- |
+| 15 | `none` as a variable name is refused (collides with the bare enum case); hit again naming the "no rows" count in a test (4th hit of #4) | test programs | 4 | L: allow shadowing of a bare case by a local, or an error text that suggests a name |
+| 16 | The compiler's own sources cannot use a language feature the seed does not have (`while` was enabled for programs, but `selfhost/*.nl` had to keep `for ... break` until the seed is refreshed with scripts/update-seed.sh) | compiler work | 1 | T: say so in the error ("the seed compiler does not support X; use Y or refresh the seed"), or refresh the seed after each language change |
+
+Slice 1 capabilities added while writing the first code: `Env.db_rows` (several rows into `list<Row, N>`, limit checked when built),
+template loops (`{#for r in rows}`, size = count times the body), `Env.http_header` (request headers, cookies).
+
+Observed in use (positive): the build errors named the place and what to do for the new checks (limit missing or larger than the
+list; string literal with a newline "escape it as \n"; a struct without the function for a method call). `if env.http_write(...) < 0L
+{ break }` reads well now that results need no throwaway `let`.
+
+Observed (negative, counted in the table below): the quoting of backslashes in my shell/regex edits corrupted source three more
+times this stretch (#12 now 11+ hits): the tests directory needs a helper that writes files verbatim, and the Edit tool should be the
+default for anything with escapes.
+
 ## Seeded from the web work so far (bench/web, services, templates), 2026-10-31
 
 | # | Snag | Where | Hits | Fix class and idea |
@@ -35,7 +53,7 @@ Still open: 3 (`try_send` for a fire-and-forget send is now `discard x.send(v)`;
 | 9 | Two generators in Python (`tools/tmpl.py`, `tools/svc.py`) exist because the compiler has no templates or services; users need Python to build, and errors point at generated files | templates, services | constant | L: move into the compiler |
 | 10 | Services call each other with a spelling that depends on the surface (`Cache_get(cache, id)` or `cache.get(id)`); checks in `svc.py` had to learn both | services | 2 | L: done for structs by method syntax; the check should move into the compiler too |
 | 11 | Escape sequences in string literals are limited (`\"`, `\\`, `\n`, `\t`, `\0`, `\xNN`); building HTML/JSON text by hand needs care | templates, tests | 3 | N; templates remove most of it |
-| 12 | Heredoc/regex edits of source with backslashes keep mangling escapes in my own tooling (not the language) | tooling | 8+ | T: use file-based edits |
+| 12 | Heredoc/regex edits of source with backslashes keep mangling escapes in my own tooling (not the language) | tooling | 11+ | T: use file-based edits |
 | 13 | An unused `Result` is an error, but a call used only for its side effect still needs a binding | `let closed = env.net_close(...)` | 8 | same as 2 |
 | 14 | No way to give a function a default argument or named arguments; `Row { key: -1L, found: false, v: 0L, price: 0L, name: Bytes.empty() }` is repeated | cache init, ask messages | 4 | L: struct defaults exist for fields; use them for these literals |
 

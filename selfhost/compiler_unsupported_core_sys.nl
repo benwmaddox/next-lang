@@ -324,6 +324,7 @@ fn unsupported_category_for_node(
                 token_is_word_at(source, tokens, files, file_index, value.token, "db_query") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "db_text") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "db_row") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "db_rows") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "cache_get") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "cache_put") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "net_listen") ||
@@ -331,6 +332,7 @@ fn unsupported_category_for_node(
                 token_is_word_at(source, tokens, files, file_index, value.token, "net_close") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "http_read") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "http_write") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "http_header") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "send") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "recv") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "recv_wait") ||

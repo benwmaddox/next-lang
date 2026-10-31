@@ -22,10 +22,13 @@ fn emit_db_row_layouts(
 ) {
     if !compiler.c_runtime { return }
     for node in 0L..tables.nodes.count() {
-        if tables.nodes[node].kind != NodeKind.MethodCall || compiler.facts[node].literal != C_METHOD_ENV_DB_ROW { continue }
+        if tables.nodes[node].kind != NodeKind.MethodCall ||
+            (compiler.facts[node].literal != C_METHOD_ENV_DB_ROW && compiler.facts[node].literal != C_METHOD_ENV_DB_ROWS) { continue }
         let row = child_at(tables, compiler, node, 3L)
         if row < 0L { continue }
-        let record = type_record(compiler, compiler.facts[row].ty)
+        // db_row fills a struct, db_rows the elements of a list of them
+        let row_type = if compiler.facts[node].literal == C_METHOD_ENV_DB_ROWS { collection_element_type(compiler, compiler.facts[row].ty) } else { compiler.facts[row].ty }
+        let record = type_record(compiler, row_type)
         var names_length = 0L
         for field_offset in 0L..record.field_count {
             let field = compiler.struct_fields[record.field_start + field_offset]
@@ -71,4 +74,35 @@ fn emit_db_row_layouts(
         for index in 1L..(tokens[literal_token].length - 1L) { ir_push_byte(compiler, ir, source[literal_start + index]) }
         ir_write_ascii(compiler, ir, "\n\n")
     }
+}
+
+fn db_lower_byte(source: Bytes max SOURCE_BUFFER_CAPACITY, position: long) -> long {
+    let c = source[position].to_long()
+    if c >= 65L && c <= 90L { c + 32L } else { c }
+}
+
+// The N in a query literal that ends with `limit N` (the literal's text, quotes included, is source[start .. start + length]),
+// or -1 when it does not end that way.
+fn db_rows_limit(source: Bytes max SOURCE_BUFFER_CAPACITY, start: long, length: long) -> long {
+    var end = start + length - 1L        // the closing quote
+    for step in 0L..length {
+        if end <= start || (source[end - 1L] != 32 && source[end - 1L] != 10) { break }
+        end -= 1L
+    }
+    var digits_start = end
+    for step in 0L..length {
+        if digits_start <= start || source[digits_start - 1L] < 48 || source[digits_start - 1L] > 57 { break }
+        digits_start -= 1L
+    }
+    if digits_start == end || end - digits_start > 9L { return -1L }
+    var value = 0L
+    for position in digits_start..end { value = value * 10L + (source[position].to_long() - 48L) }
+    var word_end = digits_start
+    for step in 0L..length {
+        if word_end <= start || source[word_end - 1L] != 32 { break }
+        word_end -= 1L
+    }
+    if word_end - start < 5L { return -1L }
+    if db_lower_byte(source, word_end - 5L) == 108L && db_lower_byte(source, word_end - 4L) == 105L && db_lower_byte(source, word_end - 3L) == 109L &&
+        db_lower_byte(source, word_end - 2L) == 105L && db_lower_byte(source, word_end - 1L) == 116L { value } else { -1L }
 }
