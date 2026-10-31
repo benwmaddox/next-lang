@@ -83,6 +83,39 @@ link() {
     fi
 }
 
+# The SQLite object, compiled once into the cache.
+sqlite_object() {
+    local runtime_dir cache object
+    runtime_dir="$(find_runtime)"
+    cache="${NLC_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/next-lang}"
+    mkdir -p "$cache"
+    object="$cache/sqlite3-3500400.o"
+    if [[ ! -f "$object" ]]; then
+        quiet_clang -O2 -c -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 \
+            "$runtime_dir/sqlite/sqlite3.c" -o "$object.$$" && mv "$object.$$" "$object"
+    fi
+    echo "$object"
+}
+
+# check_queries <ll> <package>: prepare every Env.db_row query against <package>/schema.sql, so a wrong table, column
+# or type is an error when the program is built. A package with queries and no schema.sql only gets a warning.
+check_queries() {
+    local ir="$1" package="$2" runtime_dir cache checker schema
+    grep -q '^; nlc.query ' "$ir" || return 0
+    schema="$package/schema.sql"
+    if [[ ! -f "$schema" ]]; then
+        echo "nlc: warning: the queries in this program are not checked; add $schema to check them when it is built" >&2
+        return 0
+    fi
+    runtime_dir="$(find_runtime)"
+    cache="${NLC_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/next-lang}"
+    checker="$cache/querycheck"
+    if [[ ! -x "$checker" || "$runtime_dir/querycheck.c" -nt "$checker" ]]; then
+        quiet_clang -O1 -I"$runtime_dir/sqlite" "$runtime_dir/querycheck.c" "$(sqlite_object)" -lpthread -lm -o "$checker.$$" && mv "$checker.$$" "$checker"
+    fi
+    sed -n 's/^; nlc.query //p' "$ir" | "$checker" "$schema"
+}
+
 # compile <package> <ll> <extra compiler flags...>: the C runtime unless a --runtime flag says otherwise.
 compile() {
     local package="$1" ir="$2"
@@ -149,6 +182,7 @@ case "$command" in
         ir=".nlc-build-$$.ll"
         trap 'rm -f "$ir"' EXIT
         compile "$package" "$ir" "${extra[@]}"
+        check_queries "$ir" "$package"
         link "$ir" "$output"
         ;;
     run)
@@ -158,6 +192,7 @@ case "$command" in
         work="$(mktemp -d ./.nlc-run.XXXXXX)"
         trap 'rm -rf "$work"' EXIT
         compile "$package" "$work/program.ll"
+        check_queries "$work/program.ll" "$package"
         link "$work/program.ll" "$work/program"
         "$work/program" "$@"
         ;;

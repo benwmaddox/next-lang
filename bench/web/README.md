@@ -166,3 +166,11 @@ projection), the query must be a literal, and each call site prepares its statem
 | 1000 | nocache | 130k | **174k** (+34%) |
 | 64 | cache job (misses only) | 275k | 321k (+17%) |
 | 1000 | cache job | 226k | 241k (+7%) |
+
+## Queries are checked when the program is built
+
+`bench/web/schema.sql` holds the tables. `scripts/nlc build` and `run` prepare every `env.db_row` query against it
+(`runtime/querycheck.c`, using the same SQLite): an unknown table or column, a column whose declared type does not
+fit the struct field (integer for `long`/`int`/`bool`, text for `Bytes`), or a different number of columns than fields
+is a build error, and a plan that reads a whole table is a warning with the query. A package with queries and no
+`schema.sql` gets a warning that they are unchecked. (`tests/py/test_query_check.py`.)
