@@ -1,0 +1,11 @@
+[package]
+name = "web-async-baseline"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros"] }
+
+[profile.release]
+opt-level = 3
