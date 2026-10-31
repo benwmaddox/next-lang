@@ -322,6 +322,7 @@ fn unsupported_category_for_node(
                 token_is_word_at(source, tokens, files, file_index, value.token, "args") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "host") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "db_query") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "db_text") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "net_listen") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "net_accept") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "net_close") ||
@@ -333,6 +334,7 @@ fn unsupported_category_for_node(
                 token_is_word_at(source, tokens, files, file_index, value.token, "sender") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "receiver") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "close") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "release") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "cores") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "total_cores") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "ram_bytes") ||

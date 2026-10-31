@@ -1603,6 +1603,7 @@ fn check_one_body(
                     if token_is_word_at(source, tokens, files, file_index, syntax.token, "sender") { method = MAILBOX_METHOD_SENDER }
                     else if token_is_word_at(source, tokens, files, file_index, syntax.token, "receiver") { method = MAILBOX_METHOD_RECEIVER }
                     else if token_is_word_at(source, tokens, files, file_index, syntax.token, "close") { method = MAILBOX_METHOD_CLOSE }
+                    else if token_is_word_at(source, tokens, files, file_index, syntax.token, "release") { method = MAILBOX_METHOD_RELEASE }
                 } else if record.role == MAILBOX_ROLE_SENDER {
                     if token_is_word_at(source, tokens, files, file_index, syntax.token, "send") { method = MAILBOX_METHOD_SEND }
                     else if token_is_word_at(source, tokens, files, file_index, syntax.token, "close") { method = MAILBOX_METHOD_CLOSE }

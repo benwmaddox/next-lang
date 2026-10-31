@@ -101,3 +101,14 @@ calls) and no futex call in `nl_wake` unless a plain thread is sleeping, same ma
 (two rounds each; the tokio server is `bench/web/rust-async`, one task per connection, mutex cache, one SQLite
 connection behind a mutex.) At 64 connections next-lang is 10% faster; at 1000 it is 17% slower at the median but has
 half the p99; at 4 connections it is 15% slower (spinning helps there: `NLC_SPIN=15000` gave 72k).
+
+## Rows from SQLite, JSON and HTML (version 2 of main.nl)
+
+The service now reads real rows: `items(id, v, name, price)`. `env.db_text(sql, key, out)` returns a text column into a
+`Bytes`; `env.db_query` the numbers. The cache holds whole rows. Routes: `/item/<id>` JSON with the name escaped for
+JSON and the price as dollars; `/page/<id>` HTML with the name escaped for HTML and 8% tax added to the price. A
+missing row is 404; if the cache job's mailbox is full the connection answers 503 at once. Each connection gives its
+reply mailbox back (`release()`) when it ends. `tests/py/test_web.py` checks all of it against a small SQLite file.
+
+Throughput on `/item` with these richer rows (4 cores, same method): 59-64k req/s at 4 connections, 278-281k at 64,
+225-238k at 1000 (p99 at 1000: 6 ms).
