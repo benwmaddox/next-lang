@@ -3345,14 +3345,28 @@ static void nl_db_decode_row(sqlite3_stmt *statement, unsigned char *row, const 
     }
 }
 
+/* Bind the query's parameters: the one number `key`, or the fields of a struct in order (params_layout: the count, then kind,
+   offset and capacity of each field; kinds as for rows, Bytes bound as text). */
+static void nl_db_bind(sqlite3_stmt *statement, int64_t key, const unsigned char *params, const int64_t *params_layout) {
+    if (!params_layout) { sqlite3_bind_int64(statement, 1, key); return; }
+    for (int64_t index = 0; index < params_layout[0]; ++index) {
+        int64_t kind = params_layout[1 + index * 3], offset = params_layout[2 + index * 3];
+        if (kind == 1) sqlite3_bind_int64(statement, (int)index + 1, *(const int64_t *)(params + offset));
+        else if (kind == 2) sqlite3_bind_int64(statement, (int)index + 1, *(const int32_t *)(params + offset));
+        else if (kind == 3) sqlite3_bind_int64(statement, (int)index + 1, *(const unsigned char *)(params + offset) != 0);
+        else sqlite3_bind_text(statement, (int)index + 1, (const char *)(params + offset + 8), (int)*(const int64_t *)(params + offset), SQLITE_TRANSIENT);
+    }
+}
+
 int64_t nl_db_row(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *row,
-                  const int64_t *layout, int64_t fields, const char *names) {
+                  const int64_t *layout, int64_t fields, const char *names,
+                  const unsigned char *params, const int64_t *params_layout) {
     (void)env;
     sqlite3 *connection = nl_db_open();
     if (!connection) return 0;
     sqlite3_stmt *statement = nl_db_site_statement(connection, descriptor, capacity, layout, names);
     if (!statement) return 0;
-    sqlite3_bind_int64(statement, 1, key);
+    nl_db_bind(statement, key, params, params_layout);
     int64_t found = 0;
     if (sqlite3_step(statement) == SQLITE_ROW) {
         found = 1;
@@ -3365,14 +3379,15 @@ int64_t nl_db_row(void *env, void *descriptor, uint64_t capacity, int64_t key, u
 
 int64_t nl_db_rows(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *list,
                    const int64_t *layout, int64_t fields, const char *names,
-                   int64_t first_element, int64_t stride, int64_t list_capacity) {
+                   int64_t first_element, int64_t stride, int64_t list_capacity,
+                   const unsigned char *params, const int64_t *params_layout) {
     (void)env;
     *(int64_t *)list = 0;
     sqlite3 *connection = nl_db_open();
     if (!connection) return 0;
     sqlite3_stmt *statement = nl_db_site_statement(connection, descriptor, capacity, layout, names);
     if (!statement) return 0;
-    sqlite3_bind_int64(statement, 1, key);
+    nl_db_bind(statement, key, params, params_layout);
     int64_t count = 0;
     while (count < list_capacity && sqlite3_step(statement) == SQLITE_ROW) {
         unsigned char *row = list + first_element + count * stride;
@@ -3391,15 +3406,17 @@ int64_t nl_db_text(void *env, void *descriptor, uint64_t capacity, int64_t key, 
     return -1;
 }
 int64_t nl_db_row(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *row,
-                  const int64_t *layout, int64_t fields, const char *names) {
-    (void)env; (void)descriptor; (void)capacity; (void)key; (void)row; (void)layout; (void)fields; (void)names;
+                  const int64_t *layout, int64_t fields, const char *names,
+                  const unsigned char *params, const int64_t *params_layout) {
+    (void)env; (void)descriptor; (void)capacity; (void)key; (void)row; (void)layout; (void)fields; (void)names; (void)params; (void)params_layout;
     return 0;
 }
 int64_t nl_db_rows(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *list,
                    const int64_t *layout, int64_t fields, const char *names,
-                   int64_t first_element, int64_t stride, int64_t list_capacity) {
+                   int64_t first_element, int64_t stride, int64_t list_capacity,
+                   const unsigned char *params, const int64_t *params_layout) {
     (void)env; (void)descriptor; (void)capacity; (void)key; (void)layout; (void)fields; (void)names;
-    (void)first_element; (void)stride; (void)list_capacity;
+    (void)first_element; (void)stride; (void)list_capacity; (void)params; (void)params_layout;
     *(int64_t *)list = 0;
     return 0;
 }

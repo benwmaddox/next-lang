@@ -1,0 +1,21 @@
+-- The Rails Campfire tables this app reads (Rails 90b3300, from a production snapshot), foreign keys left out.
+CREATE TABLE "users" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL, "bio" text, "bot_token" varchar, "created_at" datetime(6) NOT NULL, "email_address" varchar, "name" varchar NOT NULL, "password_digest" varchar, "role" integer DEFAULT 0 NOT NULL, "status" integer DEFAULT 0 NOT NULL, "updated_at" datetime(6) NOT NULL);
+CREATE TABLE "rooms" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL, "created_at" datetime(6) NOT NULL, "creator_id" bigint NOT NULL, "name" varchar, "type" varchar NOT NULL, "updated_at" datetime(6) NOT NULL);
+CREATE TABLE "memberships" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL, "connected_at" datetime(6), "connections" integer DEFAULT 0 NOT NULL, "created_at" datetime(6) NOT NULL, "involvement" varchar DEFAULT 'mentions', "room_id" integer NOT NULL, "unread_at" datetime(6), "updated_at" datetime(6) NOT NULL, "user_id" integer NOT NULL);
+CREATE TABLE "messages" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL, "client_message_id" varchar NOT NULL, "created_at" datetime(6) NOT NULL, "creator_id" integer NOT NULL, "room_id" integer NOT NULL, "updated_at" datetime(6) NOT NULL);
+CREATE TABLE "sessions" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL, "created_at" datetime(6) NOT NULL, "ip_address" varchar, "last_active_at" datetime(6) NOT NULL, "token" varchar NOT NULL, "updated_at" datetime(6) NOT NULL, "user_agent" varchar, "user_id" integer NOT NULL);
+CREATE TABLE "action_text_rich_texts" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL, "body" text, "created_at" datetime(6) NOT NULL, "name" varchar NOT NULL, "record_id" bigint NOT NULL, "record_type" varchar NOT NULL, "updated_at" datetime(6) NOT NULL);
+CREATE TABLE "boosts" ("id" integer PRIMARY KEY AUTOINCREMENT NOT NULL, "booster_id" integer NOT NULL, "content" varchar(16) NOT NULL, "created_at" datetime(6) NOT NULL, "message_id" integer NOT NULL, "updated_at" datetime(6) NOT NULL);
+CREATE UNIQUE INDEX "index_action_text_rich_texts_uniqueness" ON "action_text_rich_texts" ("record_type", "record_id", "name");
+CREATE INDEX "index_memberships_on_room_id_and_created_at" ON "memberships" ("room_id", "created_at");
+CREATE UNIQUE INDEX "index_memberships_on_room_id_and_user_id" ON "memberships" ("room_id", "user_id");
+CREATE INDEX "index_memberships_on_room_id" ON "memberships" ("room_id");
+CREATE INDEX "index_memberships_on_user_id" ON "memberships" ("user_id");
+CREATE UNIQUE INDEX "index_users_on_bot_token" ON "users" ("bot_token");
+CREATE UNIQUE INDEX "index_users_on_email_address" ON "users" ("email_address");
+CREATE INDEX "index_boosts_on_booster_id" ON "boosts" ("booster_id");
+CREATE INDEX "index_boosts_on_message_id" ON "boosts" ("message_id");
+CREATE INDEX "index_messages_on_creator_id" ON "messages" ("creator_id");
+CREATE INDEX "index_messages_on_room_id" ON "messages" ("room_id");
+CREATE UNIQUE INDEX "index_sessions_on_token" ON "sessions" ("token");
+CREATE INDEX "index_sessions_on_user_id" ON "sessions" ("user_id");

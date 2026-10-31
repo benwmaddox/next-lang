@@ -275,7 +275,7 @@ fn c_runtime_check_method(
         if from_kind != TYPE_KIND_ASCII && from_kind != TYPE_KIND_TEXT {
             fail_at_message(env, files, compiler, file_index, tables.nodes[first].start, "Env.db_row needs bounded text for the rest of the query (from ... where ...)")
         }
-        require_type(env, files, compiler, file_index, second, TY_LONG, compiler.facts[second].ty, tables)
+        check_db_parameters(env, files, compiler, file_index, tables, second, "Env.db_row")
         if type_kind(compiler, compiler.facts[third].ty) != TYPE_KIND_STRUCT {
             fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.db_row needs a struct to fill: its fields are the columns")
         }
@@ -316,7 +316,7 @@ fn c_runtime_check_method(
         if rows_kind != TYPE_KIND_ASCII && rows_kind != TYPE_KIND_TEXT {
             fail_at_message(env, files, compiler, file_index, tables.nodes[first].start, "Env.db_rows needs bounded text for the rest of the query (from ... where ... limit N)")
         }
-        require_type(env, files, compiler, file_index, second, TY_LONG, compiler.facts[second].ty, tables)
+        check_db_parameters(env, files, compiler, file_index, tables, second, "Env.db_rows")
         if type_kind(compiler, compiler.facts[third].ty) != TYPE_KIND_LIST {
             fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.db_rows needs a list<Row, N> to fill: the fields of Row are the columns")
         }
@@ -653,7 +653,11 @@ fn c_runtime_writable_output_location(
         place_root_binding(tables, compiler, node) >= 0L {
         return c_runtime_argument_source_location(tables, compiler, ir, node)
     }
-    if binding >= 0L && type_kind(compiler, type_id) == TYPE_KIND_BYTES {
+    // Bytes, and a struct or list (not a directory-entry list, below), received as a write parameter: its storage is the
+    // parameter's base plus the argument's index times the value's size
+    let writable_aggregate = type_kind(compiler, type_id) == TYPE_KIND_BYTES || type_kind(compiler, type_id) == TYPE_KIND_STRUCT ||
+        (type_kind(compiler, type_id) == TYPE_KIND_LIST && !is_c_runtime_dir_entry_type(compiler, collection_element_type(compiler, type_id)))
+    if binding >= 0L && writable_aggregate {
         let base = compiler_location(compiler, 3L, binding, 0L)
         let pointer = emit_location_pointer_materialization(compiler, ir, base)
         let stride = value_type_size(compiler, type_id)
@@ -672,6 +676,7 @@ fn c_runtime_writable_output_location(
             return compiler_location(compiler, 3L, binding, 0L)
         }
     }
+
     let location = place_storage_location(tables, compiler, node)
     if type_kind(compiler, type_id) == TYPE_KIND_BYTES {
         return c_runtime_indexed_writable_bytes_location(compiler, ir, node, location)
@@ -880,15 +885,19 @@ fn emit_c_runtime_method_call(
         let row_pointer = emit_location_pointer_materialization(compiler, ir, row_location)
         emit_c_raw_descriptor(tables, compiler, ir, node, first)
         let row_record = type_record(compiler, compiler.facts[third].ty)
+        let parameters_location = emit_db_parameters_location(tables, compiler, ir, second)
+        let parameters_pointer = if is_db_parameter_struct(compiler, second) { emit_location_pointer_materialization(compiler, ir, parameters_location) } else { -1L }
         ir_write_ascii(compiler, ir, "  %c.dbrow.found."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = call i64 @nl_db_row(ptr "); ir_write_value_ref(compiler, ir, receiver)
         ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[first].ty))
-        ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, second)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_db_key(compiler, ir, second)
         ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, row_location, row_pointer)
         ir_write_ascii(compiler, ir, ", ptr @nl.dbrow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ".layout, i64 ")
         ir_write_number(compiler, ir, row_record.field_count)
-        ir_write_ascii(compiler, ir, ", ptr @nl.dbrow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ".names)\n  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", ptr @nl.dbrow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ".names, ")
+        ir_write_db_parameters(compiler, ir, node, second, parameters_location, parameters_pointer)
+        ir_write_ascii(compiler, ir, ")\n  %v"); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = icmp ne i64 %c.dbrow.found."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
     } else if method == C_METHOD_HTTP_HEADER {
         let header_location = c_runtime_writable_output_location(tables, compiler, ir, third)
@@ -910,18 +919,23 @@ fn emit_c_runtime_method_call(
         let rows_type = compiler.facts[third].ty
         let rows_element = collection_element_type(compiler, rows_type)
         let rows_record = type_record(compiler, rows_element)
+        let rows_parameters_location = emit_db_parameters_location(tables, compiler, ir, second)
+        let rows_parameters_pointer = if is_db_parameter_struct(compiler, second) { emit_location_pointer_materialization(compiler, ir, rows_parameters_location) } else { -1L }
         ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = call i64 @nl_db_rows(ptr "); ir_write_value_ref(compiler, ir, receiver)
         ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[first].ty))
-        ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, second)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_db_key(compiler, ir, second)
         ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, rows_location, rows_pointer)
         ir_write_ascii(compiler, ir, ", ptr @nl.dbrow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ".layout, i64 ")
         ir_write_number(compiler, ir, rows_record.field_count)
         ir_write_ascii(compiler, ir, ", ptr @nl.dbrow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ".names, i64 ")
         ir_write_number(compiler, ir, collection_element_base_offset(compiler, rows_type))
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, value_type_size(compiler, rows_element))
-        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, collection_capacity(compiler, rows_type)); ir_write_ascii(compiler, ir, ")\n")
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, collection_capacity(compiler, rows_type))
+        ir_write_ascii(compiler, ir, ", ")
+        ir_write_db_parameters(compiler, ir, node, second, rows_parameters_location, rows_parameters_pointer)
+        ir_write_ascii(compiler, ir, ")\n")
     } else if method == C_METHOD_ENV_CACHE_GET {
         let destination_location = c_runtime_writable_output_location(tables, compiler, ir, second)
         let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination_location)

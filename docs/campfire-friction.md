@@ -38,6 +38,17 @@ Observed (negative, counted in the table below): the quoting of backslashes in m
 times this stretch (#12 now 11+ hits): the tests directory needs a helper that writes files verbatim, and the Edit tool should be the
 default for anything with escapes.
 
+## Campfire slice 1: the room page
+
+| # | Snag | Where | Hits | Fix class and idea |
+| --- | --- | --- | --- | --- |
+| 17 | "self-hosted LLVM IR buffer limit exceeded" with no hint of the cause: a `write` list or struct parameter handed to `db_rows` made the compiler emit without end | `rooms_of(env, user, rooms: write list<Room, 100>)` | 1 (an hour) | L: say which function or node was being emitted when the buffer filled; fixed the cause (write aggregates as query destinations) |
+| 18 | A `.bytes()` view cannot be kept in a `let` ("temporary and cannot be stored"); a helper needs `name.len()` and `name.bytes()[i]` repeated | `cookie_value` | 2 | L: allow a view in a `let` while its owner lives |
+| 19 | A column called `type` cannot be a struct field (keyword), so the query needs a subselect with an alias | rooms.type | 1 | N: aliasing in the query is fine; the build-time check caught the first attempt (`no such column: kind`) at once |
+| 20 | **Two call sites with the same row type shared one prepared statement** (the runtime told sites apart by the address of a constant table, and LLVM merged identical tables): the second query ran the first's SQL. Showed up as an empty sidebar and a 404 | db_row / db_rows | 1 (long) | fixed (tables are not `unnamed_addr`); regression test in test_db_rows. Lesson: a runtime cache must not key on addresses of constants |
+| 21 | No `Env`-level way to say "this user is not signed in, redirect to /session/new"; slice 1 answers 401 | pages | 1 | S: response headers and redirects (slice 2) |
+| 22 | The plain `type Page = Bytes max 196608` alias worked everywhere it was used, including template helpers and the `grow` parameter | pages | 0 | positive: aliases fix #5 |
+
 ## Seeded from the web work so far (bench/web, services, templates), 2026-10-31
 
 | # | Snag | Where | Hits | Fix class and idea |

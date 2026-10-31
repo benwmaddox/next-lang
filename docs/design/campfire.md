@@ -1,7 +1,7 @@
 # Campfire in next-lang: plan and friction log (2026-10-31)
 
 Goal (Ben): an idiomatic Campfire in next-lang, to see whether it can mimic all of Campfire's behaviour and still be fast, and to
-collect the awkward code and the things that have to be fixed again and again. Status: plan only; nothing is built.
+collect the awkward code and the things that have to be fixed again and again. Status: slice 1 (reads) is built in `apps/campfire`, see "Slice 1 as built" at the end.
 
 ## What "Campfire" is here
 
@@ -90,3 +90,24 @@ review friction after slice 3 and again after slice 4.
 
 `docs/campfire-friction.md`. Seeded with what the web work so far already hit (below); every entry says where it was hit, how
 often, and what would remove it (a language change, a library, a tool, or nothing).
+
+## Slice 1 as built (2026-10-31)
+
+`apps/campfire`: `main.nl` (about 150 lines), `pages.tpl` (3 templates), `schema.sql` (the Rails tables, taken from the snapshot).
+It reads the real Rails snapshot: `GET /` lists the rooms you are in, `GET /rooms/:id` the room's last 40 messages (oldest
+first, bodies from `action_text_rich_texts`) with the sidebar; identity is the `session_token` cookie looked up in `sessions`,
+a non-member gets 404, no or unknown session 401. Tests: `tests/py/test_campfire.py` (a synthetic database made from
+`schema.sql`: member lists, 40-message window and order, escaping, rich text written raw, cookie among others, 404/401 cases).
+Measured: 52,000 req/s uncached on four cores, 7 MB resident (`bench/campfire/README.md`; the page is 14 KB against the
+references' 366-464 KB, so the comparison is by bytes written, not yet like for like).
+
+Generic capabilities added along the way (each with its own tests): `Env.db_rows` (several rows into a list, limit checked
+when built), query parameters as a struct (`token = ?1 and active = ?2`, text bound as text), template loops and the `raw`
+filter, `Env.http_header`, writable struct and list parameters as query destinations. Not done: redirects and response headers
+(slice 2), everything that writes (slice 3). Friction found is in `docs/campfire-friction.md` (entries 15-22).
+
+Developer-experience measures for the slice: edit-build-run is under a second for the app (compile 0.3 s, link about 1 s, the
+SQLite object cached); the build-time query check caught a wrong column the first time the app was compiled; one cause of
+"IR buffer limit exceeded" cost about an hour because the error does not say where (entry 17); one runtime bug (two call sites
+sharing a prepared statement) cost another hour (entry 20). Lines: 150 of next-lang plus 14 of templates against crudspec's
+spec for the same behaviour (to be counted when the page is complete).
