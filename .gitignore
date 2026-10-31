@@ -1,2 +1,5 @@
 /target/
 __pycache__/
+
+# generated from *.tpl by tools/tmpl.py
+*.gen.nl
