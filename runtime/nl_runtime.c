@@ -1807,13 +1807,47 @@ int64_t nl_host_cores(void *host);
 static void *nl_jobs[NL_JOB_LIMIT];
 static int nl_job_count;
 
+/* Blocks for job arguments and mailboxes come from size-class free lists: a block that is freed goes back on its list and
+   the next request of that class takes it, so after the program has reached its high-water mark of live blocks it makes no
+   allocator calls at all. A block is zeroed when it is handed out. (Larger than 64 KiB: the system allocator.) */
+#define NL_BLOCK_CLASSES 11   /* 64 bytes ... 64 KiB, doubling */
+#define NL_BLOCK_HEADER 16
+typedef struct nl_block_header { uint32_t class_index; uint32_t pad; struct nl_block_header *next; } nl_block_header;
+static nl_block_header *nl_block_free_lists[NL_BLOCK_CLASSES];
+static volatile int32_t nl_block_lock;   /* a spin lock: the critical sections are a few instructions, and it works on every platform */
+static void nl_block_lock_take(void) { while (__atomic_exchange_n(&nl_block_lock, 1, __ATOMIC_ACQUIRE)) { while (__atomic_load_n(&nl_block_lock, __ATOMIC_RELAXED)) {} } }
+static void nl_block_lock_drop(void) { __atomic_store_n(&nl_block_lock, 0, __ATOMIC_RELEASE); }
+
 void *nl_job_args_alloc(uint64_t bytes) {
-    void *block = calloc(1, bytes ? (size_t)bytes : 1);
-    if (!block) nl_stack_startup_failure("cannot allocate a job's arguments");
+    uint32_t class_index = 0;
+    uint64_t class_bytes = 64;
+    while (class_bytes < bytes && class_index < NL_BLOCK_CLASSES) { class_bytes <<= 1; ++class_index; }
+    nl_block_header *header = NULL;
+    if (class_index < NL_BLOCK_CLASSES) {
+        nl_block_lock_take();
+        header = nl_block_free_lists[class_index];
+        if (header) nl_block_free_lists[class_index] = header->next;
+        nl_block_lock_drop();
+    }
+    if (!header) {
+        header = (nl_block_header *)malloc(NL_BLOCK_HEADER + (class_index < NL_BLOCK_CLASSES ? (size_t)class_bytes : (size_t)bytes));
+        if (!header) nl_stack_startup_failure("cannot allocate a job's arguments");
+        header->class_index = class_index;
+    }
+    void *block = (unsigned char *)header + NL_BLOCK_HEADER;
+    memset(block, 0, class_index < NL_BLOCK_CLASSES ? (size_t)class_bytes : (size_t)bytes);
     return block;
 }
 
-void nl_job_args_free(void *block) { free(block); }
+void nl_job_args_free(void *block) {
+    if (!block) return;
+    nl_block_header *header = (nl_block_header *)((unsigned char *)block - NL_BLOCK_HEADER);
+    if (header->class_index >= NL_BLOCK_CLASSES) { free(header); return; }
+    nl_block_lock_take();
+    header->next = nl_block_free_lists[header->class_index];
+    nl_block_free_lists[header->class_index] = header;
+    nl_block_lock_drop();
+}
 
 /* How long a receiver spins on its mailbox before it sleeps (NLC_SPIN, ring checks; none by default, because a spinning
    job holds its worker while the job it waits for sits in the queue), and where jobs are pinned
@@ -2912,10 +2946,8 @@ int64_t nl_net_accept(void *env, int64_t listener) {
 
 int64_t nl_net_close(void *env, int64_t fd) {
     (void)env;
-    if (fd >= 0 && fd < NL_HTTP_CONNECTIONS && nl_http_buffers[fd]) {
-        free(nl_http_buffers[fd]);
-        nl_http_buffers[fd] = NULL;
-    }
+    /* the connection's buffer stays with its descriptor number for the next connection that gets it (no free) */
+    if (fd >= 0 && fd < NL_HTTP_CONNECTIONS && nl_http_buffers[fd]) nl_http_buffers[fd]->length = 0;
     return close((int)fd);
 }
 
