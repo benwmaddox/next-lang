@@ -288,7 +288,7 @@ fn unsupported_category_for_node(
         NodeKind.Fit => 0L,
         NodeKind.FitType => 0L,
         NodeKind.Try => 0L,
-        NodeKind.MethodCall => if is_core_sys_receiver(source, tokens, files, tables, compiler, node, file_index) ||
+        NodeKind.MethodCall => if (compiler.facts[node].flags & FACT_STRUCT_METHOD) != 0L || method_function_exists(source, files, tokens, tables, value.token, file_index) || is_core_sys_receiver(source, tokens, files, tables, compiler, node, file_index) ||
             token_is_word_at(source, tokens, files, file_index, value.token, "is_some") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "is_none") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "is_ok") ||

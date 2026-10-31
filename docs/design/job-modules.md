@@ -194,3 +194,15 @@ Not built, with the reason:
 - **Caller-owned reply slots**: a reply mailbox is allocated and released per call (about 160 bytes, one `calloc`/`free`);
   fixing that needs state that belongs to a task, which tasks do not have yet.
 - **Stackless services**: the scheduler still gives every service a stack.
+
+## As built: method syntax (2026-10-31)
+
+`x.m(args)` on a value of a user struct `T` calls the function `T_m(x, args)` when it exists (`selfhost/struct_methods.nl`).
+It is only a spelling: the checker records the node as a direct call (`FACT_STRUCT_METHOD`, the function id in the node's
+fact, call-graph edge, argument and write-mode checks of an ordinary call), and the emitter treats the node as a call with
+the receiver as the first argument. Chains work (`p.scaled(3).sum()`), receivers may be fields (`config.db.load(...)`), and
+the generated service senders read as `cache.get(id)` instead of `Cache_get(cache, id)`; the old form still works. A name
+with no matching function, or a wrong argument count or type, is an ordinary error. `tools/svc.py` finds waiting calls in
+handlers in both spellings (receivers `me` and `config.<service field>`). Not covered: a method name that equals a built-in
+method of the receiver's own type is not possible for structs (they have none), mailbox handles are structs without a name
+and so have no user methods, and enums and other types do not get methods yet.

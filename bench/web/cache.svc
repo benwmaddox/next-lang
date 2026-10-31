@@ -20,7 +20,7 @@ on Get(key: long) -> Reply {
     if state.slots[at].key == key {
         reply(Reply { row: state.slots[at], hit: true })
     } else {
-        let forwarded = Database_load(config.db, key, reply, me)
+        let forwarded = config.db.load(key, reply, me)
     }
 }
 

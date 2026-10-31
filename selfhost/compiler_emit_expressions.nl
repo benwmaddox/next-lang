@@ -1003,7 +1003,8 @@ recursive fn emit_expr_linear(
         var frame = compiler.expr_work[frame_index]
         let current = frame.node
         let syntax = tables.nodes[current]
-        let kind = syntax.kind
+        // `x.m(args)` on a user struct is a call of Type_m with x first (struct_methods.nl)
+        let kind = if syntax.kind == NodeKind.MethodCall && (compiler.facts[current].flags & FACT_STRUCT_METHOD) != 0L { NodeKind.Call } else { syntax.kind }
         if frame.phase == 0L {
             if kind == NodeKind.Integer && compiler.facts[current].ty == TY_DOUBLE {
                 emit_float_literal(source, files, tokens, tables, compiler, ir, current, file_index)
@@ -1647,7 +1648,7 @@ recursive fn emit_expr_linear(
                     compiler.expr_work.push(EmitExprFrame { node: argument, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
                 }
             } else {
-                let is_print = token_is_word_at(source, tokens, files, file_index, syntax.token, "print")
+                let is_print = token_is_word_at(source, tokens, files, file_index, syntax.token, "print") && compiler.facts[current].function < 0L
                 let is_fill = token_is_word_at(source, tokens, files, file_index, syntax.token, "fill") &&
                     compiler.facts[current].function < 0L
                 let format_kind = if (compiler.facts[current].flags & FACT_FORMAT_TEXT) != 0L { compiler.facts[current].literal } else { FORMAT_TEXT_NONE }

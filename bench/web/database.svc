@@ -10,5 +10,5 @@ on Load(key: long, answer: Sender<Reply>, cache: Cache) {
         ok(_) => {},
         err(_) => {},
     }
-    let filled = Cache_fill(cache, row)
+    let filled = cache.fill(row)
 }

@@ -70,7 +70,7 @@ fn serve(env: Env, connection: long, cache_inbox: Sender<CacheMessage>) {
             let sent = env.http_write(connection, 404L, 1L, "{\"error\":\"not found\"}")
             if sent < 0L { break }
         } else {
-            match Cache_get(cache, id) {
+            match cache.get(id) {
                 some(reply) => {
                     body = Bytes.empty()
                     var status = 200L

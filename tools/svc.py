@@ -26,7 +26,7 @@ The generated code, for a service named Cache:
 - `struct Cache { inbox: Sender<CacheMessage> }`, the handle others hold; `CacheMessage`, an enum with one variant per
   handler (and `Stop`); a state struct and a config struct.
 - `Cache_start(<config>) -> Cache`: makes the mailbox and spawns the service's job.
-- For each handler: `Cache_get(service, key) -> Option<Row>` (sends and waits for the reply; a task calls it) or, for a
+- For each handler (also callable as `service.get(key)`): `Cache_get(service, key) -> Option<Row>` (sends and waits for the reply; a task calls it) or, for a
   handler with no reply, `Cache_fill(service, row) -> bool` (send, false when the mailbox is full), and `Cache_stop`.
 - Handlers see `state` (write), `config`, `me` (the service's own handle), their parameters, and `reply` when they declare one.
 Config fields must be numbers, bools, `Env` or mailbox handles (what `spawn` accepts).
@@ -320,6 +320,20 @@ def check_services(parsed):
                 handler = handler or Handler("tick", [], None, handler_body, handler_line)
                 body = re.sub(r"//[^\n]*", "", handler.body)
                 where = f"{path}:{handler.line}"
+                # method syntax: `config.<field>.get(...)` or `me.get(...)` where the receiver is a service handle
+                receivers = {"me": service.name}
+                receivers.update({f"config.{field}": kind for field, kind in service.config if kind in services})
+                method_calls = {}   # call text pattern -> (target service, sender function, waits)
+                for receiver, target_name in receivers.items():
+                    for target_handler in services[target_name].handlers:
+                        method_calls[rf"\b{re.escape(receiver)}\.{snake(target_handler.name)}\s*\("] = (
+                            target_name, f"{target_name}_{snake(target_handler.name)}", bool(target_handler.reply))
+                for pattern, (target_name, function, waited) in method_calls.items():
+                    if re.search(pattern, body):
+                        if waited:
+                            raise ServiceError(f"{where}: handler {service.name}.{handler.name} calls {function} and would wait for the answer; "
+                                               f"a service handler never waits. Pass `reply` (or a sender) on to the other service instead")
+                        edges.append((service.name, handler.name, target_name, function))
                 for function, target in waits.items():
                     if re.search(rf"\b{function}\s*\(", body):
                         raise ServiceError(f"{where}: handler {service.name}.{handler.name} calls {function} and would wait for the answer; "
