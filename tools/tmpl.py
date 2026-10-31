@@ -62,6 +62,7 @@ def read_structs(directory):
                 line = line.strip()
                 if not line:
                     continue
+                line = re.sub(r"\s=\s.*$", "", line)    # a default value (`name: Bytes max 32 = Bytes.empty()`) is not part of the type
                 field = re.fullmatch(r"(\w+)\s*:\s*(.+?)\s*,?", line)
                 if field:
                     fields[field.group(1)] = parse_type(field.group(2))

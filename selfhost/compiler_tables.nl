@@ -496,6 +496,7 @@ struct CompilerTables {
     default_context: Bytes max 4096
     table_failed: bool
     ir_overflow: bool
+    ir_overflow_function: long
     internal_emit_error_kind: long
     internal_emit_error_node: long
     internal_emit_error_file: long
@@ -610,6 +611,7 @@ fn empty_compiler_tables() -> CompilerTables {
         default_context: Bytes.empty(),
         table_failed: false,
         ir_overflow: false,
+        ir_overflow_function: -1L,
         internal_emit_error_kind: -1L,
         internal_emit_error_node: -1L,
         internal_emit_error_file: -1L,
@@ -682,6 +684,7 @@ fn reset_compiler_tables(env: Env, compiler: write CompilerTables) {
     compiler.default_context = Bytes.empty()
     compiler.table_failed = false
     compiler.ir_overflow = false
+    compiler.ir_overflow_function = -1L
     compiler.internal_emit_error_kind = -1L
     compiler.internal_emit_error_node = -1L
     compiler.internal_emit_error_file = -1L

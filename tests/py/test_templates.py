@@ -54,6 +54,11 @@ class Generator(unittest.TestCase):
         with self.assertRaises(tmpl.TemplateError):
             compile_template("html template t(row: Row) max 2000\n<p>café</p>\n")
 
+    def test_struct_defaults_are_not_part_of_the_field_type(self):
+        generated = compile_template("html template t(row: Row) max 400\n<p>{row.name}</p>\n",
+                                     structs="struct Row {\n    key: long = 0L\n    name: Bytes max 16 = Bytes.empty()\n}\n")
+        self.assertIn("tpl_html_text_bytes_16_400(out, row.name)", generated)
+
     def test_loops_over_lists_bound_the_output_by_the_count(self):
         # 3 rows of  <li>  +  16 bytes of name at up to 6 bytes each  +  </li>  =  4 + 96 + 5 = 105 per row, and 4 + 5 for the list
         generated = compile_template("html template t(items: list<Row, 3>) max 330\n<ul>{#for r in items}<li>{r.name}</li>{#end}</ul>\n")

@@ -4,14 +4,14 @@
 const PORT: long = 18090L
 
 struct User {
-    id: long
-    name: Bytes max 32
+    id: long = 0L
+    name: Bytes max 32 = Bytes.empty()
 }
 
 struct Room {
-    id: long
-    name: Bytes max 64
-    kind: Bytes max 32
+    id: long = 0L
+    name: Bytes max 64 = Bytes.empty()
+    kind: Bytes max 32 = Bytes.empty()
 }
 
 struct Message {
@@ -28,7 +28,7 @@ struct Token {
 }
 
 struct Membership {
-    id: long
+    id: long = 0L
 }
 
 struct RoomAndUser {
@@ -51,7 +51,7 @@ fn cookie_value(cookie: Bytes max 512, name: Ascii max 32) -> Bytes max 64 {
         while first < end && cookie[first] == 32 { first += 1L }
         var matches = end - first > name.len() && cookie[first + name.len()] == 61
         for index in 0L..name.len() {
-            if matches && cookie[first + index] != name.bytes()[index] { matches = false }
+            if matches && cookie[first + index] != name[index] { matches = false }
         }
         if matches {
             for index in first + name.len() + 1L..end { discard found.push(cookie[index]) }
@@ -102,7 +102,7 @@ fn serve(env: Env, connection: long) {
         let method = env.http_read(connection, target)
         if method < 0L { break }
         page = Bytes.empty()
-        var user = User { id: 0L, name: Bytes.empty() }
+        var user = User {}
         var status = 200L
         if method != 1L {
             status = 400L
@@ -116,9 +116,9 @@ fn serve(env: Env, connection: long) {
             render_home(page, user, rooms)
         } else if is_rooms_path(target) && room_id(target) >= 0L {
             let id = room_id(target)
-            var room = Room { id: 0L, name: Bytes.empty(), kind: Bytes.empty() }
+            var room = Room {}
             let member = RoomAndUser { room_id: id, user_id: user.id }
-            var membership = Membership { id: 0L }
+            var membership = Membership {}
             if env.db_row("from (select id, coalesce(name, 'Direct') as name, type as kind from rooms) where id = ?1", id, room) && env.db_row("from memberships where room_id = ?1 and user_id = ?2", member, membership) {
                 var rooms: list<Room, 100> = list {}
                 rooms_of(env, user, rooms)
