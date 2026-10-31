@@ -174,3 +174,20 @@ projection), the query must be a literal, and each call site prepares its statem
 fit the struct field (integer for `long`/`int`/`bool`, text for `Bytes`), or a different number of columns than fields
 is a build error, and a plan that reads a whole table is a warning with the query. A package with queries and no
 `schema.sql` gets a warning that they are unchecked. (`tests/py/test_query_check.py`.)
+
+## Templates (`pages.tpl`)
+
+The hand-written `push_*` and `render_*` functions are gone. `bench/web/pages.tpl` holds the two bodies:
+
+    json template item(row: Row) max 512
+    {{"id":{row.key},"name":{row.name},"price":{row.price|money},"v":{row.v}}}
+    html template page(row: Row, taxed: long) max 512
+    <!doctype html><html><body><h1>{row.name}</h1><p>item {row.key}</p><p>price with tax: ${taxed|money}</p></body></html>
+
+`tools/tmpl.py` (run by `scripts/nlc` when a package has `.tpl` files) turns them into `render_item` and `render_page`
+in `templates.gen.nl`, straight-line appends into the bounded body. At build time it: works out each template's largest
+output (here 285 bytes for the JSON) and refuses one that could overflow its buffer; chooses the escaping from the place
+each hole is in (HTML text, quoted attribute, URL attribute, JSON string, JSON value); and refuses a hole in a script,
+an event attribute, an unquoted value, between attributes, or at the start of a URL. Throughput is unchanged
+(314k req/s at 64 connections, 249k at 1000). The generator is a Python prototype of the template language; the plan is
+to move it into the compiler.

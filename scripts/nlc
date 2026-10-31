@@ -124,6 +124,15 @@ compile() {
     for flag in "$@"; do
         case "$flag" in --runtime=*) runtime="$flag" ;; *) flags+=("$flag") ;; esac
     done
+    # Templates (*.tpl) become functions when the program is built.
+    if compgen -G "$package/*.tpl" > /dev/null; then
+        local tmpl=""
+        for candidate in "$here/../tools/tmpl.py" "$here/tools/tmpl.py"; do
+            [[ -f "$candidate" ]] && { tmpl="$candidate"; break; }
+        done
+        [[ -n "$tmpl" ]] || { echo "nlc: cannot find tools/tmpl.py for the templates in $package" >&2; exit 2; }
+        python3 "$tmpl" "$package" || exit 1
+    fi
     "$(find_compiler)" build "$package" -o "$ir" "$runtime" "${flags[@]}"
 }
 

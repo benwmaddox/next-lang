@@ -78,3 +78,16 @@ can fix before the program runs:
 - **Sizes carry through**: a field's declared maximum is the SQLite column check, the buffer size and the template's
   bound.
 - **Read sets for caches** are computed from the declared queries, so invalidation needs no hand-written rules.
+
+## Step 2 as built: templates (prototype, 2026-10-31)
+
+`tools/tmpl.py` compiles `*.tpl` files in a package to `templates.gen.nl` (ignored by git) when `scripts/nlc` builds it.
+Syntax: a header `html template page(row: Row, taxed: long) max 512` or `json template ...`, then the body; `{path}` and
+`{path|money}` holes, `{#if bool}...{#else}...{#end}`, `{{` and `}}` for braces. Checked when built: parameter and field
+names and types (structs are read from the package's `.nl` files), the largest possible output against the buffer size,
+the escaping context of every hole (HTML text, quoted attribute, URL attribute, JSON string or value), and the
+places a hole is refused (script, style, event attributes, unquoted values, comments, the start of a URL).
+Not yet: loops over lists, components and layouts, nested templates, text that is not ASCII, inference of the right
+escaping for a `Text` that is already HTML. The generator is Python so it could be tried on the real workload quickly;
+the language rules above are the part to keep, and the generator should move into the compiler so templates need
+neither Python nor a generated file.

@@ -52,7 +52,7 @@ jobs:
           cp dist/nlc-selfhost "dist/$name/nlc-selfhost"
           zcat seed/seed.ll.gz > "dist/$name/seed.ll"
           cp scripts/nlc "dist/$name/nlc"
-          cp -r runtime core "dist/$name/"
+          cp -r runtime core tools "dist/$name/"
           {
             echo "tag: ${{ inputs.tag }}"
             echo "commit: $(git rev-parse HEAD)"
