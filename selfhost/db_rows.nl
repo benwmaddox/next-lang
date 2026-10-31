@@ -50,6 +50,25 @@ fn emit_db_row_layouts(
             ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, field.offset)
             ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, if kind == 4L { text_max_bytes(compiler, field.ty) } else { 0L })
         }
-        ir_write_ascii(compiler, ir, "]\n\n")
+        ir_write_ascii(compiler, ir, "]\n")
+        // The build checks this query against the package's schema (scripts/nlc, runtime/querycheck.c).
+        ir_write_ascii(compiler, ir, "; nlc.query ")
+        for field_offset in 0L..record.field_count {
+            if field_offset > 0L { ir_push_byte(compiler, ir, 44) }
+            ir_write_number(compiler, ir, db_row_field_kind(compiler, compiler.struct_fields[record.field_start + field_offset].ty))
+        }
+        ir_write_ascii(compiler, ir, " select ")
+        for field_offset in 0L..record.field_count {
+            let field = compiler.struct_fields[record.field_start + field_offset]
+            if field_offset > 0L { ir_push_byte(compiler, ir, 44) }
+            ir_write_token_text(source, files, tokens, compiler, ir, record.file, field.name_token)
+        }
+        ir_push_byte(compiler, ir, 32)
+        let literal = child_at(tables, compiler, node, 1L)
+        let literal_file = node_file_index(tables.nodes, files, literal)
+        let literal_token = tables.nodes[literal].token
+        let literal_start = files[literal_file].base + tokens[literal_token].start
+        for index in 1L..(tokens[literal_token].length - 1L) { ir_push_byte(compiler, ir, source[literal_start + index]) }
+        ir_write_ascii(compiler, ir, "\n\n")
     }
 }
