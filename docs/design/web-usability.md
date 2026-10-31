@@ -103,8 +103,9 @@ startup. What the web workload did and what it does now:
   `malloc`/`free` counter over about 900,000 requests (half on new connections): 970,666 frees before, 17 after.
 - A connection's HTTP buffer stays with its descriptor number instead of being freed when the connection closes.
 - Already pooled: coroutine records, native stacks, job data-stack contexts (4096), the cache table (allocated once).
-- Still allocating after startup: the timer heap grows by doubling (a high-water mark too), SQLite's own allocations (fixed
-  by `sqlite3_config` with a preallocated heap or lookaside, not done), the first use of each pool.
+- SQLite runs on one block of memory given to it at startup (`SQLITE_CONFIG_HEAP` with its own allocator; `NLC_DB_HEAP_BYTES`,
+  default 128 MiB of address space), so it no longer calls the system allocator; running out is a visible `SQLITE_NOMEM`.
+- Still allocating after startup: the timer heap grows by doubling (a high-water mark too) and the first use of each pool.
 - Rule for new features: size what they need at build time (a declared capacity, a bound from the types), take it from a pool
   or a table made at startup, and make exhaustion a visible result (`Full`, a 503), never a hidden allocation. The declared
   instance pools in `job-modules.md` are the language-level form of this.

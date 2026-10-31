@@ -3165,8 +3165,31 @@ static _Thread_local sqlite3 *nl_db_connection;
 static _Thread_local nl_db_statement nl_db_statements[64];
 static _Thread_local int nl_db_statement_count;
 
+/* SQLite runs on one block of memory taken when the first connection is opened (NLC_DB_HEAP_BYTES, default 128 MiB of
+   address space, touched only as used), through its own allocator (SQLITE_ENABLE_MEMSYS5): after that it calls the system
+   allocator never. A query that needs more than the block fails with SQLITE_NOMEM, which db_row reports as no row. */
+static volatile int nl_db_memory_state;   /* 0 not set up, 1 being set up, 2 done */
+
+static void nl_db_configure_memory(void) {
+    int expected = 0;
+    if (!__atomic_compare_exchange_n(&nl_db_memory_state, &expected, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        while (__atomic_load_n(&nl_db_memory_state, __ATOMIC_ACQUIRE) != 2) {}
+        return;
+    }
+#if defined(__linux__)
+    const char *text = getenv("NLC_DB_HEAP_BYTES");
+    int64_t bytes = text && *text ? atoll(text) : INT64_C(128) * 1024 * 1024;
+    if (bytes >= 1024 * 1024 && bytes <= INT32_MAX) {
+        void *heap = mmap(NULL, (size_t)bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (heap != MAP_FAILED) sqlite3_config(SQLITE_CONFIG_HEAP, heap, (int)bytes, 64);
+    }
+#endif
+    __atomic_store_n(&nl_db_memory_state, 2, __ATOMIC_RELEASE);
+}
+
 static sqlite3 *nl_db_open(void) {
     if (nl_db_connection) return nl_db_connection;
+    nl_db_configure_memory();
     const char *path = getenv("NLC_DB");
     sqlite3 *connection = NULL;
     if (sqlite3_open_v2(path && *path ? path : "app.db", &connection,

@@ -63,13 +63,7 @@ link() {
         local runtime_dir; runtime_dir="$(find_runtime)"
         if grep -qE 'call (void|i64) @nl_db_(query|text|row)' "$ir"; then
             # Env.db_query: SQLite is compiled once into the cache and linked in.
-            local cache="${NLC_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/next-lang}" object
-            mkdir -p "$cache"
-            object="$cache/sqlite3-3500400.o"
-            if [[ ! -f "$object" ]]; then
-                quiet_clang -O2 -c -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 \
-                    "$runtime_dir/sqlite/sqlite3.c" -o "$object.$$" && mv "$object.$$" "$object"
-            fi
+            local object; object="$(sqlite_object)"
             quiet_clang "${flags[@]}" -DNLC_WITH_DB=1 -I"$runtime_dir/sqlite" "$ir" "$runtime_dir/nl_runtime.c" "$object" -lpthread -lm -o "$output"
         else
             quiet_clang "${flags[@]}" "$ir" "$runtime_dir/nl_runtime.c" -o "$output"
@@ -89,10 +83,11 @@ sqlite_object() {
     runtime_dir="$(find_runtime)"
     cache="${NLC_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/next-lang}"
     mkdir -p "$cache"
-    object="$cache/sqlite3-3500400.o"
+    # SQLITE_ENABLE_MEMSYS5: SQLite's own allocator, so it can run on one block of memory given to it at startup (see nl_db_open)
+    object="$cache/sqlite3-3500400-memsys5.o"
     if [[ ! -f "$object" ]]; then
         quiet_clang -O2 -c -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 \
-            "$runtime_dir/sqlite/sqlite3.c" -o "$object.$$" && mv "$object.$$" "$object"
+            -DSQLITE_ENABLE_MEMSYS5 "$runtime_dir/sqlite/sqlite3.c" -o "$object.$$" && mv "$object.$$" "$object"
     fi
     echo "$object"
 }
