@@ -220,3 +220,11 @@ Job arguments and mailbox rings come from size-class free lists instead of `call
 stays with its descriptor. Counting the system allocator's calls over about 900,000 requests (keep-alive, then a burst on
 new connections): frees 970,666 before, 17 after. Throughput, 64 connections, four cores: keep-alive 282k to 303k req/s
 (+7%), a new connection every 10 requests 169k to 194k (+15%).
+
+## SQLite on a block of memory
+
+SQLite is compiled with its own allocator (`SQLITE_ENABLE_MEMSYS5`) and, when the first connection opens, is given one block
+(`NLC_DB_HEAP_BYTES`, default 128 MiB of address space taken with `MAP_NORESERVE`, so only the part used becomes memory;
+anything under 1 MiB is ignored and SQLite uses the system allocator). From then on it calls the system allocator never. A
+query that needs more than the block fails with `SQLITE_NOMEM`, which `db_row` reports as no row. System allocator calls over
+the same 900,000-request run: 459 mallocs and 17 frees before, 147 and 6 now, the remaining ones from startup.
