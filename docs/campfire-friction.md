@@ -4,6 +4,22 @@ One entry per snag in writing next-lang application code: what, where, how many 
 L language or compiler, S standard library or runtime capability, T tooling, D documentation, N nothing (acceptable). Counts are
 incremented each time the same snag costs time again.
 
+## Status after the first round of fixes (2026-10-31)
+
+Fixed in the language (tests in `tests/py/test_friction.py`):
+- **1** struct literals are allowed inside the parentheses of any call, even in a `match` head or an `if` condition
+  (`match box.send(Msg { ... })`).
+- **2, 13** `discard` now drops any plain value (a number, bool, struct) and a mailbox send, besides the built-in
+  operations whose only error is Full; it still refuses an arbitrary `Result` or `Option` (`discard env.net_close(c)`,
+  `discard box.sender().send(msg)`).
+- **7** `spawn` accepts structs of plain data (numbers, enums, text, bytes, lists, arrays, other such structs), copied into the
+  job's argument block; services pass `Cache` and `Database` handles as they are.
+- **8** `while` works on the C runtime too (it was refused only there); service loops and `serve` use `while true`.
+- **5** needed no change: `type Body = Bytes max 512` already works, including `grow Body` parameters. It was not known, which
+  is its own finding (documentation).
+Still open: 3 (`try_send` for a fire-and-forget send is now `discard x.send(v)`; probably done), 4, 6, 9 (generators), 10, 11,
+12, 14.
+
 ## Seeded from the web work so far (bench/web, services, templates), 2026-10-31
 
 | # | Snag | Where | Hits | Fix class and idea |

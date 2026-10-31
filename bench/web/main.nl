@@ -57,11 +57,10 @@ fn route_of(target: Bytes max 256) -> long {
 
 // One job per connection (a task). Asking the cache is a call: Cache_get sends the request with a reply slot and waits.
 // None means the cache's mailbox was full, which is the 503.
-fn serve(env: Env, connection: long, cache_inbox: Sender<CacheMessage>) {
-    let cache = Cache { inbox: cache_inbox }
+fn serve(env: Env, connection: long, cache: Cache) {
     var target: Bytes max 256 = Bytes.empty()
     var body: Bytes max 512 = Bytes.empty()
-    for request in 0L..4000000000L {
+    while true {
         let method = env.http_read(connection, target)
         if method < 0L { break }
         let id = item_id(target)
@@ -89,14 +88,14 @@ fn serve(env: Env, connection: long, cache_inbox: Sender<CacheMessage>) {
             }
         }
     }
-    let closed = env.net_close(connection)
+    discard env.net_close(connection)
 }
 
-fn acceptor(env: Env, listener: long, cache_inbox: Sender<CacheMessage>) {
-    for round in 0L..4000000000L {
+fn acceptor(env: Env, listener: long, cache: Cache) {
+    while true {
         let connection = env.net_accept(listener)
         if connection < 0L { break }
-        spawn serve(env, connection, cache_inbox)
+        spawn serve(env, connection, cache)
     }
 }
 
@@ -104,5 +103,5 @@ fn main(env: Env) {
     let listener = env.net_listen(PORT)
     let database = Database_start(env)
     let cache = Cache_start(database)
-    spawn acceptor(env, listener, cache.inbox)
+    spawn acceptor(env, listener, cache)
 }
