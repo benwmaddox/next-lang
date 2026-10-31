@@ -1,6 +1,7 @@
 # Jobs as modules: refined proposal (v0.2, 2026-10-31)
 
-Status: a proposal to explore, refined from Ben's idea ("a job is more of a module: optional static state, a stack, an
+Status: **decisions 1-5 below confirmed by Ben (2026-10-31); the three "Open" items are deferred.** First slice built as a
+prototype generator (`tools/svc.py`, see "As built"). Refined from Ben's idea ("a job is more of a module: optional static state, a stack, an
 init function, other functions like `tick` for games, and a function for each type of inbound message"). Nothing is
 built. It refines `mailboxes.md` (one tagged mailbox per service, reply slots, static topology) and replaces its
 "service jobs" sketch.
@@ -110,7 +111,7 @@ Messages and replies:
 6. Stackless services in the scheduler (no stack held between messages), then event-style connections (`on Readable`) as an
    option for very high connection counts.
 
-## Decisions proposed (to confirm)
+## Decisions (confirmed 2026-10-31)
 
 1. Two kinds of job, service and task, with the rule that service handlers never wait. (Replaces the earlier sketch where a
    handler could call another service and block.)
@@ -128,3 +129,23 @@ Messages and replies:
 - A service that needs to wait on I/O of its own (a logger writing a file): a task that owns the file and receives
   messages? Probably a task with an inbox, which suggests tasks may also have `on` handlers; to decide with a second
   example.
+
+## As built: step 1, services as a generated front end (2026-10-31)
+
+`tools/svc.py` compiles a package's `*.svc` files to `services.gen.nl` (ignored by git; `scripts/nlc` runs it, as it does
+`tools/tmpl.py`). Syntax: `service Name`, `config field: type` (numbers, `Env`, mailbox handles, or another service's name),
+`state field: type = initial`, `mailbox N`, `init { ... }`, and `on Message(params) [-> Reply] { ... }`; a block ends with a `}` at
+the start of a line. The generator writes the handle struct (`Name`), the message enum (`NameMessage`, a variant per
+handler plus `Stop`), the state and config structs, `Name_on_<handler>` functions, the run loop, `Name_start(config)`, a
+sender per handler (`Name_get(service, args) -> Option<Reply>` waits for the reply; `Name_fill(service, args) -> bool`),
+and `Name_stop`. Handlers see `state` (write), `config`, `me`, their parameters and, with `->`, `reply` (and `reply(value)`).
+Calls use a reply mailbox made and released per call. `forward` is the handler passing its `reply` handle on as an argument.
+
+Used in `bench/web`: `cache.svc` and `database.svc` replace about 80 lines of job loops and message structs; a cache miss
+forwards the caller's reply handle to the database service, which answers the caller directly and then fills the cache
+(one fewer hop than before). Throughput on four cores: 340-350k req/s at 64 connections (was 314k), 261-275k at 1000
+(was 249k), 58k at 4.
+
+Not built yet: `tick`, pools, reply slots inside the caller's instance (a reply mailbox is allocated per call), method
+syntax (`cache.get(k)`), stackless services, build-time checks of the message graph. Found on the way: `spawn` rejected
+an aggregate handle that was a function parameter or a struct field (fixed in `selfhost/jobs.nl`).

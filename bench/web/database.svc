@@ -1,0 +1,14 @@
+// The database: reads a row from SQLite, answers the original caller, and tells the cache.
+service Database
+config env: Env
+mailbox 256
+
+on Load(key: long, answer: Sender<Reply>, cache: Cache) {
+    let row = load_row(config.env, key)
+    let found = Reply { row: row, hit: false }
+    match answer.send(found) {
+        ok(_) => {},
+        err(_) => {},
+    }
+    let filled = Cache_fill(cache, row)
+}

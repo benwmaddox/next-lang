@@ -1,9 +1,9 @@
 // A small web service built from jobs and mailboxes.
 //   GET /item/<id>  -> JSON  {"id":..,"name":"..","price":..,"v":..}
 //   GET /page/<id>  -> HTML page with the name escaped and the price shown with 8% tax added
-// An acceptor job spawns one `serve` job per connection. Each request goes to the cache job (a direct-mapped array
-// of rows); on a miss the cache asks the database job, which reads the row from SQLite. The answer comes back
-// through the connection's own one-slot reply mailbox. If the cache's mailbox is full the connection answers 503
+// An acceptor job spawns one `serve` task per connection. Each request is a call to the Cache service (cache.svc: a direct-mapped array
+// of rows); on a miss it forwards the request to the Database service (database.svc), which reads the row from SQLite,
+// answers the caller and fills the cache. If the cache mailbox is full the connection answers 503
 // at once instead of waiting. Run with NLC_DB=<file made by bench/web/make-db.py>.
 const CACHE_SLOTS: long = 4096L
 const PORT: long = 18081L
@@ -21,18 +21,6 @@ struct Reply {
     hit: bool
 }
 
-struct Msg {
-    kind: long
-    row: Row
-    reply: Sender<Reply>
-}
-
-struct DbRequest {
-    key: long
-    reply: Sender<Reply>
-    cache: Sender<Msg>
-}
-
 // The columns this page reads: the struct is the projection, and the query is one statement.
 struct ItemData {
     v: long
@@ -44,70 +32,6 @@ fn load_row(env: Env, key: long) -> Row {
     var data = ItemData { v: 0L, price: 0L, name: Bytes.empty() }
     let found = env.db_row("from items where id = ?1", key, data)
     Row { key: key, found: found, v: data.v, price: data.price, name: data.name }
-}
-
-fn send_msg(to: Sender<Msg>, msg: Msg) {
-    for attempt in 0L..1000000000L {
-        match to.send(msg) {
-            ok(_) => { break },
-            err(_) => {},
-        }
-    }
-}
-
-fn reply_to(to: Sender<Reply>, reply: Reply) {
-    for attempt in 0L..1000000000L {
-        match to.send(reply) {
-            ok(_) => { break },
-            err(_) => {},
-        }
-    }
-}
-
-fn database(env: Env, inbox: Receiver<DbRequest>) {
-    for step in 0L..4000000000L {
-        match inbox.recv_wait() {
-            some(request) => {
-                send_msg(request.cache, Msg { kind: 1L, row: load_row(env, request.key), reply: request.reply })
-            },
-            none => { break },
-        }
-    }
-}
-
-fn cache(inbox: Receiver<Msg>, self_sender: Sender<Msg>, db: Sender<DbRequest>) {
-    var slots: list<Row, 4096> = list {}
-    let blank = Row { key: -1L, found: false, v: 0L, price: 0L, name: Bytes.empty() }
-    for index in 0L..CACHE_SLOTS {
-        match slots.push(blank) {
-            ok(_) => {},
-            err(_) => {},
-        }
-    }
-    for step in 0L..4000000000L {
-        match inbox.recv_wait() {
-            some(msg) => {
-                if msg.kind == 0L {
-                    let at = msg.row.key % CACHE_SLOTS
-                    if slots[at].key == msg.row.key {
-                        reply_to(msg.reply, Reply { row: slots[at], hit: true })
-                    } else {
-                        let request = DbRequest { key: msg.row.key, reply: msg.reply, cache: self_sender }
-                        for attempt in 0L..1000000000L {
-                            match db.send(request) {
-                                ok(_) => { break },
-                                err(_) => {},
-                            }
-                        }
-                    }
-                } else {
-                    slots[msg.row.key % CACHE_SLOTS] = msg.row
-                    reply_to(msg.reply, Reply { row: msg.row, hit: false })
-                }
-            },
-            none => { break },
-        }
-    }
 }
 
 // The id in "/item/<digits>" or "/page/<digits>", or -1.
@@ -131,12 +55,10 @@ fn route_of(target: Bytes max 256) -> long {
     0L
 }
 
-// One job per connection. It owns a one-slot reply mailbox for the cache job's answers and gives its memory back
-// when the connection ends (the cache job has answered by then, so nothing else holds it).
-fn serve(env: Env, connection: long, cache: Sender<Msg>) {
-    var replies_box: mailbox<Reply, 1> = mailbox {}
-    let replies = replies_box.receiver()
-    let reply_to_me = replies_box.sender()
+// One job per connection (a task). Asking the cache is a call: Cache_get sends the request with a reply slot and waits.
+// None means the cache's mailbox was full, which is the 503.
+fn serve(env: Env, connection: long, cache_inbox: Sender<CacheMessage>) {
+    let cache = Cache { inbox: cache_inbox }
     var target: Bytes max 256 = Bytes.empty()
     var body: Bytes max 512 = Bytes.empty()
     for request in 0L..4000000000L {
@@ -148,25 +70,19 @@ fn serve(env: Env, connection: long, cache: Sender<Msg>) {
             let sent = env.http_write(connection, 404L, 1L, "{\"error\":\"not found\"}")
             if sent < 0L { break }
         } else {
-            let ask = Msg { kind: 0L, row: Row { key: id, found: false, v: 0L, price: 0L, name: Bytes.empty() }, reply: reply_to_me }
-            match cache.send(ask) {
-                ok(_) => {
-                    match replies.recv_wait() {
-                        some(reply) => {
-                            body = Bytes.empty()
-                            var status = 200L
-                            if !reply.row.found { status = 404L }
-                            if status == 404L { discard body.try_append("{\"error\":\"no such item\"}".bytes()) }
-                            else if route == 1L { render_item(body, reply.row) }
-                            else { render_page(body, reply.row, reply.row.price + reply.row.price * 8L / 100L) }
-                            let kind = if status == 200L && route == 2L { 0L } else { 1L }
-                            let sent = env.http_write(connection, status, kind, body)
-                            if sent < 0L { break }
-                        },
-                        none => { break },
-                    }
+            match Cache_get(cache, id) {
+                some(reply) => {
+                    body = Bytes.empty()
+                    var status = 200L
+                    if !reply.row.found { status = 404L }
+                    if status == 404L { discard body.try_append("{\"error\":\"no such item\"}".bytes()) }
+                    else if route == 1L { render_item(body, reply.row) }
+                    else { render_page(body, reply.row, reply.row.price + reply.row.price * 8L / 100L) }
+                    let kind = if status == 200L && route == 2L { 0L } else { 1L }
+                    let sent = env.http_write(connection, status, kind, body)
+                    if sent < 0L { break }
                 },
-                err(_) => {
+                none => {
                     let sent = env.http_write(connection, 503L, 1L, "{\"error\":\"busy\"}")
                     if sent < 0L { break }
                 },
@@ -174,22 +90,19 @@ fn serve(env: Env, connection: long, cache: Sender<Msg>) {
         }
     }
     let closed = env.net_close(connection)
-    replies_box.release()
 }
 
-fn acceptor(env: Env, listener: long, cache: Sender<Msg>) {
+fn acceptor(env: Env, listener: long, cache_inbox: Sender<CacheMessage>) {
     for round in 0L..4000000000L {
         let connection = env.net_accept(listener)
         if connection < 0L { break }
-        spawn serve(env, connection, cache)
+        spawn serve(env, connection, cache_inbox)
     }
 }
 
 fn main(env: Env) {
     let listener = env.net_listen(PORT)
-    var cache_box: mailbox<Msg, 256> = mailbox {}
-    var db_box: mailbox<DbRequest, 256> = mailbox {}
-    spawn database(env, db_box.receiver())
-    spawn cache(cache_box.receiver(), cache_box.sender(), db_box.sender())
-    spawn acceptor(env, listener, cache_box.sender())
+    let database = Database_start(env)
+    let cache = Cache_start(database)
+    spawn acceptor(env, listener, cache.inbox)
 }

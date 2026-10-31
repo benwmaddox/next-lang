@@ -28,7 +28,13 @@ recursive fn emit_spawn_statement(
     for parameter_index in 0L..target.param_count {
         if argument < 0L { compiler.ir_overflow = true; return }
         let parameter = compiler.parameters[target.param_start + parameter_index]
-        let place = tables.nodes[argument].kind == NodeKind.Name || tables.nodes[argument].kind == NodeKind.Field
+        // A parameter that is an aggregate handle needs its address materialised by the ordinary expression path.
+        var is_parameter = false
+        if tables.nodes[argument].kind == NodeKind.Name {
+            let argument_binding = compiler.facts[argument].binding
+            is_parameter = argument_binding >= 0L && argument_binding < compiler.bindings.count() && compiler.bindings[argument_binding].parameter
+        }
+        let place = tables.nodes[argument].kind == NodeKind.Name && !is_parameter
         // A handle held in a variable or field is read in place; any other handle is built first.
         if !(is_aggregate_type(compiler, parameter.ty) && place) {
             emit_expr_linear(source, files, tokens, tables, compiler, ir, argument, file_index, return_ty, is_test)
