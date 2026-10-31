@@ -19,7 +19,7 @@ def generate():
            "",
            "fn emit_mailbox_functions(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {"]
     for line in source.read_text().splitlines():
-        if line.startswith(";") or line.startswith("declare ") or not line.strip():
+        if line.startswith(";") or line.startswith("declare ") or line.startswith("@nl_mbox_spin") or not line.strip():
             if not line.strip():
                 out.append('    ir_write_ascii(compiler, ir, "' + BS + 'n")')
             continue

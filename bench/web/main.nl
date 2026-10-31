@@ -133,47 +133,49 @@ fn item_id(target: Bytes max 256) -> long {
     id
 }
 
-fn worker(env: Env, listener: long, cache: Sender<Msg>, replies: Receiver<Reply>, reply_to_me: Sender<Reply>) {
+// One job per connection. It owns a one-slot reply mailbox for the cache job's answers (the mailbox's memory is not
+// returned yet: about 160 bytes per connection).
+fn serve(env: Env, connection: long, cache: Sender<Msg>) {
+    var replies_box: mailbox<Reply, 1> = mailbox {}
+    let replies = replies_box.receiver()
+    let reply_to_me = replies_box.sender()
     var target: Bytes max 256 = Bytes.empty()
+    for request in 0L..4000000000L {
+        let method = env.http_read(connection, target)
+        if method < 0L { break }
+        let id = item_id(target)
+        if method != 1L || id < 0L {
+            let sent = env.http_write(connection, 404L, 1L, "{\"error\":\"not found\"}")
+            if sent < 0L { break }
+        } else {
+            send_msg(cache, Msg { kind: 0L, key: id, value: 0L, reply: reply_to_me })
+            match replies.recv_wait() {
+                some(reply) => {
+                    var body: Bytes max 64 = Bytes.empty()
+                    render(body, reply.key, reply.value)
+                    let sent = env.http_write(connection, 200L, 1L, body)
+                    if sent < 0L { break }
+                },
+                none => { break },
+            }
+        }
+    }
+    let closed = env.net_close(connection)
+}
+
+fn acceptor(env: Env, listener: long, cache: Sender<Msg>) {
     for round in 0L..4000000000L {
         let connection = env.net_accept(listener)
         if connection < 0L { break }
-        for request in 0L..4000000000L {
-            let method = env.http_read(connection, target)
-            if method < 0L { break }
-            let id = item_id(target)
-            if method != 1L || id < 0L {
-                let sent = env.http_write(connection, 404L, 1L, "{\"error\":\"not found\"}")
-                if sent < 0L { break }
-            } else {
-                send_msg(cache, Msg { kind: 0L, key: id, value: 0L, reply: reply_to_me })
-                match replies.recv_wait() {
-                    some(reply) => {
-                        var body: Bytes max 64 = Bytes.empty()
-                        render(body, reply.key, reply.value)
-                        let sent = env.http_write(connection, 200L, 1L, body)
-                        if sent < 0L { break }
-                    },
-                    none => { break },
-                }
-            }
-        }
-        let closed = env.net_close(connection)
+        spawn serve(env, connection, cache)
     }
 }
 
 fn main(env: Env) {
     let listener = env.net_listen(PORT)
-    var cache_box: mailbox<Msg, 64> = mailbox {}
-    var db_box: mailbox<DbRequest, 64> = mailbox {}
-    var r0: mailbox<Reply, 1> = mailbox {}
-    var r1: mailbox<Reply, 1> = mailbox {}
-    var r2: mailbox<Reply, 1> = mailbox {}
-    var r3: mailbox<Reply, 1> = mailbox {}
+    var cache_box: mailbox<Msg, 256> = mailbox {}
+    var db_box: mailbox<DbRequest, 256> = mailbox {}
     spawn database(env, db_box.receiver())
     spawn cache(cache_box.receiver(), cache_box.sender(), db_box.sender())
-    spawn worker(env, listener, cache_box.sender(), r0.receiver(), r0.sender())
-    spawn worker(env, listener, cache_box.sender(), r1.receiver(), r1.sender())
-    spawn worker(env, listener, cache_box.sender(), r2.receiver(), r2.sender())
-    spawn worker(env, listener, cache_box.sender(), r3.receiver(), r3.sender())
+    spawn acceptor(env, listener, cache_box.sender())
 }
