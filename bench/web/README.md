@@ -213,3 +213,10 @@ takes one. Loadgen with a new connection every N requests (`loadgen port 64 4 50
 | keep-alive | 298k | 323k |
 
 What is left in the one-request-per-connection case is mostly the kernel's connect, accept and close work.
+
+## Fewer allocator calls (pooled blocks)
+
+Job arguments and mailbox rings come from size-class free lists instead of `calloc`/`free`; a connection's HTTP buffer
+stays with its descriptor. Counting the system allocator's calls over about 900,000 requests (keep-alive, then a burst on
+new connections): frees 970,666 before, 17 after. Throughput, 64 connections, four cores: keep-alive 282k to 303k req/s
+(+7%), a new connection every 10 requests 169k to 194k (+15%).

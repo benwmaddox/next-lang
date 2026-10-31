@@ -91,3 +91,20 @@ Not yet: loops over lists, components and layouts, nested templates, text that i
 escaping for a `Text` that is already HTML. The generator is Python so it could be tried on the real workload quickly;
 the language rules above are the part to keep, and the generator should move into the compiler so templates need
 neither Python nor a generated file.
+
+## Principle: use allocated memory; allocate and free rarely, and only at startup (Ben, 2026-10-31)
+
+Every feature should work out of memory that already exists, and the program should rarely call the system allocator after
+startup. What the web workload did and what it does now:
+
+- Job arguments and mailbox rings (a reply mailbox per service call, one per connection) were `calloc`ed and `free`d. They now
+  come from size-class free lists (`nl_job_args_alloc`): a freed block goes back on its list, the next request of that class
+  takes it, so once the number of live blocks has reached its high-water mark nothing calls the allocator. Counted with a
+  `malloc`/`free` counter over about 900,000 requests (half on new connections): 970,666 frees before, 17 after.
+- A connection's HTTP buffer stays with its descriptor number instead of being freed when the connection closes.
+- Already pooled: coroutine records, native stacks, job data-stack contexts (4096), the cache table (allocated once).
+- Still allocating after startup: the timer heap grows by doubling (a high-water mark too), SQLite's own allocations (fixed
+  by `sqlite3_config` with a preallocated heap or lookaside, not done), the first use of each pool.
+- Rule for new features: size what they need at build time (a declared capacity, a bound from the types), take it from a pool
+  or a table made at startup, and make exhaustion a visible result (`Full`, a 503), never a hidden allocation. The declared
+  instance pools in `job-modules.md` are the language-level form of this.
