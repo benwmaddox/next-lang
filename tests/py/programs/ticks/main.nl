@@ -44,4 +44,15 @@ fn main(env: Env) {
         none => { print(-4L) },
     }
     let stopped = Ticker_stop(ticker)
+    // the idler: messages are handled between idle steps, and the backlog is worked off while it is quiet
+    let idler = Idler_start(env)
+    for index in 0L..5L {
+        if !Idler_note(idler) { print(-5L) }
+    }
+    wait_ms(env, 100L)
+    match Idler_report(idler) {
+        some(report) => { print(report) },
+        none => { print(-6L) },
+    }
+    let idler_stopped = Idler_stop(idler)
 }

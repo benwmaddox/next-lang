@@ -172,3 +172,10 @@ Still not built: pools, caller-owned reply slots, method syntax, `on idle`.
 Not the instance pool of this design (declared capacity, `Full` when exhausted) but the part of it that cost something on
 the web path: a finished job's data-stack context goes to a pool (up to 4096) and the next job takes it, so starting a
 job maps nothing. See `bench/web/README.md`. The declared instance pool still needs the language side.
+
+## As built: `idle` (2026-10-31)
+
+`idle { ... }` in a `.svc`: runs when the mailbox is empty and returns a bool (the last expression): true when it has more
+to do. A turn polls the mailbox first (messages always come first), runs the idle step when it is empty, and waits only when
+the step says it is done (with a `tick`, the wait is limited to the next tick). One step should do bounded work. Tested with
+a backlog of 5000 steps worked off between five messages.

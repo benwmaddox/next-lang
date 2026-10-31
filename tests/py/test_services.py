@@ -27,6 +27,17 @@ class Generator(unittest.TestCase):
                          "fn Box_take(service: Box) -> Option<long>", "fn Box_stop(", "mailbox<BoxMessage, 8>"]:
             self.assertIn(expected, text)
 
+    def test_idle_and_tick_shape_the_run_loop(self):
+        idle_only = generate("service A\nstate n: long = 3L\non Ping() {\n    state.n += 1L\n}\nidle {\n    state.n > 0L\n}\n")
+        self.assertIn("fn A_on_idle(", idle_only)
+        self.assertIn("inbox.recv()", idle_only)
+        self.assertNotIn("recv_for", idle_only)
+        both = generate("service A\nconfig env: Env\non Ping() {\n}\nidle {\n    false\n}\ntick every 5 ms {\n}\n")
+        self.assertIn("recv_for(wait)", both)
+        self.assertIn("A_on_tick(", both)
+        with self.assertRaises(svc.ServiceError):
+            generate("service A\non Ping() {\n}\ntick every 5 ms {\n}\n")  # tick needs config env: Env
+
     def test_syntax_errors(self):
         for source in ["service A\n", "service A\non X() {\n", "service A\non X() {\n}\non X() {\n}\n", "nothing\n", "service A\non Stop() {\n}\n"]:
             with self.assertRaises(svc.ServiceError, msg=source):

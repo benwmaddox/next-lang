@@ -77,6 +77,8 @@ class Service:
         self.tick_ms = 0
         self.tick_body = ""
         self.tick_line = 0
+        self.idle_body = ""
+        self.idle_line = 0
         self.handlers = []
 
 
@@ -110,7 +112,7 @@ def read_services(path):
         if match:
             service.mailbox = int(match.group(1))
             continue
-        header = re.fullmatch(r"(init|tick\s+every\s+(\d+)\s*(ms|s)|on\s+(\w+)\s*\((.*)\)(?:\s*->\s*(.+?))?)\s*\{\s*", line)
+        header = re.fullmatch(r"(init|idle|tick\s+every\s+(\d+)\s*(ms|s)|on\s+(\w+)\s*\((.*)\)(?:\s*->\s*(.+?))?)\s*\{\s*", line)
         if header:
             body = []
             while index < len(lines) and lines[index] != "}":
@@ -122,6 +124,9 @@ def read_services(path):
             text = "\n".join(body)
             if header.group(1) == "init":
                 service.init = text
+            elif header.group(1) == "idle":
+                service.idle_body = text
+                service.idle_line = number
             elif header.group(1).startswith("tick"):
                 service.tick_ms = int(header.group(2)) * (1000 if header.group(3) == "s" else 1)
                 service.tick_body = text
@@ -194,6 +199,9 @@ def generate(service, path, known=()):
         out.append(f"fn {name}_on_{snake(handler.name)}({', '.join(f'{n}: {t}' for n, t in params)}) {{\n{body}\n}}\n")
     if service.tick_ms:
         out.append(f"fn {name}_on_tick(state: write {name}State, config: {name}Config, me: {name}, missed: long) {{\n{service.tick_body}\n}}\n")
+    if service.idle_body:
+        out.append(f"// runs when the mailbox is empty; returns true when it has more to do\n"
+                   f"fn {name}_on_idle(state: write {name}State, config: {name}Config, me: {name}) -> bool {{\n{service.idle_body}\n}}\n")
     # run loop
     run_params = [("inbox", f"Receiver<{message}>"), ("self_inbox", f"Sender<{message}>")] + [(n, raw_type(t)) for n, t in service.config]
     state_init = ", ".join(f"{n}: {i}" for n, _, i in service.state) if service.state else "unused: 0L"
@@ -211,29 +219,50 @@ def generate(service, path, known=()):
            f"    let me = {name} {{ inbox: self_inbox }}"]
     if service.init:
         run.append("    // init\n" + service.init)
+    # The loop. `dispatch` is the match over message kinds. With `idle`, a turn first polls the mailbox; an empty mailbox
+    # runs the idle step, and only when that has nothing more to do does the service wait. With `tick`, the wait is
+    # limited to the next tick, and a due tick runs after the turn.
+    def dispatch(pad, var="message"):
+        return [f"{pad}match {var} {{"] + [pad + arm.strip().join(["    ", ""]) for arm in arms] + [f"{pad}}}"]
+
+    idle_call = f"{name}_on_idle(state, config, me)"
+    body = ["    for svc_turn in 0L..4000000000L {"]
     if service.tick_ms:
         period = service.tick_ms
-        run += [f"    var next_tick = config.env.now_ms() + {period}L",
-                "    for svc_turn in 0L..4000000000L {",
-                "        var wait = next_tick - config.env.now_ms()",
-                "        if wait < 0L { wait = 0L }",
-                "        match inbox.recv_for(wait) {",
-                "            some(message) => {",
-                "                match message {"] + arms + [
-                "                }", "            },",
-                "            none => { if inbox.is_closed() { break } },", "        }",
-                "        let after = config.env.now_ms()",
-                "        if after >= next_tick {",
-                f"            let missed = (after - next_tick) / {period}L",
-                f"            {name}_on_tick(state, config, me, missed)",
-                f"            next_tick = next_tick + (missed + 1L) * {period}L",
-                "        }", "    }", "}\n"]
+        run.append(f"    var next_tick = config.env.now_ms() + {period}L")
+    if service.idle_body:
+        body += ["        var busy = false",
+                 "        match inbox.recv() {",
+                 "            some(message) => {",
+                 "                busy = true"] + dispatch("                ") + [
+                 "            },",
+                 "            none => {",
+                 "                if inbox.is_closed() { break }",
+                 f"                busy = {idle_call}",
+                 "            },",
+                 "        }",
+                 "        if !busy {"]
+        pad = "            "
     else:
-        run += ["    for svc_turn in 0L..4000000000L {",
-                "        match inbox.recv_wait() {",
-                "            some(message) => {",
-                "                match message {"] + arms + [
-                "                }", "            },", "            none => { break },", "        }", "    }", "}\n"]
+        pad = "        "
+    if service.tick_ms:
+        body += [f"{pad}var wait = next_tick - config.env.now_ms()",
+                 f"{pad}if wait < 0L {{ wait = 0L }}",
+                 f"{pad}match inbox.recv_for(wait) {{"]
+    else:
+        body += [f"{pad}match inbox.recv_wait() {{"]
+    body += [f"{pad}    some(message) => {{"] + dispatch(pad + "        ") + [f"{pad}    }},"]
+    body += [f"{pad}    none => {{ if inbox.is_closed() {{ break }} }},", f"{pad}}}"]
+    if service.idle_body:
+        body += ["        }"]
+    if service.tick_ms:
+        body += ["        let after = config.env.now_ms()",
+                 "        if after >= next_tick {",
+                 f"            let missed = (after - next_tick) / {period}L",
+                 f"            {name}_on_tick(state, config, me, missed)",
+                 f"            next_tick = next_tick + (missed + 1L) * {period}L",
+                 "        }"]
+    run += body + ["    }", "}\n"]
     out.append("\n".join(run))
     # start
     start_params = ", ".join(f"{n}: {t}" for n, t in service.config)
@@ -285,6 +314,8 @@ def check_services(parsed):
             bodies = [(handler, handler.body, handler.line, f"{service.name}.{handler.name}") for handler in service.handlers]
             if service.tick_ms:
                 bodies.append((None, service.tick_body, service.tick_line, f"{service.name}.tick"))
+            if service.idle_body:
+                bodies.append((None, service.idle_body, service.idle_line, f"{service.name}.idle"))
             for handler, handler_body, handler_line, label in bodies:
                 handler = handler or Handler("tick", [], None, handler_body, handler_line)
                 body = re.sub(r"//[^\n]*", "", handler.body)
