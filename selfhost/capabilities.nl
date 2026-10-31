@@ -29,6 +29,7 @@ const C_METHOD_ENV_DB_ROW: long = 3026L
 const C_METHOD_ENV_NOW_MS: long = 3027L
 const C_METHOD_ENV_DB_ROWS: long = 3028L
 const C_METHOD_HTTP_HEADER: long = 3029L
+const C_METHOD_HTTP_SET_HEADER: long = 3030L
 
 fn emit_context_runtime_symbol(
     compiler: write CompilerTables,
@@ -162,6 +163,7 @@ fn c_runtime_method_kind(
         else if token_is_word_at(source, tokens, files, file_index, token, "http_read") { C_METHOD_HTTP_READ }
         else if token_is_word_at(source, tokens, files, file_index, token, "http_write") { C_METHOD_HTTP_WRITE }
         else if token_is_word_at(source, tokens, files, file_index, token, "http_header") { C_METHOD_HTTP_HEADER }
+        else if token_is_word_at(source, tokens, files, file_index, token, "http_set_header") { C_METHOD_HTTP_SET_HEADER }
         else if token_is_word_at(source, tokens, files, file_index, token, "net_close") { C_METHOD_NET_CLOSE }
         else if token_is_word_at(source, tokens, files, file_index, token, "db_text") { C_METHOD_ENV_DB_TEXT }
         else if token_is_word_at(source, tokens, files, file_index, token, "cache_get") { C_METHOD_ENV_CACHE_GET }
@@ -292,6 +294,13 @@ fn c_runtime_check_method(
             }
         }
         result_type = TY_BOOL
+    } else if method == C_METHOD_HTTP_SET_HEADER {
+        require_type(env, files, compiler, file_index, first, TY_LONG, compiler.facts[first].ty, tables)
+        let set_header_kind = type_kind(compiler, compiler.facts[second].ty)
+        if set_header_kind != TYPE_KIND_ASCII && set_header_kind != TYPE_KIND_TEXT && set_header_kind != TYPE_KIND_BYTES {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[second].start, "Env.http_set_header needs bounded text: the whole header line, e.g. \"Location: /\"")
+        }
+        result_type = TY_LONG
     } else if method == C_METHOD_HTTP_HEADER {
         require_type(env, files, compiler, file_index, first, TY_LONG, compiler.facts[first].ty, tables)
         let header_name_kind = type_kind(compiler, compiler.facts[second].ty)
@@ -546,7 +555,7 @@ fn emit_c_runtime_method_storage(
         }
         return
     }
-    let data_argument = if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_DB_QUERY || method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_DB_ROW || method == C_METHOD_ENV_DB_ROWS || method == C_METHOD_ENV_CACHE_PUT || method == C_METHOD_HTTP_HEADER { child_at(tables, compiler, node, if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_CACHE_PUT || method == C_METHOD_HTTP_HEADER { 2L } else { 1L }) }
+    let data_argument = if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_DB_QUERY || method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_DB_ROW || method == C_METHOD_ENV_DB_ROWS || method == C_METHOD_ENV_CACHE_PUT || method == C_METHOD_HTTP_HEADER || method == C_METHOD_HTTP_SET_HEADER { child_at(tables, compiler, node, if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_CACHE_PUT || method == C_METHOD_HTTP_HEADER || method == C_METHOD_HTTP_SET_HEADER { 2L } else { 1L }) }
         else if method == C_METHOD_HTTP_WRITE { child_at(tables, compiler, node, 4L) }
         else if method == C_METHOD_OUT_WRITE { child_at(tables, compiler, node, 1L) }
         else { -1L }
@@ -899,6 +908,13 @@ fn emit_c_runtime_method_call(
         ir_write_db_parameters(compiler, ir, node, second, parameters_location, parameters_pointer)
         ir_write_ascii(compiler, ir, ")\n  %v"); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = icmp ne i64 %c.dbrow.found."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
+    } else if method == C_METHOD_HTTP_SET_HEADER {
+        emit_c_raw_descriptor(tables, compiler, ir, node, second)
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call i64 @nl_http_set_header(ptr "); ir_write_value_ref(compiler, ir, receiver)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, first)
+        ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[second].ty)); ir_write_ascii(compiler, ir, ")\n")
     } else if method == C_METHOD_HTTP_HEADER {
         let header_location = c_runtime_writable_output_location(tables, compiler, ir, third)
         let header_pointer = emit_location_pointer_materialization(compiler, ir, header_location)

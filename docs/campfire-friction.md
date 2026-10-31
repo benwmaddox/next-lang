@@ -99,3 +99,20 @@ like an ordinary string whose content is the text, so every reader of a literal'
 types, constants). `Env.db_row` / `db_rows` take them, and the build-time query check reads them with the line breaks as
 spaces (an error is reported on the line the literal starts). The Campfire queries are now written over several lines
 (`apps/campfire/main.nl`). Tests: `tests/py/test_multiline.py`.
+
+## Round 3 of fixes (2026-10-31): what is closed, what is a project
+
+- **21** done: `Env.http_set_header(connection, "Location: /rooms/7")` adds a header line to the next response; a 302 with a Location is a
+  redirect, `Set-Cookie: ...` lines (several allowed) set cookies. A line with a line break, an empty line or a line with no colon
+  is refused (header injection), and queued lines are sent once and forgotten. More status reasons are known (201, 204, 302, 303,
+  401, 403, 422, 429). Tests: `tests/py/test_http_redirect.py`.
+- **11** done: `\r` is an escape now (`"a\r\nb"`); the others were already there (`\"`, `\`, `\n`, `\t`, `\0`, `\xNN`).
+- **4** closed as by design: `none` (and `some`, `ok`, `err`) are the constructors' names; the error says to choose another name.
+- **10** closed: services read as `cache.get(id)` with method syntax, and the checks in `svc.py` find both spellings.
+- **12** closed: it is about my own shell and regular-expression editing, not the language; the Edit tool avoids it.
+- **3** closed: `discard x.send(v)`.
+- **Projects, not fixes:** **6** string interpolation (`$"{id}:{name}"`, a typed bounded text; the compiler needs a lexer mode for
+  the braces, a node kind, a bound computed from the holes and an emitter; templates cover the HTML and JSON cases) and **9** the
+  Python generators `tools/tmpl.py` and `tools/svc.py` moving out of Python (into the compiler, or into next-lang programs the
+  driver builds and caches the way it caches the query checker). Each is days of work, not an afternoon; both need a decision on
+  the target form first.
