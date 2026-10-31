@@ -407,6 +407,15 @@ fn body_child_expected(
         }
     } else if kind == NodeKind.QualifiedCase && frame.child2 >= 0L {
         enum_case_payload_type(compiler, frame.child2, child_index)
+    } else if kind == NodeKind.MethodCall && frame.child0 >= 0L && child != frame.child0 &&
+        struct_method_target(source, files, tokens, compiler, compiler.facts[frame.child0].ty, tables.nodes[parent].token, file_index) >= 0L {
+        // the receiver is the function's first parameter, so argument k is parameter k + 1
+        let method_function = struct_method_target(source, files, tokens, compiler, compiler.facts[frame.child0].ty, tables.nodes[parent].token, file_index)
+        let parameter_index = child_index + 1L
+        if parameter_index < compiler.functions[method_function].param_count {
+            let parameter = compiler.parameters[compiler.functions[method_function].param_start + parameter_index]
+            if (parameter_mode(parameter) & FLAG_MODE_GROW) != 0L || parameter_uses_text_read_view(compiler, parameter) { -1L } else { parameter.ty }
+        } else { -1L }
     } else if kind == NodeKind.MethodCall && frame.child0 >= 0L &&
         c_runtime_method_kind(source, tokens, files, compiler, file_index, tables.nodes[parent].token, compiler.facts[frame.child0].ty) != C_METHOD_NONE {
         c_runtime_child_expected(source, tokens, files, compiler, file_index, tables.nodes[parent].token,

@@ -50,6 +50,15 @@ class Generator(unittest.TestCase):
             generate(source)
         self.assertIn("never waits", str(caught.exception))
 
+    def test_waiting_through_method_syntax_is_found_too(self):
+        source = ("service A\non Get() -> long {\n    reply(1L)\n}\n"
+                  "service B\nconfig a: A\non Go() -> long {\n    let x = config.a.get()\n    reply(2L)\n}\n")
+        with self.assertRaises(svc.ServiceError) as caught:
+            generate(source)
+        self.assertIn("never waits", str(caught.exception))
+        text = generate("service A\non Load(answer: Sender<long>) {\n    let x = 1L\n}\nservice B\nconfig a: A\non Go() -> long {\n    let f = config.a.load(reply)\n}\n")
+        self.assertIn("B.Go -> A (A_load)", text)
+
     def test_a_reply_must_be_answered_or_passed_on(self):
         with self.assertRaises(svc.ServiceError) as caught:
             generate("service A\non Get() -> long {\n    let x = 1L\n}\n")

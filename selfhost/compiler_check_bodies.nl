@@ -1570,6 +1570,40 @@ fn check_one_body(
             if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
             let case = compiler.enum_cases[frame.child2]
             compiler.facts[node] = NodeFact { ty, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: case.tag }
+        } else if kind == NodeKind.MethodCall && frame.child0 >= 0L &&
+            struct_method_target(source, files, tokens, compiler, compiler.facts[frame.child0].ty, syntax.token, file_index) >= 0L {
+            // x.m(args) on a user struct: a call of Type_m(x, args)
+            let target = struct_method_target(source, files, tokens, compiler, compiler.facts[frame.child0].ty, syntax.token, file_index)
+            let function = compiler.functions[target]
+            let receiver_node = frame.child0
+            check_call_count(env, source, files, tokens, tables, compiler, function, node, file_index)
+            check_call_write_modes(env, source, files, tokens, tables, compiler, function, node, file_index, frame.scope)
+            let receiver_parameter = compiler.parameters[function.param_start]
+            if parameter_uses_text_read_view(compiler, receiver_parameter) {
+                require_text_read_argument(env, files, compiler, file_index, receiver_node, receiver_parameter.ty, compiler.facts[receiver_node].ty, tables)
+            } else {
+                require_type(env, files, compiler, file_index, receiver_node, receiver_parameter.ty, compiler.facts[receiver_node].ty, tables)
+            }
+            var method_argument = compiler.child_first[node]
+            for argument_index in 0L..function.param_count {
+                if method_argument < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "call is missing an argument") }
+                let parameter = compiler.parameters[function.param_start + argument_index]
+                if parameter_uses_text_read_view(compiler, parameter) {
+                    require_text_read_argument(env, files, compiler, file_index, method_argument, parameter.ty, compiler.facts[method_argument].ty, tables)
+                }
+                method_argument = compiler.child_next[method_argument]
+            }
+            invalidate_collection_counts_for_write_call(compiler, function, node)
+            if function_id >= 0L {
+                let edge_id = compiler.call_edges.count()
+                let next_edge = compiler.edge_first[function_id]
+                compiler.call_edges.push(CallEdge { from: function_id, to: target, node, next: next_edge }).unwrap()
+                compiler.edge_first[function_id] = edge_id
+            }
+            let method_ty = function.result_ty
+            if frame.expected >= 0L && frame.expected != method_ty { require_type(env, files, compiler, file_index, node, frame.expected, method_ty, tables) }
+            let method_flags = if method_ty == TY_NEVER || !node_children_fall_through(tables, compiler, node) { FACT_NEVER } else { FACT_FALLS_THROUGH }
+            compiler.facts[node] = NodeFact { ty: method_ty, flags: method_flags | FACT_STRUCT_METHOD, binding: -1L, function: target, literal: 0L }
         } else if kind == NodeKind.MethodCall {
             let operation = frame.auxiliary
             let receiver = frame.child0
