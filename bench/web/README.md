@@ -84,3 +84,20 @@ baseline is a thread-per-worker server that also serves four at a time (82k req/
 async Rust server would be the fairer comparison for 64+ connections and is not measured yet.
 Limits: a job that computes without waiting holds its worker (cooperative scheduling); SQLite calls block their
 worker for their duration; a mailbox's memory is not returned when its job ends.
+
+## Correction: spinning is wrong for coroutines (default NLC_SPIN is now 0)
+
+With jobs as coroutines the 15,000-iteration spin in `recv_wait` held a worker while the job it waited for sat in the
+ready queue. Process CPU during the 64-connection run: 10.2 core-seconds of user time in 4 s (tokio: 2.5), almost all
+of it spinning. With `NLC_SPIN=0` (now the default), plus a stack-switching routine in assembly (no signal-mask system
+calls) and no futex call in `nl_wake` unless a plain thread is sleeping, same machine and method as above:
+
+| connections | next-lang req/s | p50 | p99 | tokio (4 workers) req/s | p50 | p99 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4 | 58,000 | 66 us | 128 us | 69,000 | 55 us | 117 us |
+| 64 | 314,000 | 194 us | 384 us | 285,000 | 213 us | 481 us |
+| 1000 | 248,000 | 4.0 ms | 5.8 ms | 300,000 | 2.1 ms | 11.7 ms |
+
+(two rounds each; the tokio server is `bench/web/rust-async`, one task per connection, mutex cache, one SQLite
+connection behind a mutex.) At 64 connections next-lang is 10% faster; at 1000 it is 17% slower at the median but has
+half the p99; at 4 connections it is 15% slower (spinning helps there: `NLC_SPIN=15000` gave 72k).

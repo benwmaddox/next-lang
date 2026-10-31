@@ -1267,8 +1267,25 @@ int64_t nl_host_cores(void *host);
 
 enum { NL_CORO_RUNNING = 0, NL_CORO_PARKING, NL_CORO_PARKED, NL_CORO_WOKEN, NL_CORO_READY };
 
+#if defined(__x86_64__)
+#define NL_CORO_ASM_SWITCH 1
+/* Switch stacks: save the callee-saved registers and the stack pointer in *save_sp, then load load_sp and return
+   into whatever it was running (a fresh job returns into nl_coro_entry). No signal-mask system calls, unlike
+   swapcontext. */
+void nl_ctx_switch(void **save_sp, void *load_sp);
+__asm__(".text\n.globl nl_ctx_switch\n.type nl_ctx_switch,@function\nnl_ctx_switch:\n"
+        "pushq %rbp\npushq %rbx\npushq %r12\npushq %r13\npushq %r14\npushq %r15\n"
+        "movq %rsp, (%rdi)\nmovq %rsi, %rsp\n"
+        "popq %r15\npopq %r14\npopq %r13\npopq %r12\npopq %rbx\npopq %rbp\nret\n"
+        ".size nl_ctx_switch,.-nl_ctx_switch\n");
+#endif
+
 typedef struct nl_coro {
+#if defined(NL_CORO_ASM_SWITCH)
+    void *sp;
+#else
     ucontext_t context;
+#endif
     void *(*entry)(void *);
     void *argument;
     void *stack;
@@ -1283,7 +1300,12 @@ typedef struct nl_coro {
 #define NL_WAITER_BUCKETS 256
 
 static _Thread_local nl_coro *nl_running_coro;
+#if defined(NL_CORO_ASM_SWITCH)
+static _Thread_local void *nl_scheduler_sp;
+static __attribute__((noinline)) void **nl_scheduler_slot(void) { return &nl_scheduler_sp; }
+#else
 static _Thread_local ucontext_t nl_scheduler_context;
+#endif
 
 static pthread_mutex_t nl_ready_lock = PTHREAD_MUTEX_INITIALIZER;
 static nl_coro *nl_ready_head, *nl_ready_tail;
@@ -1295,10 +1317,13 @@ static pthread_mutex_t nl_stack_lock = PTHREAD_MUTEX_INITIALIZER;
 static void *nl_free_stacks[1024];
 static int nl_free_stack_count;
 static volatile int32_t nl_live_jobs;
+static volatile int32_t nl_thread_waiters;  /* plain threads sleeping in nl_park: nl_wake only makes the futex call when > 0 */
 static int nl_workers_started;
 
 static __attribute__((noinline)) nl_coro *nl_current_coro(void) { return nl_running_coro; }
+#if !defined(NL_CORO_ASM_SWITCH)
 static __attribute__((noinline)) ucontext_t *nl_scheduler_ptr(void) { return &nl_scheduler_context; }
+#endif
 
 static void nl_ready_push(nl_coro *coro) {
     pthread_mutex_lock(&nl_ready_lock);
@@ -1327,7 +1352,11 @@ static void nl_coro_make_ready(nl_coro *coro) {
 
 static __attribute__((noinline)) void nl_coro_switch_out(nl_coro *coro) {
     nl_line_flush();
+#if defined(NL_CORO_ASM_SWITCH)
+    nl_ctx_switch(&coro->sp, *nl_scheduler_slot());
+#else
     swapcontext(&coro->context, nl_scheduler_ptr());
+#endif
 }
 
 static void nl_coro_entry(void) {
@@ -1392,7 +1421,11 @@ static void *nl_worker_main(void *unused) {
         nl_coro *coro = nl_ready_pop_or_wait();
         atomic_store(&coro->state, NL_CORO_RUNNING);
         nl_running_coro = coro;
+#if defined(NL_CORO_ASM_SWITCH)
+        nl_ctx_switch(nl_scheduler_slot(), coro->sp);
+#else
         swapcontext(nl_scheduler_ptr(), &coro->context);
+#endif
         nl_running_coro = NULL;
         if (coro->finished) {
             nl_stack_put(coro->stack, coro->stack_bytes);
@@ -1502,11 +1535,22 @@ static void nl_coro_spawn(void *(*entry)(void *), void *argument) {
     coro->stack_bytes = NL_CORO_NATIVE_STACK_BYTES;
     coro->stack = nl_stack_get(coro->stack_bytes);
     if (!coro->stack) nl_stack_startup_failure("cannot allocate a job's stack");
+#if defined(NL_CORO_ASM_SWITCH)
+    {
+        uintptr_t top = ((uintptr_t)coro->stack + coro->stack_bytes) & ~(uintptr_t)15;
+        void **words = (void **)top;
+        words[-1] = NULL;                    /* return address for nl_coro_entry; it never returns */
+        words[-2] = (void *)nl_coro_entry;   /* popped by the ret in nl_ctx_switch */
+        for (int index = 3; index <= 8; ++index) words[-index] = NULL; /* r15 r14 r13 r12 rbx rbp */
+        coro->sp = &words[-8];
+    }
+#else
     getcontext(&coro->context);
     coro->context.uc_stack.ss_sp = coro->stack;
     coro->context.uc_stack.ss_size = coro->stack_bytes;
     coro->context.uc_link = NULL;
     makecontext(&coro->context, nl_coro_entry, 0);
+#endif
     atomic_store(&coro->state, NL_CORO_READY);
     __atomic_add_fetch(&nl_live_jobs, 1, __ATOMIC_SEQ_CST);
     nl_ready_push(coro);
@@ -1545,7 +1589,9 @@ int32_t nl_park(volatile int32_t *address, int32_t expected, int64_t timeout_nan
         limit.tv_nsec = (long)(timeout_nanos % 1000000000);
         limit_pointer = &limit;
     }
+    __atomic_add_fetch(&nl_thread_waiters, 1, __ATOMIC_SEQ_CST);
     long result = syscall(SYS_futex, address, 128 /* FUTEX_WAIT_PRIVATE */, expected, limit_pointer, NULL, 0);
+    __atomic_sub_fetch(&nl_thread_waiters, 1, __ATOMIC_SEQ_CST);
     return result < 0 && errno == ETIMEDOUT ? 1 : 0;
 #else
     (void)address; (void)expected; (void)timeout_nanos;
@@ -1559,7 +1605,9 @@ void nl_wake(volatile int32_t *address, int32_t count) {
     if (count == 1) WakeByAddressSingle((PVOID)address); else WakeByAddressAll((PVOID)address);
 #elif defined(__linux__) && defined(SYS_futex)
     nl_coro_wake(address, count);
-    (void)syscall(SYS_futex, address, 129 /* FUTEX_WAKE_PRIVATE */, count, NULL, NULL, 0);
+    if (__atomic_load_n(&nl_thread_waiters, __ATOMIC_SEQ_CST) > 0) {
+        (void)syscall(SYS_futex, address, 129 /* FUTEX_WAKE_PRIVATE */, count, NULL, NULL, 0);
+    }
 #else
     (void)address; (void)count;
 #endif
@@ -1585,10 +1633,11 @@ void *nl_job_args_alloc(uint64_t bytes) {
 
 void nl_job_args_free(void *block) { free(block); }
 
-/* How long a receiver spins on its mailbox before it sleeps (NLC_SPIN, ring checks), and where jobs are pinned
+/* How long a receiver spins on its mailbox before it sleeps (NLC_SPIN, ring checks; none by default, because a spinning
+   job holds its worker while the job it waits for sits in the queue), and where jobs are pinned
    (NLC_JOB_PIN: rr, the default, spreads jobs over the granted cores; same puts them all on the first; none leaves
    placement to the system). Both are tuning knobs while the defaults are measured. */
-int64_t nl_mbox_spin = 15000;
+int64_t nl_mbox_spin = 0;
 
 void nl_job_start(void *(*entry)(void *), void *arguments) {
 #if defined(__linux__) && !NL_WINDOWS
