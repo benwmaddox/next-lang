@@ -2861,7 +2861,7 @@ int64_t nl_http_write(void *env, int64_t fd, int64_t status, int64_t kind, void 
    keys never wait for each other. NLC_CACHE_SLOTS sets the number of slots (default 65536). */
 #define NL_CACHE_VALUE_BYTES 512
 typedef struct {
-    volatile int32_t lock;
+    volatile uint32_t sequence;  /* even: stable; odd: a writer is inside (a seqlock) */
     int32_t length;
     int64_t key;
     unsigned char data[NL_CACHE_VALUE_BYTES];
@@ -2890,27 +2890,36 @@ static nl_cache_slot *nl_cache_slot_for(int64_t key) {
     return &nl_cache_slots[index];
 }
 
+/* Writers take the slot by making its sequence odd; readers never write the slot, so jobs reading the same hot key
+   do not bounce its cache line between cores, and retry only if a writer was inside while they copied. */
 static void nl_cache_lock(nl_cache_slot *slot) {
-    while (__atomic_exchange_n(&slot->lock, 1, __ATOMIC_ACQUIRE)) {
-        while (__atomic_load_n(&slot->lock, __ATOMIC_RELAXED)) {}
+    for (;;) {
+        uint32_t seen = __atomic_load_n(&slot->sequence, __ATOMIC_RELAXED);
+        if (!(seen & 1) && __atomic_compare_exchange_n(&slot->sequence, &seen, seen + 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
     }
 }
 
-static void nl_cache_unlock(nl_cache_slot *slot) { __atomic_store_n(&slot->lock, 0, __ATOMIC_RELEASE); }
+static void nl_cache_unlock(nl_cache_slot *slot) { __atomic_store_n(&slot->sequence, slot->sequence + 1, __ATOMIC_RELEASE); }
 
 /* The bytes for the key into `data` (count stored at `count`); returns the length, or -1 when absent or too long. */
 int64_t nl_cache_get(void *env, int64_t key, unsigned char *data, uint64_t capacity, int64_t *count) {
     (void)env;
     nl_cache_slot *slot = nl_cache_slot_for(key);
-    int64_t result = -1;
-    nl_cache_lock(slot);
-    if (slot->key == key && (uint64_t)slot->length <= capacity) {
-        memcpy(data, slot->data, (size_t)slot->length);
-        *count = slot->length;
-        result = slot->length;
+    for (;;) {
+        uint32_t before = __atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE);
+        if (before & 1) continue;
+        int64_t slot_key = slot->key;
+        int32_t length = slot->length;
+        int64_t result = -1;
+        if (slot_key == key && length >= 0 && length <= NL_CACHE_VALUE_BYTES && (uint64_t)length <= capacity) {
+            memcpy(data, slot->data, (size_t)length);
+            result = length;
+        }
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&slot->sequence, __ATOMIC_RELAXED) != before) continue;  /* a writer intervened: copy again */
+        if (result >= 0) *count = result;
+        return result;
     }
-    nl_cache_unlock(slot);
-    return result;
 }
 
 /* Store bytes under the key, replacing whatever shared the slot; returns 0, or -1 when they are too long. */
