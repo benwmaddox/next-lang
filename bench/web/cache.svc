@@ -1,0 +1,29 @@
+// The cache: a direct-mapped array of rows. A hit is answered here; a miss goes to the database service with this
+// request's reply handle, so the database answers the caller itself and then fills the cache.
+service Cache
+config db: Database
+state slots: list<Row, 4096> = list {}
+mailbox 256
+
+init {
+    let blank = Row { key: -1L, found: false, v: 0L, price: 0L, name: Bytes.empty() }
+    for index in 0L..CACHE_SLOTS {
+        match state.slots.push(blank) {
+            ok(_) => {},
+            err(_) => {},
+        }
+    }
+}
+
+on Get(key: long) -> Reply {
+    let at = key % CACHE_SLOTS
+    if state.slots[at].key == key {
+        reply(Reply { row: state.slots[at], hit: true })
+    } else {
+        let forwarded = Database_load(config.db, key, reply, me)
+    }
+}
+
+on Fill(row: Row) {
+    state.slots[row.key % CACHE_SLOTS] = row
+}

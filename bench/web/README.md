@@ -191,3 +191,10 @@ each hole is in (HTML text, quoted attribute, URL attribute, JSON string, JSON v
 an event attribute, an unquoted value, between attributes, or at the start of a URL. Throughput is unchanged
 (314k req/s at 64 connections, 249k at 1000). The generator is a Python prototype of the template language; the plan is
 to move it into the compiler.
+
+## Services (`cache.svc`, `database.svc`)
+
+The cache and database jobs are now services (docs/design/job-modules.md): state and one handler per message, no loops,
+no message structs. A miss forwards the caller's reply handle to the database service, which answers the caller and
+fills the cache. Same machine and method: 340-350k req/s at 64 connections (before: 314k), 261-275k at 1000 (249k), 58k
+at 4. The connection is a task that calls `Cache_get`, and gets none (the 503) when the cache's mailbox is full.

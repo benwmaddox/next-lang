@@ -1,0 +1,24 @@
+// A counter service: handlers never wait; `Get` answers its caller.
+service Counter
+config step: long
+state total: long = 0L
+state calls: long = 0L
+mailbox 16
+
+init {
+    state.total = 100L
+}
+
+on Add(amount: long) {
+    state.total += amount * config.step
+    state.calls += 1L
+}
+
+on Get() -> long {
+    state.calls += 1L
+    reply(state.total)
+}
+
+on Calls() -> long {
+    reply(state.calls)
+}

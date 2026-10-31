@@ -124,6 +124,15 @@ compile() {
     for flag in "$@"; do
         case "$flag" in --runtime=*) runtime="$flag" ;; *) flags+=("$flag") ;; esac
     done
+    # Services (*.svc) become state, messages, a loop and typed senders when the program is built.
+    if compgen -G "$package/*.svc" > /dev/null; then
+        local svc=""
+        for candidate in "$here/../tools/svc.py" "$here/tools/svc.py"; do
+            [[ -f "$candidate" ]] && { svc="$candidate"; break; }
+        done
+        [[ -n "$svc" ]] || { echo "nlc: cannot find tools/svc.py for the services in $package" >&2; exit 2; }
+        python3 "$svc" "$package" || exit 1
+    fi
     # Templates (*.tpl) become functions when the program is built.
     if compgen -G "$package/*.tpl" > /dev/null; then
         local tmpl=""
