@@ -50,8 +50,8 @@ default for anything with escapes.
 - **14** needed no change: struct field defaults already exist (`id: long = 0L`, `name: Bytes max 32 = Bytes.empty()`) and give
   `User {}`; the app uses them, and the template generator now ignores defaults when it reads the types.
 - **15** the message already says "choose a different name"; left as is.
-Still open: 3 (done by `discard`), 4, 6 (string interpolation), 9 (generators into the compiler), 10, 11, 12, 21 (redirects), and a
-new one, **23**: SQL queries are single-line literals of 300+ characters (a literal cannot span lines, and `db_row` requires a
+**23 fixed the same day by multi-line string literals** (`"""..."""`, see below). Still open: 3 (done by `discard`), 4, 6 (string
+interpolation), 9 (generators into the compiler), 10, 11, 12, 21 (redirects). Written then as open, and now fixed, **23**: SQL queries are single-line literals of 300+ characters (a literal cannot span lines, and `db_row` requires a
 literal so it can be checked when built). Options: a line continuation in string literals, adjacent literals joined, or named
 queries in a `.sql` file referenced by name. It needs a decision, because the build-time check reads the literal's text.
 
@@ -90,3 +90,12 @@ queries in a `.sql` file referenced by name. It needs a decision, because the bu
 ## Campfire-specific entries
 
 None yet. Add them as slices are built.
+
+## Multi-line string literals (Ben's suggestion, 2026-10-31)
+
+`"""..."""` is a string literal that may span lines. The line breaks and the indentation are part of the text; the ordinary
+escapes work; a quote, or two in a row, is just text; the text ends at the next three quotes. The lexer makes the token look
+like an ordinary string whose content is the text, so every reader of a literal's content works unchanged (lengths, `Ascii`
+types, constants). `Env.db_row` / `db_rows` take them, and the build-time query check reads them with the line breaks as
+spaces (an error is reported on the line the literal starts). The Campfire queries are now written over several lines
+(`apps/campfire/main.nl`). Tests: `tests/py/test_multiline.py`.

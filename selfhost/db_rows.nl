@@ -87,7 +87,11 @@ fn emit_db_row_layouts(
         let literal_file = node_file_index(tables.nodes, files, literal)
         let literal_token = tables.nodes[literal].token
         let literal_start = files[literal_file].base + tokens[literal_token].start
-        for index in 1L..(tokens[literal_token].length - 1L) { ir_push_byte(compiler, ir, source[literal_start + index]) }
+        // a query written over several lines goes into the single-line comment with its line breaks as spaces
+        for index in 1L..(tokens[literal_token].length - 1L) {
+            let query_byte = source[literal_start + index]
+            ir_push_byte(compiler, ir, if query_byte == 10 || query_byte == 13 || query_byte == 9 { 32 } else { query_byte })
+        }
         ir_write_ascii(compiler, ir, "\n\n")
     }
 }
@@ -102,7 +106,7 @@ fn db_lower_byte(source: Bytes max SOURCE_BUFFER_CAPACITY, position: long) -> lo
 fn db_rows_limit(source: Bytes max SOURCE_BUFFER_CAPACITY, start: long, length: long) -> long {
     var end = start + length - 1L        // the closing quote
     for step in 0L..length {
-        if end <= start || (source[end - 1L] != 32 && source[end - 1L] != 10) { break }
+        if end <= start || (source[end - 1L] != 32 && source[end - 1L] != 10 && source[end - 1L] != 13 && source[end - 1L] != 9) { break }
         end -= 1L
     }
     var digits_start = end
