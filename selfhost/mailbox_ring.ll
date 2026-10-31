@@ -13,6 +13,7 @@
 declare i32 @nl_park(ptr, i32, i64)
 @nl_mbox_spin = external global i64
 declare void @nl_yield()
+declare i64 @nl_now_ns()
 declare void @nl_wake(ptr, i32)
 
 define internal void @nl.mbox.init(ptr %mb, i64 %capacity, i64 %elem_size) {
@@ -182,6 +183,57 @@ closed.clear:
 drain:
   %last = call i1 @nl.mbox.recv(ptr %mb, ptr %out)
   ret i1 %last
+yes:
+  ret i1 true
+}
+
+; Take the next message, waiting at most `%timeout` nanoseconds. False when the time ran out or the mailbox is closed
+; and drained (the caller tells the two apart with the closed flag).
+define internal i1 @nl.mbox.recv_for(ptr %mb, ptr %out, i64 %timeout) {
+entry:
+  %start = call i64 @nl_now_ns()
+  %deadline = add i64 %start, %timeout
+  br label %again
+again:
+  %got = call i1 @nl.mbox.recv(ptr %mb, ptr %out)
+  br i1 %got, label %yes, label %check
+check:
+  %closed.addr = getelementptr i8, ptr %mb, i64 80
+  %closed = load atomic i32, ptr %closed.addr acquire, align 4
+  %is.closed = icmp ne i32 %closed, 0
+  br i1 %is.closed, label %drain, label %clock
+clock:
+  %now = call i64 @nl_now_ns()
+  %left = sub i64 %deadline, %now
+  %expired = icmp sle i64 %left, 0
+  br i1 %expired, label %timed.out, label %prepare
+prepare:
+  %wake.addr = getelementptr i8, ptr %mb, i64 72
+  %waiting.addr = getelementptr i8, ptr %mb, i64 76
+  %ticket = load atomic i32, ptr %wake.addr seq_cst, align 4
+  store atomic i32 1, ptr %waiting.addr seq_cst, align 4
+  fence seq_cst
+  %again.got = call i1 @nl.mbox.recv(ptr %mb, ptr %out)
+  br i1 %again.got, label %got.clear, label %sleep
+sleep:
+  %closed2 = load atomic i32, ptr %closed.addr acquire, align 4
+  %is.closed2 = icmp ne i32 %closed2, 0
+  br i1 %is.closed2, label %closed.clear, label %park
+park:
+  %parked = call i32 @nl_park(ptr %wake.addr, i32 %ticket, i64 %left)
+  store atomic i32 0, ptr %waiting.addr seq_cst, align 4
+  br label %again
+got.clear:
+  store atomic i32 0, ptr %waiting.addr seq_cst, align 4
+  ret i1 true
+closed.clear:
+  store atomic i32 0, ptr %waiting.addr seq_cst, align 4
+  br label %drain
+drain:
+  %last = call i1 @nl.mbox.recv(ptr %mb, ptr %out)
+  ret i1 %last
+timed.out:
+  ret i1 false
 yes:
   ret i1 true
 }

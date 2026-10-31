@@ -1607,13 +1607,16 @@ fn check_one_body(
                 } else if record.role == MAILBOX_ROLE_SENDER {
                     if token_is_word_at(source, tokens, files, file_index, syntax.token, "send") { method = MAILBOX_METHOD_SEND }
                     else if token_is_word_at(source, tokens, files, file_index, syntax.token, "close") { method = MAILBOX_METHOD_CLOSE }
+                    else if token_is_word_at(source, tokens, files, file_index, syntax.token, "is_closed") { method = MAILBOX_METHOD_IS_CLOSED }
                 } else {
                     if token_is_word_at(source, tokens, files, file_index, syntax.token, "recv") { method = MAILBOX_METHOD_RECV }
                     else if token_is_word_at(source, tokens, files, file_index, syntax.token, "recv_wait") { method = MAILBOX_METHOD_RECV_WAIT }
+                    else if token_is_word_at(source, tokens, files, file_index, syntax.token, "recv_for") { method = MAILBOX_METHOD_RECV_FOR }
+                    else if token_is_word_at(source, tokens, files, file_index, syntax.token, "is_closed") { method = MAILBOX_METHOD_IS_CLOSED }
                 }
                 if method == 0L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "no matching mailbox method is available on this value") }
                 let actual_count = count_children(tables, compiler, node) - 1L
-                let wanted_count = if method == MAILBOX_METHOD_SEND { 1L } else { 0L }
+                let wanted_count = if method == MAILBOX_METHOD_SEND || method == MAILBOX_METHOD_RECV_FOR { 1L } else { 0L }
                 if actual_count != wanted_count { fail_at_message(env, files, compiler, file_index, syntax.start, "mailbox method has the wrong number of arguments") }
                 var mailbox_result = TY_UNIT
                 if method == MAILBOX_METHOD_SENDER {
@@ -1626,8 +1629,14 @@ fn check_one_body(
                     let full_ty = builtin_full_type_id(compiler)
                     if full_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "internal capacity error type is unavailable") }
                     mailbox_result = intern_sum_type(compiler, TYPE_KIND_RESULT, TY_UNIT, full_ty, file_index, node, -1L, -1L)
-                } else if method == MAILBOX_METHOD_RECV || method == MAILBOX_METHOD_RECV_WAIT {
+                } else if method == MAILBOX_METHOD_RECV || method == MAILBOX_METHOD_RECV_WAIT || method == MAILBOX_METHOD_RECV_FOR {
+                    if method == MAILBOX_METHOD_RECV_FOR {
+                        let wait_ms = compiler.child_next[receiver]
+                        require_type(env, files, compiler, file_index, wait_ms, TY_LONG, compiler.facts[wait_ms].ty, tables)
+                    }
                     mailbox_result = intern_sum_type(compiler, TYPE_KIND_OPTION, record.element, -1L, file_index, node, -1L, -1L)
+                } else if method == MAILBOX_METHOD_IS_CLOSED {
+                    mailbox_result = TY_BOOL
                 } else { () }
                 if frame.expected >= 0L && frame.expected != mailbox_result { require_type(env, files, compiler, file_index, node, frame.expected, mailbox_result, tables) }
                 let mailbox_flags = if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }

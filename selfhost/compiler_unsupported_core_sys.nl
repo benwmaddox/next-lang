@@ -338,6 +338,9 @@ fn unsupported_category_for_node(
                 token_is_word_at(source, tokens, files, file_index, value.token, "receiver") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "close") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "release") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "recv_for") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "is_closed") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "now_ms") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "cores") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "total_cores") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "ram_bytes") ||

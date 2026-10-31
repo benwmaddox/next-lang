@@ -35,6 +35,15 @@ fn emit_mailbox_method(
         ir_write_ascii(compiler, ir, "  call void @nl.mbox.close(ptr %mb.ring."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ")\n")
         return
     }
+    if method == MAILBOX_METHOD_IS_CLOSED {
+        ir_write_ascii(compiler, ir, "  %mb.closed.addr."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %mb.ring."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 80\n  %mb.closed.flag."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = load atomic i32, ptr %mb.closed.addr."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " acquire, align 4\n  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = icmp ne i32 %mb.closed.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
+        return
+    }
     if method == MAILBOX_METHOD_RELEASE {
         // The owner gives the ring's memory back; no handle to it may be used afterwards.
         ir_write_ascii(compiler, ir, "  call void @nl_job_args_free(ptr %mb.ring."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ")\n")
@@ -84,11 +93,18 @@ fn emit_mailbox_method(
     let payload = sum_payload_record(compiler, result_type, 0L, 0L)
     let address = enum_temporary_address(node, MAX_TREE_NODES * 3L + 5L)
     emit_layout_address(compiler, ir, address, storage_location_with_offset(aggregate_destination_location(compiler, 0L, node), payload.offset))
+    if method == MAILBOX_METHOD_RECV_FOR {
+        // the wait is given in milliseconds
+        ir_write_ascii(compiler, ir, "  %mb.timeout."); ir_write_number(compiler, ir, node)
+        let wait_node = compiler.child_next[receiver]
+        ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, wait_node); ir_write_ascii(compiler, ir, ", 1000000\n")
+    }
     ir_write_ascii(compiler, ir, "  %mb.got."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, " = call i1 @nl.mbox.")
-    ir_write_ascii(compiler, ir, if method == MAILBOX_METHOD_RECV_WAIT { "recv_wait" } else { "recv" })
+    ir_write_ascii(compiler, ir, if method == MAILBOX_METHOD_RECV_WAIT { "recv_wait" } else if method == MAILBOX_METHOD_RECV_FOR { "recv_for" } else { "recv" })
     ir_write_ascii(compiler, ir, "(ptr %mb.ring."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address)
+    if method == MAILBOX_METHOD_RECV_FOR { ir_write_ascii(compiler, ir, ", i64 %mb.timeout."); ir_write_number(compiler, ir, node) }
     ir_write_ascii(compiler, ir, ")\n  br i1 %mb.got."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, ", label %mb.recv.some."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, ", label %mb.recv.none."); ir_write_number(compiler, ir, node)

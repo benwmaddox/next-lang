@@ -149,3 +149,20 @@ forwards the caller's reply handle to the database service, which answers the ca
 Not built yet: `tick`, pools, reply slots inside the caller's instance (a reply mailbox is allocated per call), method
 syntax (`cache.get(k)`), stackless services, build-time checks of the message graph. Found on the way: `spawn` rejected
 an aggregate handle that was a function parameter or a struct field (fixed in `selfhost/jobs.nl`).
+
+## As built: step 2, checks, timers and `tick` (2026-10-31)
+
+- **Checks in `tools/svc.py`:** a handler that calls another service's waiting sender (`Other_get(...)`) is an error ("a
+  service handler never waits"; pass `reply` on instead); a handler declared `-> T` must call `reply(...)` or pass `reply`
+  on; `reply` in a handler without `->` is an error. The message graph (which handler sends to which service) is appended to
+  `services.gen.nl` as comments.
+- **Timers in the scheduler:** a min-heap of deadlines; an idle worker's `epoll_wait` times out at the earliest one. A
+  job that parks with a timeout is both a waiter and a timer (whichever finds it first resumes it; a wait serial makes a
+  timer for an earlier wait harmless). `Env.now_ms()` is a monotonic clock.
+- **Mailbox:** `Receiver.recv_for(ms)` waits at most that long (none on timeout; `is_closed()` tells timeout from the end,
+  and works on a `Sender` too).
+- **`tick every N ms { ... }` in a `.svc`** (needs `config env: Env`): the run loop waits `recv_for` until the next tick,
+  handles at most one message per turn, and runs the tick when due. Overruns are skipped, not queued; the body sees `missed`
+  (how many ticks it skipped). Tested at 20 ms for about 210 ms: 7 to 11 ticks, under 3 missed.
+- Coroutine records are now reused rather than freed (so a stale timer entry never touches freed memory).
+Still not built: pools, caller-owned reply slots, method syntax, `on idle`.

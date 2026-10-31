@@ -319,7 +319,7 @@ fn emit_sys_method(
         emit_double_method(tables, compiler, ir, node, collection_operation)
         return
     }
-    if collection_operation >= MAILBOX_METHOD_SENDER && collection_operation <= MAILBOX_METHOD_RELEASE {
+    if collection_operation >= MAILBOX_METHOD_SENDER && collection_operation <= MAILBOX_METHOD_IS_CLOSED {
         emit_mailbox_method(tables, compiler, ir, node, collection_operation)
         return
     }

@@ -26,6 +26,7 @@ const C_METHOD_ENV_DB_TEXT: long = 3023L
 const C_METHOD_ENV_CACHE_GET: long = 3024L
 const C_METHOD_ENV_CACHE_PUT: long = 3025L
 const C_METHOD_ENV_DB_ROW: long = 3026L
+const C_METHOD_ENV_NOW_MS: long = 3027L
 
 fn emit_context_runtime_symbol(
     compiler: write CompilerTables,
@@ -162,6 +163,7 @@ fn c_runtime_method_kind(
         else if token_is_word_at(source, tokens, files, file_index, token, "db_text") { C_METHOD_ENV_DB_TEXT }
         else if token_is_word_at(source, tokens, files, file_index, token, "cache_get") { C_METHOD_ENV_CACHE_GET }
         else if token_is_word_at(source, tokens, files, file_index, token, "db_row") { C_METHOD_ENV_DB_ROW }
+        else if token_is_word_at(source, tokens, files, file_index, token, "now_ms") { C_METHOD_ENV_NOW_MS }
         else if token_is_word_at(source, tokens, files, file_index, token, "cache_put") { C_METHOD_ENV_CACHE_PUT }
         else { C_METHOD_NONE }
     } else if receiver_type == TY_HOST {
@@ -242,7 +244,7 @@ fn c_runtime_check_method(
     if method == C_METHOD_NONE { return -1L }
     let actual_count = count_children(tables, compiler, node) - 1L
     let wanted_count = if method == C_METHOD_ENV_ARGS || method == C_METHOD_ARGS_COUNT || method == C_METHOD_ARG_LENGTH ||
-        method == C_METHOD_ENV_HOST || method == C_METHOD_HOST_CORES || method == C_METHOD_HOST_TOTAL_CORES ||
+        method == C_METHOD_ENV_HOST || method == C_METHOD_ENV_NOW_MS || method == C_METHOD_HOST_CORES || method == C_METHOD_HOST_TOTAL_CORES ||
         method == C_METHOD_HOST_RAM || method == C_METHOD_HOST_PAGE_SIZE { 0L }
         else if method == C_METHOD_ENV_EXIT || method == C_METHOD_ARGS_GET || method == C_METHOD_ARG_BYTE || method == C_METHOD_OUT_WRITE ||
             method == C_METHOD_NET_LISTEN || method == C_METHOD_NET_ACCEPT || method == C_METHOD_NET_CLOSE { 1L }
@@ -256,7 +258,9 @@ fn c_runtime_check_method(
     let second = child_at(tables, compiler, node, 2L)
     let third = child_at(tables, compiler, node, 3L)
     var result_type = TY_UNIT
-    if method == C_METHOD_NET_LISTEN || method == C_METHOD_NET_ACCEPT || method == C_METHOD_NET_CLOSE {
+    if method == C_METHOD_ENV_NOW_MS {
+        result_type = TY_LONG
+    } else if method == C_METHOD_NET_LISTEN || method == C_METHOD_NET_ACCEPT || method == C_METHOD_NET_CLOSE {
         require_type(env, files, compiler, file_index, first, TY_LONG, compiler.facts[first].ty, tables)
         result_type = TY_LONG
     } else if method == C_METHOD_ENV_DB_ROW {
@@ -803,6 +807,9 @@ fn emit_c_runtime_method_call(
         ir_write_ascii(compiler, ir, "  call void @nl_fs_write(ptr "); ir_write_value_ref(compiler, ir, receiver); ir_write_ascii(compiler, ir, ", ptr ")
         if path_is_arg { ir_write_value_ref(compiler, ir, first) } else { emit_location_pointer_reference(compiler, ir, path_location, path_pointer) }
         ir_write_ascii(compiler, ir, ", i32 "); ir_write_number(compiler, ir, if path_is_arg { 1L } else { 0L }); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, if path_is_arg { 0L } else { collection_capacity(compiler, path_type) }); ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i32 2, i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[second].ty)); ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, result_location, result_pointer); ir_write_ascii(compiler, ir, ")\n")
+    } else if method == C_METHOD_ENV_NOW_MS {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call i64 @nl_now_ms(ptr "); ir_write_value_ref(compiler, ir, receiver); ir_write_ascii(compiler, ir, ")\n")
     } else if method == C_METHOD_NET_LISTEN || method == C_METHOD_NET_ACCEPT || method == C_METHOD_NET_CLOSE {
         ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = call i64 @nl_")
