@@ -143,7 +143,16 @@ check:
   %closed.addr = getelementptr i8, ptr %mb, i64 80
   %closed = load atomic i32, ptr %closed.addr acquire, align 4
   %is.closed = icmp ne i32 %closed, 0
-  br i1 %is.closed, label %drain, label %prepare
+  br i1 %is.closed, label %drain, label %spin
+; Spin briefly before sleeping: a message that arrives within a few microseconds then costs no futex wake.
+spin:
+  %spin.i = phi i64 [ 0, %check ], [ %spin.next, %spin.again ]
+  %spin.got = call i1 @nl.mbox.recv(ptr %mb, ptr %out)
+  br i1 %spin.got, label %yes, label %spin.again
+spin.again:
+  %spin.next = add i64 %spin.i, 1
+  %spin.more = icmp ult i64 %spin.next, 15000
+  br i1 %spin.more, label %spin, label %prepare
 prepare:
   %wake.addr = getelementptr i8, ptr %mb, i64 72
   %waiting.addr = getelementptr i8, ptr %mb, i64 76

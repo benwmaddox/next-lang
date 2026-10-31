@@ -23,3 +23,17 @@ accepted (the loadgen's maximum latency shows it). Suspend-on-I/O (step 4 of doc
 Ratio 0.66. The shapes differ on purpose: next-lang sends every request through the cache job's mailbox and back
 (two park/wake hand-offs), where the Rust baseline reads a mutex-protected array inline. Both serve four connections
 at a time (four blocking workers). Baseline: `bench/web/rust-baseline` (`cargo build --release`, port 18082).
+
+## Where the mailbox hop's time goes (same day)
+
+- Worker answering without the cache job (HTTP layer alone): about 84,000 req/s, p50 43 us, the same as the Rust baseline.
+  So the cost is the cache hop: worker -> cache job -> worker.
+- The hop's latency was the cache job's thread being woken from a futex sleep (about 25 us in this VM), not the ring:
+  4 clients send one request every ~12 us, so the cache job emptied its mailbox and parked between most messages.
+- `recv_wait` now spins on the ring before parking. Spin length vs result (4 connections):
+  none: 54.5k req/s p50 70 us; 3,000 iterations: 55k, 69 us; 15,000: 55k on 4 cores but 67k on 6 cores, p50 55 us
+  (p99 118 us); 100,000: p50 41 us (the hop is free) but 33k req/s and p99 700 us, because six jobs spinning on four
+  cores starve each other.
+- Reading: a service job that parks costs a wake-up per request; a spinning one costs a core. Spinning needs the
+  jobs to have cores to themselves (the host grant says how many), so the next step is to let main say which jobs
+  are hot (spin) and which are not, and to size the spin from the grant.
