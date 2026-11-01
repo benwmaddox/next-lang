@@ -114,6 +114,29 @@ check_queries() {
     sed -n 's/^; nlc.query //p' "$ir" | "$checker" "$schema"
 }
 
+# generator <name> <package>: runs the generator program tools/gen/<name> (written in next-lang) on a package. The program is
+# built with the compiler on first use and again whenever its sources, the compiler or the runtime change.
+generator() {
+    local name="$1" package="$2" src="" candidate cache bin compiler runtime_dir work
+    for candidate in "$here/../tools/gen/$name" "$here/tools/gen/$name"; do
+        [[ -d "$candidate" ]] && { src="$candidate"; break; }
+    done
+    [[ -n "$src" ]] || { echo "nlc: cannot find tools/gen/$name for the package $package" >&2; exit 2; }
+    cache="${NLC_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/next-lang}"
+    mkdir -p "$cache"
+    bin="$cache/gen-$name"
+    compiler="$(find_compiler)"
+    runtime_dir="$(find_runtime)"
+    if [[ ! -x "$bin" || "$compiler" -nt "$bin" || "$runtime_dir/nl_runtime.c" -nt "$bin" || -n "$(find "$src" -type f -newer "$bin" | head -n 1)" ]]; then
+        work="$(mktemp -d ./.nlc-gen.XXXXXX)"
+        cp -r "$src" "$work/pkg"
+        if ! "$compiler" build "$work/pkg" -o "$work/gen.ll" --runtime=c; then rm -rf "$work"; exit 1; fi
+        link "$work/gen.ll" "$bin.$$" && mv "$bin.$$" "$bin"
+        rm -rf "$work"
+    fi
+    NLC_STACK_RESERVE_BYTES="${NLC_STACK_RESERVE_BYTES:-1073741824}" "$bin" "$package"
+}
+
 # compile <package> <ll> <extra compiler flags...>: the C runtime unless a --runtime flag says otherwise.
 compile() {
     local package="$1" ir="$2"
@@ -124,21 +147,11 @@ compile() {
     done
     # Services (*.svc) become state, messages, a loop and typed senders when the program is built.
     if compgen -G "$package/*.svc" > /dev/null; then
-        local svc=""
-        for candidate in "$here/../tools/svc.py" "$here/tools/svc.py"; do
-            [[ -f "$candidate" ]] && { svc="$candidate"; break; }
-        done
-        [[ -n "$svc" ]] || { echo "nlc: cannot find tools/svc.py for the services in $package" >&2; exit 2; }
-        python3 "$svc" "$package" || exit 1
+        generator svc "$package" || exit 1
     fi
     # Templates (*.tpl) become functions when the program is built.
     if compgen -G "$package/*.tpl" > /dev/null; then
-        local tmpl=""
-        for candidate in "$here/../tools/tmpl.py" "$here/tools/tmpl.py"; do
-            [[ -f "$candidate" ]] && { tmpl="$candidate"; break; }
-        done
-        [[ -n "$tmpl" ]] || { echo "nlc: cannot find tools/tmpl.py for the templates in $package" >&2; exit 2; }
-        python3 "$tmpl" "$package" || exit 1
+        generator tmpl "$package" || exit 1
     fi
     "$(find_compiler)" build "$package" -o "$ir" "$runtime" "${flags[@]}"
 }

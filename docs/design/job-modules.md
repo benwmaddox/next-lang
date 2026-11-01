@@ -132,8 +132,8 @@ Messages and replies:
 
 ## As built: step 1, services as a generated front end (2026-10-31)
 
-`tools/svc.py` compiles a package's `*.svc` files to `services.gen.nl` (ignored by git; `scripts/nlc` runs it, as it does
-`tools/tmpl.py`). Syntax: `service Name`, `config field: type` (numbers, `Env`, mailbox handles, or another service's name),
+`tools/gen/svc` (a next-lang program) compiles a package's `*.svc` files to `services.gen.nl` (ignored by git; `scripts/nlc` runs it, as it does
+`tools/gen/tmpl`). Syntax: `service Name`, `config field: type` (numbers, `Env`, mailbox handles, or another service's name),
 `state field: type = initial`, `mailbox N`, `init { ... }`, and `on Message(params) [-> Reply] { ... }`; a block ends with a `}` at
 the start of a line. The generator writes the handle struct (`Name`), the message enum (`NameMessage`, a variant per
 handler plus `Stop`), the state and config structs, `Name_on_<handler>` functions, the run loop, `Name_start(config)`, a
@@ -152,7 +152,7 @@ an aggregate handle that was a function parameter or a struct field (fixed in `s
 
 ## As built: step 2, checks, timers and `tick` (2026-10-31)
 
-- **Checks in `tools/svc.py`:** a handler that calls another service's waiting sender (`Other_get(...)`) is an error ("a
+- **Checks in `tools/gen/svc`:** a handler that calls another service's waiting sender (`Other_get(...)`) is an error ("a
   service handler never waits"; pass `reply` on instead); a handler declared `-> T` must call `reply(...)` or pass `reply`
   on; `reply` in a handler without `->` is an error. The message graph (which handler sends to which service) is appended to
   `services.gen.nl` as comments.
@@ -182,7 +182,7 @@ a backlog of 5000 steps worked off between five messages.
 
 ## Status after the first implementation round (2026-10-31)
 
-Built: services front end (`tools/svc.py`), the checks (handlers never wait, replies answered or passed on, message graph),
+Built: services front end (`tools/gen/svc`), the checks (handlers never wait, replies answered or passed on, message graph),
 timers and `tick`, `idle`, `recv_for` / `is_closed` / `now_ms`, the pooled job contexts.
 
 Not built, with the reason:
@@ -202,7 +202,7 @@ It is only a spelling: the checker records the node as a direct call (`FACT_STRU
 fact, call-graph edge, argument and write-mode checks of an ordinary call), and the emitter treats the node as a call with
 the receiver as the first argument. Chains work (`p.scaled(3).sum()`), receivers may be fields (`config.db.load(...)`), and
 the generated service senders read as `cache.get(id)` instead of `Cache_get(cache, id)`; the old form still works. A name
-with no matching function, or a wrong argument count or type, is an ordinary error. `tools/svc.py` finds waiting calls in
+with no matching function, or a wrong argument count or type, is an ordinary error. `tools/gen/svc` finds waiting calls in
 handlers in both spellings (receivers `me` and `config.<service field>`). Not covered: a method name that equals a built-in
 method of the receiver's own type is not possible for structs (they have none), mailbox handles are structs without a name
 and so have no user methods, and enums and other types do not get methods yet.

@@ -85,7 +85,7 @@ Later additions: `{#for item in list}...{#end}` over a `list<Row, N>` parameter 
 `{path|raw}` writes bytes or text as they are, only in HTML text (never in a tag or attribute), for markup the application has already
 made safe (Campfire's message bodies are sanitised rich text); its size is the declared maximum.
 
-`tools/tmpl.py` compiles `*.tpl` files in a package to `templates.gen.nl` (ignored by git) when `scripts/nlc` builds it.
+`tools/gen/tmpl` (a next-lang program) compiles `*.tpl` files in a package to `templates.gen.nl` (ignored by git) when `scripts/nlc` builds it.
 Syntax: a header `html template page(row: Row, taxed: long) max 512` or `json template ...`, then the body; `{path}` and
 `{path|money}` holes, `{#if bool}...{#else}...{#end}`, `{{` and `}}` for braces. Checked when built: parameter and field
 names and types (structs are read from the package's `.nl` files), the largest possible output against the buffer size,
