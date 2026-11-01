@@ -132,3 +132,19 @@ page redirects to the form when nobody is signed in. Not done: the bans table (i
 CSRF tokens, rate limiting of sign-in.
 Friction: `ok` as a variable name collides with the `ok` constructor (same family as entry 4); form-urlencoded parsing had to be written
 in the app (a candidate for a small library).
+
+## Round 5: the generators out of Python (#9)
+
+`tools/gen/tmpl` and `tools/gen/svc` are next-lang programs (about 1,500 and 1,100 lines) that replace `tools/tmpl.py` and
+`tools/svc.py`. `scripts/nlc` builds each with the compiler on first use into the cache (again when its sources, the compiler or the
+runtime change) and runs it for packages with `.tpl` or `.svc` files; a build needs no Python now. Both produce byte-identical output and
+identical error messages to the Python versions on 49 template cases and 26 service cases plus the real packages
+(`tools/gen/compare_tmpl.py`, `tools/gen/compare_svc.py`, run with the built binary as the argument). The Python files stay as the
+reference for those comparisons (and the unit tests that import them) until the corpus is turned into golden files.
+
+Compiler bugs found by writing them (both worked around; to fix):
+- **24** `for entry in files { ... env.fs.join(package, entry.name) ... }` over a list<DirEntry> gives the first element's path every time;
+  `for i in 0L..files.count() { let entry = files[i] ... }` is right. The same loop-view family: `for edge in a { discard b.push(edge) }`
+  (pushing the loop element into another list of the same type) generates IR with an undefined local and clang rejects it.
+- **25** a `Bytes` stored in a struct reached through a `write` parameter cannot be grown (`grow` is for builders only), so a program with
+  several output buffers keeps them as `list<byte, N>` fields or passes each as its own `grow` parameter.

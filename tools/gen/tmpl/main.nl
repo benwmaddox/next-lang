@@ -370,7 +370,8 @@ fn read_structs(env: Env, g: write Gen, package: Arg, entries: write list<DirEnt
         ok(_) => (),
         err(_) => limit_error(env, "source files"),
     }
-    for entry in entries {
+    for entry_index in 0L..entries.count() {
+        let entry = entries[entry_index]
         if entry.kind == FileKind.File {
             let path = match env.fs.join(package, entry.name) {
                 ok(value) => value,
@@ -1468,7 +1469,8 @@ fn main(env: Env) {
         err(_) => limit_error(env, "template files"),
     }
     var any = false
-    for entry in templates {
+    for template_index in 0L..templates.count() {
+        let entry = templates[template_index]
         if entry.kind == FileKind.File {
             any = true
             g.path = g.package_text

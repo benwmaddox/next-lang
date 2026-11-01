@@ -184,7 +184,7 @@ The hand-written `push_*` and `render_*` functions are gone. `bench/web/pages.tp
     html template page(row: Row, taxed: long) max 512
     <!doctype html><html><body><h1>{row.name}</h1><p>item {row.key}</p><p>price with tax: ${taxed|money}</p></body></html>
 
-`tools/tmpl.py` (run by `scripts/nlc` when a package has `.tpl` files) turns them into `render_item` and `render_page`
+`tools/gen/tmpl` (a next-lang program, built and cached and run by `scripts/nlc` when a package has `.tpl` files) turns them into `render_item` and `render_page`
 in `templates.gen.nl`, straight-line appends into the bounded body. At build time it: works out each template's largest
 output (here 285 bytes for the JSON) and refuses one that could overflow its buffer; chooses the escaping from the place
 each hole is in (HTML text, quoted attribute, URL attribute, JSON string, JSON value); and refuses a hole in a script,
