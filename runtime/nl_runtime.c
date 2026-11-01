@@ -3292,12 +3292,11 @@ int64_t nl_random_token(void *env, int64_t length, unsigned char *out, uint64_t 
     int64_t made = 0;
     while (made < length) {
         unsigned char random_bytes[64];
+        ssize_t got = 0;
 #if defined(__linux__)
-        ssize_t got = getrandom(random_bytes, sizeof(random_bytes), 0);
-        if (got <= 0) return -1;
-#else
-        return -1;
+        got = getrandom(random_bytes, sizeof(random_bytes), 0);
 #endif
+        if (got <= 0) return -1;
         for (ssize_t index = 0; index < got && made < length; ++index) {
             if (random_bytes[index] < 232) out[made++] = (unsigned char)alphabet[random_bytes[index] % 58];   /* 232 = 4 * 58: no bias */
         }
