@@ -27,6 +27,22 @@ struct Token {
     value: Bytes max 64
 }
 
+struct Email {
+    value: Bytes max 128
+}
+
+struct Credential {
+    id: long = 0L
+    digest: Bytes max 80 = Bytes.empty()
+}
+
+struct NewSession {
+    user_id: long
+    token: Bytes max 64
+    ip: Bytes max 64
+    agent: Bytes max 256
+}
+
 struct Membership {
     id: long = 0L
 }
@@ -60,6 +76,103 @@ fn cookie_value(cookie: Bytes max 512, name: Ascii max 32) -> Bytes max 64 {
         start = end + 1L
     }
     found
+}
+
+fn hex_value(c: byte) -> long {
+    let v = c.to_long()
+    if v >= 48L && v <= 57L { return v - 48L }
+    if v >= 65L && v <= 70L { return v - 55L }
+    if v >= 97L && v <= 102L { return v - 87L }
+    -1L
+}
+
+// The value of the field `name` in a form body ("a=1&email_address=x%40y.com"), decoded; empty when absent.
+fn form_value(body: Bytes max 1024, name: Ascii max 32) -> Bytes max 128 {
+    var found: Bytes max 128 = Bytes.empty()
+    var start = 0L
+    while start < body.count() {
+        var end = start
+        while end < body.count() && body[end] != 38 { end += 1L }
+        var matches = end - start > name.len() && body[start + name.len()] == 61
+        for index in 0L..name.len() {
+            if matches && body[start + index] != name[index] { matches = false }
+        }
+        if matches {
+            var at = start + name.len() + 1L
+            while at < end {
+                let c = body[at].to_long()
+                if c == 43L {
+                    discard found.push((byte)32)
+                } else if c == 37L && at + 2L < end && hex_value(body[at + 1L]) >= 0L && hex_value(body[at + 2L]) >= 0L {
+                    discard found.push((byte)(hex_value(body[at + 1L]) * 16L + hex_value(body[at + 2L])))
+                    at += 2L
+                } else {
+                    discard found.push(body[at])
+                }
+                at += 1L
+            }
+            return found
+        }
+        start = end + 1L
+    }
+    found
+}
+
+fn target_is(target: Bytes max 256, text: Ascii max 32) -> bool {
+    if target.count() != text.len() { return false }
+    for index in 0L..text.len() {
+        if target[index] != text[index] { return false }
+    }
+    true
+}
+
+// A 303 to `location` (a header line such as "Location: /session/new"), with the cookie line when there is one.
+fn redirect(env: Env, connection: long, location: Ascii max 64, cookie: Bytes max 128) -> bool {
+    if cookie.count() > 0L { discard env.http_set_header(connection, cookie) }
+    discard env.http_set_header(connection, location)
+    env.http_write(connection, 303L, 2L, "") >= 0L
+}
+
+// Sign in: the form's email address and password. On success a session row, its cookie, and a redirect home; otherwise
+// back to the form. A deactivated user (status 1) is never found.
+fn sign_in(env: Env, connection: long) -> bool {
+    var body: Bytes max 1024 = Bytes.empty()
+    discard env.http_body(connection, body)
+    let email = Email { value: form_value(body, "email_address") }
+    let password = form_value(body, "password")
+    var credential = Credential {}
+    var accepted = false
+    if email.value.count() > 0L && password.count() > 0L {
+        let found = env.db_row("""
+            from (select id, coalesce(password_digest, '') as digest from users where email_address = ?1 and status = 0)
+        """, email, credential)
+        accepted = found && env.password_verify(credential.digest, password)
+    }
+    if !accepted { return redirect(env, connection, "Location: /session/new?failed=1", Bytes.empty()) }
+    var session = NewSession { user_id: credential.id, token: Bytes.empty(), ip: Bytes.empty(), agent: Bytes.empty() }
+    discard env.random_token(32L, session.token)
+    discard env.http_peer(connection, session.ip)
+    discard env.http_header(connection, "User-Agent", session.agent)
+    discard env.db_exec("""
+        insert into sessions (user_id, token, ip_address, user_agent, last_active_at, created_at, updated_at)
+        values (?1, ?2, ?3, ?4, datetime('now'), datetime('now'), datetime('now'))
+    """, session)
+    var line: Bytes max 128 = Bytes.empty()
+    discard line.try_append("Set-Cookie: session_token=".bytes())
+    discard line.try_append(session.token)
+    discard line.try_append("; HttpOnly; Path=/; SameSite=Lax".bytes())
+    redirect(env, connection, "Location: /", line)
+}
+
+// Sign out: the session row goes and the cookie is cleared.
+fn sign_out(env: Env, connection: long) -> bool {
+    var cookie: Bytes max 512 = Bytes.empty()
+    discard env.http_header(connection, "Cookie", cookie)
+    let token = Token { value: cookie_value(cookie, "session_token") }
+    discard env.db_exec("delete from sessions where token = ?1", token)
+    var line: Bytes max 128 = Bytes.empty()
+    discard line.try_append("Set-Cookie: session_token=; Max-Age=0; HttpOnly; Path=/".bytes())
+    redirect(env, connection, "Location: /session/new", line)
 }
 
 // The digits after "/rooms/" in a target, or -1.
@@ -115,12 +228,30 @@ fn serve(env: Env, connection: long) {
         page = Bytes.empty()
         var user = User {}
         var status = 200L
-        if method != 1L {
+        var handled = false
+        if method == 2L && target_is(target, "/session") {
+            if !sign_in(env, connection) { break }
+            handled = true
+        } else if method == 4L && target_is(target, "/session") {
+            if !sign_out(env, connection) { break }
+            handled = true
+        }
+        let signed_in = !handled && current_user(env, connection, user)
+        if handled {
+            // already answered
+        } else if method != 1L {
             status = 400L
             render_text(page, "bad request")
-        } else if !current_user(env, connection, user) {
-            status = 401L
-            render_text(page, "sign in")
+        } else if target_is(target, "/session/new") || target_is(target, "/session/new?failed=1") {
+            if signed_in {
+                if !redirect(env, connection, "Location: /", Bytes.empty()) { break }
+                handled = true
+            } else {
+                render_signin(page, target.count() > 12L)
+            }
+        } else if !signed_in {
+            if !redirect(env, connection, "Location: /session/new", Bytes.empty()) { break }
+            handled = true
         } else if target.count() == 1L && target[0] == 47 {
             var rooms: list<Room, 100> = list {}
             rooms_of(env, user, rooms)
@@ -162,7 +293,7 @@ fn serve(env: Env, connection: long) {
             status = 404L
             render_text(page, "not found")
         }
-        if !reply(env, connection, status, if status == 200L { 0L } else { 2L }, page) { break }
+        if !handled && !reply(env, connection, status, if status == 200L { 0L } else { 2L }, page) { break }
     }
     discard env.net_close(connection)
 }

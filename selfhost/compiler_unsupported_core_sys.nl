@@ -334,6 +334,11 @@ fn unsupported_category_for_node(
                 token_is_word_at(source, tokens, files, file_index, value.token, "http_write") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "http_header") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "http_set_header") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "http_body") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "http_peer") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "random_token") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "db_exec") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "password_verify") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "send") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "recv") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "recv_wait") ||

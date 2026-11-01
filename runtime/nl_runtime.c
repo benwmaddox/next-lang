@@ -2909,8 +2909,10 @@ void nl_out_write(void *handle, void *data_value, int data_is_argument, uint64_t
 
 /* `head` keeps the request line and headers of the request last returned by http_read, for Env.http_header. */
 #define NL_HTTP_OUT_HEADERS 2048
+#define NL_HTTP_BODY 4096
 typedef struct {
-    uint32_t length; uint32_t head_length; uint32_t out_length;
+    uint32_t length; uint32_t head_length; uint32_t out_length; uint32_t body_length;
+    unsigned char body[NL_HTTP_BODY];   /* the body of the request last read (the first NL_HTTP_BODY bytes of it) */
     unsigned char data[NL_HTTP_BUFFER]; unsigned char head[NL_HTTP_BUFFER];
     unsigned char out[NL_HTTP_OUT_HEADERS];   /* header lines for the next response, each ending in CRLF */
 } nl_http_buffer;
@@ -2953,7 +2955,9 @@ int64_t nl_net_accept(void *env, int64_t listener) {
 int64_t nl_net_close(void *env, int64_t fd) {
     (void)env;
     /* the connection's buffer stays with its descriptor number for the next connection that gets it (no free) */
-    if (fd >= 0 && fd < NL_HTTP_CONNECTIONS && nl_http_buffers[fd]) { nl_http_buffers[fd]->length = 0; nl_http_buffers[fd]->head_length = 0; nl_http_buffers[fd]->out_length = 0; }
+    if (fd >= 0 && fd < NL_HTTP_CONNECTIONS && nl_http_buffers[fd]) {
+        nl_http_buffers[fd]->length = 0; nl_http_buffers[fd]->head_length = 0; nl_http_buffers[fd]->out_length = 0; nl_http_buffers[fd]->body_length = 0;
+    }
     return close((int)fd);
 }
 
@@ -3004,6 +3008,9 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
     uint32_t at = 0;
     if (head > 4 && memcmp(buffer->data, "GET ", 4) == 0) { method = 1; at = 4; }
     else if (head > 5 && memcmp(buffer->data, "POST ", 5) == 0) { method = 2; at = 5; }
+    else if (head > 7 && memcmp(buffer->data, "DELETE ", 7) == 0) { method = 4; at = 7; }
+    else if (head > 4 && memcmp(buffer->data, "PUT ", 4) == 0) { method = 5; at = 4; }
+    else if (head > 6 && memcmp(buffer->data, "PATCH ", 6) == 0) { method = 6; at = 6; }
     else { while (at < head && buffer->data[at] != ' ') ++at; ++at; }
     uint32_t start = at;
     while (at < head && buffer->data[at] != ' ' && buffer->data[at] != '\r') ++at;
@@ -3015,7 +3022,8 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
     memcpy(buffer->head, buffer->data, head);
     buffer->head_length = head;
     uint32_t consumed = head;
-    /* a request body is read and dropped */
+    /* the request body is read in full; the first NL_HTTP_BODY bytes are kept for Env.http_body */
+    buffer->body_length = 0;
     while (body > 0) {
         uint32_t have = buffer->length - consumed;
         if (have == 0) {
@@ -3029,12 +3037,47 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
             have = buffer->length;
         }
         uint32_t take = (int64_t)have < body ? have : (uint32_t)body;
+        if (buffer->body_length < NL_HTTP_BODY) {
+            uint32_t room = NL_HTTP_BODY - buffer->body_length;
+            uint32_t keep = take < room ? take : room;
+            memcpy(buffer->body + buffer->body_length, buffer->data + consumed, keep);
+            buffer->body_length += keep;
+        }
         consumed += take;
         body -= take;
     }
     memmove(buffer->data, buffer->data + consumed, buffer->length - consumed);
     buffer->length -= consumed;
     return method;
+}
+
+/* The body of the request last read on the connection (at most 4096 bytes of it) into `out`; returns its length, or -1 when it
+   does not fit. */
+int64_t nl_http_body(void *env, int64_t fd, unsigned char *out, uint64_t out_capacity, int64_t *count) {
+    (void)env;
+    if (fd < 0 || fd >= NL_HTTP_CONNECTIONS || !nl_http_buffers[fd]) return -1;
+    const nl_http_buffer *buffer = nl_http_buffers[fd];
+    if (buffer->body_length > out_capacity) return -1;
+    memcpy(out, buffer->body, buffer->body_length);
+    *count = buffer->body_length;
+    return buffer->body_length;
+}
+
+/* The address of the peer of the connection, as text ("203.0.113.9" or an IPv6 address), into `out`. */
+int64_t nl_http_peer(void *env, int64_t fd, unsigned char *out, uint64_t out_capacity, int64_t *count) {
+    (void)env;
+    struct sockaddr_storage address;
+    socklen_t size = sizeof(address);
+    char text[64];
+    if (getpeername((int)fd, (struct sockaddr *)&address, &size) != 0) return -1;
+    const void *raw = address.ss_family == AF_INET ? (const void *)&((struct sockaddr_in *)&address)->sin_addr
+                                                   : (const void *)&((struct sockaddr_in6 *)&address)->sin6_addr;
+    if (!inet_ntop(address.ss_family, raw, text, sizeof(text))) return -1;
+    size_t length = strlen(text);
+    if (length > out_capacity) return -1;
+    memcpy(out, text, length);
+    *count = (int64_t)length;
+    return (int64_t)length;
 }
 
 /* The value of a header of the request last read on the connection (case-insensitive name), into `out` (count at *count);
@@ -3148,6 +3191,12 @@ int64_t nl_http_header(void *env, int64_t fd, void *name_descriptor, uint64_t na
 int64_t nl_http_set_header(void *env, int64_t fd, void *line_descriptor, uint64_t capacity) {
     (void)env; (void)fd; (void)line_descriptor; (void)capacity; return -1;
 }
+int64_t nl_http_body(void *env, int64_t fd, unsigned char *out, uint64_t out_capacity, int64_t *count) {
+    (void)env; (void)fd; (void)out; (void)out_capacity; (void)count; return -1;
+}
+int64_t nl_http_peer(void *env, int64_t fd, unsigned char *out, uint64_t out_capacity, int64_t *count) {
+    (void)env; (void)fd; (void)out; (void)out_capacity; (void)count; return -1;
+}
 #endif
 
 /* Env.cache_get / Env.cache_put: one process-wide direct-mapped cache of byte strings (up to 512 bytes) keyed by a
@@ -3230,6 +3279,55 @@ int64_t nl_cache_put(void *env, int64_t key, void *descriptor, uint64_t capacity
     nl_cache_unlock(slot);
     return 0;
 }
+
+/* Env.random_token(length, out): `length` characters from a base-58 alphabet (no 0, O, I, l), from the system's random source,
+   into `out`; returns the length, or -1. Used for session tokens. */
+#if defined(__linux__)
+#include <sys/random.h>
+#endif
+int64_t nl_random_token(void *env, int64_t length, unsigned char *out, uint64_t out_capacity, int64_t *count) {
+    (void)env;
+    static const char alphabet[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    if (length < 1 || (uint64_t)length > out_capacity) return -1;
+    int64_t made = 0;
+    while (made < length) {
+        unsigned char random_bytes[64];
+#if defined(__linux__)
+        ssize_t got = getrandom(random_bytes, sizeof(random_bytes), 0);
+        if (got <= 0) return -1;
+#else
+        return -1;
+#endif
+        for (ssize_t index = 0; index < got && made < length; ++index) {
+            if (random_bytes[index] < 232) out[made++] = (unsigned char)alphabet[random_bytes[index] % 58];   /* 232 = 4 * 58: no bias */
+        }
+    }
+    *count = length;
+    return length;
+}
+
+/* Env.password_verify(hash, password): the stored password digest (bcrypt, "$2a$12$...", as Rails writes it) against a password,
+   by the system's crypt; compared without stopping at the first difference. Linked only when a program uses it. */
+#if defined(NLC_WITH_CRYPT)
+#include <crypt.h>
+int64_t nl_password_verify(void *env, const unsigned char *hash, const unsigned char *password) {
+    (void)env;
+    int64_t hash_length = *(const int64_t *)hash, password_length = *(const int64_t *)password;
+    if (hash_length < 20 || hash_length > 120 || password_length < 0 || password_length > 72) return 0;
+    char stored[128], typed[80];
+    memcpy(stored, hash + 8, (size_t)hash_length); stored[hash_length] = 0;
+    memcpy(typed, password + 8, (size_t)password_length); typed[password_length] = 0;
+    struct crypt_data data;
+    memset(&data, 0, sizeof(data));
+    const char *made = crypt_r(typed, stored, &data);
+    if (!made || (int64_t)strlen(made) != hash_length) return 0;
+    unsigned char difference = 0;
+    for (int64_t index = 0; index < hash_length; ++index) difference |= (unsigned char)(made[index] ^ stored[index]);
+    return difference == 0;
+}
+#else
+int64_t nl_password_verify(void *env, const unsigned char *hash, const unsigned char *password) { (void)env; (void)hash; (void)password; return 0; }
+#endif
 
 #ifdef NLC_WITH_DB
 /* Env.db_query(sql, key): run one statement with ?1 bound to key on this thread's connection to the SQLite file
@@ -3444,6 +3542,31 @@ int64_t nl_db_rows(void *env, void *descriptor, uint64_t capacity, int64_t key, 
     sqlite3_clear_bindings(statement);
     return count;
 }
+/* Env.db_exec(statement, parameters): run an insert, update or delete with the parameters bound like db_row's; returns the number of
+   rows it changed, or -1. The call site's table (its address) identifies its prepared statement. */
+int64_t nl_db_exec(void *env, void *descriptor, uint64_t capacity, int64_t key, const int64_t *site,
+                   const unsigned char *params, const int64_t *params_layout) {
+    (void)env;
+    sqlite3 *connection = nl_db_open();
+    if (!connection) return -1;
+    sqlite3_stmt *statement = NULL;
+    for (int index = 0; index < nl_db_site_count; ++index) {
+        if (nl_db_sites[index].layout == site) { statement = nl_db_sites[index].statement; break; }
+    }
+    if (!statement) {
+        unsigned char scratch[4096];
+        const unsigned char *sql; uint64_t length; int tag = -1, code = 0;
+        if (!nl_extract_raw(descriptor, 2, capacity, scratch, &sql, &length, &tag, &code)) return -1;
+        if (sqlite3_prepare_v2(connection, (const char *)sql, (int)length, &statement, NULL) != SQLITE_OK) return -1;
+        if (nl_db_site_count < 64) nl_db_sites[nl_db_site_count++] = (nl_db_site){site, statement};
+    }
+    nl_db_bind(statement, key, params, params_layout);
+    int result = sqlite3_step(statement);
+    int64_t changed = (result == SQLITE_DONE || result == SQLITE_ROW) ? (int64_t)sqlite3_changes(connection) : -1;
+    sqlite3_reset(statement);
+    sqlite3_clear_bindings(statement);
+    return changed;
+}
 #else
 int64_t nl_db_text(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *data, uint64_t data_capacity, int64_t *count) {
     (void)env; (void)descriptor; (void)capacity; (void)key; (void)data; (void)data_capacity; (void)count;
@@ -3454,6 +3577,11 @@ int64_t nl_db_row(void *env, void *descriptor, uint64_t capacity, int64_t key, u
                   const unsigned char *params, const int64_t *params_layout) {
     (void)env; (void)descriptor; (void)capacity; (void)key; (void)row; (void)layout; (void)fields; (void)names; (void)params; (void)params_layout;
     return 0;
+}
+int64_t nl_db_exec(void *env, void *descriptor, uint64_t capacity, int64_t key, const int64_t *site,
+                   const unsigned char *params, const int64_t *params_layout) {
+    (void)env; (void)descriptor; (void)capacity; (void)key; (void)site; (void)params; (void)params_layout;
+    return -1;
 }
 int64_t nl_db_rows(void *env, void *descriptor, uint64_t capacity, int64_t key, unsigned char *list,
                    const int64_t *layout, int64_t fields, const char *names,

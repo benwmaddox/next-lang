@@ -116,3 +116,19 @@ spaces (an error is reported on the line the literal starts). The Campfire queri
   Python generators `tools/tmpl.py` and `tools/svc.py` moving out of Python (into the compiler, or into next-lang programs the
   driver builds and caches the way it caches the query checker). Each is days of work, not an afternoon; both need a decision on
   the target form first.
+
+## Round 4: slice 2 (sign in and out)
+
+New generic capabilities, all with tests (`tests/py/test_http_identity.py`): `Env.http_body` (the request body, first 4096 bytes),
+`Env.http_peer` (the peer's address as text), `Env.random_token(n, out)` (base-58 from the system's random source),
+`Env.password_verify(hash, password)` (bcrypt as Rails writes it, by the system crypt, compared in constant time; links `-lcrypt` only
+when used) and `Env.db_exec("insert ...", params)` (a literal statement, checked against `schema.sql` when the program is built,
+parameters bound like `db_row`'s; returns the rows changed). DELETE, PUT and PATCH are methods 4, 5 and 6.
+
+Campfire: `GET /session/new` (form), `POST /session` (form body parsed with percent-decoding; a deactivated user or wrong password
+is sent back to `/session/new?failed=1`; success inserts a session row with token, address and user agent and redirects home with
+`Set-Cookie: session_token=...; HttpOnly; Path=/; SameSite=Lax`), `DELETE /session` (row deleted, cookie cleared), and every other
+page redirects to the form when nobody is signed in. Not done: the bans table (it is not in the snapshot's schema), first-run setup,
+CSRF tokens, rate limiting of sign-in.
+Friction: `ok` as a variable name collides with the `ok` constructor (same family as entry 4); form-urlencoded parsing had to be written
+in the app (a candidate for a small library).

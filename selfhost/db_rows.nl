@@ -186,3 +186,45 @@ fn ir_write_db_parameters(
         ir_write_ascii(compiler, ir, "ptr null, ptr null")
     }
 }
+
+// Env.db_exec(statement, parameters): a site key (its address tells call sites apart), the parameters' table when they are a
+// struct, and the statement for the build-time check ("x" instead of field kinds: it is prepared against the schema, nothing more).
+fn emit_db_exec_sites(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+) {
+    if !compiler.c_runtime { return }
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind != NodeKind.MethodCall || compiler.facts[node].literal != C_METHOD_ENV_DB_EXEC { continue }
+        ir_write_ascii(compiler, ir, "@nl.dbexec."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = private constant [1 x i64] [i64 0]\n")
+        let parameters = child_at(tables, compiler, node, 2L)
+        if parameters >= 0L && is_db_parameter_struct(compiler, parameters) {
+            let parameter_record = type_record(compiler, compiler.facts[parameters].ty)
+            ir_write_ascii(compiler, ir, "@nl.dbparams."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = private unnamed_addr constant ["); ir_write_number(compiler, ir, 1L + parameter_record.field_count * 3L)
+            ir_write_ascii(compiler, ir, " x i64] [i64 "); ir_write_number(compiler, ir, parameter_record.field_count)
+            for field_offset in 0L..parameter_record.field_count {
+                let field = compiler.struct_fields[parameter_record.field_start + field_offset]
+                let kind = db_row_field_kind(compiler, field.ty)
+                ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, kind)
+                ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, field.offset)
+                ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, if kind == 4L { text_max_bytes(compiler, field.ty) } else { 0L })
+            }
+            ir_write_ascii(compiler, ir, "]\n")
+        }
+        ir_write_ascii(compiler, ir, "; nlc.query x ")
+        let literal = child_at(tables, compiler, node, 1L)
+        let literal_file = node_file_index(tables.nodes, files, literal)
+        let literal_token = tables.nodes[literal].token
+        let literal_start = files[literal_file].base + tokens[literal_token].start
+        for index in 1L..(tokens[literal_token].length - 1L) {
+            let statement_byte = source[literal_start + index]
+            ir_push_byte(compiler, ir, if statement_byte == 10 || statement_byte == 13 || statement_byte == 9 { 32 } else { statement_byte })
+        }
+        ir_write_ascii(compiler, ir, "\n\n")
+    }
+}
