@@ -305,3 +305,30 @@ Slow sites, paced at a fixed rate (10 s runs, server CPU from /proc as a share o
 Latency at 50 req/s: p50 116-128 us against 132-135 before and 104-110 for Rust. Nothing spins and nothing polls; at rest the
 server uses no CPU. Tried and dropped: letting an idle worker take over a pinned job for good (it re-registered the socket and cost
 25-45% at 16-1000 connections), and waking a sleeping worker whenever the owner is busy (no change).
+
+## A fairer Rust comparison (2026-11-02)
+
+The "Rust" columns above at 16 connections and up are the thread-per-connection server with 4 threads: it can serve only 4
+connections at a time (the rest wait in the accept queue), so it stays near 88k whatever the load and says nothing about 16+
+connections. Both Rust servers now take `WEB_THREADS` (default 4). The fair comparison for many connections is tokio (one task per
+connection, work-stealing scheduler, shared mutex cache, one SQLite connection behind a mutex) with as many worker threads as the
+server has cores. Server on 4 cores (8-11) or 8 cores (8-15), closed loop, 4 s runs, req/s:
+
+| cores | connections | next-lang | tokio (same threads) | Rust threads (same threads) |
+| ---: | ---: | ---: | ---: | ---: |
+| 4 | 4 | 84.7k | 69.8k | 90.3k |
+| 4 | 16 | 218.6k | **271.1k** | 91.1k (thread-limited) |
+| 4 | 64 | **326.5k** | 302.2k | 88.8k (thread-limited) |
+| 4 | 1000 | 282.5k | **304.4k** | |
+| 8 | 4 | 82.7k | 74.6k | 91.0k |
+| 8 | 16 | 213.1k | **261.3k** | 133.6k (thread-limited) |
+| 8 | 64 | **581.1k** | 450.6k | 134.9k (thread-limited) |
+| 8 | 1000 | 581.5k | 588.7k | |
+
+- At 4 connections the thread-per-connection server is still best (90k; next-lang 83-85k, tokio 70-75k).
+- At 64 connections next-lang is 8% (4 cores) and 29% (8 cores) ahead of tokio; at 1000 they are level (-7% and -1%).
+- 16 connections is next-lang weak spot against tokio: 18-24% behind on 4 and on 8 cores. The numbers barely move between 4 and 8 cores
+  (219k, 213k), because a closed loop of 16 connections measures latency, not capacity (16 / 73 us = 219k; tokio 16 / 61 us).
+- Not spinning: at 50 / 500 / 5000 req/s with 4 connections tokio uses 0.2% / 1.4% / 10.9% of a core, the threads server 0.2% / 1.4% / 10.5%,
+  next-lang 0.3% / 1.9% / 12.4% (context switches per request 1.0, 1.0 and 1.1-1.25). So tokio does not get its 16-connection lead
+  by spinning; next-lang's request path is simply about 10 us slower at the median (109 us against 97 at 50 req/s).
