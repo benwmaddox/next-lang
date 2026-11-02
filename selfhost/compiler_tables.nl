@@ -463,6 +463,7 @@ struct CompilerTables {
     range_alias_names: list<bool, TOKEN_STORAGE_CAPACITY>
     function_name_present: list<bool, TOKEN_STORAGE_CAPACITY>
     functions: list<FunctionRecord, FUNCTION_TABLE_CAPACITY>
+    function_frames: list<long, FUNCTION_TABLE_CAPACITY>
     parameters: list<ParameterRecord, BINDING_TABLE_CAPACITY>
     type_records: list<TypeRecord, TYPE_TABLE_CAPACITY>
     mailbox_types: list<MailboxRecord, 256>
@@ -578,6 +579,7 @@ fn empty_compiler_tables() -> CompilerTables {
         range_alias_names: list {},
         function_name_present: list {},
         functions: list {},
+        function_frames: list {},
         parameters: list {},
         type_records: list {},
         mailbox_types: list {},
@@ -650,6 +652,7 @@ fn reset_compiler_tables(env: Env, compiler: write CompilerTables) {
     compiler.range_alias_names.clear()
     compiler.function_name_present.clear()
     compiler.functions.clear()
+    compiler.function_frames.clear()
     compiler.parameters.clear()
     compiler.type_records.clear()
     compiler.mailbox_types.clear()

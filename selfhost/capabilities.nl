@@ -90,6 +90,7 @@ fn emit_c_runtime_environment_field(
 }
 
 fn emit_c_main_function(
+    tables: ParseTables,
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -98,7 +99,9 @@ fn emit_c_main_function(
 ) {
     let entry_file = if entry >= 0L { compiler.functions[entry].file } else { 0L }
     let entry_name = files[entry_file].name
-    ir_write_ascii(compiler, ir, "define i32 @main(i32 %argc, ptr %argv, ptr %envp, ptr %auxv) {\nentry:\n  %nl.ctx = call ptr @nl_context_create(i64 4096, i64 ")
+    ir_write_ascii(compiler, ir, "define i32 @main(i32 %argc, ptr %argv, ptr %envp, ptr %auxv) {\nentry:\n  %nl.ctx = call ptr @nl_context_create(i64 ")
+    ir_write_number(compiler, ir, stack_reservation_estimate(tables, compiler, entry))
+    ir_write_ascii(compiler, ir, ", i64 ")
     ir_write_number(compiler, ir, config.recursion_budget)
     ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds ([")
     ir_write_number(compiler, ir, entry_name.count() + 1L)

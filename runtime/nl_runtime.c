@@ -280,6 +280,8 @@ static uint64_t nl_offset_stack_reservation(uint64_t computed_bytes) {
 #endif
     uint64_t bytes = nl_creating_job_context ? NL_JOB_STACK_DEFAULT_BYTES : NL_OFFSET_STACK_DEFAULT_BYTES;
     const char *override = getenv(nl_creating_job_context ? "NLC_JOB_STACK_RESERVE_BYTES" : "NLC_STACK_RESERVE_BYTES");
+    /* The build computed an upper bound for this entry point (anything above the 4096 placeholder): reserve that, not the generic default. */
+    if (computed_bytes > 4096 && !(override && *override)) return computed_bytes;
     if (override && *override) {
         errno = 0;
         char *end = NULL;
@@ -601,9 +603,65 @@ uint64_t nl_stack_alloc_offset(void *opaque, uint64_t top_offset, uint64_t bytes
 }
 #endif
 
+/* NLC_REPORT_STACKS=1: when the program ends, a histogram (powers of two) of how much data stack and native stack each job used. */
+#if defined(__linux__) && !NL_WINDOWS
+static int nl_report_stacks_enabled = -1;
+static volatile uint64_t nl_report_data_histogram[40], nl_report_native_histogram[40], nl_report_data_max, nl_report_native_max;
+static volatile uint64_t nl_report_reserved_min = UINT64_MAX, nl_report_reserved_max;
+static void nl_report_stacks_print(void) {
+    char line[512];
+    for (int pass = 0; pass < 2; ++pass) {
+        volatile uint64_t *histogram = pass ? nl_report_native_histogram : nl_report_data_histogram;
+        uint64_t jobs = 0;
+        for (int index = 0; index < 40; ++index) jobs += histogram[index];
+        int length = snprintf(line, sizeof(line), "stacks: %s: %llu jobs, largest %llu bytes; jobs by size (up to 4 KiB, 8, 16 ...):",
+                              pass ? "native" : "data", (unsigned long long)jobs,
+                              (unsigned long long)(pass ? nl_report_native_max : nl_report_data_max));
+        for (int index = 12; index < 40; ++index) {
+            if (histogram[index] && length < (int)sizeof(line) - 24) length += snprintf(line + length, sizeof(line) - length, " <=%llu:%llu", (unsigned long long)1 << index, (unsigned long long)histogram[index]);
+        }
+        if (!pass && nl_report_reserved_max) length += snprintf(line + length, sizeof(line) - length, " (reserved per job: %llu to %llu bytes)", (unsigned long long)nl_report_reserved_min, (unsigned long long)nl_report_reserved_max);
+        line[length++] = '\n';
+        ssize_t ignored = write(2, line, (size_t)length); (void)ignored;
+    }
+}
+static int nl_log2_bucket(uint64_t value) {
+    int bucket = 12;
+    while (bucket < 39 && ((uint64_t)1 << bucket) < value) ++bucket;
+    return bucket;
+}
+static void nl_report_job_stacks(nl_data_stack_context *context) {
+    if (nl_report_stacks_enabled < 0) {
+        const char *flag = getenv("NLC_REPORT_STACKS");
+        nl_report_stacks_enabled = flag && *flag == '1';
+        if (nl_report_stacks_enabled) { atexit(nl_report_stacks_print); signal(SIGUSR2, (void (*)(int))nl_report_stacks_print); }
+    }
+    if (!nl_report_stacks_enabled) return;
+    uint64_t data_used = context->peak_used_bytes;
+    uint64_t native_used = 0;
+    uintptr_t low = 0; uint64_t bytes = 0;
+    if (nl_coroutine_stack_bounds(&low, &bytes)) {
+        /* the stack is zero when new; the lowest word that is not zero is the deepest the job (or an earlier job on this stack) went */
+        const uint64_t *words = (const uint64_t *)low;
+        uint64_t count = bytes / 8, at = 0;
+        while (at < count && words[at] == 0) ++at;
+        native_used = (count - at) * 8;
+    }
+    __atomic_add_fetch(&nl_report_data_histogram[nl_log2_bucket(data_used)], 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&nl_report_native_histogram[nl_log2_bucket(native_used)], 1, __ATOMIC_RELAXED);
+    if (context->reservation_bytes < nl_report_reserved_min) nl_report_reserved_min = context->reservation_bytes;
+    if (context->reservation_bytes > nl_report_reserved_max) nl_report_reserved_max = context->reservation_bytes;
+    if (data_used > nl_report_data_max) nl_report_data_max = data_used;
+    if (native_used > nl_report_native_max) nl_report_native_max = native_used;
+}
+#endif
+
 void nl_context_destroy(void *opaque) {
     nl_data_stack_context *context = opaque;
     if (!context) return;
+#if defined(__linux__) && defined(NLC_STACK_MODE_OFFSET)
+    if (context->is_job) nl_report_job_stacks(context);
+#endif
 #if defined(__linux__) || NL_WINDOWS
     if (nl_output_flush_all() != 0) nl_fail(20, -1, 0, 0);
 #if defined(__linux__) && defined(NLC_STACK_MODE_OFFSET)

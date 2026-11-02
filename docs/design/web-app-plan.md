@@ -94,7 +94,12 @@ what unblocks the most:
   50 req/s. First measure busy cores and CPU per request at 16 and 64 connections for the shared pool and for socket-owning workers, then
   the options recorded in the review: choose the worker at wake time, keep the cache service's data on one core (or a cache per worker),
   and soft affinity.
-- **Fix the stack estimation process, then size every job from it (Ben, 2026-11-02).** Today the sizes are constants: a job reserves
+- **Stack estimation: step 1 done (2026-11-02), see below.** The build now computes a data-stack bound per entry point from each
+  function's block sizes and the call graph (selfhost/stack_estimates.nl) and the runtime reserves that; `NLC_REPORT_STACKS=1` prints
+  what each job used and reserved; tests/py/test_stack_estimates.py checks reserved >= used and well below the old default. Left: the
+  native-stack bound, the typical-run estimate to start commit from, exact (not summed) frame sizes, recursion bounded by the
+  recursion budget, and the other items below.
+- **Fix the stack estimation process, then size every job from it (Ben, 2026-11-02).** Before step 1 the sizes were constants: a job reserved
   64 MiB of address space for its data stack (`NLC_JOB_STACK_RESERVE_BYTES`) and 1 MiB for its native stack (coroutines; 64 MiB for plain
   threads), whatever the job does. The design has an estimate per entry point (DESIGN.md "The job's data stack": a worst case from the
   build, and a typical-run estimate with loops counted as 5 rounds), but nothing the build computes reaches the runtime: the

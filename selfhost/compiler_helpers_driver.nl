@@ -1117,6 +1117,7 @@ fn emit_file_globals(
 // E3a1 begin: shared compiler integration.
 fn emit_main_function(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tables: ParseTables,
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -1125,7 +1126,7 @@ fn emit_main_function(
     entry: long,
 ) {
     if compiler.c_runtime {
-        emit_c_main_function(compiler, ir, files, config, entry)
+        emit_c_main_function(tables, compiler, ir, files, config, entry)
         return
     }
     // E3a1 subsection: create the stable context before any context-passing hook.
@@ -1502,7 +1503,7 @@ fn compile_selfhost_package(
     }
     emit_registered_type_helpers(source, files, tokens, tables, compiler, ir)
     emit_file_globals(files, source, tokens, tables, compiler, ir)
-    emit_main_function(source, compiler, ir, files, tokens, config, entry)
+    emit_main_function(source, tables, compiler, ir, files, tokens, config, entry)
     emit_job_entries(files, tables, compiler, ir, config)
     emit_db_row_layouts(source, files, tokens, tables, compiler, ir)
     emit_db_exec_sites(source, files, tokens, tables, compiler, ir)

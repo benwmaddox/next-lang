@@ -452,6 +452,23 @@ fn plan_function_regions(
         if compiler.region_current_size > largest_block { largest_block = compiler.region_current_size }
     }
     compiler.region_max_size = largest_block
+    // The most data stack the function itself can use: every block's range counted once, whether or not blocks nest or follow each other
+    // (an over-estimate), and a little for alignment. The program-wide bound for an entry point is built from these (stack_estimates.nl).
+    if function_id >= 0L && function_id < compiler.functions.count() {
+        var frame_total = 0L
+        for block_step in 0L..body - first + 1L {
+            let block = body - block_step
+            if (tables.nodes[block].kind == NodeKind.Block || tables.nodes[block].kind == NodeKind.MatchArm) &&
+                block >= 0L && block < compiler.block_end.count() && compiler.block_end[block] > 0L {
+                frame_total += compiler.block_end[block] + 64L
+            }
+        }
+        for step in 0L..compiler.functions.count() {
+            if compiler.function_frames.count() > function_id { break }
+            match compiler.function_frames.push(-1L) { ok(_) => (), err(_) => return }
+        }
+        compiler.function_frames[function_id] = frame_total
+    }
 }
 
 fn emit_region_scope_enter(
