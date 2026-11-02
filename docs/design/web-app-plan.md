@@ -33,3 +33,69 @@ Each of steps 4 and 6 gets a benchmark against a small Rust server doing the sam
 - SQLite is the first database; HTTP/1.1 only at first, with TLS left to a reverse proxy.
 - JSON output is built by formatting into a bounded buffer first; a typed builder can follow.
 - Native code is reached through capabilities, not a general `extern fn`.
+
+# Roadmap after the first web target (2026-11-02)
+
+Where it stands: the plan above is built and measured (docs/campfire-friction.md rounds 1 to 7, bench/web/README.md). The Campfire clone
+runs sign-in, rooms and messages on SQLite at about 50k pages/s in 7 MB; the web benchmark is level with tokio at 64 to 1000
+connections. A review of practical use (Ben asked, 2026-11-02) found what is missing for CLIs and for ordinary web apps. In order of
+what unblocks the most:
+
+## 1. CLI basics (Env capabilities)
+
+- **Standard input:** `env.stdin` read into a bounded `Bytes`, read-to-end and line-at-a-time, with end-of-input as a result, not an error.
+- **Environment variables:** `env.var(name, out)` into a bounded buffer (absent is a result). Declared in the package so the build knows
+  the program reads them.
+- **Flag parsing:** a small library over `env.args()`: `--name value`, `--name=value`, `-f`, positional arguments, `--help` text built
+  from the declarations, usage errors with exit code 2.
+- **Run another program:** `env.run(program, args, stdin, stdout_buffer)` with a bounded output and an exit code; declared capability.
+- **Exit codes and error output conventions** documented; a CLI example (a `grep`-like or `wc`-like tool) in the tests.
+- Files outside the current directory (today's rule confines `Fs` paths beneath it): a declared `fs` root list in `package.toml`.
+
+## 2. Outgoing connections
+
+- **`net_connect` and a client:** TCP connect (with a deadline), then an HTTP/1.1 client (`env.http_get/post` into bounded buffers) that
+  suspends the job on I/O like the server side does; DNS by the system resolver in a worker.
+- **TLS:** outgoing first (HTTPS requests), then incoming; through the system library, behind a capability (no TLS written here).
+- Use: webhooks, calling another service, fetching a feed. Test against a local server written in next-lang.
+
+## 3. Web application library
+
+- **JSON:** parse into a declared struct (bounded, with the first error's position) and print from one; today only templates print JSON.
+- **Forms and query strings:** percent-decoding and `a=b&c=d` into a struct (Campfire has a hand-written one).
+- **Sessions, CSRF tokens, rate limiting (per address, in a fixed table), request logging, a background-job pattern** (a service with `tick`):
+  as library code and examples, built on what exists (`random_token`, `password_verify`, `db_exec`, services).
+- **More databases:** PostgreSQL through a capability (typed queries checked at build time against a schema file as for SQLite).
+- **Templates for `Text`:** the generator knows `Bytes` and `Ascii` only; teach it `Text` so names and bodies read through `Text` fields
+  (validated UTF-8, code points counted) are used without conversion.
+- **Static files** from a directory (with a bounded cache) and compression for responses.
+
+## 4. Performance
+
+- **16 connections:** next-lang is 18-24% behind tokio (219k against 271k on 4 cores) because its median is about 10 us slower, even at
+  50 req/s. First measure busy cores and CPU per request at 16 and 64 connections for the shared pool and for socket-owning workers, then
+  the options recorded in the review: choose the worker at wake time, keep the cache service's data on one core (or a cache per worker),
+  and soft affinity.
+- **Request path cost:** where the 10 us goes (coroutine switch, the HTTP layer, user CPU 5 us against Rust's 2.7).
+- Keep: 4-connection result (ahead of the thread-per-connection server), low CPU at slow rates (checked at 50 / 500 / 5000 req/s).
+
+## 5. Platform
+
+- **Windows:** sockets (IOCP), coroutines/fibers and the driver features that are Linux-only today (templates, services run through the
+  Linux driver); then a macOS port of the same capability layer.
+- **Hosting:** a container recipe and a systemd example; graceful shutdown on SIGTERM (stop accepting, finish in-flight requests).
+
+## 6. Compiler and tooling quality
+
+- **Open compiler bugs (docs/campfire-friction.md 24, 25):** `for x in list` with the element's field passed on gives a stale value;
+  pushing a loop element into another list of the same type generates IR that clang rejects; a `Bytes` inside a struct reached through a
+  `write` parameter cannot grow (`grow` is for builders only).
+- **Tests take 10 to 15 minutes before a commit:** split into a fast set that runs on every commit and the full set on the server.
+- **Remove the Python generator references** (`tools/tmpl.py`, `tools/svc.py`) once their comparison corpus is turned into golden files.
+- **A formatter and an editor protocol (language server),** so the build-time errors show where the code is written.
+- **Package manager:** dependencies by path or git, version pinning, a lock file; today a program is one directory.
+
+## Order
+
+1 (CLI basics) and 2 (outgoing connections) first: each opens a whole kind of program. Then 3 (JSON, forms, library), then 4 and 5 in
+parallel with them as measurements and ports allow; 6 as it hurts.
