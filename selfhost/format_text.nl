@@ -21,7 +21,7 @@ fn format_text_builtin_kind(
     if node < 0L || node >= compiler.facts.count() { return FORMAT_TEXT_NONE }
     let callee_token = tables.nodes[node].token
     if callee_token >= 0L && callee_token < tokens.count() && tokens[callee_token].kind == TokenKind.Dollar {
-        FORMAT_TEXT_STR
+        if tables.nodes[node].flags != 0L { tables.nodes[node].flags } else { FORMAT_TEXT_STR }
     } else if token_is_word_at(source, tokens, files, file_index, callee_token, "str") {
         FORMAT_TEXT_STR
     } else if token_is_word_at(source, tokens, files, file_index, callee_token, "str_hex") { FORMAT_TEXT_HEX }
@@ -102,7 +102,7 @@ fn format_text_check_capacity(
     max_bytes: long,
     max_codepoints: long,
 ) {
-    if kind == TYPE_KIND_ASCII {
+    if kind == TYPE_KIND_ASCII || kind == TYPE_KIND_BYTES {
         if max_bytes < 0L || max_bytes > MAX_VALUE_SIZE - 8L {
             fail_at_message(env, files, compiler, file_index, node,
                 "formatted Ascii maximum exceeds the supported value size; reduce a value or width")
@@ -150,9 +150,14 @@ fn check_format_text_builtin(
     let argument = compiler.child_first[node]
     let argument_type = compiler.facts[argument].ty
     var result_type = -1L
-    if kind == FORMAT_TEXT_STR && (type_kind(compiler, argument_type) == TYPE_KIND_ASCII || type_kind(compiler, argument_type) == TYPE_KIND_TEXT) {
+    let is_hole = tables.nodes[node].extra == INTERP_MARK
+    let hole_kind = type_kind(compiler, argument_type)
+    if kind == FORMAT_TEXT_STR && (hole_kind == TYPE_KIND_ASCII || hole_kind == TYPE_KIND_TEXT || (is_hole && hole_kind == TYPE_KIND_BYTES)) {
         // text as it is (a text hole in an interpolated string)
         result_type = argument_type
+    } else if kind == FORMAT_TEXT_STR && is_hole && argument_type == TY_BOOL {
+        // "true" or "false"
+        result_type = intern_text_type(compiler, TYPE_KIND_ASCII, 5L, 0L, file_index, node, -1L, -1L)
     } else if kind == FORMAT_TEXT_STR || kind == FORMAT_TEXT_HEX || kind == FORMAT_TEXT_BIN {
         if !format_text_numeric_type(argument_type) {
             let name = if kind == FORMAT_TEXT_STR { "str" }
@@ -161,7 +166,7 @@ fn check_format_text_builtin(
             let found_type = type_name_or_fallback(argument_type)
             if tables.nodes[node].token >= 0L && tokens[tables.nodes[node].token].kind == TokenKind.Dollar {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start,
-                    "a hole in an interpolated string takes int, long, byte, Ascii or Text; found " + found_type)
+                    "a hole in an interpolated string takes int, long, byte, bool, Ascii, Bytes or Text; found " + found_type)
             }
             fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start,
                 name + " needs int, long, or byte; found " + found_type)
@@ -187,6 +192,18 @@ fn check_format_text_builtin(
                 "ascii_upper needs Ascii; found " + found_type)
         }
         result_type = argument_type
+    } else if kind == FORMAT_TEXT_PAD && is_hole && format_text_numeric_type(argument_type) {
+        // {n:8}: a number padded on the left with spaces
+        let width_maximum = format_text_width_maximum(env, files, tables, compiler, file_index, node, compiler.child_next[argument])
+        let formatted = format_text_number_maximum(tables, compiler, argument, argument_type, 10L)
+        let maximum = if formatted > width_maximum { formatted } else { width_maximum }
+        format_text_check_capacity(env, files, compiler, file_index, tables.nodes[node].start, TYPE_KIND_ASCII, maximum, 0L)
+        result_type = intern_text_type(compiler, TYPE_KIND_ASCII, maximum, 0L, file_index, node, -1L, -1L)
+    } else if kind == FORMAT_TEXT_PAD && is_hole && hole_kind == TYPE_KIND_BYTES {
+        let width_maximum = format_text_width_maximum(env, files, tables, compiler, file_index, node, compiler.child_next[argument])
+        let maximum = if text_max_bytes(compiler, argument_type) > width_maximum { text_max_bytes(compiler, argument_type) } else { width_maximum }
+        format_text_check_capacity(env, files, compiler, file_index, tables.nodes[node].start, TYPE_KIND_BYTES, maximum, 0L)
+        result_type = intern_text_type(compiler, TYPE_KIND_BYTES, maximum, 0L, file_index, node, -1L, -1L)
     } else if kind == FORMAT_TEXT_PAD || kind == FORMAT_TEXT_PAD_RIGHT {
         let argument_kind = type_kind(compiler, argument_type)
         if argument_kind != TYPE_KIND_ASCII && argument_kind != TYPE_KIND_TEXT {

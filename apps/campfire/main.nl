@@ -158,9 +158,7 @@ fn sign_in(env: Env, connection: long) -> bool {
         values (?1, ?2, ?3, ?4, datetime('now'), datetime('now'), datetime('now'))
     """, session)
     var line: Bytes max 128 = Bytes.empty()
-    discard line.try_append("Set-Cookie: session_token=".bytes())
-    discard line.try_append(session.token)
-    discard line.try_append("; HttpOnly; Path=/; SameSite=Lax".bytes())
+    discard line.try_append($"Set-Cookie: session_token={session.token}; HttpOnly; Path=/; SameSite=Lax")
     redirect(env, connection, "Location: /", line)
 }
 

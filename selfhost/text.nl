@@ -930,6 +930,36 @@ fn emit_text_builder_method(
         return
     }
 
+    if interp_is_deferred_append(tables, compiler, argument) {
+        // $"..." appended: written straight into the builder when its largest value fits; otherwise built first, then appended
+        let builder_max = text_max_bytes(compiler, receiver_ty)
+        ir_write_ascii(compiler, ir, "  %text.builder.fast.room."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = sub i64 "); ir_write_number(compiler, ir, builder_max)
+        ir_write_ascii(compiler, ir, ", %text.builder.receiver.length."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "\n  %text.builder.fast.fits."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = icmp ule i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[argument].ty))
+        ir_write_ascii(compiler, ir, ", %text.builder.fast.room."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "\n  br i1 %text.builder.fast.fits."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", label %text.builder.interp.fast."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", label %text.builder.interp.slow."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "\ntext.builder.interp.fast."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+        ir_write_ascii(compiler, ir, "  %text.builder.fast.data."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, receiver_location, receiver_pointer)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_data_offset(compiler, receiver_ty))
+        ir_write_ascii(compiler, ir, "\n  "); interp_name(compiler, ir, "base", argument, 1L, 0L)
+        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %text.builder.fast.data."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 %text.builder.receiver.length."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
+        emit_interp_pieces(tables, compiler, ir, argument, argument, 1L, 0L, 1L)
+        ir_write_ascii(compiler, ir, "  %text.builder.fast.length."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = add i64 %text.builder.receiver.length."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", "); interp_name(compiler, ir, "off", argument, 1L, interp_leaf_count(tables, compiler, argument)); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  store i64 %text.builder.fast.length."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, receiver_location, receiver_pointer); ir_write_ascii(compiler, ir, ", align 1")
+        emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  br label %text.builder.append.ok."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "\ntext.builder.interp.slow."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+        emit_interp_value(tables, compiler, ir, argument)
+    }
     let source_ty = compiler.facts[argument].ty
     let source_location = aggregate_source_location_for_node(tables, compiler, argument)
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
@@ -1010,6 +1040,8 @@ fn emit_text_builder_method(
     ir_write_ascii(compiler, ir, ", ptr %text.builder.length.addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1")
     emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
     if is_test && receiver_kind == TYPE_KIND_TEXT { emit_text_assert_storage(compiler, ir, receiver_ty, receiver_location) }
+    ir_write_ascii(compiler, ir, "  br label %text.builder.append.ok."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, "\ntext.builder.append.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
     emit_collection_capacity_result_tag(compiler, ir, node, 0L)
     ir_write_ascii(compiler, ir, "  br label %text.builder.append.done."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, "\ntext.builder.append.full."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")

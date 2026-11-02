@@ -160,3 +160,21 @@ that exist. `{{` and `}}` are literal braces; a hole is any expression. Holes ta
 or a struct is an error that says so. Still to do: `Bytes` holes (concatenating `Bytes` with `Ascii` into `Bytes`, which Campfire's
 code wants), bool holes, the format options (`{n:8}`, `{n:x}`) and appending straight into a builder without a temporary.
 Tests: `tests/py/test_interpolation.py`.
+
+### Round 6, second part: flat code, `Bytes` and bool holes, formats, appending without a temporary
+
+- **Flat.** The parser still makes the chain of `+`, but every node is marked (`extra` is `INTERP_MARK`) and the code is written by the
+  chain's root alone (`selfhost/interpolation.nl`): each piece is copied, or its number formatted, straight to its place in one
+  destination. The `+` nodes and the hole calls under a flat root have no code and no storage of their own (the region planner skips
+  them), so a chain of n pieces is n writes with no temporaries and no prefix copied again. Before, each `+` made a value and copied
+  the growing prefix.
+- **Into a builder.** `out.try_append($"...")` (a `Bytes` or `Ascii` builder) checks once whether the builder has room for the chain's
+  largest value; if so the pieces are written to the builder's tail and its length is set, with no intermediate value. If not, the
+  chain is built in its own storage first and appended with the exact length, so `Full` is reported exactly as before (a value that
+  fits is never refused because its worst case would not).
+- **Holes.** int, long, byte, bool (`true`/`false`), `Ascii`, `Bytes` (the result is `Bytes` when a hole is `Bytes`, and an
+  all-`Ascii` chain takes the type its context wants), `Text` (a chain with `Text` keeps the pairwise concatenation, because
+  code points have to be counted: the one place a nested form is kept). A struct or a double is an error.
+- **Formats.** `{n:8}` (padded to width 8, numbers and text), `{n:08}` (zero-padded), `{n:x}`, `{n:b}`. The width is a literal.
+  `{n:8}` for a number is not available inside a chain that also holds non-ASCII text.
+- Campfire's sign-in now builds its cookie header with one `try_append($"Set-Cookie: session_token={session.token}; ...")`.

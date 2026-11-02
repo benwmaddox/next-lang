@@ -219,6 +219,7 @@ fn region_node_is_temporary(tables: ParseTables, compiler: CompilerTables, node:
         syntax_kind == NodeKind.FitType || syntax_kind == NodeKind.CastType ||
         syntax_kind == NodeKind.Block || syntax_kind == NodeKind.MatchArm { return false }
     if region_node_is_direct_output(tables, compiler, node) { return false }
+    if interp_is_flat_member(tables, compiler, node) { return false }
     if syntax_kind == NodeKind.Name || syntax_kind == NodeKind.Field {
         return region_node_needs_snapshot(tables, compiler, node)
     }
