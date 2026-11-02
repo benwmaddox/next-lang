@@ -55,6 +55,8 @@ enum TokenKind {
     Shl,
     Shr,
     Eof,
+    Dollar,
+    InterpEnd,
 }
 
 struct Token {
@@ -126,6 +128,118 @@ fn emit_newline(
     emit_token(tokens, file_token_count, TokenKind.Newline, start, 1L, line, col)
 }
 
+struct InterpStep {
+    pos: long
+    line: long
+    col: long
+    ended: bool
+}
+
+// A piece of an interpolated string is a String token whose first and last bytes (the characters next to it: a quote or a
+// brace) are borrowed the way a multi-line string borrows them, so it reads like an ordinary quoted literal.
+fn emit_interp_piece(
+    tokens: write list<Token, TOKEN_STORAGE_CAPACITY>,
+    file_token_count: write long,
+    last_kind: write TokenKind,
+    content_start: long,
+    content_length: long,
+    line: long,
+    col: long,
+) -> Result<(), LexProblem> {
+    emit_token(tokens, file_token_count, TokenKind.String, content_start - 1L, content_length + 2L, line, col)?
+    last_kind = TokenKind.String
+    ok(())
+}
+
+// Scans the text of an interpolated string from `from`: String tokens for the pieces, then either the closing quote
+// (an InterpEnd token) or the `{` of a hole (an LBrace token and a new entry on `interp`).
+fn lex_interp_pieces(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    base: long,
+    length: long,
+    from: long,
+    from_line: long,
+    from_col: long,
+    first: bool,
+    tokens: write list<Token, TOKEN_STORAGE_CAPACITY>,
+    file_token_count: write long,
+    interp: write list<long, 16>,
+    last_kind: write TokenKind,
+) -> Result<InterpStep, LexProblem> {
+    var pos = from
+    var line = from_line
+    var col = from_col
+    var piece_start = pos
+    var anything = false
+    for step in 0L..length + 1L {
+        if pos >= length {
+            return err(token_error(LexProblemKind.UnclosedString, from - 1L, from_line, from_col - 1L, 0))
+        }
+        let current = source[base + pos]
+        if current == 34 {
+            if pos > piece_start {
+                emit_interp_piece(tokens, file_token_count, last_kind, piece_start, pos - piece_start, line, col)?
+            } else if !anything && first {
+                emit_interp_piece(tokens, file_token_count, last_kind, pos, 0L, line, col)?
+            }
+            emit_token(tokens, file_token_count, TokenKind.InterpEnd, pos, 1L, line, col)?
+            last_kind = TokenKind.InterpEnd
+            return ok(InterpStep { pos: pos + 1L, line, col: col + 1L, ended: true })
+        }
+        if current == 92 {
+            pos += 1L
+            col += 1L
+            if pos >= length { return err(token_error(LexProblemKind.UnclosedString, from - 1L, from_line, from_col - 1L, 0)) }
+            let escaped = source[base + pos]
+            if escaped == 120 {
+                if pos + 2L >= length || !is_hex_digit(source[base + pos + 1L]) || !is_hex_digit(source[base + pos + 2L]) {
+                    return err(token_error(LexProblemKind.InvalidHexEscape, from - 1L, from_line, from_col - 1L, 0))
+                }
+                pos += 3L
+                col += 3L
+            } else if escaped == 34 || escaped == 92 || escaped == 110 || escaped == 114 || escaped == 116 || escaped == 48 {
+                pos += 1L
+                col += 1L
+            } else {
+                return err(token_error(LexProblemKind.UnsupportedEscape, from - 1L, from_line, from_col - 1L, 0))
+            }
+            continue
+        }
+        if current == 10 {
+            return err(token_error(LexProblemKind.NewlineInString, from - 1L, from_line, from_col - 1L, 0))
+        }
+        if current == 123 || current == 125 {
+            let doubled = pos + 1L < length && source[base + pos + 1L] == current
+            if doubled {
+                // {{ and }} are one literal brace: the piece so far ends with the first of the two
+                emit_interp_piece(tokens, file_token_count, last_kind, piece_start, pos + 1L - piece_start, line, col)?
+                anything = true
+                pos += 2L
+                col += 2L
+                piece_start = pos
+                continue
+            }
+            if current == 125 {
+                return err(token_error(LexProblemKind.UnexpectedCharacter, pos, line, col, 125))
+            }
+            if pos > piece_start {
+                emit_interp_piece(tokens, file_token_count, last_kind, piece_start, pos - piece_start, line, col)?
+            }
+            emit_token(tokens, file_token_count, TokenKind.LBrace, pos, 1L, line, col)?
+            last_kind = TokenKind.LBrace
+            match interp.push(0L) {
+                ok(_) => (),
+                err(_) => return err(token_error(LexProblemKind.DelimiterNesting, pos, line, col, 0)),
+            }
+            return ok(InterpStep { pos: pos + 1L, line, col: col + 1L, ended: false })
+        }
+        let unit_width = utf8_width(current)
+        pos += unit_width
+        col += unit_width
+    }
+    err(token_error(LexProblemKind.UnclosedString, from - 1L, from_line, from_col - 1L, 0))
+}
+
 fn lex_file(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     base: long,
@@ -139,7 +253,7 @@ fn lex_file(
     var col = 1L
     var file_token_count = 0L
     var last_kind = TokenKind.Eof
-
+    var interp: list<long, 16> = list {}
     for step in 0L..length {
         if pos >= length { break }
         let absolute = base + pos
@@ -181,6 +295,18 @@ fn lex_file(
         let start = pos
         let start_line = line
         let start_col = col
+        if value == 36 && pos + 1L < length && source[absolute + 1L] == 34 {
+            // $"text {hole} text": a Dollar token, then the pieces and holes
+            match emit_token(tokens, file_token_count, TokenKind.Dollar, start, 1L, start_line, start_col) {
+                ok(_) => { last_kind = TokenKind.Dollar },
+                err(problem) => return err(problem),
+            }
+            let scanned = lex_interp_pieces(source, base, length, pos + 2L, line, col + 2L, true, tokens, file_token_count, interp, last_kind)?
+            pos = scanned.pos
+            line = scanned.line
+            col = scanned.col
+            continue
+        }
         if is_ident_start(value) {
             pos += 1L
             col += 1L
@@ -568,8 +694,28 @@ fn lex_file(
             ok(_) => { last_kind = kind },
             err(problem) => return err(problem),
         }
+        if kind == TokenKind.LBrace && interp.count() > 0L {
+            interp[interp.count() - 1L] += 1L
+        } else if kind == TokenKind.RBrace && interp.count() > 0L {
+            if interp[interp.count() - 1L] == 0L {
+                // the end of a hole: back into the string text
+                match interp.pop() {
+                    some(_) => (),
+                    none => (),
+                }
+                let scanned = lex_interp_pieces(source, base, length, pos, line, col, false, tokens, file_token_count, interp, last_kind)?
+                pos = scanned.pos
+                line = scanned.line
+                col = scanned.col
+            } else {
+                interp[interp.count() - 1L] -= 1L
+            }
+        }
     }
 
+    if interp.count() > 0L {
+        return err(token_error(LexProblemKind.UnclosedString, length, line, col, 0))
+    }
     if delimiters.count() > 0L {
         let kind = if delimiters[delimiters.count() - 1L] == DelimiterKind.Parenthesis {
             LexProblemKind.UnclosedParen

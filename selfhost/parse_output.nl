@@ -189,6 +189,7 @@ fn write_parse_message(
         ParseProblemKind.ExpectedValue => out.write(b"expected a value, a function call, or an if expression")?,
         ParseProblemKind.AnonymousFunction => out.write(b"anonymous functions are not supported; use a named top-level function")?,
         ParseProblemKind.ExpectedCloseParen => out.write(b"expected ')' after the arguments")?,
+        ParseProblemKind.ExpectedCloseInterpolation => out.write(b"expected '}' to end the hole in the interpolated string")?,
         ParseProblemKind.ExpectedCloseBracket => out.write(b"expected ']' after the array capacity")?,
         ParseProblemKind.EmptyCollectionOnly => out.write(b"collection literals start empty; add values after construction")?,
         ParseProblemKind.ExpectedCallOpen => out.write(b"expected '('")?,
@@ -896,6 +897,8 @@ fn wire_token_tag(kind: TokenKind) -> long {
         TokenKind.AndAnd => 44L, TokenKind.Or => 45L, TokenKind.OrOr => 46L,
         TokenKind.Caret => 47L, TokenKind.Shl => 48L, TokenKind.Shr => 49L,
         TokenKind.Eof => 50L,
+        TokenKind.Dollar => 51L,
+        TokenKind.InterpEnd => 52L,
         TokenKind.Tilde => 51L, TokenKind.ShlEq => 52L, TokenKind.AndEq => 53L,
         TokenKind.OrEq => 54L, TokenKind.CaretEq => 55L,
     }

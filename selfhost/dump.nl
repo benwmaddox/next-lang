@@ -56,6 +56,8 @@ fn token_kind_name(kind: TokenKind) -> Ascii max 20 {
         TokenKind.Shl => "Shl",
         TokenKind.Shr => "Shr",
         TokenKind.Eof => "Eof",
+        TokenKind.Dollar => "Dollar",
+        TokenKind.InterpEnd => "InterpEnd",
     }
 }
 
