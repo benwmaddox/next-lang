@@ -36,6 +36,22 @@ Each of steps 4 and 6 gets a benchmark against a small Rust server doing the sam
 
 # Roadmap after the first web target (2026-11-02)
 
+## Goals (Ben, 2026-11-02)
+
+1. **Competitive with Rust on resource use in many cases:** memory (resident and peak), CPU per request, binary size, startup time and
+   build time for the same program. The language's bounds and up-front allocation are the means; the test is a side-by-side number.
+2. **Easier to reason about than Rust for business logic and application code, especially compared with working around the borrow
+   checker:** no lifetimes, no clone-to-satisfy-the-compiler, no `Arc<Mutex<..>>` plumbing for shared state; plain records, copy on
+   assignment, bounds that are checked at build time and say what to change.
+
+Both are measured, not claimed. Each program that goes into bench/ or apps/ gets a scoreboard row against its Rust counterpart:
+resident and peak memory, CPU per request, binary size, startup, build time, and source lines; and a note of every place the Rust
+version needs `clone`, `Arc`, `Mutex`, a lifetime annotation or an index instead of a reference where the next-lang one does not
+(and the reverse: where next-lang needs a bound or a copy that Rust does not). Today's numbers: the web benchmark (bench/web) is
+level with tokio at 64 to 1000 connections and uses 3.5 to 4 MB resident for the paced runs against Rust's 3.5 to 4 MB; Campfire's room
+page uses 7 MB resident (13.7 MB peak). Not yet compared: binary size, startup and build time, and the readability side
+(Campfire against the Rust port in the AgentLang benchmark, line for line).
+
 Where it stands: the plan above is built and measured (docs/campfire-friction.md rounds 1 to 7, bench/web/README.md). The Campfire clone
 runs sign-in, rooms and messages on SQLite at about 50k pages/s in 7 MB; the web benchmark is level with tokio at 64 to 1000
 connections. A review of practical use (Ben asked, 2026-11-02) found what is missing for CLIs and for ordinary web apps. In order of
