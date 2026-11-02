@@ -9,6 +9,14 @@ fn db_row_field_kind(compiler: CompilerTables, ty: long) -> long {
     else if ty == TY_INT { 2L }
     else if ty == TY_BOOL { 3L }
     else if type_kind(compiler, ty) == TYPE_KIND_BYTES { 4L }
+    else if type_kind(compiler, ty) == TYPE_KIND_TEXT { 5L }
+    else { 0L }
+}
+
+// A field's capacity in a layout table: its byte limit; a Text field also carries its code-point limit above bit 32.
+fn db_row_field_capacity(compiler: CompilerTables, kind: long, ty: long) -> long {
+    if kind == 4L { text_max_bytes(compiler, ty) }
+    else if kind == 5L { text_max_bytes(compiler, ty) + text_max_codepoints(compiler, ty) * 4294967296L }
     else { 0L }
 }
 
@@ -52,7 +60,7 @@ fn emit_db_row_layouts(
             let kind = db_row_field_kind(compiler, field.ty)
             ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, kind)
             ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, field.offset)
-            ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, if kind == 4L { text_max_bytes(compiler, field.ty) } else { 0L })
+            ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, db_row_field_capacity(compiler, kind, field.ty))
         }
         ir_write_ascii(compiler, ir, "]\n")
         let parameters = child_at(tables, compiler, node, 2L)
@@ -66,7 +74,7 @@ fn emit_db_row_layouts(
                 let kind = db_row_field_kind(compiler, field.ty)
                 ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, kind)
                 ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, field.offset)
-                ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, if kind == 4L { text_max_bytes(compiler, field.ty) } else { 0L })
+                ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, db_row_field_capacity(compiler, kind, field.ty))
             }
             ir_write_ascii(compiler, ir, "]\n")
         }

@@ -307,8 +307,8 @@ fn c_runtime_check_method(
     } else if method == C_METHOD_HTTP_BODY || method == C_METHOD_HTTP_PEER || method == C_METHOD_RANDOM_TOKEN {
         // (connection or length, a Bytes destination) -> length written, or -1
         require_type(env, files, compiler, file_index, first, TY_LONG, compiler.facts[first].ty, tables)
-        if type_kind(compiler, compiler.facts[second].ty) != TYPE_KIND_BYTES {
-            fail_at_message(env, files, compiler, file_index, tables.nodes[second].start, "this call needs a Bytes destination")
+        if type_kind(compiler, compiler.facts[second].ty) != TYPE_KIND_BYTES && type_kind(compiler, compiler.facts[second].ty) != TYPE_KIND_TEXT {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[second].start, "this call needs a Bytes or Text destination")
         }
         if !c_runtime_writable_argument(tables, compiler, second) {
             fail_at_message(env, files, compiler, file_index, tables.nodes[second].start, "this call needs a writable Bytes destination")
@@ -345,8 +345,8 @@ fn c_runtime_check_method(
         if header_name_kind != TYPE_KIND_ASCII && header_name_kind != TYPE_KIND_TEXT {
             fail_at_message(env, files, compiler, file_index, tables.nodes[second].start, "Env.http_header needs bounded text for the header name")
         }
-        if type_kind(compiler, compiler.facts[third].ty) != TYPE_KIND_BYTES {
-            fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.http_header needs a Bytes destination for the value")
+        if type_kind(compiler, compiler.facts[third].ty) != TYPE_KIND_BYTES && type_kind(compiler, compiler.facts[third].ty) != TYPE_KIND_TEXT {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.http_header needs a Bytes or Text destination for the value")
         }
         if !c_runtime_writable_argument(tables, compiler, third) {
             fail_at_message(env, files, compiler, file_index, tables.nodes[third].start, "Env.http_header needs a writable Bytes destination")
@@ -949,8 +949,9 @@ fn emit_c_runtime_method_call(
     } else if method == C_METHOD_HTTP_BODY || method == C_METHOD_HTTP_PEER || method == C_METHOD_RANDOM_TOKEN {
         let bytes_location = c_runtime_writable_output_location(tables, compiler, ir, second)
         let bytes_pointer = emit_location_pointer_materialization(compiler, ir, bytes_location)
-        ir_write_ascii(compiler, ir, "  %c.bytes.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr inbounds i8, ptr "); emit_location_pointer_reference(compiler, ir, bytes_location, bytes_pointer); ir_write_ascii(compiler, ir, ", i64 8\n")
-        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        let bytes_destination_type = compiler.facts[second].ty
+        ir_write_ascii(compiler, ir, "  %c.bytes.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr inbounds i8, ptr "); emit_location_pointer_reference(compiler, ir, bytes_location, bytes_pointer); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_data_offset(compiler, bytes_destination_type)); ir_push_byte(compiler, ir, 10)
+        emit_http_result_prefix(compiler, ir, node, type_kind(compiler, compiler.facts[second].ty) == TYPE_KIND_TEXT)
         ir_write_ascii(compiler, ir, " = call i64 @nl_")
         ir_write_ascii(compiler, ir, if method == C_METHOD_HTTP_BODY { "http_body" } else if method == C_METHOD_HTTP_PEER { "http_peer" } else { "random_token" })
         ir_write_ascii(compiler, ir, "(ptr "); ir_write_value_ref(compiler, ir, receiver)
@@ -958,6 +959,10 @@ fn emit_c_runtime_method_call(
         ir_write_ascii(compiler, ir, ", ptr %c.bytes.data."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[second].ty))
         ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, bytes_location, bytes_pointer); ir_write_ascii(compiler, ir, ")\n")
+        if type_kind(compiler, compiler.facts[second].ty) == TYPE_KIND_TEXT {
+            let bytes_ty = compiler.facts[second].ty
+            emit_text_destination_check(compiler, ir, node, bytes_location, bytes_pointer, bytes_ty, "c.bytes.data")
+        }
     } else if method == C_METHOD_PASSWORD_VERIFY {
         let hash_location = c_runtime_argument_source_location(tables, compiler, ir, first)
         let hash_pointer = emit_location_pointer_materialization(compiler, ir, hash_location)
@@ -992,9 +997,10 @@ fn emit_c_runtime_method_call(
     } else if method == C_METHOD_HTTP_HEADER {
         let header_location = c_runtime_writable_output_location(tables, compiler, ir, third)
         let header_pointer = emit_location_pointer_materialization(compiler, ir, header_location)
+        let header_destination_type = compiler.facts[third].ty
         emit_c_raw_descriptor(tables, compiler, ir, node, second)
-        ir_write_ascii(compiler, ir, "  %c.header.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr inbounds i8, ptr "); emit_location_pointer_reference(compiler, ir, header_location, header_pointer); ir_write_ascii(compiler, ir, ", i64 8\n")
-        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "  %c.header.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr inbounds i8, ptr "); emit_location_pointer_reference(compiler, ir, header_location, header_pointer); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_data_offset(compiler, header_destination_type)); ir_push_byte(compiler, ir, 10)
+        emit_http_result_prefix(compiler, ir, node, type_kind(compiler, compiler.facts[third].ty) == TYPE_KIND_TEXT)
         ir_write_ascii(compiler, ir, " = call i64 @nl_http_header(ptr "); ir_write_value_ref(compiler, ir, receiver)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, first)
         ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node)
@@ -1002,6 +1008,10 @@ fn emit_c_runtime_method_call(
         ir_write_ascii(compiler, ir, ", ptr %c.header.data."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[third].ty))
         ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, header_location, header_pointer); ir_write_ascii(compiler, ir, ")\n")
+        if type_kind(compiler, compiler.facts[third].ty) == TYPE_KIND_TEXT {
+            let header_ty = compiler.facts[third].ty
+            emit_text_destination_check(compiler, ir, node, header_location, header_pointer, header_ty, "c.header.data")
+        }
     } else if method == C_METHOD_ENV_DB_ROWS {
         let rows_location = c_runtime_writable_output_location(tables, compiler, ir, third)
         let rows_pointer = emit_location_pointer_materialization(compiler, ir, rows_location)
