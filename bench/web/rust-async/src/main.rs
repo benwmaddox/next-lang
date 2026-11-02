@@ -1,4 +1,4 @@
-// The same service as bench/web/main.nl on tokio: four worker threads, one task per connection, a shared
+// The same service as bench/web/main.nl on tokio: WEB_THREADS worker threads (default 4), one task per connection, a shared
 // direct-mapped cache behind a mutex, and one SQLite connection (behind a mutex) used on cache misses.
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -6,8 +6,12 @@ use tokio::net::TcpListener;
 
 const SLOTS: usize = 4096;
 
-#[tokio::main(worker_threads = 4)]
-async fn main() {
+fn main() {
+    let threads = std::env::var("WEB_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(4usize);
+    tokio::runtime::Builder::new_multi_thread().worker_threads(threads).enable_all().build().unwrap().block_on(serve());
+}
+
+async fn serve() {
     let listener = TcpListener::bind("0.0.0.0:18084").await.unwrap();
     let cache = Arc::new(Mutex::new(vec![(-1i64, 0i64); SLOTS]));
     let path = std::env::var("NLC_DB").unwrap_or_else(|_| "app.db".into());

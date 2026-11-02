@@ -1,4 +1,4 @@
-// Same service as bench/web/main.nl in Rust: four blocking worker threads, a shared direct-mapped cache behind a
+// Same service as bench/web/main.nl in Rust: WEB_THREADS blocking worker threads (default 4), a shared direct-mapped cache behind a
 // mutex, and one SQLite connection per thread. GET /item/<id> -> {"id":..,"v":..}.
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -11,7 +11,8 @@ fn main() {
     let cache: Arc<Mutex<Vec<(i64, i64)>>> = Arc::new(Mutex::new(vec![(-1, 0); SLOTS]));
     let path = std::env::var("NLC_DB").unwrap_or_else(|_| "app.db".into());
     let mut handles = Vec::new();
-    for _ in 0..4 {
+    let threads: usize = std::env::var("WEB_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+    for _ in 0..threads {
         let listener = listener.clone();
         let cache = cache.clone();
         let path = path.clone();
