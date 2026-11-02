@@ -332,3 +332,30 @@ server has cores. Server on 4 cores (8-11) or 8 cores (8-15), closed loop, 4 s r
 - Not spinning: at 50 / 500 / 5000 req/s with 4 connections tokio uses 0.2% / 1.4% / 10.9% of a core, the threads server 0.2% / 1.4% / 10.5%,
   next-lang 0.3% / 1.9% / 12.4% (context switches per request 1.0, 1.0 and 1.1-1.25). So tokio does not get its 16-connection lead
   by spinning; next-lang's request path is simply about 10 us slower at the median (109 us against 97 at 50 req/s).
+
+## Memory against Rust (2026-11-02)
+
+Resident memory (VmRSS, kB) of the web service, measured after 4 s of load at each connection count (a fresh process each time, 4
+threads/workers, same machine); `idle` is right after the first connection is accepted. Startup (process start to first accepted
+connection) is 3-5 ms for all of them.
+
+| | idle | 4 connections | 64 | 1000 | binary | virtual size |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| next-lang, per-connection buffers 22 KB (before) | 2,288 | 4,400 | 6,336 | 29,040 | 1.35 MB | 33.9 GB at start, 100 GB at 1000 |
+| **next-lang, buffers allocated on demand (now)** | **2,112** | **4,224** | **5,280** | **17,776** | **1.35 MB** | same |
+| tokio (4 worker threads) | 3,872 | 4,400 | 5,104 | 13,024 | 2.98 MB | 0.28 GB |
+| Rust, 4 blocking threads | 3,872 | 4,224 | 4,576 | (4 at a time) | 2.53 MB | 0.28 GB |
+
+- Idle, 4 and 64 connections: level with Rust (next-lang is 1.7 MB below at idle, and 0.2 MB over tokio at 64).
+- 1000 connections: 17.8 MB against tokio 13.0 MB (15.5 KB per connection against 9.3 KB). The first number, 29 MB, was mine: every
+  connection carried a 22 KB buffer (8 KB read buffer, a second 8 KB copy of the request head, a 4 KB body and 2 KB of header lines
+  kept for `http_body` and `http_set_header`). The head copy, body and header lines are now allocated when a request needs them
+  (a head at its own length) and the read buffer starts at 1 KB and grows to 8 KB: that took 11 MB off at 1000 connections.
+- Where the remaining 15.5 KB per connection goes (smaps at 1000 connections): about 8 KB resident in each job's 1 MiB native stack,
+  4 KB (one page) in its data stack, and the rest in the connection buffer and bookkeeping. Next steps: smaller stack frames in the
+  HTTP functions (several hold 4 KB scratch arrays), and a smaller or lazily-grown native stack.
+- **Virtual size is the weak spot:** each job reserves 64 MiB of address space for its data stack and 1 MiB of native stack, so 1000
+  connections show 100 GB virtual against Rust's 0.28 GB. Only touched pages are resident, but it matters under `ulimit -v`, strict
+  overcommit (`vm.overcommit_memory=2`) and some container limits. A per-job reservation sized from the build's computed worst case, or a
+  default far below 64 MiB, would fix it.
+- Binary: next-lang 1.35 MB with SQLite and the runtime linked in; the Rust servers 2.5 and 3.0 MB.
