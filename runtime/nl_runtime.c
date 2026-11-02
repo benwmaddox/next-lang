@@ -2083,6 +2083,39 @@ static int64_t nl_host_total_core_count(void) {
 }
 
 void *nl_env_host(void *value) { return value; }
+
+/* Env.stdin_read(out): the next chunk of standard input (at most `capacity` bytes) into `out`, the length written to *count. Returns the
+   length; 0 is the end of the input, -1 a read error. */
+int64_t nl_stdin_read(void *env, unsigned char *out, uint64_t capacity, int64_t *count) {
+    (void)env;
+    if (capacity == 0) { *count = 0; return 0; }
+    int64_t got;
+    do { got = (int64_t)read(0, out, (unsigned int)(capacity > 1u << 30 ? 1u << 30 : capacity)); } while (got < 0 && errno == EINTR);
+    if (got < 0) return -1;
+    *count = got;
+    return got;
+}
+
+static int nl_extract_raw(const void *value, int is_argument, uint64_t capacity, unsigned char scratch[4096],
+                          const unsigned char **bytes, uint64_t *length, int *error_tag, int *error_code);
+
+/* Env.getenv(name, out): the value of the environment variable `name` into `out`; its length, or -1 when it is not set or does not fit. */
+int64_t nl_getenv(void *env, void *name_descriptor, uint64_t name_capacity, unsigned char *out, uint64_t out_capacity, int64_t *count) {
+    (void)env;
+    unsigned char scratch[4096];
+    const unsigned char *name; uint64_t name_length; int tag = -1, code = 0;
+    if (!nl_extract_raw(name_descriptor, 2, name_capacity, scratch, &name, &name_length, &tag, &code) || name_length == 0 || name_length > 255) return -1;
+    char key[256];
+    memcpy(key, name, (size_t)name_length);
+    key[name_length] = 0;
+    const char *value = getenv(key);
+    if (!value) return -1;
+    size_t length = strlen(value);
+    if (length > out_capacity) return -1;
+    memcpy(out, value, length);
+    *count = (int64_t)length;
+    return (int64_t)length;
+}
 int64_t nl_host_total_cores(void *host) { (void)host; return nl_host_total_core_count(); }
 int64_t nl_host_cores(void *host) {
     (void)host;
