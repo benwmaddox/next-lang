@@ -35,6 +35,8 @@ const C_METHOD_HTTP_PEER: long = 3032L
 const C_METHOD_RANDOM_TOKEN: long = 3033L
 const C_METHOD_ENV_DB_EXEC: long = 3034L
 const C_METHOD_PASSWORD_VERIFY: long = 3035L
+const C_METHOD_STDIN_READ: long = 3036L
+const C_METHOD_ENV_GETENV: long = 3037L
 
 fn emit_context_runtime_symbol(
     compiler: write CompilerTables,
@@ -174,6 +176,8 @@ fn c_runtime_method_kind(
         else if token_is_word_at(source, tokens, files, file_index, token, "random_token") { C_METHOD_RANDOM_TOKEN }
         else if token_is_word_at(source, tokens, files, file_index, token, "db_exec") { C_METHOD_ENV_DB_EXEC }
         else if token_is_word_at(source, tokens, files, file_index, token, "password_verify") { C_METHOD_PASSWORD_VERIFY }
+        else if token_is_word_at(source, tokens, files, file_index, token, "stdin_read") { C_METHOD_STDIN_READ }
+        else if token_is_word_at(source, tokens, files, file_index, token, "getenv") { C_METHOD_ENV_GETENV }
         else if token_is_word_at(source, tokens, files, file_index, token, "net_close") { C_METHOD_NET_CLOSE }
         else if token_is_word_at(source, tokens, files, file_index, token, "db_text") { C_METHOD_ENV_DB_TEXT }
         else if token_is_word_at(source, tokens, files, file_index, token, "cache_get") { C_METHOD_ENV_CACHE_GET }
@@ -263,7 +267,7 @@ fn c_runtime_check_method(
         method == C_METHOD_ENV_HOST || method == C_METHOD_ENV_NOW_MS || method == C_METHOD_HOST_CORES || method == C_METHOD_HOST_TOTAL_CORES ||
         method == C_METHOD_HOST_RAM || method == C_METHOD_HOST_PAGE_SIZE { 0L }
         else if method == C_METHOD_ENV_EXIT || method == C_METHOD_ARGS_GET || method == C_METHOD_ARG_BYTE || method == C_METHOD_OUT_WRITE ||
-            method == C_METHOD_NET_LISTEN || method == C_METHOD_NET_ACCEPT || method == C_METHOD_NET_CLOSE { 1L }
+            method == C_METHOD_NET_LISTEN || method == C_METHOD_NET_ACCEPT || method == C_METHOD_NET_CLOSE || method == C_METHOD_STDIN_READ { 1L }
         else if method == C_METHOD_HTTP_WRITE { 4L }
         else if method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_DB_ROW || method == C_METHOD_ENV_DB_ROWS || method == C_METHOD_HTTP_HEADER { 3L }
         else if method == C_METHOD_FS_LIST { 3L } else { 2L }
@@ -337,6 +341,34 @@ fn c_runtime_check_method(
         let set_header_kind = type_kind(compiler, compiler.facts[second].ty)
         if set_header_kind != TYPE_KIND_ASCII && set_header_kind != TYPE_KIND_TEXT && set_header_kind != TYPE_KIND_BYTES {
             fail_at_message(env, files, compiler, file_index, tables.nodes[second].start, "Env.http_set_header needs bounded text: the whole header line, e.g. \"Location: /\"")
+        }
+        result_type = TY_LONG
+    } else if method == C_METHOD_STDIN_READ {
+        // Env.stdin_read(out): the next chunk of standard input into out (replacing what it held); the length, 0 at the end of the input
+        if type_kind(compiler, compiler.facts[first].ty) != TYPE_KIND_BYTES {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[first].start, "Env.stdin_read needs a Bytes destination")
+        }
+        if !c_runtime_writable_argument(tables, compiler, first) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[first].start, "Env.stdin_read needs a writable Bytes destination")
+        }
+        if active_view_overlaps_place(tables, compiler, scope, first) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[first].start, "cannot replace storage that contains a live collection view")
+        }
+        result_type = TY_LONG
+    } else if method == C_METHOD_ENV_GETENV {
+        // Env.getenv(name, out): the value of an environment variable into out; its length, or -1 when it is not set or does not fit
+        let variable_kind = type_kind(compiler, compiler.facts[first].ty)
+        if variable_kind != TYPE_KIND_ASCII && variable_kind != TYPE_KIND_TEXT {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[first].start, "Env.getenv needs bounded text for the variable name")
+        }
+        if type_kind(compiler, compiler.facts[second].ty) != TYPE_KIND_BYTES && type_kind(compiler, compiler.facts[second].ty) != TYPE_KIND_TEXT {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[second].start, "Env.getenv needs a Bytes or Text destination for the value")
+        }
+        if !c_runtime_writable_argument(tables, compiler, second) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[second].start, "Env.getenv needs a writable destination")
+        }
+        if active_view_overlaps_place(tables, compiler, scope, second) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[second].start, "cannot replace storage that contains a live collection view")
         }
         result_type = TY_LONG
     } else if method == C_METHOD_HTTP_HEADER {
@@ -593,7 +625,7 @@ fn emit_c_runtime_method_storage(
         }
         return
     }
-    let data_argument = if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_DB_QUERY || method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_DB_ROW || method == C_METHOD_ENV_DB_ROWS || method == C_METHOD_ENV_CACHE_PUT || method == C_METHOD_HTTP_HEADER || method == C_METHOD_HTTP_SET_HEADER || method == C_METHOD_ENV_DB_EXEC { child_at(tables, compiler, node, if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_CACHE_PUT || method == C_METHOD_HTTP_HEADER || method == C_METHOD_HTTP_SET_HEADER { 2L } else { 1L }) }
+    let data_argument = if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_DB_QUERY || method == C_METHOD_ENV_DB_TEXT || method == C_METHOD_ENV_DB_ROW || method == C_METHOD_ENV_DB_ROWS || method == C_METHOD_ENV_CACHE_PUT || method == C_METHOD_HTTP_HEADER || method == C_METHOD_HTTP_SET_HEADER || method == C_METHOD_ENV_DB_EXEC || method == C_METHOD_ENV_GETENV { child_at(tables, compiler, node, if method == C_METHOD_FS_WRITE || method == C_METHOD_ENV_CACHE_PUT || method == C_METHOD_HTTP_HEADER || method == C_METHOD_HTTP_SET_HEADER { 2L } else { 1L }) }
         else if method == C_METHOD_HTTP_WRITE { child_at(tables, compiler, node, 4L) }
         else if method == C_METHOD_OUT_WRITE { child_at(tables, compiler, node, 1L) }
         else { -1L }
@@ -994,6 +1026,33 @@ fn emit_c_runtime_method_call(
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, first)
         ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[second].ty)); ir_write_ascii(compiler, ir, ")\n")
+    } else if method == C_METHOD_STDIN_READ {
+        let stdin_location = c_runtime_writable_output_location(tables, compiler, ir, first)
+        let stdin_pointer = emit_location_pointer_materialization(compiler, ir, stdin_location)
+        let stdin_type = compiler.facts[first].ty
+        ir_write_ascii(compiler, ir, "  %c.stdin.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr inbounds i8, ptr "); emit_location_pointer_reference(compiler, ir, stdin_location, stdin_pointer); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_data_offset(compiler, stdin_type)); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call i64 @nl_stdin_read(ptr "); ir_write_value_ref(compiler, ir, receiver)
+        ir_write_ascii(compiler, ir, ", ptr %c.stdin.data."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, stdin_type))
+        ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, stdin_location, stdin_pointer); ir_write_ascii(compiler, ir, ")\n")
+    } else if method == C_METHOD_ENV_GETENV {
+        let variable_location = c_runtime_writable_output_location(tables, compiler, ir, second)
+        let variable_pointer = emit_location_pointer_materialization(compiler, ir, variable_location)
+        let variable_destination_type = compiler.facts[second].ty
+        emit_c_raw_descriptor(tables, compiler, ir, node, first)
+        ir_write_ascii(compiler, ir, "  %c.getenv.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr inbounds i8, ptr "); emit_location_pointer_reference(compiler, ir, variable_location, variable_pointer); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_data_offset(compiler, variable_destination_type)); ir_push_byte(compiler, ir, 10)
+        emit_http_result_prefix(compiler, ir, node, type_kind(compiler, compiler.facts[second].ty) == TYPE_KIND_TEXT)
+        ir_write_ascii(compiler, ir, " = call i64 @nl_getenv(ptr "); ir_write_value_ref(compiler, ir, receiver)
+        ir_write_ascii(compiler, ir, ", ptr %c.raw.descriptor.pointer."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[first].ty))
+        ir_write_ascii(compiler, ir, ", ptr %c.getenv.data."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_max_bytes(compiler, compiler.facts[second].ty))
+        ir_write_ascii(compiler, ir, ", ptr "); emit_location_pointer_reference(compiler, ir, variable_location, variable_pointer); ir_write_ascii(compiler, ir, ")\n")
+        if type_kind(compiler, compiler.facts[second].ty) == TYPE_KIND_TEXT {
+            let variable_ty = compiler.facts[second].ty
+            emit_text_destination_check(compiler, ir, node, variable_location, variable_pointer, variable_ty, "c.getenv.data")
+        }
     } else if method == C_METHOD_HTTP_HEADER {
         let header_location = c_runtime_writable_output_location(tables, compiler, ir, third)
         let header_pointer = emit_location_pointer_materialization(compiler, ir, header_location)

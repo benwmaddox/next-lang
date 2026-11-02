@@ -59,9 +59,11 @@ what unblocks the most:
 
 ## 1. CLI basics (Env capabilities)
 
-- **Standard input:** `env.stdin` read into a bounded `Bytes`, read-to-end and line-at-a-time, with end-of-input as a result, not an error.
-- **Environment variables:** `env.var(name, out)` into a bounded buffer (absent is a result). Declared in the package so the build knows
-  the program reads them.
+- **Standard input (done 2026-11-02):** `env.stdin_read(out)` reads the next chunk into a `Bytes` (replacing its contents) and returns the
+  length; 0 is the end of the input, -1 an error. Line-at-a-time reading is library code on top (tests/py/programs/cli_grep does it).
+- **Environment variables (done 2026-11-02):** `env.getenv(name, out)` into a `Bytes` or `Text` (validated UTF-8 as for header reads);
+  returns the length, or -1 when the variable is not set or does not fit. Declaring the variables a program reads in `package.toml`
+  (so the build knows) is still to do.
 - **Flag parsing:** a small library over `env.args()`: `--name value`, `--name=value`, `-f`, positional arguments, `--help` text built
   from the declarations, usage errors with exit code 2.
 - **Run another program:** `env.run(program, args, stdin, stdout_buffer)` with a bounded output and an exit code; declared capability.
