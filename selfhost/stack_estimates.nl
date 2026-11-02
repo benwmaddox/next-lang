@@ -4,10 +4,13 @@
 // A function's own use is the sum of all its blocks' ranges (regions.nl, over-counted: blocks that follow each other are added). The
 // entry's bound is its own use plus the deepest of the functions it calls, down the call graph. A function that is reached by a cycle
 // (recursion), through a function value (indirect call), or that is not a user function the build planned, makes the bound unknown, and
-// an unknown bound keeps the runtime's generic default. The bound is then doubled and given 256 KiB more, because it must never be too
-// low (the job would fail with a data stack overflow) while a too-high one only wastes address space.
+// an unknown bound keeps the runtime's generic default. The calculation is trusted as it stands, with no safety factor added on top: it
+// is checked instead (the whole test suite runs with the exact bound reserved, and tests/py/test_stack_estimates.py compares what a job
+// used with what it reserved), and a job that did exceed it would stop with a data stack overflow naming the entry point. What is added
+// is only rounding: the reservation is rounded up to a power of two, at least 64 KiB, so that jobs with nearby bounds reserve the same
+// size and share pooled stacks (a stack is reused only by a job whose reservation fits it) and the sizes stay few and readable.
 
-const STACK_BOUND_MARGIN_BYTES: long = 262144L
+const STACK_BOUND_FLOOR_BYTES: long = 65536L
 const STACK_BOUND_CALL_DEPTH: long = 40L
 const STACK_BOUND_SCAN_BUDGET: long = 3000000L
 
@@ -76,5 +79,10 @@ fn stack_reservation_estimate(tables: ParseTables, compiler: CompilerTables, fun
     var budget = STACK_BOUND_SCAN_BUDGET
     let bound = stack_worst_case(tables, compiler, function_id, 0L, path, budget)
     if bound < 0L || bound > 4611686018427387904L / 4L { return 4096L }
-    bound * 2L + STACK_BOUND_MARGIN_BYTES
+    var size = STACK_BOUND_FLOOR_BYTES
+    for step in 0L..62L {
+        if size >= bound { break }
+        size = size * 2L
+    }
+    size
 }

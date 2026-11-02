@@ -359,8 +359,10 @@ connection) is 3-5 ms for all of them.
   did. Web benchmark connection jobs used at most 4 KiB of data stack (5.6 KB of native stack); Campfire's, 290 KiB (17 KB of native
   stack). The build now computes a bound for each entry point (selfhost/stack_estimates.nl: each function's blocks summed, plus the
   deepest callee down the call graph; recursion, function values and anything unplanned make it unknown, and an unknown bound keeps the
-  old default), doubles it and adds 256 KiB, and passes it to the runtime. Reserved per connection job: 64 MiB -> 260 KiB (web
-  benchmark), 64 MiB -> 864 KiB (Campfire, against 290 KiB used); virtual size of the web server 33.9 GB at start -> 112 MB, and
+  old default), rounds it up to a power of two (at least 64 KiB, so jobs with nearby bounds share pooled stacks) and passes it to the
+  runtime. No safety factor: the calculation is checked instead (the whole suite passes with the exact bound reserved, no margin, no
+  rounding beyond pages; Campfire's exact bound is 311 KB against 297 KB used). Reserved per connection job: 64 MiB -> 64 KiB (web
+  benchmark), 64 MiB -> 512 KiB (Campfire, against 290 KiB used); virtual size of the web server 33.9 GB at start -> 112 MB, and
   100 GB -> 1.7 GB at 1000 connections (Rust 0.28 GB; the rest is each job's 1 MiB of native stack reservation, of which 6-17 KB is
   used). Resident memory is unchanged (17.9 MB at 1000 connections).
 - Binary: next-lang 1.35 MB with SQLite and the runtime linked in; the Rust servers 2.5 and 3.0 MB.
