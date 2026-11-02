@@ -22,6 +22,7 @@ fn main(env: Env) {
         total += index
     }
     builders(env)
+    texts(env)
 }
 
 struct Row {
@@ -75,4 +76,23 @@ fn builders(env: Env) {
     var ascii: Ascii max 40 = ""
     discard ascii.try_append($"{flag}/{true}")
     print(ascii)
+}
+
+// Text: non-ASCII literals and Text holes; the code points are counted as the pieces are written.
+fn texts(env: Env) {
+    let name: Text max 8 = "né"
+    let s = $"café {name} {7L:3}|{name:5}|{42L:x}"
+    print(s)
+    print(s.len())
+    print(s.byte_len())
+    var t: Text max 40 = Text.empty()
+    discard t.try_append($"é{name}!")
+    print(t)
+    print(t.len())
+    var small: Text max 4 = Text.empty()
+    match small.try_append($"{name}{name}{name}") {
+        ok(_) => print("appended"),
+        err(_) => print("full"),
+    }
+    print(small.len())
 }
