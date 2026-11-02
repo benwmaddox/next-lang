@@ -3113,12 +3113,28 @@ void nl_out_write(void *handle, void *data_value, int data_is_argument, uint64_t
 /* `head` keeps the request line and headers of the request last returned by http_read, for Env.http_header. */
 #define NL_HTTP_OUT_HEADERS 2048
 #define NL_HTTP_BODY 4096
+/* A connection keeps one 8 KB buffer for what it has read. The copy of the request head (for Env.http_header), the body (for Env.http_body)
+   and the header lines for the next response are allocated the first time a request needs them, at the size it needs (a head: its own
+   length), so an idle or small-request connection costs about 8 KB, not 22. */
 typedef struct {
     uint32_t length; uint32_t head_length; uint32_t out_length; uint32_t body_length;
-    unsigned char body[NL_HTTP_BODY];   /* the body of the request last read (the first NL_HTTP_BODY bytes of it) */
-    unsigned char data[NL_HTTP_BUFFER]; unsigned char head[NL_HTTP_BUFFER];
-    unsigned char out[NL_HTTP_OUT_HEADERS];   /* header lines for the next response, each ending in CRLF */
+    uint32_t head_capacity;
+    uint32_t data_capacity;
+    unsigned char *head;   /* the request line and headers of the request last returned by http_read */
+    unsigned char *body;   /* the body of the request last read (the first NL_HTTP_BODY bytes of it) */
+    unsigned char *out;    /* header lines for the next response, each ending in CRLF */
+    unsigned char *data;   /* what has been read: starts at 1 KB and doubles up to NL_HTTP_BUFFER when a request head is longer */
 } nl_http_buffer;
+
+static int nl_http_grow_data(nl_http_buffer *buffer) {
+    if (buffer->data_capacity >= NL_HTTP_BUFFER) return 0;
+    uint32_t capacity = buffer->data_capacity ? buffer->data_capacity * 2 : 1024;
+    unsigned char *grown = (unsigned char *)realloc(buffer->data, capacity);
+    if (!grown) return 0;
+    buffer->data = grown;
+    buffer->data_capacity = capacity;
+    return 1;
+}
 static nl_http_buffer *nl_http_buffers[NL_HTTP_CONNECTIONS];
 
 int64_t nl_net_listen(void *env, int64_t port) {
@@ -3199,9 +3215,9 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
     for (;;) {
         end = nl_http_find(buffer->data, buffer->length, "\r\n\r\n", 4);
         if (end) break;
-        if (buffer->length >= NL_HTTP_BUFFER) return -1;
+        if (buffer->length >= buffer->data_capacity && !nl_http_grow_data(buffer)) return -1;
         nl_wait_fd((int)fd, EPOLLIN);   /* returns at once when the socket has been readable since the last wait */
-        size_t room = NL_HTTP_BUFFER - buffer->length;
+        size_t room = buffer->data_capacity - buffer->length;
         ssize_t got = recv((int)fd, buffer->data + buffer->length, room, 0);
         if (got < 0 && errno == EINTR) continue;
         if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
@@ -3226,24 +3242,35 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
     memcpy(target, buffer->data + start, size);
     *target_length = (int64_t)size;
     int64_t body = nl_http_content_length(buffer->data, head);
+    if (buffer->head_capacity < head) {
+        uint32_t capacity = (head + 255u) & ~255u;
+        unsigned char *grown = (unsigned char *)realloc(buffer->head, capacity);
+        if (!grown) return -1;
+        buffer->head = grown;
+        buffer->head_capacity = capacity;
+    }
     memcpy(buffer->head, buffer->data, head);
     buffer->head_length = head;
     uint32_t consumed = head;
     /* the request body is read in full; the first NL_HTTP_BODY bytes are kept for Env.http_body */
     buffer->body_length = 0;
+    if (body > 0 && !buffer->body) {
+        buffer->body = (unsigned char *)malloc(NL_HTTP_BODY);
+        if (!buffer->body) return -1;
+    }
     while (body > 0) {
         uint32_t have = buffer->length - consumed;
         if (have == 0) {
             buffer->length = 0;
             consumed = 0;
             nl_wait_fd((int)fd, EPOLLIN);
-            ssize_t got = recv((int)fd, buffer->data, NL_HTTP_BUFFER, 0);
+            ssize_t got = recv((int)fd, buffer->data, buffer->data_capacity, 0);
             if (got < 0 && errno == EINTR) continue;
             if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
             if (got <= 0) return -1;
             buffer->length = (uint32_t)got;
             have = buffer->length;
-            if ((size_t)got == NL_HTTP_BUFFER) nl_fd_mark_readable((int)fd);
+            if ((size_t)got == buffer->data_capacity) nl_fd_mark_readable((int)fd);
         }
         uint32_t take = (int64_t)have < body ? have : (uint32_t)body;
         if (buffer->body_length < NL_HTTP_BODY) {
@@ -3267,7 +3294,7 @@ int64_t nl_http_body(void *env, int64_t fd, unsigned char *out, uint64_t out_cap
     if (fd < 0 || fd >= NL_HTTP_CONNECTIONS || !nl_http_buffers[fd]) return -1;
     const nl_http_buffer *buffer = nl_http_buffers[fd];
     if (buffer->body_length > out_capacity) return -1;
-    memcpy(out, buffer->body, buffer->body_length);
+    if (buffer->body_length) memcpy(out, buffer->body, buffer->body_length);
     *count = buffer->body_length;
     return buffer->body_length;
 }
@@ -3335,6 +3362,10 @@ int64_t nl_http_set_header(void *env, int64_t fd, void *line_descriptor, uint64_
         buffer = (nl_http_buffer *)calloc(1, sizeof(*buffer));
         if (!buffer) return -1;
         nl_http_buffers[fd] = buffer;
+    }
+    if (!buffer->out) {
+        buffer->out = (unsigned char *)malloc(NL_HTTP_OUT_HEADERS);
+        if (!buffer->out) return -1;
     }
     if (buffer->out_length + length + 2 > NL_HTTP_OUT_HEADERS) return -1;
     memcpy(buffer->out + buffer->out_length, line, (size_t)length);

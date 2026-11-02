@@ -94,6 +94,9 @@ what unblocks the most:
   50 req/s. First measure busy cores and CPU per request at 16 and 64 connections for the shared pool and for socket-owning workers, then
   the options recorded in the review: choose the worker at wake time, keep the cache service's data on one core (or a cache per worker),
   and soft affinity.
+- **Memory per connection and virtual size:** 15.5 KB resident per connection at 1000 connections against tokio 9.3 KB (stack frames with
+  4 KB scratch arrays in the HTTP functions, 8 KB touched in each 1 MiB native stack), and 100 GB of virtual address space at 1000
+  connections against Rust 0.28 GB (64 MiB data-stack reservation per job): shrink both; see bench/web/README.md "Memory against Rust".
 - **Request path cost:** where the 10 us goes (coroutine switch, the HTTP layer, user CPU 5 us against Rust's 2.7).
 - Keep: 4-connection result (ahead of the thread-per-connection server), low CPU at slow rates (checked at 50 / 500 / 5000 req/s).
 
