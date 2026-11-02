@@ -64,9 +64,9 @@ int main(int argc, char **argv) {
                     /* SQLite stores dates and times as text (Rails' datetime columns are); a Bytes field takes them */
                     int text = strcasestr(declared, "CHAR") || strcasestr(declared, "TEXT") || strcasestr(declared, "CLOB") || strcasestr(declared, "BLOB") ||
                                strcasestr(declared, "DATE") || strcasestr(declared, "TIME");
-                    if ((kind <= 3 && !integer) || (kind == 4 && !text)) {
+                    if ((kind <= 3 && !integer) || (kind >= 4 && !text)) {
                         fprintf(stderr, "nlc: query error: column %s is declared %s but the struct field wants %s\n  %s\n",
-                                sqlite3_column_name(statement, index), declared, kind == 4 ? "text" : "an integer", sql);
+                                sqlite3_column_name(statement, index), declared, kind >= 4 ? "text" : "an integer", sql);
                         failures++;
                     }
                 }

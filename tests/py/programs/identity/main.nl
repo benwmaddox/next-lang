@@ -36,6 +36,13 @@ fn serve(env: Env, connection: long) {
             var hash: Bytes max 80 = Bytes.empty()
             discard hash.try_append("$2a$04$dcz.lzds.VCqQ5p7isC1l.H1xOKqPl1yyxP5kt5VQq3EbJn4Rocn.".bytes())
             sent = env.http_write(connection, if env.password_verify(hash, body) { 200L } else { 403L }, 2L, "")
+        } else if target.count() == 4L && target[1] == 117 {
+            // /utf: the body into a Text of at most 8 code points
+            var text: Text max 8 = Text.empty()
+            let size = env.http_body(connection, text)
+            var answer: Bytes max 64 = Bytes.empty()
+            discard answer.try_append($"{size}:{text.len()}:{text.byte_len()}:{text}")
+            sent = env.http_write(connection, 200L, 2L, answer)
         } else if target.count() == 5L && target[1] == 110 {
             // /note: insert a note owned by 7 with the body as its text; answer how many notes 7 has now
             var body: Bytes max 256 = Bytes.empty()

@@ -193,3 +193,15 @@ text that came through those, so they stay `Bytes` and a chain holding one is `B
 count). Making them `Text` means checking UTF-8 where the data enters (SQLite does not guarantee it; a request can send anything), so a
 bad value needs a rule (refuse the row, replace the byte, or fail the request). Proposed next step: allow `Text` fields in
 `db_row`/`db_rows` and `Text` destinations for header/body reads, validated when read.
+
+### Round 7: Text fields and destinations, validated where the data enters
+
+`db_row`/`db_rows` fill `Text` fields (and bind them as query parameters), and `Env.http_header`, `http_body`, `http_peer` and
+`random_token` write into a `Text` destination as well as a `Bytes`. A value is delivered only when it is well-formed UTF-8 (overlong
+forms, surrogates and values above U+10FFFF are refused) and within both the field's byte limit and its code-point limit; the code points
+are counted once, on the way in. Otherwise the field is left empty (a row's `Text` field, as a too-long `Bytes` field already was) or
+the call returns -1 with the destination empty (the destination calls). Tests: `tests/py/test_db_text.py` (invalid bytes, a surrogate,
+too many code points, NULL), `/utf` in `tests/py/test_http_identity.py`.
+An interpolated string holding a `Text` can be appended to a `Bytes` builder (its bytes are valid bytes). Not done: the template
+generator knows `Bytes`/`Ascii` only, so Campfire's pages still take `Bytes` fields; teaching it `Text` (escaping by bytes of the
+text) is the step that lets Campfire's names and bodies be `Text` all the way.

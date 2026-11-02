@@ -54,6 +54,10 @@ class HttpIdentity(unittest.TestCase):
                 self.assertEqual(call("POST", "/verify", "secret")[0], 200)
                 self.assertEqual(call("POST", "/verify", "Secret")[0], 403)
                 self.assertEqual(call("POST", "/verify", "")[0], 403)
+                self.assertEqual(call("POST", "/utf", "né".encode()), (200, "3:2:3:né"))
+                self.assertEqual(call("POST", "/utf", b"\xff\xfe"), (200, "-1:0:0:"))      # not UTF-8: refused, destination empty
+                self.assertEqual(call("POST", "/utf", "abcdefghi"), (200, "-1:0:0:"))      # nine code points do not fit eight
+                self.assertEqual(call("POST", "/utf", "日本語".encode()), (200, "9:3:9:日本語"))
                 self.assertEqual(call("POST", "/note", "hello"), (200, "1,0"))
                 self.assertEqual(call("DELETE", "/note", "again"), (200, "1,2"))        # inserts one, deletes both
                 rows = sqlite3.connect(path).execute("select count(*) from notes").fetchone()[0]

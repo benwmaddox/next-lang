@@ -3466,6 +3466,32 @@ static sqlite3_stmt *nl_db_site_statement(sqlite3 *connection, void *descriptor,
     return statement;
 }
 
+/* The number of code points in `size` bytes of UTF-8, or -1 when they are not well-formed UTF-8 (overlong forms, surrogates and
+   values above U+10FFFF included). */
+static int64_t nl_utf8_codepoints(const unsigned char *text, int64_t size) {
+    int64_t points = 0, index = 0;
+    while (index < size) {
+        unsigned char lead = text[index];
+        int64_t width;
+        uint32_t value;
+        if (lead < 0x80) { width = 1; value = lead; }
+        else if (lead >= 0xC2 && lead <= 0xDF) { width = 2; value = lead & 0x1F; }
+        else if (lead >= 0xE0 && lead <= 0xEF) { width = 3; value = lead & 0x0F; }
+        else if (lead >= 0xF0 && lead <= 0xF4) { width = 4; value = lead & 0x07; }
+        else return -1;
+        if (index + width > size) return -1;
+        for (int64_t next = 1; next < width; ++next) {
+            if ((text[index + next] & 0xC0) != 0x80) return -1;
+            value = (value << 6) | (text[index + next] & 0x3F);
+        }
+        if ((width == 3 && value < 0x800) || (width == 4 && (value < 0x10000 || value > 0x10FFFF))) return -1;
+        if (value >= 0xD800 && value <= 0xDFFF) return -1;
+        index += width;
+        ++points;
+    }
+    return points;
+}
+
 static void nl_db_decode_row(sqlite3_stmt *statement, unsigned char *row, const int64_t *layout, int64_t fields) {
     for (int64_t field = 0; field < fields; ++field) {
         int64_t kind = layout[1 + field * 3], offset = layout[2 + field * 3], field_capacity = layout[3 + field * 3];
@@ -3482,6 +3508,20 @@ static void nl_db_decode_row(sqlite3_stmt *statement, unsigned char *row, const 
             } else {
                 *(int64_t *)(row + offset) = 0;
             }
+        } else if (kind == 5) {
+            /* Text: well-formed UTF-8 within both limits (bytes in the low half of the capacity, code points above), else left empty */
+            int size = sqlite3_column_bytes(statement, (int)field);
+            const unsigned char *text = sqlite3_column_blob(statement, (int)field);
+            int64_t max_bytes = field_capacity & 0xFFFFFFFFLL, max_points = field_capacity >> 32;
+            int64_t points = (text && size >= 0 && (int64_t)size <= max_bytes) ? nl_utf8_codepoints(text, size) : -1;
+            if (points >= 0 && points <= max_points) {
+                memcpy(row + offset + 16, text, (size_t)size);
+                *(int64_t *)(row + offset) = size;
+                *(int64_t *)(row + offset + 8) = points;
+            } else {
+                *(int64_t *)(row + offset) = 0;
+                *(int64_t *)(row + offset + 8) = 0;
+            }
         }
     }
 }
@@ -3495,7 +3535,7 @@ static void nl_db_bind(sqlite3_stmt *statement, int64_t key, const unsigned char
         if (kind == 1) sqlite3_bind_int64(statement, (int)index + 1, *(const int64_t *)(params + offset));
         else if (kind == 2) sqlite3_bind_int64(statement, (int)index + 1, *(const int32_t *)(params + offset));
         else if (kind == 3) sqlite3_bind_int64(statement, (int)index + 1, *(const unsigned char *)(params + offset) != 0);
-        else sqlite3_bind_text(statement, (int)index + 1, (const char *)(params + offset + 8), (int)*(const int64_t *)(params + offset), SQLITE_TRANSIENT);
+        else sqlite3_bind_text(statement, (int)index + 1, (const char *)(params + offset + (kind == 5 ? 16 : 8)), (int)*(const int64_t *)(params + offset), SQLITE_TRANSIENT);
     }
 }
 
