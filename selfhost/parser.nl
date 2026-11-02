@@ -107,6 +107,7 @@ enum ParseProblemKind {
     AnonymousFunction,
     ExpectedCloseParen,
     ExpectedCloseInterpolation,
+    BadInterpolationFormat,
     CastDepth,
     ExpectedCloseBracket,
     EmptyCollectionOnly,
@@ -2222,16 +2223,35 @@ recursive fn parse_interpolation(
             let hole_value = parse_expression(source, tokens, tables, 0L)?
             if hole_value < 0L { return err(cursor_error(tables, tokens, ParseProblemKind.ExpectedValue)) }
             tables.state.allow_struct_literals = old_allow
+            // an optional format: {n:08} zero-padded width, {n:8} padded width, {n:x} hexadecimal, {n:b} binary
+            var spec_kind = 0L
+            var hole_arguments = 1L
+            if cursor_peek(tables, tokens, 0L).kind == TokenKind.Colon {
+                cursor_next(tables, tokens)
+                let spec = cursor_next(tables, tokens)
+                if spec.kind == TokenKind.Ident && spec.length == 1L && source[tables.state.file_base + spec.start] == 120 {
+                    spec_kind = FORMAT_TEXT_HEX
+                } else if spec.kind == TokenKind.Ident && spec.length == 1L && source[tables.state.file_base + spec.start] == 98 {
+                    spec_kind = FORMAT_TEXT_BIN
+                } else if spec.kind == TokenKind.Number {
+                    spec_kind = if spec.length > 1L && source[tables.state.file_base + spec.start] == 48 { FORMAT_TEXT_PAD_ZERO } else { FORMAT_TEXT_PAD }
+                    let width_expr = parse_prefix_leaf(source, tokens, tables, spec)?
+                    if width_expr.node < 0L { return err(cursor_error(tables, tokens, ParseProblemKind.BadInterpolationFormat)) }
+                    hole_arguments = 2L
+                } else {
+                    return err(ParseError { kind: ParseProblemKind.BadInterpolationFormat, offset: spec.start, token: spec.token })
+                }
+            }
             let close = cursor_expect(tables, tokens, TokenKind.RBrace, ParseProblemKind.ExpectedCloseInterpolation)?
             end = close.start + close.length
-            last = append_node(tables, NodeKind.Call, hole_first, dollar.token, dollar.start, end, dollar.start, 0L, -1L, 1L)?
+            last = append_node(tables, NodeKind.Call, hole_first, dollar.token, dollar.start, end, dollar.start, spec_kind, INTERP_MARK, hole_arguments)?
             tables.nodes[last].meta0 = dollar.start + dollar.length
         } else {
             return err(cursor_error(tables, tokens, ParseProblemKind.ExpectedCloseInterpolation))
         }
         operands += 1L
         if operands >= 2L {
-            last = append_node(tables, NodeKind.Binary, first, dollar.token, dollar.start, end, dollar.start, 0L, -1L, 0L)?
+            last = append_node(tables, NodeKind.Binary, first, dollar.token, dollar.start, end, dollar.start, 0L, INTERP_MARK, 0L)?
         }
     }
     if last < 0L {

@@ -81,3 +81,25 @@ fn nl_text_format_pad(
     }
     byte_length + padding
 }
+
+// A number in base 10 padded on the left with spaces to target_width.
+fn nl_text_format_number_pad(value: long, target_width: long, destination: sys.Addr) -> long {
+    var remaining = value
+    if remaining > 0L { remaining = 0L - remaining }
+    let digits = nl_text_format_digit_count(value, 10L)
+    let sign = if value < 0L { 1L } else { 0L }
+    let length = sign + digits
+    let spaces = if target_width > length { target_width - length } else { 0L }
+    for step in 0L..spaces {
+        sys.store8(destination, step, 32)
+    }
+    if sign != 0L { sys.store8(destination, spaces, 45) }
+    var place = spaces + sign + digits - 1L
+    for step in 0L..digits {
+        let digit = 0L - (remaining % 10L)
+        sys.store8(destination, place, (int)(48L + digit))
+        remaining = remaining / 10L
+        place -= 1L
+    }
+    length + spaces
+}

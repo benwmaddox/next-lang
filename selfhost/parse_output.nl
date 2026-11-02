@@ -190,6 +190,7 @@ fn write_parse_message(
         ParseProblemKind.AnonymousFunction => out.write(b"anonymous functions are not supported; use a named top-level function")?,
         ParseProblemKind.ExpectedCloseParen => out.write(b"expected ')' after the arguments")?,
         ParseProblemKind.ExpectedCloseInterpolation => out.write(b"expected '}' to end the hole in the interpolated string")?,
+        ParseProblemKind.BadInterpolationFormat => out.write(b"a format is a width such as 8, a zero-padded width such as 08, x (hexadecimal) or b (binary)")?,
         ParseProblemKind.ExpectedCloseBracket => out.write(b"expected ']' after the array capacity")?,
         ParseProblemKind.EmptyCollectionOnly => out.write(b"collection literals start empty; add values after construction")?,
         ParseProblemKind.ExpectedCallOpen => out.write(b"expected '('")?,

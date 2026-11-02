@@ -2021,6 +2021,43 @@ fn check_one_body(
                 }
                 ty = sum_case_payload_type(compiler, left.ty, 0L, 0L)
                 require_type(env, files, compiler, file_index, frame.child1, ty, right.ty, tables)
+            } else if op == 0L && syntax.extra == INTERP_MARK {
+                // an interpolated string: Ascii pieces and holes, Bytes when a hole is Bytes, Text when non-ASCII text is in it
+                let left_kind = type_kind(compiler, left.ty)
+                let right_kind = type_kind(compiler, right.ty)
+                if (left_kind == TYPE_KIND_BYTES && right_kind == TYPE_KIND_TEXT) || (left_kind == TYPE_KIND_TEXT && right_kind == TYPE_KIND_BYTES) {
+                    fail_at_message(env, files, compiler, file_index, syntax.anchor, "an interpolated string cannot join Bytes and Text; convert one of them")
+                }
+                var result_kind = if left_kind == TYPE_KIND_BYTES || right_kind == TYPE_KIND_BYTES { TYPE_KIND_BYTES }
+                    else if left_kind == TYPE_KIND_TEXT || right_kind == TYPE_KIND_TEXT { TYPE_KIND_TEXT }
+                    else { TYPE_KIND_ASCII }
+                if result_kind == TYPE_KIND_ASCII && frame.expected >= 0L {
+                    if type_kind(compiler, frame.expected) == TYPE_KIND_BYTES { result_kind = TYPE_KIND_BYTES }
+                    else if type_kind(compiler, frame.expected) == TYPE_KIND_TEXT { result_kind = TYPE_KIND_TEXT }
+                }
+                let left_bytes = text_max_bytes(compiler, left.ty)
+                let right_bytes = text_max_bytes(compiler, right.ty)
+                if left_bytes < 0L || right_bytes < 0L || left_bytes > 9223372036854775807L - right_bytes {
+                    fail_at_message(env, files, compiler, file_index, syntax.anchor, "the interpolated string is too long; reduce a hole's maximum")
+                }
+                let result_bytes = left_bytes + right_bytes
+                let result_header = if result_kind == TYPE_KIND_TEXT { 16L } else { 8L }
+                if result_bytes > MAX_VALUE_SIZE - result_header {
+                    fail_at_message(env, files, compiler, file_index, syntax.anchor, "the interpolated string is too long; reduce a hole's maximum")
+                }
+                var result_points = 0L
+                if result_kind == TYPE_KIND_TEXT {
+                    result_points = text_max_codepoints(compiler, left.ty) + text_max_codepoints(compiler, right.ty)
+                }
+                var interp_ty = intern_text_type(compiler, result_kind, result_bytes, result_points, file_index, node, -1L, -1L)
+                if interp_ty < 0L {
+                    fail_at_message(env, files, compiler, file_index, syntax.anchor, "the interpolated string is too long; reduce a hole's maximum")
+                }
+                if frame.expected >= 0L {
+                    if text_width_fits(compiler, interp_ty, frame.expected) { interp_ty = frame.expected }
+                    else { fail_type_mismatch(env, files, compiler, file_index, syntax.anchor, frame.expected, interp_ty) }
+                }
+                ty = interp_ty
             } else if op == 0L && is_text_concatenation(compiler, left.ty, right.ty) {
                 let left_kind = type_kind(compiler, left.ty)
                 let right_kind = type_kind(compiler, right.ty)

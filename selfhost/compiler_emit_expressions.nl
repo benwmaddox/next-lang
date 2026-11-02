@@ -1520,6 +1520,13 @@ recursive fn emit_expr_linear(
             frame.phase = 2L
             compiler.expr_work[frame_index] = frame
             compiler.expr_work.push(EmitExprFrame { node: frame.child1, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+        } else if kind == NodeKind.Binary && frame.phase == 2L && interp_node(tables, current) &&
+            (interp_is_flat_member(tables, compiler, current) || interp_is_flat_root(tables, compiler, current)) {
+            // a flat interpolated string: the root writes all of it; the `+` below it have no code
+            if interp_is_flat_root(tables, compiler, current) && !interp_is_deferred_append(tables, compiler, current) {
+                emit_interp_value(tables, compiler, ir, current)
+            }
+            match compiler.expr_work.pop() { some(_) => (), none => () }
         } else if kind == NodeKind.Binary && frame.phase == 2L {
             let left = frame.child0
             let right = frame.child1
@@ -1653,7 +1660,11 @@ recursive fn emit_expr_linear(
                     compiler.facts[current].function < 0L
                 let format_kind = if (compiler.facts[current].flags & FACT_FORMAT_TEXT) != 0L { compiler.facts[current].literal } else { FORMAT_TEXT_NONE }
                 let first_arg = compiler.child_first[current]
-                if format_kind != FORMAT_TEXT_NONE {
+                if interp_node(tables, current) && (interp_is_flat_member(tables, compiler, current) || interp_is_flat_root(tables, compiler, current)) {
+                    if interp_is_flat_root(tables, compiler, current) && !interp_is_deferred_append(tables, compiler, current) {
+                        emit_interp_value(tables, compiler, ir, current)
+                    }
+                } else if format_kind != FORMAT_TEXT_NONE {
                     emit_format_text_builtin(source, files, tokens, tables, compiler, ir, current, file_index, is_test, format_kind)
                 } else if is_print {
                     let arg_ty = compiler.facts[first_arg].ty

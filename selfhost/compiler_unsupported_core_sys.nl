@@ -734,7 +734,7 @@ fn check_text_builder_method(
     let valid_argument = if is_push { argument_type == TY_BYTE || argument_type == TY_INT }
         else if receiver_kind == TYPE_KIND_ASCII { type_kind(compiler, argument_type) == TYPE_KIND_ASCII }
         else if receiver_kind == TYPE_KIND_TEXT { type_kind(compiler, argument_type) == TYPE_KIND_TEXT || type_kind(compiler, argument_type) == TYPE_KIND_ASCII }
-        else { type_kind(compiler, argument_type) == TYPE_KIND_BYTES }
+        else { type_kind(compiler, argument_type) == TYPE_KIND_BYTES || (tables.nodes[argument].extra == INTERP_MARK && type_kind(compiler, argument_type) == TYPE_KIND_ASCII) }
     if !valid_argument {
         fail_builder_argument_type(env, source, files, tokens, compiler, file_index,
             tables.nodes[argument].start, receiver_kind, argument_type, is_push)
