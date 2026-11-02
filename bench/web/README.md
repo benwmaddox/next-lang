@@ -228,3 +228,46 @@ SQLite is compiled with its own allocator (`SQLITE_ENABLE_MEMSYS5`) and, when th
 anything under 1 MiB is ignored and SQLite uses the system allocator). From then on it calls the system allocator never. A
 query that needs more than the block fails with `SQLITE_NOMEM`, which `db_row` reports as no row. System allocator calls over
 the same 900,000-request run: 459 mallocs and 17 frees before, 147 and 6 now, the remaining ones from startup.
+
+## Why Rust is ahead at 4 connections (2026-11-02, measured; corrects an earlier guess)
+
+Closed loop, 4 connections, 4 cores for the server: next-lang 55-63k req/s (p50 about 62 us), the thread-per-connection Rust server
+80-87k (p50 about 42 us). Throughput is 4 / latency, so the question is why a request takes 20 us longer.
+
+- **Not the cache hop.** The `shared` and `nocache` variants (no hop at all) do the same at 4 connections as the cache job (52-58k).
+- **CPU per request** (user + system time from /proc, divided by requests): next-lang 43-49 us, Rust 25 us. User time is 5 us against 2.7;
+  the rest is the kernel: 39-43 us against 22. Context switches per request are about the same (1.1-1.2 against 1.0).
+- **Not the number of system calls, either.** Counted with an LD_PRELOAD shim: the cache-job variant made 8.5 calls per request and
+  the no-cache one 6.1, against about 2 for Rust (one recv, one send). Moving to one edge-triggered registration per socket (see
+  below) cut recv 2.0 -> 1.0 and epoll_ctl 1.0 -> 0 per request (no-cache variant 6.1 -> 4.6 calls) and changed neither the
+  CPU per request nor the throughput at 4 connections.
+- **The number of workers is.** The same binary on the same 4 cores, `NLC_WORKERS` varied (no-cache variant, 4 connections):
+
+  | workers | req/s | CPU per request | context switches per request |
+  | ---: | ---: | ---: | ---: |
+  | 1 (one core) | 65-68k | 16 us | 0.00 |
+  | 2 | 85-103k | 20-22 us | 0.11-0.14 |
+  | 4 | 53-60k | 45-48 us | 1.2 |
+
+  With 2 workers next-lang is ahead of Rust (80-87k) at 4 connections. With 4 workers there is less work than workers: each one
+  goes to sleep in `epoll_wait` after every request and is woken across cores for the next, and the sleeping and waking is what costs
+  the extra 20 us. The other way round, the cache-job variant at 16 / 64 / 1000 connections with 2 / 3 / 4 workers:
+  139k / 148k / 104k, 191k / 191k / 156k, 242k / 325k / 202k. So the right number of awake workers follows the load, and a fixed
+  count is wrong at one end or the other.
+- Next step: wake a sleeping worker only when there is more ready work than the awake ones will get to (a backlog), keeping at
+  least one worker polling for events so nothing starves; the awake count then rises under load by itself.
+
+### Edge-triggered descriptors (done)
+
+A socket is registered with epoll once (edge-triggered) when a job first waits on it and stays registered until it is closed. An event
+sets a readable/writable bit and wakes the jobs waiting for it; a job finds the bit already set and does not suspend, or suspends
+without a system call. Before, every wait was an `epoll_ctl` plus a `recv` that had already failed. The event loop also queues the
+first job an event makes ready without waking another worker (it takes the job itself). 3 interleaved rounds each, 4 cores:
+
+| connections | before | after |
+| ---: | ---: | ---: |
+| 16 | 249k, 223k, 218k | 232k, 241k, 219k |
+| 64 | 304k, 294k, 258k | 325k, 342k, 307k |
+| 1000 | 225k, 205k, 215k | 216k, 214k, 231k |
+
+About 14% at 64 connections, equal at 16 and 1000.

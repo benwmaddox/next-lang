@@ -1376,6 +1376,8 @@ typedef struct nl_coro {
     uint64_t wait_serial;   /* identifies the current wait, so a timer for an earlier wait is ignored */
     int timed_out;
     struct nl_coro *next;
+    struct nl_coro *fd_next;   /* on the waiter list of a descriptor (nl_fd_state) */
+    uint32_t fd_want;          /* 1: readable, 2: writable */
 } nl_coro;
 
 /* Timers: a min-heap of (deadline, job, wait serial). A job that parks with a timeout is both a waiter on its address and
@@ -1422,29 +1424,69 @@ static __attribute__((noinline)) ucontext_t *nl_scheduler_ptr(void) { return &nl
 static void nl_timer_add(int64_t deadline, nl_coro *coro, uint64_t serial);
 static void nl_timers_fire(void);
 
-static void nl_ready_push(nl_coro *coro) {
+/* Puts a job on the ready queue. A sleeping worker is woken (a write to the wake-up eventfd) only when `notify_idle` is set: the event
+   loop passes 0 for the first job it makes ready, because the worker that made it ready takes it itself. */
+static void nl_ready_push_ex(nl_coro *coro, int notify_idle) {
     pthread_mutex_lock(&nl_ready_lock);
     coro->next = NULL;
     if (nl_ready_tail) nl_ready_tail->next = coro; else nl_ready_head = coro;
     nl_ready_tail = coro;
-    int notify = nl_idle_workers > 0;
+    int notify = notify_idle && nl_idle_workers > 0;
     pthread_mutex_unlock(&nl_ready_lock);
     if (notify) { uint64_t one = 1; ssize_t ignored = write(nl_wake_fd, &one, sizeof(one)); (void)ignored; }
 }
 
-/* Called by whoever makes a parked job runnable (a waker, or the event loop). */
-static void nl_coro_make_ready(nl_coro *coro) {
+static void nl_ready_push(nl_coro *coro) { nl_ready_push_ex(coro, 1); }
+
+/* Called by whoever makes a parked job runnable (a waker, or the event loop). Returns 1 when the job was put on the ready queue. */
+static int nl_coro_make_ready_ex(nl_coro *coro, int notify_idle) {
     for (;;) {
         int state = atomic_load(&coro->state);
         if (state == NL_CORO_PARKED) {
-            if (atomic_compare_exchange_weak(&coro->state, &state, NL_CORO_READY)) { nl_ready_push(coro); return; }
+            if (atomic_compare_exchange_weak(&coro->state, &state, NL_CORO_READY)) { nl_ready_push_ex(coro, notify_idle); return 1; }
         } else if (state == NL_CORO_PARKING) {
             /* still switching out: the worker finishes the hand-over */
-            if (atomic_compare_exchange_weak(&coro->state, &state, NL_CORO_WOKEN)) return;
+            if (atomic_compare_exchange_weak(&coro->state, &state, NL_CORO_WOKEN)) return 0;
         } else {
-            return;
+            return 0;
         }
     }
+}
+
+static void nl_coro_make_ready(nl_coro *coro) { (void)nl_coro_make_ready_ex(coro, 1); }
+
+/* Descriptors: each is registered with epoll once, edge-triggered, and stays registered until it is closed. An event only records
+   that the descriptor became readable or writable (a bit in `flags`) and wakes the jobs waiting for that; a job that finds the bit
+   already set when it comes to wait does not suspend at all, and one that waits suspends without another system call. A request on
+   a connection then costs one wait (the event loop epoll_wait, shared by every connection), one recv and one send: the
+   one-shot registration it replaces cost an epoll_ctl per wait and a recv that only failed. */
+#define NL_FD_STATES 65536
+typedef struct { uint32_t flags; int registered; nl_coro *waiters; } nl_fd_state;
+static nl_fd_state nl_fd_states[NL_FD_STATES];
+static pthread_mutex_t nl_fd_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* An event for a descriptor: record it and take the jobs it wakes off the waiter list (the returned list is linked by fd_next). */
+static nl_coro *nl_fd_event(nl_fd_state *state, uint32_t events) {
+    uint32_t bits = 0;
+    if (events & (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR)) bits |= 1u;
+    if (events & (EPOLLOUT | EPOLLHUP | EPOLLERR)) bits |= 2u;
+    nl_coro *woken = NULL;
+    pthread_mutex_lock(&nl_fd_lock);
+    state->flags |= bits;
+    nl_coro **link = &state->waiters;
+    while (*link) {
+        nl_coro *waiter = *link;
+        if (waiter->fd_want & bits) {
+            *link = waiter->fd_next;
+            waiter->fd_next = woken;
+            woken = waiter;
+            state->flags &= ~waiter->fd_want;   /* the woken job takes what it waited for */
+        } else {
+            link = &waiter->fd_next;
+        }
+    }
+    pthread_mutex_unlock(&nl_fd_lock);
+    return woken;
 }
 
 static __attribute__((noinline)) void nl_coro_switch_out(nl_coro *coro) {
@@ -1568,12 +1610,21 @@ static nl_coro *nl_ready_pop_or_wait(void) {
         pthread_mutex_lock(&nl_ready_lock);
         nl_idle_workers--;
         pthread_mutex_unlock(&nl_ready_lock);
+        /* Jobs the events make ready are queued without waking another worker for the first one: this worker takes it itself on the
+           next turn of the loop; the second and later (work to share) wake a sleeping worker. */
+        int made_ready = 0;
         for (int index = 0; index < count; ++index) {
             if (events[index].data.ptr == NULL) {
                 uint64_t drained;
                 ssize_t ignored = read(nl_wake_fd, &drained, sizeof(drained)); (void)ignored;
             } else {
-                nl_coro_make_ready((nl_coro *)events[index].data.ptr);
+                nl_coro *woken = nl_fd_event((nl_fd_state *)events[index].data.ptr, events[index].events);
+                while (woken) {
+                    nl_coro *next_waiter = woken->fd_next;
+                    woken->fd_next = NULL;
+                    made_ready += nl_coro_make_ready_ex(woken, made_ready >= 1);
+                    woken = next_waiter;
+                }
             }
         }
     }
@@ -1669,12 +1720,58 @@ void nl_wait_fd(int fd, uint32_t events) {
         while (poll(&entry, 1, -1) < 0 && errno == EINTR) {}
         return;
     }
+    uint32_t bit = (events & EPOLLIN) ? 1u : 2u;
+    if (fd >= 0 && fd < NL_FD_STATES) {
+        nl_fd_state *state = &nl_fd_states[fd];
+        pthread_mutex_lock(&nl_fd_lock);
+        if (state->flags & bit) {            /* it became ready since the last wait: no need to suspend */
+            state->flags &= ~bit;
+            pthread_mutex_unlock(&nl_fd_lock);
+            return;
+        }
+        if (!state->registered) {
+            struct epoll_event event;
+            event.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
+            event.data.ptr = state;
+            if (epoll_ctl(nl_epoll_fd, EPOLL_CTL_ADD, fd, &event) == 0) {
+                state->registered = 1;
+                pthread_mutex_unlock(&nl_fd_lock);
+                return;                       /* first wait on this descriptor: let the caller try the system call first */
+            }
+            pthread_mutex_unlock(&nl_fd_lock);  /* not something epoll watches: take the one-shot route below */
+        } else {
+            atomic_store(&coro->state, NL_CORO_PARKING);
+            coro->fd_want = bit;
+            coro->fd_next = state->waiters;
+            state->waiters = coro;
+            pthread_mutex_unlock(&nl_fd_lock);
+            nl_coro_switch_out(coro);
+            return;
+        }
+    }
     atomic_store(&coro->state, NL_CORO_PARKING);
     struct epoll_event event;
     event.events = events | EPOLLONESHOT;
     event.data.ptr = coro;
     if (epoll_ctl(nl_epoll_fd, EPOLL_CTL_MOD, fd, &event) != 0) epoll_ctl(nl_epoll_fd, EPOLL_CTL_ADD, fd, &event);
     nl_coro_switch_out(coro);
+}
+
+/* A recv that filled the buffer may have left more in the socket, and no new event will say so: remember it is readable. */
+static void nl_fd_mark_readable(int fd) {
+    if (fd < 0 || fd >= NL_FD_STATES) return;
+    pthread_mutex_lock(&nl_fd_lock);
+    nl_fd_states[fd].flags |= 1u;
+    pthread_mutex_unlock(&nl_fd_lock);
+}
+
+/* The descriptor is being closed: forget what is known about it (closing removes it from epoll). */
+static void nl_fd_forget(int fd) {
+    if (fd < 0 || fd >= NL_FD_STATES) return;
+    pthread_mutex_lock(&nl_fd_lock);
+    nl_fd_states[fd].flags = 0;
+    nl_fd_states[fd].registered = 0;
+    pthread_mutex_unlock(&nl_fd_lock);
 }
 
 static void nl_workers_start(void) {
@@ -2958,6 +3055,7 @@ int64_t nl_net_close(void *env, int64_t fd) {
     if (fd >= 0 && fd < NL_HTTP_CONNECTIONS && nl_http_buffers[fd]) {
         nl_http_buffers[fd]->length = 0; nl_http_buffers[fd]->head_length = 0; nl_http_buffers[fd]->out_length = 0; nl_http_buffers[fd]->body_length = 0;
     }
+    nl_fd_forget((int)fd);
     return close((int)fd);
 }
 
@@ -2996,11 +3094,14 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
         end = nl_http_find(buffer->data, buffer->length, "\r\n\r\n", 4);
         if (end) break;
         if (buffer->length >= NL_HTTP_BUFFER) return -1;
-        ssize_t got = recv((int)fd, buffer->data + buffer->length, NL_HTTP_BUFFER - buffer->length, 0);
+        nl_wait_fd((int)fd, EPOLLIN);   /* returns at once when the socket has been readable since the last wait */
+        size_t room = NL_HTTP_BUFFER - buffer->length;
+        ssize_t got = recv((int)fd, buffer->data + buffer->length, room, 0);
         if (got < 0 && errno == EINTR) continue;
-        if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { nl_wait_fd((int)fd, EPOLLIN); continue; }
+        if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
         if (got <= 0) return -1;
         buffer->length += (uint32_t)got;
+        if ((size_t)got == room) nl_fd_mark_readable((int)fd);
     }
     uint32_t head = (uint32_t)(end - buffer->data) + 4;
     /* request line: METHOD SP target SP version */
@@ -3029,12 +3130,14 @@ int64_t nl_http_read(void *env, int64_t fd, unsigned char *target, uint64_t capa
         if (have == 0) {
             buffer->length = 0;
             consumed = 0;
+            nl_wait_fd((int)fd, EPOLLIN);
             ssize_t got = recv((int)fd, buffer->data, NL_HTTP_BUFFER, 0);
             if (got < 0 && errno == EINTR) continue;
-            if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { nl_wait_fd((int)fd, EPOLLIN); continue; }
+            if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
             if (got <= 0) return -1;
             buffer->length = (uint32_t)got;
             have = buffer->length;
+            if ((size_t)got == NL_HTTP_BUFFER) nl_fd_mark_readable((int)fd);
         }
         uint32_t take = (int64_t)have < body ? have : (uint32_t)body;
         if (buffer->body_length < NL_HTTP_BODY) {
