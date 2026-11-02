@@ -271,3 +271,37 @@ first job an event makes ready without waking another worker (it takes the job i
 | 1000 | 225k, 205k, 215k | 216k, 214k, 231k |
 
 About 14% at 64 connections, equal at 16 and 1000.
+
+## Workers own their sockets (2026-11-02)
+
+Each worker now has its own ready queue, its own epoll instance and its own wake-up eventfd. A job that waits on a socket is pinned to the
+worker it was on: the socket is watched by that worker only, a worker with nothing to do sleeps in `epoll_wait` on exactly the sockets
+it owns, and the job always resumes there. A new job goes to the next worker in turn (the acceptor's connections spread evenly). A job
+that has not waited on a socket (the cache and database services) floats: a job it wakes is queued on the waker's worker, which runs it
+as soon as the waker parks (no cross-core wake for the cache hop); an idle worker takes a waiting job from a queue that is two or more
+deep (a pinned job is only borrowed, and goes home at its next wake).
+
+Same method as above (4 cores for the server, interleaved rounds); `before` is the shared pool with edge-triggered sockets:
+
+| connections | before (shared pool) | workers own sockets | Rust (4 blocking threads) |
+| ---: | ---: | ---: | ---: |
+| 4 | 60k | **92k** | 87k |
+| 8 | 116k | **134k** | 87k |
+| 16 | 250-257k | 211-216k | 87k |
+| 64 | 336-345k | 311-319k | 88k |
+| 1000 | 266k | 268-279k | |
+
+Better at low concurrency (about 50% at 4 connections, ahead of Rust), 8-17% lower at 16 and 64 connections (a connection cannot go to
+whichever worker is free; idle time on one worker while another has a queue), equal at 1000.
+
+Slow sites, paced at a fixed rate (10 s runs, server CPU from /proc as a share of one core; idle for 10 s: 0.000% for all three):
+
+| load | before | workers own sockets | Rust |
+| --- | --- | --- | --- |
+| 50 req/s, 1 connection | 0.70% (254 context switches/s) | 0.40% (100/s) | 0.30% (50/s) |
+| 50 req/s, 4 connections | 0.70% (238/s) | 0.40% (65/s) | 0.30% (51/s) |
+| 500 req/s, 4 connections | 4.3% (2135/s) | 1.9% (626/s) | 1.5% (501/s) |
+
+Latency at 50 req/s: p50 116-128 us against 132-135 before and 104-110 for Rust. Nothing spins and nothing polls; at rest the
+server uses no CPU. Tried and dropped: letting an idle worker take over a pinned job for good (it re-registered the socket and cost
+25-45% at 16-1000 connections), and waking a sleeping worker whenever the owner is busy (no change).

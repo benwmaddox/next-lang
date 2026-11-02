@@ -1378,6 +1378,8 @@ typedef struct nl_coro {
     struct nl_coro *next;
     struct nl_coro *fd_next;   /* on the waiter list of a descriptor (nl_fd_state) */
     uint32_t fd_want;          /* 1: readable, 2: writable */
+    int home;                  /* the worker whose queue it is put on while it is pinned (or when woken from outside the workers) */
+    int pinned;                /* it has waited on a descriptor: that is registered with its home worker epoll, so it stays there */
 } nl_coro;
 
 /* Timers: a min-heap of (deadline, job, wait serial). A job that parks with a timeout is both a waiter on its address and
@@ -1403,10 +1405,23 @@ static __attribute__((noinline)) void **nl_scheduler_slot(void) { return &nl_sch
 static _Thread_local ucontext_t nl_scheduler_context;
 #endif
 
-static pthread_mutex_t nl_ready_lock = PTHREAD_MUTEX_INITIALIZER;
-static nl_coro *nl_ready_head, *nl_ready_tail;
-static int nl_idle_workers;
-static int nl_epoll_fd = -1, nl_wake_fd = -1;
+/* Each worker has its own ready queue, its own epoll instance and its own wake-up eventfd. A job that waits on a socket is pinned to
+   the worker it was running on: the socket is registered with that worker epoll, so its events wake that worker only (a worker
+   that has nothing to do sleeps in its own epoll_wait, on exactly the sockets it owns), and the job always resumes there, on a core
+   that has its data warm. A job that has not waited on a socket (a service, a computation) floats: a job it wakes is queued on the
+   waker worker, which runs it as soon as the waker parks, and an idle worker may take floating jobs from a busy one's queue. */
+#define NL_MAX_WORKERS 64
+typedef struct {
+    pthread_mutex_t lock;
+    nl_coro *head, *tail;
+    int count;
+    int idle;          /* blocked, or about to block, in epoll_wait */
+    int epoll_fd, wake_fd;
+} nl_worker;
+static nl_worker nl_workers[NL_MAX_WORKERS];
+static int nl_worker_total;
+static _Thread_local int nl_my_worker = -1;
+static unsigned nl_spawn_next;
 static pthread_mutex_t nl_waiters_lock = PTHREAD_MUTEX_INITIALIZER;
 static nl_coro *nl_waiters[NL_WAITER_BUCKETS];
 static pthread_mutex_t nl_stack_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1426,14 +1441,61 @@ static void nl_timers_fire(void);
 
 /* Puts a job on the ready queue. A sleeping worker is woken (a write to the wake-up eventfd) only when `notify_idle` is set: the event
    loop passes 0 for the first job it makes ready, because the worker that made it ready takes it itself. */
-static void nl_ready_push_ex(nl_coro *coro, int notify_idle) {
-    pthread_mutex_lock(&nl_ready_lock);
+static void nl_worker_wake(nl_worker *worker) {
+    uint64_t one = 1;
+    ssize_t ignored = write(worker->wake_fd, &one, sizeof(one));
+    (void)ignored;
+}
+
+/* Wake one sleeping worker other than `except` (to take floating jobs, or to look at the timers). */
+static void nl_wake_other_idle(int except) {
+    for (int index = 0; index < nl_worker_total; ++index) {
+        if (index != except && nl_workers[index].idle) { nl_worker_wake(&nl_workers[index]); return; }
+    }
+}
+
+static void nl_ready_push_at(nl_coro *coro, int destination) {
+    nl_worker *worker = &nl_workers[destination];
+    pthread_mutex_lock(&worker->lock);
     coro->next = NULL;
-    if (nl_ready_tail) nl_ready_tail->next = coro; else nl_ready_head = coro;
-    nl_ready_tail = coro;
-    int notify = notify_idle && nl_idle_workers > 0;
-    pthread_mutex_unlock(&nl_ready_lock);
-    if (notify) { uint64_t one = 1; ssize_t ignored = write(nl_wake_fd, &one, sizeof(one)); (void)ignored; }
+    if (worker->tail) worker->tail->next = coro; else worker->head = coro;
+    worker->tail = coro;
+    int depth = ++worker->count;
+    int wake_destination = destination != nl_my_worker && worker->idle;
+    pthread_mutex_unlock(&worker->lock);
+    if (wake_destination) nl_worker_wake(worker);
+    else if (depth >= 2) nl_wake_other_idle(destination);   /* work to share: a sleeping worker may take it */
+}
+
+static void nl_ready_push_ex(nl_coro *coro, int notify_idle) {
+    (void)notify_idle;
+    int me = nl_my_worker;
+    nl_ready_push_at(coro, coro->pinned || me < 0 ? coro->home : me);
+}
+
+/* An idle worker takes a job that is waiting behind another job on a busy worker queue: a floating one if there is one, else the
+   first. A pinned job is only borrowed: it keeps its home, its sockets stay watched by its home worker, and the next time it is
+   woken it is queued there again. */
+static nl_coro *nl_steal(int me) {
+    for (int step = 1; step < nl_worker_total; ++step) {
+        nl_worker *other = &nl_workers[(me + step) % nl_worker_total];
+        if (other->count == 0 || pthread_mutex_trylock(&other->lock) != 0) continue;
+        nl_coro *previous = NULL, *chosen = NULL, *chosen_previous = NULL;
+        for (nl_coro *candidate = other->head; candidate; previous = candidate, candidate = candidate->next) {
+            if (!chosen) { chosen = candidate; chosen_previous = previous; }
+            if (!candidate->pinned) { chosen = candidate; chosen_previous = previous; break; }
+        }
+        if (chosen) {
+            if (chosen_previous) chosen_previous->next = chosen->next; else other->head = chosen->next;
+            if (other->tail == chosen) other->tail = chosen_previous;
+            other->count--;
+            pthread_mutex_unlock(&other->lock);
+            chosen->next = NULL;
+            return chosen;
+        }
+        pthread_mutex_unlock(&other->lock);
+    }
+    return NULL;
 }
 
 static void nl_ready_push(nl_coro *coro) { nl_ready_push_ex(coro, 1); }
@@ -1461,7 +1523,7 @@ static void nl_coro_make_ready(nl_coro *coro) { (void)nl_coro_make_ready_ex(coro
    a connection then costs one wait (the event loop epoll_wait, shared by every connection), one recv and one send: the
    one-shot registration it replaces cost an epoll_ctl per wait and a recv that only failed. */
 #define NL_FD_STATES 65536
-typedef struct { uint32_t flags; int registered; nl_coro *waiters; } nl_fd_state;
+typedef struct { uint32_t flags; int registered; int worker; nl_coro *waiters; } nl_fd_state;   /* worker: whose epoll watches it */
 static nl_fd_state nl_fd_states[NL_FD_STATES];
 static pthread_mutex_t nl_fd_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -1539,12 +1601,7 @@ static void nl_timer_add(int64_t deadline, nl_coro *coro, uint64_t serial) {
     int64_t previous = nl_timer_earliest;
     nl_timer_earliest = nl_timer_heap[0].deadline;
     pthread_mutex_unlock(&nl_timer_lock);
-    if (deadline < previous) {
-        pthread_mutex_lock(&nl_ready_lock);
-        int notify = nl_idle_workers > 0;
-        pthread_mutex_unlock(&nl_ready_lock);
-        if (notify) { uint64_t one = 1; ssize_t ignored = write(nl_wake_fd, &one, sizeof(one)); (void)ignored; }
-    }
+    if (deadline < previous) nl_wake_other_idle(nl_my_worker);
 }
 
 /* Resume the jobs whose deadline has passed (those still waiting for the wait the timer was made for). */
@@ -1586,43 +1643,47 @@ static void nl_timers_fire(void) {
 
 static nl_coro *nl_ready_pop_or_wait(void) {
     struct epoll_event events[64];
+    int me = nl_my_worker;
+    nl_worker *worker = &nl_workers[me];
     for (;;) {
         if (nl_timer_earliest != INT64_MAX) nl_timers_fire();
-        pthread_mutex_lock(&nl_ready_lock);
-        nl_coro *coro = nl_ready_head;
+        pthread_mutex_lock(&worker->lock);
+        nl_coro *coro = worker->head;
         if (coro) {
-            nl_ready_head = coro->next;
-            if (!nl_ready_head) nl_ready_tail = NULL;
-            int more = nl_ready_head != NULL && nl_idle_workers > 0;
-            pthread_mutex_unlock(&nl_ready_lock);
-            if (more) { uint64_t one = 1; ssize_t ignored = write(nl_wake_fd, &one, sizeof(one)); (void)ignored; }
+            worker->head = coro->next;
+            if (!worker->head) worker->tail = NULL;
+            worker->count--;
+            pthread_mutex_unlock(&worker->lock);
             return coro;
         }
-        nl_idle_workers++;
-        pthread_mutex_unlock(&nl_ready_lock);
+        pthread_mutex_unlock(&worker->lock);
+        coro = nl_steal(me);
+        if (coro) return coro;
+        pthread_mutex_lock(&worker->lock);
+        if (worker->head) { pthread_mutex_unlock(&worker->lock); continue; }   /* something was queued meanwhile */
+        worker->idle = 1;
+        pthread_mutex_unlock(&worker->lock);
         int timeout_ms = -1;
         int64_t earliest = nl_timer_earliest;
         if (earliest != INT64_MAX) {
             int64_t wait_ns = earliest - nl_now_ns();
             timeout_ms = wait_ns <= 0 ? 0 : (wait_ns > INT64_C(1000000000000) ? 1000000 : (int)((wait_ns + 999999) / 1000000));
         }
-        int count = epoll_wait(nl_epoll_fd, events, 64, timeout_ms);
-        pthread_mutex_lock(&nl_ready_lock);
-        nl_idle_workers--;
-        pthread_mutex_unlock(&nl_ready_lock);
-        /* Jobs the events make ready are queued without waking another worker for the first one: this worker takes it itself on the
-           next turn of the loop; the second and later (work to share) wake a sleeping worker. */
-        int made_ready = 0;
+        int count = epoll_wait(worker->epoll_fd, events, 64, timeout_ms);
+        pthread_mutex_lock(&worker->lock);
+        worker->idle = 0;
+        pthread_mutex_unlock(&worker->lock);
+        /* The jobs the events make ready are pinned to this worker: they are queued here and taken on the next turn of the loop. */
         for (int index = 0; index < count; ++index) {
             if (events[index].data.ptr == NULL) {
                 uint64_t drained;
-                ssize_t ignored = read(nl_wake_fd, &drained, sizeof(drained)); (void)ignored;
+                ssize_t ignored = read(worker->wake_fd, &drained, sizeof(drained)); (void)ignored;
             } else {
                 nl_coro *woken = nl_fd_event((nl_fd_state *)events[index].data.ptr, events[index].events);
                 while (woken) {
                     nl_coro *next_waiter = woken->fd_next;
                     woken->fd_next = NULL;
-                    made_ready += nl_coro_make_ready_ex(woken, made_ready >= 1);
+                    (void)nl_coro_make_ready_ex(woken, 0);
                     woken = next_waiter;
                 }
             }
@@ -1630,8 +1691,8 @@ static nl_coro *nl_ready_pop_or_wait(void) {
     }
 }
 
-static void *nl_worker_main(void *unused) {
-    (void)unused;
+static void *nl_worker_main(void *argument) {
+    nl_my_worker = (int)(intptr_t)argument;
     for (;;) {
         nl_coro *coro = nl_ready_pop_or_wait();
         atomic_store(&coro->state, NL_CORO_RUNNING);
@@ -1721,6 +1782,8 @@ void nl_wait_fd(int fd, uint32_t events) {
         return;
     }
     uint32_t bit = (events & EPOLLIN) ? 1u : 2u;
+    if (!coro->pinned) { coro->pinned = 1; coro->home = nl_my_worker; }   /* from now on this job runs where its sockets are watched */
+    int watching_epoll = nl_workers[coro->home].epoll_fd;   /* the home worker watches the job sockets, wherever the job runs now */
     if (fd >= 0 && fd < NL_FD_STATES) {
         nl_fd_state *state = &nl_fd_states[fd];
         pthread_mutex_lock(&nl_fd_lock);
@@ -1733,8 +1796,9 @@ void nl_wait_fd(int fd, uint32_t events) {
             struct epoll_event event;
             event.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
             event.data.ptr = state;
-            if (epoll_ctl(nl_epoll_fd, EPOLL_CTL_ADD, fd, &event) == 0) {
+            if (epoll_ctl(watching_epoll, EPOLL_CTL_ADD, fd, &event) == 0) {
                 state->registered = 1;
+                state->worker = coro->home;
                 pthread_mutex_unlock(&nl_fd_lock);
                 return;                       /* first wait on this descriptor: let the caller try the system call first */
             }
@@ -1753,7 +1817,7 @@ void nl_wait_fd(int fd, uint32_t events) {
     struct epoll_event event;
     event.events = events | EPOLLONESHOT;
     event.data.ptr = coro;
-    if (epoll_ctl(nl_epoll_fd, EPOLL_CTL_MOD, fd, &event) != 0) epoll_ctl(nl_epoll_fd, EPOLL_CTL_ADD, fd, &event);
+    if (epoll_ctl(watching_epoll, EPOLL_CTL_MOD, fd, &event) != 0) epoll_ctl(watching_epoll, EPOLL_CTL_ADD, fd, &event);
     nl_coro_switch_out(coro);
 }
 
@@ -1775,20 +1839,26 @@ static void nl_fd_forget(int fd) {
 }
 
 static void nl_workers_start(void) {
-    nl_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    nl_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    struct epoll_event event;
-    event.events = EPOLLIN;
-    event.data.ptr = NULL;
-    epoll_ctl(nl_epoll_fd, EPOLL_CTL_ADD, nl_wake_fd, &event);
     int64_t cores = nl_host_cores(NULL);
     const char *override = getenv("NLC_WORKERS");
     int64_t workers = override && *override ? atoll(override) : cores;
     if (workers < 1) workers = 1;
+    if (workers > NL_MAX_WORKERS) workers = NL_MAX_WORKERS;
+    for (int64_t index = 0; index < workers; ++index) {
+        nl_worker *worker = &nl_workers[index];
+        pthread_mutex_init(&worker->lock, NULL);
+        worker->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+        worker->wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        struct epoll_event event;
+        event.events = EPOLLIN;
+        event.data.ptr = NULL;
+        epoll_ctl(worker->epoll_fd, EPOLL_CTL_ADD, worker->wake_fd, &event);
+    }
+    nl_worker_total = (int)workers;
     const char *pin = getenv("NLC_JOB_PIN");
     for (int64_t index = 0; index < workers; ++index) {
         int64_t where = pin && strcmp(pin, "none") == 0 ? -1 : pin && strcmp(pin, "same") == 0 ? 0 : index;
-        if (!nl_thread_start(nl_worker_main, NULL, 0, where)) nl_stack_startup_failure("cannot start a worker thread");
+        if (!nl_thread_start(nl_worker_main, (void *)(intptr_t)index, 0, where)) nl_stack_startup_failure("cannot start a worker thread");
     }
     nl_workers_started = 1;
 }
@@ -1832,7 +1902,10 @@ static void nl_coro_spawn(void *(*entry)(void *), void *argument) {
 #endif
     atomic_store(&coro->state, NL_CORO_READY);
     __atomic_add_fetch(&nl_live_jobs, 1, __ATOMIC_SEQ_CST);
-    nl_ready_push(coro);
+    /* a new job goes to the next worker in turn: connections spread over the workers when the acceptor spawns one per connection */
+    coro->home = (int)(__atomic_fetch_add(&nl_spawn_next, 1, __ATOMIC_RELAXED) % (unsigned)nl_worker_total);
+    coro->pinned = 0;
+    nl_ready_push_at(coro, coro->home);
 }
 
 static void nl_coro_join_all(void) {
