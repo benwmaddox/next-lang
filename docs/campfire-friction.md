@@ -178,3 +178,18 @@ Tests: `tests/py/test_interpolation.py`.
 - **Formats.** `{n:8}` (padded to width 8, numbers and text), `{n:08}` (zero-padded), `{n:x}`, `{n:b}`. The width is a literal.
   `{n:8}` for a number is not available inside a chain that also holds non-ASCII text.
 - Campfire's sign-in now builds its cookie header with one `try_append($"Set-Cookie: session_token={session.token}; ...")`.
+
+### Round 6, third part: Text chains are flat too
+
+A chain with non-ASCII text (a `Text` value) is written by the same flat code. Alongside the byte offset it keeps a running count of code
+points: a literal piece and a number or bool count what they write, an `Ascii`/`Bytes` hole counts its bytes, a `Text` hole says how
+many it holds (padding adds up to its width). The root stores both numbers in the `Text` header, and `try_append` to a `Text` builder
+checks the builder's byte limit and its code-point limit together before writing into its tail. Nothing in interpolation uses the
+pairwise concatenation now, and `{n:8}` works in `Text` chains.
+
+Open question (Ben): why `Bytes` at all in these chains? `Bytes` appear because the database layer (`db_row`/`db_rows`) and the
+network reads (`http_header`, `http_body`, `http_peer`) fill `Bytes` fields only. Campfire's names and message bodies are
+text that came through those, so they stay `Bytes` and a chain holding one is `Bytes` (raw, not checked as UTF-8, no code-point
+count). Making them `Text` means checking UTF-8 where the data enters (SQLite does not guarantee it; a request can send anything), so a
+bad value needs a rule (refuse the row, replace the byte, or fail the request). Proposed next step: allow `Text` fields in
+`db_row`/`db_rows` and `Text` destinations for header/body reads, validated when read.

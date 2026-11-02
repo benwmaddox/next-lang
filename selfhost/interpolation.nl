@@ -31,10 +31,21 @@ fn interp_chain_root(tables: ParseTables, compiler: CompilerTables, node: long) 
     current
 }
 
-// Whether the chain is written flat: its value is Ascii or Bytes.
+// Whether the chain is written flat: its value is Ascii, Bytes or Text (a Text also counts its code points as it goes).
 fn interp_chain_is_flat(tables: ParseTables, compiler: CompilerTables, root: long) -> bool {
     let kind = type_kind(compiler, compiler.facts[root].ty)
-    kind == TYPE_KIND_ASCII || kind == TYPE_KIND_BYTES
+    kind == TYPE_KIND_ASCII || kind == TYPE_KIND_BYTES || kind == TYPE_KIND_TEXT
+}
+
+fn interp_root_is_text(compiler: CompilerTables, root: long) -> bool {
+    type_kind(compiler, compiler.facts[root].ty) == TYPE_KIND_TEXT
+}
+
+// Whether the leaf is text copied from a literal or a text hole (its code points come from the source), not a number or a bool.
+fn interp_leaf_copies_text(tables: ParseTables, compiler: CompilerTables, leaf: long) -> bool {
+    if tables.nodes[leaf].kind != NodeKind.Call { return true }
+    let hole_kind = type_kind(compiler, compiler.facts[compiler.child_first[leaf]].ty)
+    hole_kind == TYPE_KIND_ASCII || hole_kind == TYPE_KIND_BYTES || hole_kind == TYPE_KIND_TEXT
 }
 
 // A piece or hole, or `+`, that is written by its chain's root and has no code of its own.
@@ -165,6 +176,17 @@ fn emit_interp_pieces(
         ir_write_ascii(compiler, ir, " = add i64 ")
         if index == 0L { ir_write_ascii(compiler, ir, "0") } else { interp_name(compiler, ir, "off", root, tag, index) }
         ir_write_ascii(compiler, ir, ", "); interp_name(compiler, ir, "len", root, tag, index); ir_push_byte(compiler, ir, 10)
+        if interp_root_is_text(compiler, root) {
+            // the code points written so far: digits and ASCII text count one each, other text says how many it holds
+            if !interp_leaf_copies_text(tables, compiler, leaf) {
+                ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "plen", root, tag, index)
+                ir_write_ascii(compiler, ir, " = add i64 "); interp_name(compiler, ir, "len", root, tag, index); ir_write_ascii(compiler, ir, ", 0\n")
+            }
+            ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "poff", root, tag, index + 1L)
+            ir_write_ascii(compiler, ir, " = add i64 ")
+            if index == 0L { ir_write_ascii(compiler, ir, "0") } else { interp_name(compiler, ir, "poff", root, tag, index) }
+            ir_write_ascii(compiler, ir, ", "); interp_name(compiler, ir, "plen", root, tag, index); ir_push_byte(compiler, ir, 10)
+        }
     }
 }
 
@@ -204,14 +226,33 @@ fn emit_interp_copy(
     ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "src", root, tag, index)
     ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer)
     ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_location_data_offset(compiler, source_type, location)); ir_push_byte(compiler, ir, 10)
+    let counts_points = interp_root_is_text(compiler, root)
+    if counts_points {
+        // how many code points the source holds: Text says so, Ascii and Bytes one per byte
+        emit_text_source_length(compiler, ir, location, pointer, source_node, if tag == 0L { "ipa" } else { "ipb" })
+        emit_text_source_points(compiler, ir, source_type, location, pointer, source_node, if tag == 0L { "ipa" } else { "ipb" })
+        ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "spts", root, tag, index)
+        ir_write_ascii(compiler, ir, " = add i64 %text."); ir_write_ascii(compiler, ir, if tag == 0L { "ipa" } else { "ipb" })
+        ir_write_ascii(compiler, ir, ".points."); ir_write_number(compiler, ir, source_node); ir_write_ascii(compiler, ir, ", 0\n")
+    }
     if width_node >= 0L {
         emit_interp_width(compiler, ir, root, tag, index, width_node)
         ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "len", root, tag, index)
         ir_write_ascii(compiler, ir, " = call i64 @nl_core_nl_text_format_pad(ptr %nl.ctx, ptr "); interp_name(compiler, ir, "src", root, tag, index)
         ir_write_ascii(compiler, ir, ", i64 "); interp_name(compiler, ir, "slen", root, tag, index)
-        ir_write_ascii(compiler, ir, ", i64 "); interp_name(compiler, ir, "slen", root, tag, index)
+        ir_write_ascii(compiler, ir, ", i64 "); interp_name(compiler, ir, if counts_points { "spts" } else { "slen" }, root, tag, index)
         ir_write_ascii(compiler, ir, ", i64 "); interp_name(compiler, ir, "width", root, tag, index)
         ir_write_ascii(compiler, ir, ", i1 true, ptr "); interp_name(compiler, ir, "dst", root, tag, index); ir_write_ascii(compiler, ir, ")\n")
+        if counts_points {
+            // the padded text holds the wider of its width and its own code points
+            ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "pwide", root, tag, index)
+            ir_write_ascii(compiler, ir, " = icmp sgt i64 "); interp_name(compiler, ir, "width", root, tag, index)
+            ir_write_ascii(compiler, ir, ", "); interp_name(compiler, ir, "spts", root, tag, index)
+            ir_write_ascii(compiler, ir, "\n  "); interp_name(compiler, ir, "plen", root, tag, index)
+            ir_write_ascii(compiler, ir, " = select i1 "); interp_name(compiler, ir, "pwide", root, tag, index)
+            ir_write_ascii(compiler, ir, ", i64 "); interp_name(compiler, ir, "width", root, tag, index)
+            ir_write_ascii(compiler, ir, ", i64 "); interp_name(compiler, ir, "spts", root, tag, index); ir_push_byte(compiler, ir, 10)
+        }
     } else {
         ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "copy", root, tag, index)
         ir_write_ascii(compiler, ir, " = call ptr @memmove(ptr "); interp_name(compiler, ir, "dst", root, tag, index)
@@ -219,6 +260,10 @@ fn emit_interp_copy(
         ir_write_ascii(compiler, ir, ", i64 "); interp_name(compiler, ir, "slen", root, tag, index); ir_write_ascii(compiler, ir, ")\n")
         ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "len", root, tag, index)
         ir_write_ascii(compiler, ir, " = add i64 "); interp_name(compiler, ir, "slen", root, tag, index); ir_write_ascii(compiler, ir, ", 0\n")
+        if counts_points {
+            ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "plen", root, tag, index)
+            ir_write_ascii(compiler, ir, " = add i64 "); interp_name(compiler, ir, "spts", root, tag, index); ir_write_ascii(compiler, ir, ", 0\n")
+        }
     }
 }
 
@@ -235,6 +280,13 @@ fn emit_interp_value(tables: ParseTables, compiler: write CompilerTables, ir: gr
     ir_write_ascii(compiler, ir, "  %text.format.written."); ir_write_number(compiler, ir, root)
     ir_write_ascii(compiler, ir, " = add i64 "); interp_name(compiler, ir, "off", root, 0L, count); ir_write_ascii(compiler, ir, ", 0\n")
     emit_format_text_store_length(compiler, ir, root, destination, destination_pointer)
+    if interp_root_is_text(compiler, root) {
+        ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "pointsaddr", root, 0L, 0L)
+        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
+        ir_write_ascii(compiler, ir, ", i64 8\n  store i64 "); interp_name(compiler, ir, "poff", root, 0L, count)
+        ir_write_ascii(compiler, ir, ", ptr "); interp_name(compiler, ir, "pointsaddr", root, 0L, 0L); ir_write_ascii(compiler, ir, ", align 1")
+        emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+    }
 }
 
 // A flat chain that is the argument of a Bytes or Ascii builder's try_append writes into the builder when the builder has room
@@ -246,5 +298,5 @@ fn interp_is_deferred_append(tables: ParseTables, compiler: CompilerTables, node
     let receiver = compiler.child_first[parent]
     if receiver < 0L || compiler.child_next[receiver] != node { return false }
     let receiver_kind = type_kind(compiler, compiler.facts[receiver].ty)
-    receiver_kind == TYPE_KIND_BYTES || receiver_kind == TYPE_KIND_ASCII
+    receiver_kind == TYPE_KIND_BYTES || receiver_kind == TYPE_KIND_ASCII || receiver_kind == TYPE_KIND_TEXT
 }

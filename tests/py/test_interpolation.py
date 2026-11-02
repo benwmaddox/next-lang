@@ -18,7 +18,8 @@ class Interpolation(unittest.TestCase):
             "42", "id=42!", "user 7: ada scored -3", "{braces} and 4242", "43 84", 'tab\there "quoted" 42', "", "plain",
             "[x][x]", "20", "row 0: 0", "row 1: 0", "row 2: 1",
             "id=7 name=ada live=true;flag=false", "35", "full", "4", "3", "3", "#3 ada live=true16",
-            "[    42][000042][-00042][ff][101][   ada][ada]", "   3|   ab|9", "false/true", ""])
+            "[    42][000042][-00042][ff][101][   ada][ada]", "   3|   ab|9", "false/true",
+            "café né   7|   né|2a", "20", "23", "éné!", "4", "full", "0", ""])
 
     def build(self, body):
         package = ROOT / ".interp-test"
