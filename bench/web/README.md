@@ -354,8 +354,13 @@ connection) is 3-5 ms for all of them.
 - Where the remaining 15.5 KB per connection goes (smaps at 1000 connections): about 8 KB resident in each job's 1 MiB native stack,
   4 KB (one page) in its data stack, and the rest in the connection buffer and bookkeeping. Next steps: smaller stack frames in the
   HTTP functions (several hold 4 KB scratch arrays), and a smaller or lazily-grown native stack.
-- **Virtual size is the weak spot:** each job reserves 64 MiB of address space for its data stack and 1 MiB of native stack, so 1000
-  connections show 100 GB virtual against Rust's 0.28 GB. Only touched pages are resident, but it matters under `ulimit -v`, strict
-  overcommit (`vm.overcommit_memory=2`) and some container limits. A per-job reservation sized from the build's computed worst case, or a
-  default far below 64 MiB, would fix it.
+- **Virtual size was the weak spot, and the estimates were far too high** (measured with `NLC_REPORT_STACKS=1`, which prints how much
+  data stack and native stack each job used and what it reserved). Every job reserved 64 MiB of data stack, and main 32 GiB, whatever it
+  did. Web benchmark connection jobs used at most 4 KiB of data stack (5.6 KB of native stack); Campfire's, 290 KiB (17 KB of native
+  stack). The build now computes a bound for each entry point (selfhost/stack_estimates.nl: each function's blocks summed, plus the
+  deepest callee down the call graph; recursion, function values and anything unplanned make it unknown, and an unknown bound keeps the
+  old default), doubles it and adds 256 KiB, and passes it to the runtime. Reserved per connection job: 64 MiB -> 260 KiB (web
+  benchmark), 64 MiB -> 864 KiB (Campfire, against 290 KiB used); virtual size of the web server 33.9 GB at start -> 112 MB, and
+  100 GB -> 1.7 GB at 1000 connections (Rust 0.28 GB; the rest is each job's 1 MiB of native stack reservation, of which 6-17 KB is
+  used). Resident memory is unchanged (17.9 MB at 1000 connections).
 - Binary: next-lang 1.35 MB with SQLite and the runtime linked in; the Rust servers 2.5 and 3.0 MB.

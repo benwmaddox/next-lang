@@ -107,7 +107,8 @@ fn emit_job_entries(
         let target = compiler.functions[target_id]
         let file_index = node_file_index(tables.nodes, files, node)
         ir_write_ascii(compiler, ir, "define ptr @nl.job."); ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, "(ptr %args) {\nentry:\n  %ctx = call ptr @nl_context_create_job(i64 4096, i64 "); ir_write_number(compiler, ir, config.recursion_budget)
+        ir_write_ascii(compiler, ir, "(ptr %args) {\nentry:\n  %ctx = call ptr @nl_context_create_job(i64 "); ir_write_number(compiler, ir, stack_reservation_estimate(tables, compiler, target_id))
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, config.recursion_budget)
         ir_write_ascii(compiler, ir, ", ptr getelementptr inbounds (["); ir_write_number(compiler, ir, files[file_index].name.count() + 1L)
         ir_write_ascii(compiler, ir, " x i8], ptr @.nl.file."); ir_write_number(compiler, ir, file_index)
         ir_write_ascii(compiler, ir, ", i64 0, i64 0))\n  %top = call i64 @nl_context_base_offset(ptr %ctx)\n")
