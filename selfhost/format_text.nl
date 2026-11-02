@@ -20,7 +20,9 @@ fn format_text_builtin_kind(
 ) -> long {
     if node < 0L || node >= compiler.facts.count() { return FORMAT_TEXT_NONE }
     let callee_token = tables.nodes[node].token
-    if token_is_word_at(source, tokens, files, file_index, callee_token, "str") {
+    if callee_token >= 0L && callee_token < tokens.count() && tokens[callee_token].kind == TokenKind.Dollar {
+        FORMAT_TEXT_STR
+    } else if token_is_word_at(source, tokens, files, file_index, callee_token, "str") {
         FORMAT_TEXT_STR
     } else if token_is_word_at(source, tokens, files, file_index, callee_token, "str_hex") { FORMAT_TEXT_HEX }
     else if token_is_word_at(source, tokens, files, file_index, callee_token, "str_bin") { FORMAT_TEXT_BIN }
@@ -148,12 +150,19 @@ fn check_format_text_builtin(
     let argument = compiler.child_first[node]
     let argument_type = compiler.facts[argument].ty
     var result_type = -1L
-    if kind == FORMAT_TEXT_STR || kind == FORMAT_TEXT_HEX || kind == FORMAT_TEXT_BIN {
+    if kind == FORMAT_TEXT_STR && (type_kind(compiler, argument_type) == TYPE_KIND_ASCII || type_kind(compiler, argument_type) == TYPE_KIND_TEXT) {
+        // text as it is (a text hole in an interpolated string)
+        result_type = argument_type
+    } else if kind == FORMAT_TEXT_STR || kind == FORMAT_TEXT_HEX || kind == FORMAT_TEXT_BIN {
         if !format_text_numeric_type(argument_type) {
             let name = if kind == FORMAT_TEXT_STR { "str" }
                 else if kind == FORMAT_TEXT_HEX { "str_hex" }
                 else { "str_bin" }
             let found_type = type_name_or_fallback(argument_type)
+            if tables.nodes[node].token >= 0L && tokens[tables.nodes[node].token].kind == TokenKind.Dollar {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start,
+                    "a hole in an interpolated string takes int, long, byte, Ascii or Text; found " + found_type)
+            }
             fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start,
                 name + " needs int, long, or byte; found " + found_type)
         }
@@ -325,7 +334,7 @@ fn emit_format_text_builtin(
         ir_write_ascii(compiler, ir, ", ptr %text.format.output.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, FIXED_TEXT_MAXIMUM)
         ir_write_ascii(compiler, ir, ")\n  %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt i64 %text.format.written."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
         emit_runtime_failure(files, tables, compiler, ir, node, file_index, FAILURE_FIXED_TEXT)
-    } else if kind == FORMAT_TEXT_STR || kind == FORMAT_TEXT_HEX || kind == FORMAT_TEXT_BIN {
+    } else if (kind == FORMAT_TEXT_STR && type_kind(compiler, argument_type) != TYPE_KIND_ASCII && type_kind(compiler, argument_type) != TYPE_KIND_TEXT) || kind == FORMAT_TEXT_HEX || kind == FORMAT_TEXT_BIN {
         emit_format_text_numeric_i64(compiler, ir, node, argument)
         let radix = if kind == FORMAT_TEXT_HEX { 16L } else if kind == FORMAT_TEXT_BIN { 2L } else { 10L }
         ir_write_ascii(compiler, ir, "  %text.format.written."); ir_write_number(compiler, ir, node)
@@ -340,7 +349,7 @@ fn emit_format_text_builtin(
         ir_write_ascii(compiler, ir, " = call i64 @nl_core_nl_text_format_pad_zero(ptr %nl.ctx, i64 %text.format.number."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i64 %text.format.width."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", ptr %text.format.output.data."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 41); ir_push_byte(compiler, ir, 10)
-    } else if kind == FORMAT_TEXT_PAD || kind == FORMAT_TEXT_PAD_RIGHT {
+    } else if kind == FORMAT_TEXT_PAD || kind == FORMAT_TEXT_PAD_RIGHT || (kind == FORMAT_TEXT_STR && (type_kind(compiler, argument_type) == TYPE_KIND_ASCII || type_kind(compiler, argument_type) == TYPE_KIND_TEXT)) {
         let width_node = compiler.child_next[argument]
         let source_location = aggregate_destination_location(compiler, 0L, argument)
         let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
@@ -350,7 +359,11 @@ fn emit_format_text_builtin(
         ir_write_ascii(compiler, ir, "  %text.format.source.data."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, source_location, source_pointer)
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, source_data_offset); ir_push_byte(compiler, ir, 10)
-        emit_format_text_width_i64(compiler, ir, node, width_node)
+        if kind == FORMAT_TEXT_STR {
+            ir_write_ascii(compiler, ir, "  %text.format.width."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 0, 0\n")
+        } else {
+            emit_format_text_width_i64(compiler, ir, node, width_node)
+        }
         ir_write_ascii(compiler, ir, "  %text.format.written."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = call i64 @nl_core_nl_text_format_pad(ptr %nl.ctx, ptr %text.format.source.data."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", i64 %text.format.src.length."); ir_write_number(compiler, ir, node)

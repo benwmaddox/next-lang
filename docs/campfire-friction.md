@@ -148,3 +148,15 @@ Compiler bugs found by writing them (both worked around; to fix):
   (pushing the loop element into another list of the same type) generates IR with an undefined local and clang rejects it.
 - **25** a `Bytes` stored in a struct reached through a `write` parameter cannot be grown (`grow` is for builders only), so a program with
   several output buffers keeps them as `list<byte, N>` fields or passes each as its own `grow` parameter.
+
+## Round 6: string interpolation (#6)
+
+`$"user {id}: {name} scored {score}"` is built. The lexer turns it into a `Dollar` token, `String` pieces (each borrowing the
+characters beside it as its quotes, like a multi-line string), `LBrace ... RBrace` around each hole and an `InterpEnd` token; the parser
+makes a left-leaning chain of `+` over the pieces and one call node per hole whose callee token is the `$`. The checker treats such a
+call as `str`: a number becomes its digits, and `Ascii` or `Text` is copied as it is. So the type is the concatenation the checker already
+bounds (`Ascii max` the sum of the pieces, with each number at its type's longest) and the code is the concatenation and formatting
+that exist. `{{` and `}}` are literal braces; a hole is any expression. Holes take int, long, byte, Ascii and Text; a bool, a `Bytes`
+or a struct is an error that says so. Still to do: `Bytes` holes (concatenating `Bytes` with `Ascii` into `Bytes`, which Campfire's
+code wants), bool holes, the format options (`{n:8}`, `{n:x}`) and appending straight into a builder without a temporary.
+Tests: `tests/py/test_interpolation.py`.

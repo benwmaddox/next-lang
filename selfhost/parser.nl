@@ -106,6 +106,7 @@ enum ParseProblemKind {
     ExpectedValue,
     AnonymousFunction,
     ExpectedCloseParen,
+    ExpectedCloseInterpolation,
     CastDepth,
     ExpectedCloseBracket,
     EmptyCollectionOnly,
@@ -2176,11 +2177,67 @@ recursive fn parse_prefix(
         let expression = parse_array_literal(source, tokens, tables, token)?
         return postfix_expression(source, tokens, tables, expression)
     }
+    if token.kind == TokenKind.Dollar {
+        let expression = parse_interpolation(source, tokens, tables, token)?
+        return postfix_expression(source, tokens, tables, expression)
+    }
     if token.kind == TokenKind.Ident && cursor_peek(tables, tokens, 0L).kind == TokenKind.LParen && direct_call_name_allowed(source, tokens, tables, token) {
         return parse_direct_call(source, tokens, tables, token)
     }
     let expression = parse_prefix_leaf(source, tokens, tables, token)?
     postfix_expression(source, tokens, tables, expression)
+}
+
+// $"text {hole} text": the pieces and holes become a left-leaning chain of `+` over string literals and calls of the text
+// formatter (the call's callee token is the `$`), so the result is the concatenation the checker already bounds.
+recursive fn parse_interpolation(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: write ParseTables,
+    dollar: CursorToken,
+) -> Result<ExprRef, ParseError> {
+    let first = tables.nodes.count()
+    var operands = 0L
+    var end = dollar.start + dollar.length
+    var last = -1L
+    for step in 0L..MAX_TOKENS_PER_FILE {
+        let next = cursor_peek(tables, tokens, 0L)
+        if next.kind == TokenKind.InterpEnd {
+            cursor_next(tables, tokens)
+            end = next.start + next.length
+            break
+        }
+        if next.kind == TokenKind.String {
+            cursor_next(tables, tokens)
+            let piece_first = tables.nodes.count()
+            let high_hex = token_has_non_ascii_hex_escape(source, tables.state.file_base + next.start, next.length)
+            let flags = if high_hex { FLAG_BYTESTRING_NONASCII_HEX } else { 0L }
+            last = append_node(tables, NodeKind.ByteString, piece_first, next.token, next.start, next.start + next.length, next.start, flags, -1L, 0L)?
+            end = next.start + next.length
+        } else if next.kind == TokenKind.LBrace {
+            cursor_next(tables, tokens)
+            let hole_first = tables.nodes.count()
+            let old_allow = tables.state.allow_struct_literals
+            tables.state.allow_struct_literals = true
+            let hole_value = parse_expression(source, tokens, tables, 0L)?
+            if hole_value < 0L { return err(cursor_error(tables, tokens, ParseProblemKind.ExpectedValue)) }
+            tables.state.allow_struct_literals = old_allow
+            let close = cursor_expect(tables, tokens, TokenKind.RBrace, ParseProblemKind.ExpectedCloseInterpolation)?
+            end = close.start + close.length
+            last = append_node(tables, NodeKind.Call, hole_first, dollar.token, dollar.start, end, dollar.start, 0L, -1L, 1L)?
+            tables.nodes[last].meta0 = dollar.start + dollar.length
+        } else {
+            return err(cursor_error(tables, tokens, ParseProblemKind.ExpectedCloseInterpolation))
+        }
+        operands += 1L
+        if operands >= 2L {
+            last = append_node(tables, NodeKind.Binary, first, dollar.token, dollar.start, end, dollar.start, 0L, -1L, 0L)?
+        }
+    }
+    if last < 0L {
+        return err(cursor_error(tables, tokens, ParseProblemKind.ExpectedCloseInterpolation))
+    }
+    ok(ExprRef { node: last, pending_kind: 0L, token: -1L, extra_token: -1L, start: dollar.start, end })
 }
 
 recursive fn parse_prefix_leaf(
@@ -3095,6 +3152,7 @@ fn expression_starts_nested(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: li
     if token.kind == TokenKind.Number || token.kind == TokenKind.String {
         return expression_has_postfix(tables, tokens, 1L, false)
     }
+    if token.kind == TokenKind.Dollar { return true }
     token.kind == TokenKind.LBracket
 }
 
