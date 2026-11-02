@@ -94,9 +94,25 @@ what unblocks the most:
   50 req/s. First measure busy cores and CPU per request at 16 and 64 connections for the shared pool and for socket-owning workers, then
   the options recorded in the review: choose the worker at wake time, keep the cache service's data on one core (or a cache per worker),
   and soft affinity.
-- **Memory per connection and virtual size:** 15.5 KB resident per connection at 1000 connections against tokio 9.3 KB (stack frames with
-  4 KB scratch arrays in the HTTP functions, 8 KB touched in each 1 MiB native stack), and 100 GB of virtual address space at 1000
-  connections against Rust 0.28 GB (64 MiB data-stack reservation per job): shrink both; see bench/web/README.md "Memory against Rust".
+- **Fix the stack estimation process, then size every job from it (Ben, 2026-11-02).** Today the sizes are constants: a job reserves
+  64 MiB of address space for its data stack (`NLC_JOB_STACK_RESERVE_BYTES`) and 1 MiB for its native stack (coroutines; 64 MiB for plain
+  threads), whatever the job does. The design has an estimate per entry point (DESIGN.md "The job's data stack": a worst case from the
+  build, and a typical-run estimate with loops counted as 5 rounds), but nothing the build computes reaches the runtime: the
+  self-hosted compiler's output carries only `; nlc.stack offset`. (I have not checked what the stage 0 compiler still does.) Work:
+  1. **Compute per entry point** (every `main`, spawned function and service handler) a data-stack worst case, a typical-run estimate and a
+     native-stack bound (frame sizes up the call graph; recursion and indirect calls marked unbounded), and check them in `inspect stacks`.
+  2. **Emit them** as a table the runtime reads at spawn: reserve the worst case (rounded up, with the configured headroom), commit nothing
+     beyond what is used, start from the typical estimate; reserve the native stack from its bound plus a margin; an unbounded entry keeps
+     today's default or the configured cap.
+  3. **Validate the estimates against what jobs touch:** record each job's high-water marks (data stack and native stack) at exit under an
+     environment switch, and a test that fails when an estimate is below a measured value (too low is a crash waiting to happen) or more
+     than 4x above it on the benchmark programs (too high wastes address space).
+  4. **Shrink what the runtime itself puts on the stack:** several HTTP and capability functions hold 4 KB scratch arrays
+     (`unsigned char scratch[4096]` for text arguments), so every connection touches two pages of native stack for nothing; read arguments in
+     place or size the scratch from the argument.
+  Targets, measured on the web benchmark and Campfire: at 1000 connections at most 13 MB resident (tokio: 13.0; now 17.8, 15.5 KB per
+  connection against 9.3) and at most 2 GB of virtual address space (Rust: 0.28; now 100); idle and 64-connection numbers must not rise. See
+  bench/web/README.md "Memory against Rust".
 - **Request path cost:** where the 10 us goes (coroutine switch, the HTTP layer, user CPU 5 us against Rust's 2.7).
 - Keep: 4-connection result (ahead of the thread-per-connection server), low CPU at slow rates (checked at 50 / 500 / 5000 req/s).
 
