@@ -97,3 +97,9 @@ byte data is `list<byte, N>` or `byte[N]`. Windows stay arena-only. To do if ado
 index assignment on `Ascii`/`Bytes` a build error, fix what in `selfhost/` and `core/` used
 it, update LANGUAGE.md, and map Go `[]byte` to `list<byte, N>` in go2nl. Open: `truncate(n)`
 (not allowed in this proposal).
+
+### Text arena: no reset, arenas end with their owner (decided 2026-11-04)
+
+No `reset()` and no scope-based freeing of arena memory (it needs lifetime tracking). Arenas
+are dropped whole with their owner (job, run, struct). The append-only bounded-text proposal
+above is still only a leaning.
