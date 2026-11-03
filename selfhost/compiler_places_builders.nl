@@ -480,7 +480,7 @@ fn body_child_expected(
             let other = if child == frame.child0 { frame.child1 } else { frame.child0 }
             let known = natural_node_type(source, tokens, files, tables, compiler, other, frame.scope, file_index)
             if is_unsuffixed_integer(tables, other) && !is_unsuffixed_integer(tables, child) { -1L }
-            else if type_kind(compiler, known) == TYPE_KIND_ASCII || type_kind(compiler, known) == TYPE_KIND_TEXT || type_kind(compiler, known) == TYPE_KIND_BYTES { -1L }
+            else if known == TY_WINDOW || type_kind(compiler, known) == TYPE_KIND_ASCII || type_kind(compiler, known) == TYPE_KIND_TEXT || type_kind(compiler, known) == TYPE_KIND_BYTES { -1L }
             else if known >= 0L { known }
             else if is_unsuffixed_integer(tables, child) { -1L }
             else { -1L }

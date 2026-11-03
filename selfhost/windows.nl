@@ -27,6 +27,10 @@ const WOP_GT: long = 8L
 const WOP_GE: long = 9L
 const WOP_PRINT: long = 10L
 const WOP_TO_BYTES: long = 11L
+const WOP_STARTS_WITH: long = 12L
+const WOP_ENDS_WITH: long = 13L
+const WOP_FIND: long = 14L
+const WOP_CONTAINS: long = 15L
 const WOP_ADD: long = 20L
 const WOP_USED: long = 21L
 const WOP_BEGIN: long = 22L
@@ -41,7 +45,7 @@ fn type_is_arena(compiler: CompilerTables, type_id: long) -> bool {
 // Whether the window operation reads the arena's bytes through the window's owner (the others need no arena, or have the arena
 // as their receiver).
 fn window_op_needs_owner(op: long) -> bool {
-    op >= WOP_AT && op <= WOP_TO_BYTES
+    op >= WOP_AT && op <= WOP_CONTAINS
 }
 
 // The operation a method name stands for on a window (receiver) or an arena, or 0.
@@ -65,6 +69,10 @@ fn window_method_op(
         if token_is_word_at(source, tokens, files, file_index, method_token, "len") { WOP_LEN }
         else if token_is_word_at(source, tokens, files, file_index, method_token, "slice") { WOP_SLICE }
         else if token_is_word_at(source, tokens, files, file_index, method_token, "to_bytes") { WOP_TO_BYTES }
+        else if token_is_word_at(source, tokens, files, file_index, method_token, "starts_with") { WOP_STARTS_WITH }
+        else if token_is_word_at(source, tokens, files, file_index, method_token, "ends_with") { WOP_ENDS_WITH }
+        else if token_is_word_at(source, tokens, files, file_index, method_token, "find") { WOP_FIND }
+        else if token_is_word_at(source, tokens, files, file_index, method_token, "contains") { WOP_CONTAINS }
         else { 0L }
     }
 }
@@ -92,7 +100,7 @@ fn check_window_method(
     let op = window_method_op(source, tokens, files, file_index, syntax.token, is_arena)
     if op == 0L {
         if is_arena { fail_at_message(env, files, compiler, file_index, syntax.anchor, "an arena has add, used, begin, push, append and finish") }
-        fail_at_message(env, files, compiler, file_index, syntax.anchor, "a window has len, slice and to_bytes")
+        fail_at_message(env, files, compiler, file_index, syntax.anchor, "a window has len, slice, to_bytes, starts_with, ends_with, contains and find")
     }
     let arguments = count_children(tables, compiler, node) - 1L
     var argument = compiler.child_next[receiver]
@@ -100,6 +108,15 @@ fn check_window_method(
     if op == WOP_LEN || op == WOP_USED || op == WOP_BEGIN || op == WOP_FINISH || op == WOP_TO_BYTES {
         if arguments != 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "this method takes no arguments") }
         result_ty = if op == WOP_LEN || op == WOP_USED { TY_LONG } else if op == WOP_FINISH { TY_WINDOW } else { TY_UNIT }
+    }
+    if op >= WOP_STARTS_WITH && op <= WOP_CONTAINS {
+        if arguments != 1L { fail_at_message(env, files, compiler, file_index, syntax.start, "this method takes one argument") }
+        let needle_ty = compiler.facts[argument].ty
+        let needle_kind = type_kind(compiler, needle_ty)
+        if needle_ty != TY_WINDOW && needle_kind != TYPE_KIND_ASCII && needle_kind != TYPE_KIND_BYTES {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "this takes a window of the same arena or a bounded Ascii or Bytes value")
+        }
+        result_ty = if op == WOP_FIND { TY_LONG } else { TY_BOOL }
     }
     if op == WOP_SLICE {
         if arguments != 2L { fail_at_message(env, files, compiler, file_index, syntax.start, "slice takes a range: w.slice(a..b)") }
@@ -157,7 +174,7 @@ fn window_method_argument_type(
     method_token: long,
     receiver_ty: long,
 ) -> long {
-    if receiver_ty == TY_WINDOW { return TY_LONG }
+    if receiver_ty == TY_WINDOW { return if token_is_word_at(source, tokens, files, file_index, method_token, "slice") { TY_LONG } else { -1L } }
     if type_is_arena(compiler, receiver_ty) && token_is_word_at(source, tokens, files, file_index, method_token, "push") { return TY_BYTE }
     -1L
 }
@@ -188,6 +205,15 @@ fn emit_window_helpers(compiler: write CompilerTables, ir: grow Bytes max IR_BUF
     ir_write_ascii(compiler, ir, "define internal i64 @nlw_slice(ptr %ctx, i64 %w, i64 %a, i64 %b) {\nentry:\n  %len = and i64 %w, 4294967295\n  %c1 = icmp sge i64 %a, 0\n  %c2 = icmp sle i64 %a, %b\n  %c3 = icmp sle i64 %b, %len\n  %c12 = and i1 %c1, %c2\n  %ok = and i1 %c12, %c3\n  br i1 %ok, label %in, label %bad\nbad:\n  call void @nlc_fail(ptr %ctx, i32 16, i32 0, i32 0, i32 0)\n  unreachable\nin:\n  %start = lshr i64 %w, 32\n  %ns = add i64 %start, %a\n  %nl = sub i64 %b, %a\n  %hi = shl i64 %ns, 32\n  %r = or i64 %hi, %nl\n  ret i64 %r\n}\n\n")
     ir_write_ascii(compiler, ir, "define internal i32 @nlw_cmp(ptr %a, i64 %x, i64 %y) {\nentry:\n  %lx = and i64 %x, 4294967295\n  %ly = and i64 %y, 4294967295\n  %sx = lshr i64 %x, 32\n  %sy = lshr i64 %y, 32\n  %lt = icmp ult i64 %lx, %ly\n  %m = select i1 %lt, i64 %lx, i64 %ly\n  %base = getelementptr i8, ptr %a, i64 24\n  %px = getelementptr i8, ptr %base, i64 %sx\n  %py = getelementptr i8, ptr %base, i64 %sy\n  %c = call i32 @memcmp(ptr %px, ptr %py, i64 %m)\n  %nz = icmp ne i32 %c, 0\n  br i1 %nz, label %diff, label %same\ndiff:\n  %neg = icmp slt i32 %c, 0\n  %r = select i1 %neg, i32 -1, i32 1\n  ret i32 %r\nsame:\n  %eq = icmp eq i64 %lx, %ly\n  %o = select i1 %lt, i32 -1, i32 1\n  %r2 = select i1 %eq, i32 0, i32 %o\n  ret i32 %r2\n}\n\n")
     ir_write_ascii(compiler, ir, "define internal void @nlw_print(ptr %ctx, ptr %a, i64 %w) {\nentry:\n  %len = and i64 %w, 4294967295\n  %start = lshr i64 %w, 32\n  %base = getelementptr i8, ptr %a, i64 24\n  %p = getelementptr i8, ptr %base, i64 %start\n  call void @nlc_print_ascii(ptr %ctx, ptr %p, i64 %len)\n  call void @nlc_print_newline(ptr %ctx)\n  ret void\n}\n\n")
+    // raw forms over (pointer, length) pairs: used when the other operand is a bounded Ascii/Bytes value
+    ir_write_ascii(compiler, ir, "define internal ptr @nlw_ptr(ptr %a, i64 %w) {\nentry:\n  %start = lshr i64 %w, 32\n  %base = getelementptr i8, ptr %a, i64 24\n  %p = getelementptr i8, ptr %base, i64 %start\n  ret ptr %p\n}\n\n")
+    ir_write_ascii(compiler, ir, "define internal i32 @nlw_cmp_raw(ptr %px, i64 %lx, ptr %py, i64 %ly) {\nentry:\n  %lt = icmp ult i64 %lx, %ly\n  %m = select i1 %lt, i64 %lx, i64 %ly\n  %c = call i32 @memcmp(ptr %px, ptr %py, i64 %m)\n  %nz = icmp ne i32 %c, 0\n  br i1 %nz, label %diff, label %same\ndiff:\n  %neg = icmp slt i32 %c, 0\n  %r = select i1 %neg, i32 -1, i32 1\n  ret i32 %r\nsame:\n  %eq = icmp eq i64 %lx, %ly\n  %o = select i1 %lt, i32 -1, i32 1\n  %r2 = select i1 %eq, i32 0, i32 %o\n  ret i32 %r2\n}\n\n")
+    ir_write_ascii(compiler, ir, "define internal i1 @nlw_prefix(ptr %p, i64 %len, ptr %np, i64 %nlen) {\nentry:\n  %fits = icmp ule i64 %nlen, %len\n  br i1 %fits, label %check, label %no\ncheck:\n  %c = call i32 @memcmp(ptr %p, ptr %np, i64 %nlen)\n  %eq = icmp eq i32 %c, 0\n  ret i1 %eq\nno:\n  ret i1 false\n}\n\n")
+    ir_write_ascii(compiler, ir, "define internal i1 @nlw_suffix(ptr %p, i64 %len, ptr %np, i64 %nlen) {\nentry:\n  %fits = icmp ule i64 %nlen, %len\n  br i1 %fits, label %check, label %no\ncheck:\n  %skip = sub i64 %len, %nlen\n  %q = getelementptr i8, ptr %p, i64 %skip\n  %c = call i32 @memcmp(ptr %q, ptr %np, i64 %nlen)\n  %eq = icmp eq i32 %c, 0\n  ret i1 %eq\nno:\n  ret i1 false\n}\n\n")
+    // find: the first index where the needle occurs, or -1 (an empty needle is found at 0)
+    ir_write_ascii(compiler, ir, "define internal i64 @nlw_find(ptr %p, i64 %len, ptr %np, i64 %nlen) {\nentry:\n  %fits = icmp ule i64 %nlen, %len\n  br i1 %fits, label %scan, label %none\nscan:\n  %last = sub i64 %len, %nlen\n  br label %loop\nloop:\n  %i = phi i64 [ 0, %scan ], [ %next, %step ]\n  %more = icmp ule i64 %i, %last\n  br i1 %more, label %body, label %none\nbody:\n  %q = getelementptr i8, ptr %p, i64 %i\n  %c = call i32 @memcmp(ptr %q, ptr %np, i64 %nlen)\n  %eq = icmp eq i32 %c, 0\n  br i1 %eq, label %found, label %step\nstep:\n  %next = add i64 %i, 1\n  br label %loop\nfound:\n  ret i64 %i\nnone:\n  ret i64 -1\n}\n\n")
+    // content hash of a window (FNV-1a over its bytes): equal text hashes equal wherever it sits in the arena
+    ir_write_ascii(compiler, ir, "define internal i64 @nlw_hash(ptr %a, i64 %w) {\nentry:\n  %len = and i64 %w, 4294967295\n  %p = call ptr @nlw_ptr(ptr %a, i64 %w)\n  br label %loop\nloop:\n  %i = phi i64 [ 0, %entry ], [ %next, %body ]\n  %h = phi i64 [ -3750763034362895579, %entry ], [ %mixed, %body ]\n  %more = icmp ult i64 %i, %len\n  br i1 %more, label %body, label %done\nbody:\n  %q = getelementptr i8, ptr %p, i64 %i\n  %b = load i8, ptr %q, align 1\n  %bz = zext i8 %b to i64\n  %x = xor i64 %h, %bz\n  %mixed = mul i64 %x, 1099511628211\n  %next = add i64 %i, 1\n  br label %loop\ndone:\n  ret i64 %h\n}\n\n")
     // append: copies n bytes to the end of the arena; returns the start offset. The capacity check fails loudly.
     ir_write_ascii(compiler, ir, "define internal i64 @nlw_append(ptr %ctx, ptr %a, ptr %data, i64 %n) {\nentry:\n  %count = load i64, ptr %a, align 1\n  %capp = getelementptr i8, ptr %a, i64 8\n  %cap = load i64, ptr %capp, align 1\n  %new = add i64 %count, %n\n  %ok = icmp ule i64 %new, %cap\n  br i1 %ok, label %in, label %full\nfull:\n  call void @nlc_fail(ptr %ctx, i32 25, i32 0, i32 0, i32 0)\n  unreachable\nin:\n  %base = getelementptr i8, ptr %a, i64 24\n  %dst = getelementptr i8, ptr %base, i64 %count\n  %m = call ptr @memcpy(ptr %dst, ptr %data, i64 %n)\n  store i64 %new, ptr %a, align 1\n  ret i64 %count\n}\n\n")
     // builder state: the word at offset 16 is 0 (closed) or the builder's start mark + 1
@@ -286,11 +312,43 @@ fn emit_window_op(
         ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, first); ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, second); ir_write_ascii(compiler, ir, ")\n")
         return
     }
-    if op >= WOP_EQ && op <= WOP_GE {
-        ir_write_ascii(compiler, ir, "  %window.cmp."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call i32 @nlw_cmp(ptr "); emit_location_pointer_reference(compiler, ir, location, serial)
-        ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, first); ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, second); ir_write_ascii(compiler, ir, ")\n  %v"); ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, if op == WOP_EQ { " = icmp eq" } else if op == WOP_NE { " = icmp ne" } else if op == WOP_LT { " = icmp slt" } else if op == WOP_LE { " = icmp sle" } else if op == WOP_GT { " = icmp sgt" } else { " = icmp sge" })
-        ir_write_ascii(compiler, ir, " i32 %window.cmp."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
+    // comparisons, starts_with, ends_with, contains, find: the other operand is a window of the same arena or a bounded value
+    if (op >= WOP_EQ && op <= WOP_GE) || (op >= WOP_STARTS_WITH && op <= WOP_CONTAINS) {
+        let other_ty = compiler.facts[second].ty
+        // window pointer and length
+        ir_write_ascii(compiler, ir, "  %window.p."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @nlw_ptr(ptr "); emit_location_pointer_reference(compiler, ir, location, serial)
+        ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, first); ir_write_ascii(compiler, ir, ")\n  %window.l."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = and i64 "); ir_write_value_ref(compiler, ir, first); ir_write_ascii(compiler, ir, ", 4294967295\n")
+        // the other operand's pointer and length
+        if other_ty == TY_WINDOW {
+            ir_write_ascii(compiler, ir, "  %window.np."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @nlw_ptr(ptr "); emit_location_pointer_reference(compiler, ir, location, serial)
+            ir_write_ascii(compiler, ir, ", i64 "); ir_write_value_ref(compiler, ir, second); ir_write_ascii(compiler, ir, ")\n  %window.nl."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = and i64 "); ir_write_value_ref(compiler, ir, second); ir_write_ascii(compiler, ir, ", 4294967295\n")
+        } else {
+            let other_location = aggregate_source_location_for_node(tables, compiler, second)
+            let other_serial = emit_location_pointer_materialization(compiler, ir, other_location)
+            ir_write_ascii(compiler, ir, "  %window.nl."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, other_location, other_serial)
+            ir_write_ascii(compiler, ir, ", align 1\n  %window.np."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, other_location, other_serial)
+            ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_data_offset(compiler, other_ty)); ir_push_byte(compiler, ir, 10)
+        }
+        if op >= WOP_EQ && op <= WOP_GE {
+            ir_write_ascii(compiler, ir, "  %window.cmp."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call i32 @nlw_cmp_raw(ptr %window.p."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", i64 %window.l."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %window.np."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 %window.nl."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ")\n  %v"); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, if op == WOP_EQ { " = icmp eq" } else if op == WOP_NE { " = icmp ne" } else if op == WOP_LT { " = icmp slt" } else if op == WOP_LE { " = icmp sle" } else if op == WOP_GT { " = icmp sgt" } else { " = icmp sge" })
+            ir_write_ascii(compiler, ir, " i32 %window.cmp."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
+            return
+        }
+        if op == WOP_STARTS_WITH || op == WOP_ENDS_WITH {
+            ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, if op == WOP_STARTS_WITH { " = call i1 @nlw_prefix(ptr %window.p." } else { " = call i1 @nlw_suffix(ptr %window.p." })
+        } else if op == WOP_FIND {
+            ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call i64 @nlw_find(ptr %window.p.")
+        } else {
+            ir_write_ascii(compiler, ir, "  %window.found."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call i64 @nlw_find(ptr %window.p.")
+        }
+        ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 %window.l."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %window.np."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 %window.nl."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ")\n")
+        if op == WOP_CONTAINS {
+            ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp sge i64 %window.found."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
+        }
         return
     }
     if op == WOP_PRINT {

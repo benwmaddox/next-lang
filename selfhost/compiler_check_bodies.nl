@@ -1208,7 +1208,7 @@ fn check_one_body(
         } else if kind == NodeKind.Binary && syntax.flags >= 8L && syntax.flags <= 13L && compiler.facts[frame.child0].ty == TY_WINDOW {
             // a == b, a < b, ... on two windows compare their bytes
             if !compiler.c_runtime { fail_at_message(env, files, compiler, file_index, syntax.start, "arenas and windows need the C runtime") }
-            if compiler.facts[frame.child1].ty != TY_WINDOW { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, TY_WINDOW, compiler.facts[frame.child1].ty) }
+            if compiler.facts[frame.child1].ty != TY_WINDOW && type_kind(compiler, compiler.facts[frame.child1].ty) != TYPE_KIND_ASCII && type_kind(compiler, compiler.facts[frame.child1].ty) != TYPE_KIND_BYTES { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, TY_WINDOW, compiler.facts[frame.child1].ty) }
             if frame.expected >= 0L && frame.expected != TY_BOOL { require_type(env, files, compiler, file_index, node, frame.expected, TY_BOOL, tables) }
             compiler.facts[node] = NodeFact { ty: TY_BOOL, flags: FACT_FALLS_THROUGH | FACT_WINDOW_OP, binding: -1L, function: -1L, literal: window_compare_op(syntax.flags) }
         } else if kind == NodeKind.Index {

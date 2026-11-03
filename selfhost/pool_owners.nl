@@ -448,7 +448,7 @@ fn owner_resolve_window_op(
         fail_at_message(env, files, compiler, file_index, tables.nodes[node].start,
             "cannot tell which arena this window belongs to; declare it as Window<arena name>")
     }
-    if op >= WOP_EQ && op <= WOP_GE && second >= 0L {
+    if ((op >= WOP_EQ && op <= WOP_GE) || (op >= WOP_STARTS_WITH && op <= WOP_CONTAINS)) && second >= 0L && compiler.facts[second].ty == TY_WINDOW {
         owner_check_sink(env, source, files, tokens, tables, compiler, st, owner, second)
     }
     var found = -1L

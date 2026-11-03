@@ -78,4 +78,23 @@ fn main(env: Env) {
     print(depth(s.text, file, 2000L))
     let tail = file.slice(4999990L..5000000L)
     print(tail)
+
+    // searching, and comparing with a bounded value without copying it into the arena
+    let text = small.add("the quick brown fox")
+    print(text.starts_with("the"))
+    print(text.starts_with("quick"))
+    print(text.ends_with("fox"))
+    print(text.ends_with("the"))
+    print(text.contains("brown"))
+    print(text.contains("slow"))
+    print(text.find("quick"))
+    print(text.find("fox"))
+    print(text.find("cat"))
+    print(text.find(small.add("o")))
+    let quick = text.slice(4L..9L)
+    print(text.starts_with(text.slice(0L..3L)))
+    print(quick == "quick")
+    print(quick != "quick")
+    print(quick < "r")
+    print(quick > "quick")
 }
