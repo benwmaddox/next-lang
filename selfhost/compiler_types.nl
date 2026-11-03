@@ -429,6 +429,8 @@ fn resolve_value_type(
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Host") { return TY_HOST }
     // `Id<P>`: a pool slot number. The owner P is checked by the language design but erased here.
     if (syntax.meta1 & 2097151L) == 1L && token_is_word_at(source, tokens, files, file_index, syntax.token, "Id") { return TY_LONG }
+    // `Window<P>` (provisional name): unbounded read-only text, a range of the bytes of arena P (see docs/design/text-arena.md).
+    if (syntax.meta1 & 2097151L) == 1L && token_is_word_at(source, tokens, files, file_index, syntax.token, "Window") { return TY_WINDOW }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Path") {
         return collection_type_matches(compiler, TYPE_KIND_LIST, TY_BYTE, 4096L)
     }

@@ -249,7 +249,7 @@ fn unsupported_category_for_node(
         if value.kind != NodeKind.Annotation && value.kind != NodeKind.ParameterType && value.kind != NodeKind.FieldType && value.kind != NodeKind.ResultType { return UNSUPPORTED_POOL_USE }
     }
     if is_type_node(value.kind) && (value.meta1 & 2097151L) == 1L && value.token >= 0L &&
-        token_is_word_at(source, tokens, files, file_index, value.token, "Id") { return 0L }
+        (token_is_word_at(source, tokens, files, file_index, value.token, "Id") || token_is_word_at(source, tokens, files, file_index, value.token, "Window")) { return 0L }
     match value.kind {
         NodeKind.Program => 0L,
         NodeKind.Enum => 0L,
@@ -310,6 +310,13 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "set") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "get") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "add") ||
+            (compiler.c_runtime && (token_is_word_at(source, tokens, files, file_index, value.token, "used") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "begin") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "append") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "finish") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "to_bytes") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "ends_with") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "find"))) ||
             (compiler.c_runtime && (token_is_word_at(source, tokens, files, file_index, value.token, "to_double") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "parse_double"))) ||
             token_is_word_at(source, tokens, files, file_index, value.token, "empty") ||

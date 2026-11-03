@@ -25,6 +25,7 @@ struct OwnerState {
     scrutinee: long
     pool_declarations: long
     pool_values: long
+    scope_node: long
 }
 
 fn owner_binding_owner(st: OwnerState, binding: long) -> long {
@@ -43,6 +44,17 @@ fn owner_set_binding(env: Env, st: write OwnerState, binding: long, owner: long)
     match st.binding_owners.push(owner) { ok(_) => (), err(_) => { env.exit(2) } }
 }
 
+// `Id` and the provisional window type name `Window` both name their owner (arena or pool) in `<...>`.
+fn owner_is_id_word(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    file_index: long,
+    token: long,
+) -> bool {
+    token_is_word_at(source, tokens, files, file_index, token, "Id") || token_is_word_at(source, tokens, files, file_index, token, "Window")
+}
+
 // The type argument naming the pool in `Id<pool>`, found directly or inside list<...>, Option<...> and so on.
 recursive fn owner_id_argument(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
@@ -56,7 +68,7 @@ recursive fn owner_id_argument(
     if type_node < 0L || depth > 8L { return -1L }
     let file_index = node_file_index(tables.nodes, files, type_node)
     let first = compiler.child_first[type_node]
-    if token_is_word_at(source, tokens, files, file_index, tables.nodes[type_node].token, "Id") &&
+    if owner_is_id_word(source, tokens, files, file_index, tables.nodes[type_node].token) &&
         (tables.nodes[type_node].meta1 & 2097151L) == 1L {
         return first
     }
@@ -81,7 +93,7 @@ fn owner_type_is_direct_id(
 ) -> bool {
     if type_node < 0L { return false }
     let file_index = node_file_index(tables.nodes, files, type_node)
-    token_is_word_at(source, tokens, files, file_index, tables.nodes[type_node].token, "Id") && (tables.nodes[type_node].meta1 & 2097151L) == 1L
+    owner_is_id_word(source, tokens, files, file_index, tables.nodes[type_node].token) && (tables.nodes[type_node].meta1 & 2097151L) == 1L
 }
 
 // The pool a name stands for: a pool parameter or local of function `function_id`, else the one pool field of that name.
@@ -244,6 +256,13 @@ recursive fn owner_of_value(
     }
     if kind == NodeKind.MethodCall {
         let receiver = compiler.child_first[node]
+        if receiver >= 0L && (compiler.facts[node].flags & FACT_WINDOW_OP) != 0L {
+            // arena.add / arena.finish make a window of that arena; slice keeps its receiver's arena
+            let window_op = compiler.facts[node].literal & 255L
+            if window_op == WOP_ADD || window_op == WOP_FINISH { return owner_of_pool_place(compiler, tables, receiver) }
+            if window_op == WOP_SLICE { return owner_of_value(source, files, tokens, tables, compiler, st, receiver, depth + 1L) }
+            return OWNER_UNKNOWN
+        }
         if receiver >= 0L && type_kind(compiler, compiler.facts[receiver].ty) == TYPE_KIND_POOL && compiler.facts[node].literal == COLLECTION_METHOD_POOL_ADD {
             return owner_of_pool_place(compiler, tables, receiver)
         }
@@ -352,6 +371,7 @@ fn fail_owner_mismatch(
     offset: long,
     expected: long,
     actual: long,
+    window: bool,
 ) -> never {
     let file = files[file_index]
     let position = position_for_offset(file_index, file.base + offset, compiler)
@@ -363,11 +383,13 @@ fn fail_owner_mismatch(
     match env.err.write(b": error: expected ") { ok(_) => (), err(_) => env.exit(3) }
     let expected_file = files[node_file_index(tables.nodes, files, expected)]
     match write_token_raw(env.err, source, tokens, expected_file.base, tables.nodes[expected].token) { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(b".Id, got ") { ok(_) => (), err(_) => env.exit(3) }
+    if window { match env.err.write(b".Window, got ") { ok(_) => (), err(_) => env.exit(3) } }
+    else { match env.err.write(b".Id, got ") { ok(_) => (), err(_) => env.exit(3) } }
     if actual >= 0L {
         let actual_file = files[node_file_index(tables.nodes, files, actual)]
         match write_token_raw(env.err, source, tokens, actual_file.base, tables.nodes[actual].token) { ok(_) => (), err(_) => env.exit(3) }
-        match env.err.write(b".Id") { ok(_) => (), err(_) => env.exit(3) }
+        if window { match env.err.write(b".Window") { ok(_) => (), err(_) => env.exit(3) } }
+        else { match env.err.write(b".Id") { ok(_) => (), err(_) => env.exit(3) } }
     } else {
         match env.err.write(b"an id whose pool is not known (arithmetic on an id loses its pool)") { ok(_) => (), err(_) => env.exit(3) }
     }
@@ -393,11 +415,73 @@ fn owner_check_sink(
     // With a single pool in the package every id belongs to it, so an id of unknown origin cannot be another pool's.
     if actual < 0L && st.pool_declarations <= 1L { return }
     let file_index = node_file_index(tables.nodes, files, value)
-    fail_owner_mismatch(env, source, files, tokens, tables, compiler, file_index, tables.nodes[value].start, expected, if actual >= 0L { actual } else { -1L })
+    fail_owner_mismatch(env, source, files, tokens, tables, compiler, file_index, tables.nodes[value].start, expected, if actual >= 0L { actual } else { -1L }, compiler.facts[value].ty == TY_WINDOW)
 }
 
 fn owner_value_is_pool_struct(compiler: CompilerTables, type_id: long) -> bool {
     type_kind(compiler, type_id) == TYPE_KIND_STRUCT && type_contains_pool(compiler, type_id, 0L)
+}
+
+// A window operation (windows.nl): operations that read bytes through the window's owner get the arena's binding in their
+// fact so that the emitter can load its address; two windows compared with each other must have the same arena; appending a
+// window to an arena needs a window of that arena.
+fn owner_resolve_window_op(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    st: OwnerState,
+    node: long,
+) {
+    let op = compiler.facts[node].literal & 255L
+    let first = compiler.child_first[node]
+    let second = if first >= 0L { compiler.child_next[first] } else { -1L }
+    let file_index = node_file_index(tables.nodes, files, node)
+    if op == WOP_APPEND && second >= 0L && compiler.facts[second].ty == TY_WINDOW {
+        owner_check_sink(env, source, files, tokens, tables, compiler, st, owner_of_pool_place(compiler, tables, first), second)
+        return
+    }
+    if !window_op_needs_owner(op) { return }
+    let owner = owner_of_value(source, files, tokens, tables, compiler, st, first, 0L)
+    if owner < 0L {
+        fail_at_message(env, files, compiler, file_index, tables.nodes[node].start,
+            "cannot tell which arena this window belongs to; declare it as Window<arena name>")
+    }
+    if ((op >= WOP_EQ && op <= WOP_GE) || (op >= WOP_STARTS_WITH && op <= WOP_CONTAINS)) && second >= 0L && compiler.facts[second].ty == TY_WINDOW {
+        owner_check_sink(env, source, files, tokens, tables, compiler, st, owner, second)
+    }
+    var found = -1L
+    for binding in 0L..compiler.bindings.count() {
+        if compiler.bindings[binding].node == owner && type_kind(compiler, compiler.bindings[binding].ty) == TYPE_KIND_POOL { found = binding; break }
+    }
+    if found < 0L {
+        // a struct field: the function's one value of the struct that holds the field (a parameter or a local) gives the address
+        var field = -1L
+        for candidate in 0L..compiler.struct_fields.count() {
+            if compiler.struct_fields[candidate].node == owner { field = candidate; break }
+        }
+        let function_node = st.scope_node
+        let lowest = node_first_child(tables.nodes, function_node)
+        if field >= 0L && st.scope_node >= 0L {
+            for binding in 0L..compiler.bindings.count() {
+                let holder = compiler.bindings[binding].node
+                if holder < lowest || holder > function_node || type_kind(compiler, compiler.bindings[binding].ty) != TYPE_KIND_STRUCT { continue }
+                let record = type_record(compiler, compiler.bindings[binding].ty)
+                if field >= record.field_start && field < record.field_start + record.field_count {
+                    found = binding
+                    compiler.facts[node].literal = op + (compiler.struct_fields[field].offset + 1L) * 256L
+                    break
+                }
+            }
+        }
+    }
+    if found < 0L {
+        fail_at_message(env, files, compiler, file_index, tables.nodes[node].start,
+            "this arena is a struct field with no value of its struct in this function; pass the arena down as its own parameter")
+    }
+    compiler.facts[node].binding = found
 }
 
 recursive fn owner_walk(
@@ -406,7 +490,7 @@ recursive fn owner_walk(
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: ParseTables,
-    compiler: CompilerTables,
+    compiler: write CompilerTables,
     st: write OwnerState,
     node: long,
     depth: long,
@@ -460,7 +544,7 @@ recursive fn owner_walk(
         owner_walk(env, source, files, tokens, tables, compiler, st, child, depth + 1L)
         child = compiler.child_next[child]
     }
-    if is_type_node(kind) && token_is_word_at(source, tokens, files, file_index, tables.nodes[node].token, "Id") &&
+    if is_type_node(kind) && owner_is_id_word(source, tokens, files, file_index, tables.nodes[node].token) &&
         (tables.nodes[node].meta1 & 2097151L) == 1L {
         let argument = compiler.child_first[node]
         let found = owner_resolve_name(compiler, st, compiler.token_name_ids[tables.nodes[argument].token], st.function_id)
@@ -472,6 +556,9 @@ recursive fn owner_walk(
             fail_at_message(env, files, compiler, file_index, tables.nodes[node].start,
                 "with more than one pool in the package, an id must name its pool: write Id<pool name> (owner parameters such as Id<P> are not supported yet)")
         }
+    }
+    if (compiler.facts[node].flags & FACT_WINDOW_OP) != 0L {
+        owner_resolve_window_op(env, source, files, tokens, tables, compiler, st, node)
     }
     if kind == NodeKind.PatternBinding {
         let binding = compiler.facts[node].binding
@@ -635,11 +722,11 @@ fn check_pool_owners(
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
     tables: ParseTables,
-    compiler: CompilerTables,
+    compiler: write CompilerTables,
 ) {
     var st = OwnerState {
         visible_names: list {}, visible_keys: list {}, binding_ids: list {}, binding_owners: list {},
-        function_id: -1L, scrutinee: -1L, pool_declarations: 0L, pool_values: 0L,
+        function_id: -1L, scrutinee: -1L, pool_declarations: 0L, pool_values: 0L, scope_node: -1L,
     }
     for field in 0L..compiler.struct_fields.count() {
         if type_kind(compiler, compiler.struct_fields[field].ty) == TYPE_KIND_POOL { st.pool_declarations += 1L }
@@ -666,6 +753,7 @@ fn check_pool_owners(
         let function = compiler.functions[function_id]
         if function.file < 0L { continue }
         st.function_id = function_id
+        st.scope_node = function.node
         st.scrutinee = -1L
         for step in 0L..st.visible_names.count() { match st.visible_names.pop() { some(_) => (), none => () } }
         for step in 0L..st.visible_keys.count() { match st.visible_keys.pop() { some(_) => (), none => () } }
@@ -699,5 +787,15 @@ fn check_pool_owners(
                 }
             }
         }
+    }
+    // test blocks: the same checks (pool ids and windows used in a test)
+    for test_index in 0L..compiler.tests.count() {
+        let test = compiler.tests[test_index]
+        st.function_id = -1L
+        st.scrutinee = -1L
+        st.scope_node = test.node
+        for step in 0L..st.visible_names.count() { match st.visible_names.pop() { some(_) => (), none => () } }
+        for step in 0L..st.visible_keys.count() { match st.visible_keys.pop() { some(_) => (), none => () } }
+        owner_walk(env, source, files, tokens, tables, compiler, st, test.node, 0L)
     }
 }

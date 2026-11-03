@@ -417,6 +417,9 @@ fn body_child_expected(
             let parameter = compiler.parameters[compiler.functions[method_function].param_start + parameter_index]
             if (parameter_mode(parameter) & FLAG_MODE_GROW) != 0L || parameter_uses_text_read_view(compiler, parameter) { -1L } else { parameter.ty }
         } else { -1L }
+    } else if kind == NodeKind.MethodCall && frame.child0 >= 0L && child != frame.child0 &&
+        (compiler.facts[frame.child0].ty == TY_WINDOW || type_is_arena(compiler, compiler.facts[frame.child0].ty)) {
+        window_method_argument_type(source, tokens, files, compiler, file_index, tables.nodes[parent].token, compiler.facts[frame.child0].ty)
     } else if kind == NodeKind.MethodCall && frame.child0 >= 0L &&
         c_runtime_method_kind(source, tokens, files, compiler, file_index, tables.nodes[parent].token, compiler.facts[frame.child0].ty) != C_METHOD_NONE {
         c_runtime_child_expected(source, tokens, files, compiler, file_index, tables.nodes[parent].token,
@@ -477,7 +480,7 @@ fn body_child_expected(
             let other = if child == frame.child0 { frame.child1 } else { frame.child0 }
             let known = natural_node_type(source, tokens, files, tables, compiler, other, frame.scope, file_index)
             if is_unsuffixed_integer(tables, other) && !is_unsuffixed_integer(tables, child) { -1L }
-            else if type_kind(compiler, known) == TYPE_KIND_ASCII || type_kind(compiler, known) == TYPE_KIND_TEXT || type_kind(compiler, known) == TYPE_KIND_BYTES { -1L }
+            else if known == TY_WINDOW || type_kind(compiler, known) == TYPE_KIND_ASCII || type_kind(compiler, known) == TYPE_KIND_TEXT || type_kind(compiler, known) == TYPE_KIND_BYTES { -1L }
             else if known >= 0L { known }
             else if is_unsuffixed_integer(tables, child) { -1L }
             else { -1L }

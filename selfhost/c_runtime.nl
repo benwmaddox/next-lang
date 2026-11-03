@@ -50,4 +50,5 @@ fn emit_c_runtime_adapters(compiler: write CompilerTables, ir: grow Bytes max IR
     emit_c_runtime_filesystem_adapters(compiler, ir)
     emit_c_runtime_text_adapters(compiler, ir)
     emit_float_text_functions(compiler, ir)
+    emit_window_helpers(compiler, ir)
 }
