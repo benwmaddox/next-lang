@@ -1905,11 +1905,7 @@ fn emit_collection_method(
         }
         ir_write_ascii(compiler, ir, "coll.push.add."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.push.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.push.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.push.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.push.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.push.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.push.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         if is_aggregate_type(compiler, element) {
-            let source_kind = if tables.nodes[value_argument].kind == NodeKind.Name && compiler.facts[value_argument].binding >= 0L {
-                if compiler.bindings[compiler.facts[value_argument].binding].parameter { 2L } else { 1L }
-            } else if tables.nodes[value_argument].kind == NodeKind.Field { 3L } else { 0L }
-            let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[value_argument].binding } else { value_argument }
-            let source_location = aggregate_source_location(compiler, source_kind, source_id)
+            let source_location = aggregate_source_location_for_node(tables, compiler, value_argument)
             let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
             emit_collection_store_dynamic_fields(compiler, ir, element, stride, base_offset, 0L,
                 location, pointer_serial, source_location, source_pointer, 1L, node)
@@ -1947,11 +1943,7 @@ fn emit_collection_method(
         }
         ir_write_ascii(compiler, ir, "  %coll.insert.prev."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sub i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  br label %coll.insert.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.insert.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.insert.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.insert.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.insert.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         if is_aggregate_type(compiler, element) {
-            let source_kind = if tables.nodes[value_argument].kind == NodeKind.Name && compiler.facts[value_argument].binding >= 0L {
-                if compiler.bindings[compiler.facts[value_argument].binding].parameter { 2L } else { 1L }
-            } else if tables.nodes[value_argument].kind == NodeKind.Field { 3L } else { 0L }
-            let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[value_argument].binding } else { value_argument }
-            let source_location = aggregate_source_location(compiler, source_kind, source_id)
+            let source_location = aggregate_source_location_for_node(tables, compiler, value_argument)
             let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
             emit_collection_store_dynamic_fields(compiler, ir, element, stride, base_offset, 0L,
                 location, pointer_serial, source_location, source_pointer, 2L, argument)
