@@ -390,6 +390,7 @@ recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTable
             let location = compiler_location(compiler, 3L, binding, 0L)
             sum_parameter_location(compiler, binding, StorageLocation { origin: location.origin, anchor_kind: location.anchor_kind, anchor_node: location.anchor_node, byte_offset: location.byte_offset, copies: -1L, index: -1L, index_node: -1L, index_stride: 0L })
         } else if binding >= 0L && compiler.bindings[binding].parameter { compiler_location(compiler, 3L, binding, 0L) }
+        else if binding < 0L && (compiler.facts[node].flags & (FACT_CONSTANT_TEXT | FACT_CONSTANT_ARRAY)) != 0L { compiler_location(compiler, 0L, node, 0L) }
         else { compiler_location(compiler, 1L, binding, 0L) }
     } else if kind == NodeKind.Field {
         var root = node

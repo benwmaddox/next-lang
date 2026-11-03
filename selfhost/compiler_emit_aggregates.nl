@@ -10,7 +10,7 @@ fn emit_aggregate_address(
     let receiver = compiler.child_first[node]
     if emit_collection_field_path_address(tables, compiler, ir, node, node) { return }
     if emit_parameter_field_path_address(tables, compiler, ir, node, node) { return }
-    if tables.nodes[receiver].kind == NodeKind.Name {
+    if tables.nodes[receiver].kind == NodeKind.Name && compiler.facts[receiver].binding >= 0L {
         let binding = compiler.facts[receiver].binding
         if compiler.bindings[binding].parameter { emit_layout_address(compiler, ir, node, compiler_location(compiler, 3L, binding, field.offset)) }
         else { emit_layout_address(compiler, ir, node, compiler_location(compiler, 1L, binding, field.offset)) }

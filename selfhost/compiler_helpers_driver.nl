@@ -1005,7 +1005,8 @@ fn emit_file_globals(
     }
     for node in 0L..tables.nodes.count() {
         if tables.nodes[node].kind == NodeKind.Const && (compiler.facts[node].flags & FACT_CONSTANT_ARRAY) != 0L {
-            emit_array_constant_global(source, tokens, files, tables, compiler, ir, node)
+            if const_is_simple_array(compiler, node) { emit_array_constant_global(source, tokens, files, tables, compiler, ir, node) }
+            else { emit_image_constant_global(source, tokens, files, tables, compiler, ir, node) }
         }
     }
     let first_file_id = compiler_file_id_base(compiler)
