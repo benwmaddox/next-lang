@@ -1200,6 +1200,24 @@ recursive fn parse_type_inner(
     }
 }
 
+// The maximum of `Ascii max N`, `Bytes max N` or `Text max N`. A bare number directly followed by `[` is the
+// whole maximum, so that `Bytes max 16[3]` is an array of three `Bytes max 16`, not a maximum of `16[3]`.
+recursive fn parse_text_limit(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: write ParseTables,
+) -> Result<long, ParseError> {
+    let first = cursor_peek(tables, tokens, 0L)
+    let second = cursor_peek(tables, tokens, 1L)
+    if first.kind == TokenKind.Number && second.kind == TokenKind.LBracket && !first.virtual_piece {
+        let token = cursor_next(tables, tokens)
+        let leaf = parse_prefix_leaf(source, tokens, tables, token)?
+        return ok(leaf.node)
+    }
+    let expression = parse_expression(source, tokens, tables, 8L)?
+    ok(expression)
+}
+
 recursive fn parse_named_type(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -1296,25 +1314,25 @@ recursive fn parse_named_type(
     if type_name_is(source, tokens, tables, name.token, "Ascii") || type_name_is(source, tokens, tables, name.token, "Bytes") {
         if cursor_word_is(source, tables, tokens, "max") {
             cursor_next(tables, tokens)
-            parse_expression(source, tokens, tables, 8L)?
+            parse_text_limit(source, tokens, tables)?
             constants += 1L
         }
     }
     if type_name_is(source, tokens, tables, name.token, "Text") {
         if cursor_word_is(source, tables, tokens, "max") {
             cursor_next(tables, tokens)
-            parse_expression(source, tokens, tables, 8L)?
+            parse_text_limit(source, tokens, tables)?
             constants += 1L
             if cursor_word_is(source, tables, tokens, "bytes") {
                 cursor_next(tables, tokens)
                 cursor_expect_word(source, tables, tokens, "max", ParseProblemKind.ExpectedTextMax)?
-                parse_expression(source, tokens, tables, 8L)?
+                parse_text_limit(source, tokens, tables)?
                 constants += 1L
             }
         } else if cursor_word_is(source, tables, tokens, "bytes") {
             cursor_next(tables, tokens)
             cursor_expect_word(source, tables, tokens, "max", ParseProblemKind.ExpectedTextMax)?
-            parse_expression(source, tokens, tables, 8L)?
+            parse_text_limit(source, tokens, tables)?
             constants += 1L
             flags = flags | FLAG_TYPE_TEXT_BYTES
         } else {
