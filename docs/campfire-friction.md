@@ -205,3 +205,19 @@ too many code points, NULL), `/utf` in `tests/py/test_http_identity.py`.
 An interpolated string holding a `Text` can be appended to a `Bytes` builder (its bytes are valid bytes). Not done: the template
 generator knows `Bytes`/`Ascii` only, so Campfire's pages still take `Bytes` fields; teaching it `Text` (escaping by bytes of the
 text) is the step that lets Campfire's names and bodies be `Text` all the way.
+
+## Round 8: developer and agent experience (2026-11-02)
+
+Done (see AGENTS.md, docs/LANGUAGE.md): `AGENTS.md`/`CLAUDE.md`, a language cheat sheet whose tour (`docs/examples/tour`) is built and
+tested, `nlc check` (compile only, about 50 ms against 1 s for a build), source lines with a caret under errors, `nlc check --json`,
+`nlc test --filter`, `scripts/test-related.sh`, `nlc fmt` (whitespace only), and `nlc` building the compiler from the current
+sources when none is named (it used to pick up a stale `.selfhost-stage-chain-aos/stage3`).
+
+| # | Snag | Status |
+| --- | --- | --- |
+| 24 | `for edge in a { discard b.push(edge) }` emitted IR using a local that was never allocated | fixed: push and insert resolve a loop view's location (`tests/py/test_foreach_push.py`). The `env.fs.join(package, entry.name)` form was not re-checked |
+| 26 | `expected int, found never; cast explicitly with (int)value` for a string literal in an `int` function | fixed: the error names Ascii, Text, Bytes, or the kind (a struct, a list, ...); the cast hint only appears between scalars. Still open: it says "a struct" rather than the struct's name |
+| 27 | A range alias (`type Score = int 0..=100`) used in a struct field reported "type arguments" | clearer text; the feature itself is still not built |
+| 28 | Only the first error is reported (every error path exits), so a fix takes a full round trip each | open; needs error recovery in the checker, or per-function checking with a collected list |
+| 29 | `out.line(..)`, `out.int(..)` report "not supported ... method calls" on the default C runtime | open; use `print` or `env.out.write` |
+| 30 | `nlc fmt` is whitespace only; a layout formatter needs a lexer that keeps comments and blank lines | open |
