@@ -1,0 +1,3 @@
+main.nl:11:24: error: expected b.Id, got a.Id
+   11 |     print(arena_len(b, w))
+      |                        ^
