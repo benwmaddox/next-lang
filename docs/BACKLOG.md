@@ -52,3 +52,17 @@ constants; `Bytes max N[3]` parsing (branch `rich-maps`).
 - Iterators: probably no language change; go2nl converts range-over-func by inlining.
 - Small: `Option<Id<P>>` as the idiomatic "maybe a link" and `none` as a field default;
   letting a temporary be a `write` argument (go2nl uses explicit temporaries today).
+
+## Principle: explicit environment (2026-11-03)
+
+No subtle hoisting of values into a closure: a function sees only what it is given as arguments
+(DESIGN.md, "Explicit environment, never hoisting"). Value types of this kind are welcome: a
+*view* (reference + start + end), a *cursor* (iterator state), an *environment record*
+(captured values + the id of the named function). Open: names for the family (View, Cursor,
+Env_* are the proposals), and whether next-lang gets a built-in `View` type.
+
+Open question that follows from it: DESIGN.md's *scoped blocks* (`db.read { }`,
+`transaction { }`, `parallel for` bodies, a page's `for` and `if`) "may read the surrounding
+locals", which is implicit capture by another name (the compiler makes a helper whose context
+is passed explicitly, but the programmer does not see that). Decide whether to keep them
+as they are, make the context visible in the syntax, or list the read locals at the block.
