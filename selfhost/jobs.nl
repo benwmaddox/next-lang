@@ -85,8 +85,11 @@ recursive fn emit_spawn_statement(
         ir_write_ascii(compiler, ir, ", align 1\n")
         argument = compiler.child_next[argument]
     }
+    ir_write_ascii(compiler, ir, "  %spawn.native."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = load i64, ptr @nl.job."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ".native, align 8\n")
     ir_write_ascii(compiler, ir, "  call void @nl_job_start(ptr @nl.job."); ir_write_number(compiler, ir, node)
-    ir_write_ascii(compiler, ir, ", ptr %spawn.args."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ")\n")
+    ir_write_ascii(compiler, ir, ", ptr %spawn.args."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", i64 %spawn.native."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ")\n")
     // Remember the site so its thread entry is emitted (only sites in emitted functions have an entry).
     compiler.facts[node].literal = 1L
 }
@@ -135,6 +138,10 @@ fn emit_job_entries(
             }
         }
         ir_write_ascii(compiler, ir, ")\n  call void @nl_context_destroy(ptr %ctx)\n  call void @nl_job_args_free(ptr %args)\n  ret ptr null\n}\n\n")
+        // the native stack the job is started on (0: the runtime's default), read by the spawn site
+        ir_write_ascii(compiler, ir, "@nl.job."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ".native = private constant i64 "); ir_write_number(compiler, ir, native_stack_estimate(tables, compiler, target_id))
+        ir_write_ascii(compiler, ir, ", align 8\n\n")
     }
 }
 

@@ -607,7 +607,7 @@ uint64_t nl_stack_alloc_offset(void *opaque, uint64_t top_offset, uint64_t bytes
 #if defined(__linux__) && !NL_WINDOWS
 static int nl_report_stacks_enabled = -1;
 static volatile uint64_t nl_report_data_histogram[40], nl_report_native_histogram[40], nl_report_data_max, nl_report_native_max;
-static volatile uint64_t nl_report_reserved_min = UINT64_MAX, nl_report_reserved_max;
+static volatile uint64_t nl_report_reserved_min = UINT64_MAX, nl_report_reserved_max, nl_report_native_reserved_min = UINT64_MAX, nl_report_native_reserved_max;
 static void nl_report_stacks_print(void) {
     char line[512];
     for (int pass = 0; pass < 2; ++pass) {
@@ -621,6 +621,7 @@ static void nl_report_stacks_print(void) {
             if (histogram[index] && length < (int)sizeof(line) - 24) length += snprintf(line + length, sizeof(line) - length, " <=%llu:%llu", (unsigned long long)1 << index, (unsigned long long)histogram[index]);
         }
         if (!pass && nl_report_reserved_max) length += snprintf(line + length, sizeof(line) - length, " (reserved per job: %llu to %llu bytes)", (unsigned long long)nl_report_reserved_min, (unsigned long long)nl_report_reserved_max);
+        if (pass && nl_report_native_reserved_max) length += snprintf(line + length, sizeof(line) - length, " (reserved per job: %llu to %llu bytes)", (unsigned long long)nl_report_native_reserved_min, (unsigned long long)nl_report_native_reserved_max);
         line[length++] = '\n';
         ssize_t ignored = write(2, line, (size_t)length); (void)ignored;
     }
@@ -646,6 +647,8 @@ static void nl_report_job_stacks(nl_data_stack_context *context) {
         uint64_t count = bytes / 8, at = 0;
         while (at < count && words[at] == 0) ++at;
         native_used = (count - at) * 8;
+        if (bytes < nl_report_native_reserved_min) nl_report_native_reserved_min = bytes;
+        if (bytes > nl_report_native_reserved_max) nl_report_native_reserved_max = bytes;
     }
     __atomic_add_fetch(&nl_report_data_histogram[nl_log2_bucket(data_used)], 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&nl_report_native_histogram[nl_log2_bucket(native_used)], 1, __ATOMIC_RELAXED);
@@ -1484,6 +1487,7 @@ static pthread_mutex_t nl_waiters_lock = PTHREAD_MUTEX_INITIALIZER;
 static nl_coro *nl_waiters[NL_WAITER_BUCKETS];
 static pthread_mutex_t nl_stack_lock = PTHREAD_MUTEX_INITIALIZER;
 static void *nl_free_stacks[1024];
+static size_t nl_free_stack_bytes[1024];
 static int nl_free_stack_count;
 static volatile int32_t nl_live_jobs;
 static volatile int32_t nl_thread_waiters;  /* plain threads sleeping in nl_park: nl_wake only makes the futex call when > 0 */
@@ -1627,8 +1631,16 @@ static void nl_coro_entry(void) {
 }
 
 static void *nl_stack_get(size_t bytes) {
+    void *stack = NULL;
     pthread_mutex_lock(&nl_stack_lock);
-    void *stack = nl_free_stack_count ? nl_free_stacks[--nl_free_stack_count] : NULL;
+    for (int index = nl_free_stack_count - 1; index >= 0; --index) {   /* a stack of the size wanted, from those given back */
+        if (nl_free_stack_bytes[index] == bytes) {
+            stack = nl_free_stacks[index];
+            nl_free_stacks[index] = nl_free_stacks[--nl_free_stack_count];
+            nl_free_stack_bytes[index] = nl_free_stack_bytes[nl_free_stack_count];
+            break;
+        }
+    }
     pthread_mutex_unlock(&nl_stack_lock);
     if (stack) return stack;
     stack = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_STACK, -1, 0);
@@ -1639,7 +1651,11 @@ static void *nl_stack_get(size_t bytes) {
 
 static void nl_stack_put(void *stack, size_t bytes) {
     pthread_mutex_lock(&nl_stack_lock);
-    if (nl_free_stack_count < 1024) { nl_free_stacks[nl_free_stack_count++] = stack; stack = NULL; }
+    if (nl_free_stack_count < 1024) {
+        nl_free_stack_bytes[nl_free_stack_count] = bytes;
+        nl_free_stacks[nl_free_stack_count++] = stack;
+        stack = NULL;
+    }
     pthread_mutex_unlock(&nl_stack_lock);
     if (stack) munmap(stack, bytes);
 }
@@ -1922,7 +1938,7 @@ static void nl_workers_start(void) {
 }
 
 /* spawn: a new job on the ready queue. */
-static void nl_coro_spawn(void *(*entry)(void *), void *argument) {
+static void nl_coro_spawn(void *(*entry)(void *), void *argument, uint64_t native_bytes) {
     if (!nl_workers_started) nl_workers_start();
     pthread_mutex_lock(&nl_coro_pool_lock);
     nl_coro *coro = nl_free_coros;
@@ -1939,7 +1955,9 @@ static void nl_coro_spawn(void *(*entry)(void *), void *argument) {
     if (!coro) nl_stack_startup_failure("cannot start a job");
     coro->entry = entry;
     coro->argument = argument;
-    coro->stack_bytes = NL_CORO_NATIVE_STACK_BYTES;
+    /* the build computes how much native stack an entry point needs (0: unknown, take the default); a whole number of 16 KiB steps */
+    coro->stack_bytes = native_bytes ? (size_t)((native_bytes + 16383u) & ~(uint64_t)16383u) : NL_CORO_NATIVE_STACK_BYTES;
+    if (coro->stack_bytes < 65536) coro->stack_bytes = 65536;
     coro->stack = nl_stack_get(coro->stack_bytes);
     if (!coro->stack) nl_stack_startup_failure("cannot allocate a job's stack");
 #if defined(NL_CORO_ASM_SWITCH)
@@ -2083,7 +2101,7 @@ void nl_job_args_free(void *block) {
    placement to the system). Both are tuning knobs while the defaults are measured. */
 int64_t nl_mbox_spin = 0;
 
-void nl_job_start(void *(*entry)(void *), void *arguments) {
+void nl_job_start(void *(*entry)(void *), void *arguments, int64_t native_bytes) {
 #if defined(__linux__) && !NL_WINDOWS
     static int spin_configured;
     if (!spin_configured) {
@@ -2091,7 +2109,7 @@ void nl_job_start(void *(*entry)(void *), void *arguments) {
         if (spin_text && *spin_text) nl_mbox_spin = atoll(spin_text);
         spin_configured = 1;
     }
-    nl_coro_spawn(entry, arguments);
+    nl_coro_spawn(entry, arguments, native_bytes > 0 ? (uint64_t)native_bytes : 0);
     return;
 #endif
     if (nl_job_count >= NL_JOB_LIMIT) nl_stack_startup_failure("too many jobs");

@@ -61,6 +61,11 @@ class StackEstimates(unittest.TestCase):
             self.assertGreaterEqual(jobs, 10)
             self.assertGreaterEqual(reserved_low, largest, "a job reserved less than it used")
             self.assertLess(reserved_high, 4 << 20, "the reservation is still the generic default")
+            native = re.search(r"stacks: native: (\d+) jobs, largest (\d+) bytes.*reserved per job: (\d+) to (\d+) bytes", text)
+            self.assertTrue(native, text)
+            native_largest, native_reserved_low, native_reserved_high = int(native.group(2)), int(native.group(3)), int(native.group(4))
+            self.assertGreater(native_reserved_low, native_largest + 80 * 1024, "less native stack than used plus the runtime's safety room")
+            self.assertLess(native_reserved_high, 512 * 1024, "the native stack is still the 1 MiB default")
 
 
 if __name__ == "__main__":
