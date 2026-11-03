@@ -1,0 +1,3 @@
+main.nl:13:28: error: expected labels.Id, got nodes.Id
+   13 |         print(world.labels[n].text)
+      |                            ^

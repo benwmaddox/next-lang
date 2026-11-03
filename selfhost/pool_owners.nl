@@ -430,7 +430,27 @@ recursive fn owner_walk(
     if kind == NodeKind.ForEach {
         let collection = compiler.child_first[node]
         let binding = compiler.facts[node].binding
-        if collection >= 0L && binding >= 0L && compiler.bindings[binding].ty == TY_LONG {
+        if collection >= 0L && binding >= 0L && type_kind(compiler, compiler.facts[collection].ty) == TYPE_KIND_MAP {
+            // for key, value in map: the key's ids belong to the pool named by the map's key type, the value's by its value type.
+            let map_type = owner_place_type_node(compiler, tables, collection)
+            let function_scope = if tables.nodes[collection].kind == NodeKind.Name { st.function_id } else { -1L }
+            let key_node = owner_map_argument(source, files, tokens, tables, compiler, map_type, 0L)
+            let key_binding_type = compiler.bindings[binding].ty
+            if key_binding_type == TY_LONG || collection_kind_is_list(type_kind(compiler, key_binding_type)) || type_kind(compiler, key_binding_type) == TYPE_KIND_ARRAY {
+                let key_owner = if key_node >= 0L { owner_declared(source, files, tokens, tables, compiler, st, key_node, function_scope) } else { OWNER_UNKNOWN }
+                owner_set_binding(env, st, binding, if key_owner == OWNER_NONE { OWNER_UNKNOWN } else { key_owner })
+            }
+            if tables.nodes[node].aux > 0L {
+                let value_token = tables.extra[tables.nodes[node].extra]
+                let value_binding = find_binding_in_scope(compiler, compiler.bindings[binding].scope, compiler.token_name_ids[value_token])
+                if value_binding >= 0L {
+                    let value_type = compiler.bindings[value_binding].ty
+                    if value_type == TY_LONG || collection_kind_is_list(type_kind(compiler, value_type)) || type_kind(compiler, value_type) == TYPE_KIND_ARRAY {
+                        owner_set_binding(env, st, value_binding, owner_of_value(source, files, tokens, tables, compiler, st, collection, 0L))
+                    }
+                }
+            }
+        } else if collection >= 0L && binding >= 0L && compiler.bindings[binding].ty == TY_LONG {
             owner_set_binding(env, st, binding, owner_of_value(source, files, tokens, tables, compiler, st, collection, 0L))
         }
     }

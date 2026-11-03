@@ -741,3 +741,136 @@ fn check_map_keys(
             "map key type '", tables.nodes[key_node].token, "' is not hashable; use Ascii, integers, bool, enums, ids, or structs built from those types")
     }
 }
+
+// ---- for-each over a map ------------------------------------------------------------------------
+// `for k, v in m { ... }` and `for k in m { ... }` visit the live entries in insertion order (the order of the
+// entries array: setting an existing key keeps its position, removing a key and setting it again puts it last).
+// k and v are read-only copies of the key and value. The loop may not change the map it walks.
+
+// The field path of a place, leaf first (-1 stands for an index, whose element is not known). False when too long.
+fn map_loop_place_chain(tables: ParseTables, compiler: CompilerTables, node: long, chain: write list<long, 16>) -> bool {
+    var current = node
+    for step in 0L..16L {
+        if current < 0L { return false }
+        let kind = tables.nodes[current].kind
+        if kind == NodeKind.Name { return true }
+        if kind == NodeKind.Field {
+            match chain.push(compiler.facts[current].literal) { ok(_) => (), err(_) => { return false } }
+        } else if kind == NodeKind.Index {
+            match chain.push(-1L) { ok(_) => (), err(_) => { return false } }
+        } else { return false }
+        current = compiler.child_first[current]
+    }
+    false
+}
+
+// Whether changing `written` could change `walked`: both rooted at the same binding and `written` is `walked` or a part
+// that contains it (the whole record holding the map).
+fn map_loop_place_conflict(tables: ParseTables, compiler: CompilerTables, written: long, walked: long) -> bool {
+    let binding = place_root_binding(tables, compiler, written)
+    if binding < 0L || binding != place_root_binding(tables, compiler, walked) { return false }
+    var written_chain: list<long, 16> = list {}
+    var walked_chain: list<long, 16> = list {}
+    if !map_loop_place_chain(tables, compiler, written, written_chain) || !map_loop_place_chain(tables, compiler, walked, walked_chain) { return true }
+    if written_chain.count() > walked_chain.count() { return false }
+    for step in 0L..written_chain.count() {
+        let a = written_chain[written_chain.count() - 1L - step]
+        let b = walked_chain[walked_chain.count() - 1L - step]
+        if a < 0L || b < 0L { return true }
+        if a != b { return false }
+    }
+    true
+}
+
+// The first node in the loop body that could change the walked map, else -1: set or remove on it, an assignment to it
+// or to something holding it, or passing it (or something holding it) to a `write` parameter.
+fn map_loop_mutation(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    body: long,
+    walked: long,
+) -> long {
+    let first = body - tables.nodes[body].subtree + 1L
+    for node in first..body + 1L {
+        let kind = tables.nodes[node].kind
+        if kind == NodeKind.Assign {
+            if map_loop_place_conflict(tables, compiler, compiler.child_first[node], walked) { return node }
+        } else if kind == NodeKind.MethodCall || kind == NodeKind.Call {
+            let function_id = compiler.facts[node].function
+            let receiver = compiler.child_first[node]
+            if kind == NodeKind.MethodCall && receiver >= 0L && type_kind(compiler, compiler.facts[receiver].ty) == TYPE_KIND_MAP {
+                let method = compiler.facts[node].literal
+                if (method == COLLECTION_METHOD_MAP_SET || method == COLLECTION_METHOD_MAP_REMOVE) && map_loop_place_conflict(tables, compiler, receiver, walked) { return node }
+            }
+            if function_id >= 0L && (kind == NodeKind.Call || (compiler.facts[node].flags & FACT_STRUCT_METHOD) != 0L) {
+                let function = compiler.functions[function_id]
+                var argument = compiler.child_first[node]
+                for offset in 0L..function.param_count {
+                    if argument < 0L { break }
+                    let mode = parameter_mode(compiler.parameters[function.param_start + offset])
+                    if (mode & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L && map_loop_place_conflict(tables, compiler, argument, walked) { return node }
+                    argument = compiler.child_next[argument]
+                }
+            }
+        } else { () }
+    }
+    -1L
+}
+
+// The start of one loop iteration over entry number %for.each.current.N: skip a removed entry, else copy its key (and
+// value, when the loop names one) into the loop's own variables.
+fn emit_map_loop_entry(
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    map_location: StorageLocation,
+    map_pointer: long,
+    map_type: long,
+    key_binding: long,
+    scope: long,
+) {
+    let key = map_key_type(compiler, map_type)
+    let value = map_value_type(compiler, map_type)
+    ir_write_ascii(compiler, ir, "  %for.map.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %for.each.current."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, map_slot_size(compiler, map_type))
+    ir_write_ascii(compiler, ir, "\n  %for.map.shifted."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %for.map.offset."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", 16\n  %for.map.entry."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
+    emit_location_pointer_reference(compiler, ir, map_location, map_pointer)
+    ir_write_ascii(compiler, ir, ", i64 %for.map.shifted."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, "\n  %for.map.state."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr %for.map.entry."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, "\n  %for.map.live."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq i64 %for.map.state."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", 1\n  br i1 %for.map.live."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %for.map.take."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", label %for.increment."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nfor.map.take."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+    emit_map_loop_copy(compiler, ir, node, 0L, map_key_offset(compiler, map_type), value_type_size(compiler, key), key_binding)
+    if tables.nodes[node].aux > 0L {
+        let value_token = tables.extra[tables.nodes[node].extra]
+        let value_binding = find_binding_in_scope(compiler, scope, compiler.token_name_ids[value_token])
+        if value_binding >= 0L {
+            emit_map_loop_copy(compiler, ir, node, 1L, map_value_offset(compiler, map_type), value_type_size(compiler, value), value_binding)
+        }
+    }
+}
+
+// Copy `size` bytes at `offset` in %for.map.entry.N into the local of `binding`.
+fn emit_map_loop_copy(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    part: long,
+    offset: long,
+    size: long,
+    binding: long,
+) {
+    let destination = compiler_location(compiler, 1L, binding, 0L)
+    let serial = emit_location_pointer_materialization(compiler, ir, destination)
+    ir_write_ascii(compiler, ir, "  %for.map.source."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, part)
+    ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %for.map.entry."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, offset)
+    ir_write_ascii(compiler, ir, "\n  %for.map.copy."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, part)
+    ir_write_ascii(compiler, ir, " = call ptr @nl.mem.copy(ptr "); emit_location_pointer_reference(compiler, ir, destination, serial)
+    ir_write_ascii(compiler, ir, ", ptr %for.map.source."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, part)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
+}

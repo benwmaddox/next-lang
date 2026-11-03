@@ -1,0 +1,3 @@
+main.nl:9:9: error: a loop over a map cannot change that map; collect the keys first, or change it after the loop
+    9 |         touch(book)
+      |         ^

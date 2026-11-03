@@ -2745,8 +2745,15 @@ recursive fn emit_function_body(
                 let view_address = emit_late_place_address(tables, compiler, ir, collection)
                 location = compiler_location(compiler, 2L, view_address, 0L)
             }
+            if collection_kind == TYPE_KIND_MAP && tables.nodes[collection].kind == NodeKind.Field {
+                let map_address = emit_late_place_address(tables, compiler, ir, collection)
+                location = compiler_location(compiler, 2L, map_address, 0L)
+            }
             let pointer = emit_location_pointer_materialization(compiler, ir, location)
-            if collection_kind_is_list(collection_kind) {
+            if collection_kind == TYPE_KIND_MAP {
+                // the entries in use (live and removed) are visited in order; removed ones are skipped in the body
+                ir_write_ascii(compiler, ir, "  %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 8\n  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 1\n")
+            } else if collection_kind_is_list(collection_kind) {
                 ir_write_ascii(compiler, ir, "  %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 0\n  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 1\n")
             } else if collection_kind == TYPE_KIND_ASCII || collection_kind == TYPE_KIND_BYTES {
                 ir_write_ascii(compiler, ir, "  %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 0\n  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 1\n")
@@ -2756,7 +2763,9 @@ recursive fn emit_function_body(
             ir_write_ascii(compiler, ir, "  store i64 0, ptr %for.each.index."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 8\n  br label %for.cond."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, "\nfor.cond."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ":\n  %for.each.current."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.index."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 8\n  %for.each.more."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = icmp ult i64 %for.each.current."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, "\n  br i1 %for.each.more."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", label %for.body."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", label %for.end."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, "\nfor.body."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ":\n")
             let view_binding = compiler.facts[child].binding
             let view_scope = compiler.bindings[view_binding].scope
-            if tables.nodes[child].aux > 0L {
+            if collection_kind == TYPE_KIND_MAP {
+                emit_map_loop_entry(tables, compiler, ir, child, location, pointer, collection_type, view_binding, view_scope)
+            } else if tables.nodes[child].aux > 0L {
                 let index_token = tables.extra[tables.nodes[child].extra]
                 let index_binding = find_binding_in_scope(compiler, view_scope, compiler.token_name_ids[index_token])
                 if index_binding >= 0L { ir_write_ascii(compiler, ir, "  store i64 %for.each.current."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, index_binding); ir_write_ascii(compiler, ir, ", align 8\n") }

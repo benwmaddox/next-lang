@@ -928,7 +928,7 @@ fn check_one_body(
         if kind == NodeKind.ForEach && frame.phase == 80L {
             let collection_type = compiler.facts[frame.child0].ty
             let collection_kind = type_kind(compiler, collection_type)
-            if collection_kind == TYPE_KIND_MAP {
+            if collection_kind == TYPE_KIND_MAP && !compiler.c_runtime {
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: frame.child0, offset: tables.nodes[frame.child0].start, category: UNSUPPORTED_MAP_USE, token: tables.nodes[frame.child0].token })
             }
             if collection_kind == TYPE_KIND_QUEUE {
@@ -938,12 +938,47 @@ fn check_one_body(
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: frame.child0, offset: tables.nodes[frame.child0].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[frame.child0].token })
             }
             if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST &&
-                collection_kind != TYPE_KIND_ASCII && collection_kind != TYPE_KIND_BYTES {
-                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "for-each loops require an array, list, Ascii, or Bytes")
+                collection_kind != TYPE_KIND_ASCII && collection_kind != TYPE_KIND_BYTES && collection_kind != TYPE_KIND_MAP {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "for-each loops require an array, list, map, Ascii, or Bytes")
             }
             let collection_binding = place_root_binding(tables, compiler, frame.child0)
             if !is_assignable_place(tables, frame.child0) || collection_binding < 0L {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "collection iteration needs a local, parameter, or field place; bind the value to a local first")
+            }
+            if collection_kind == TYPE_KIND_MAP {
+                // Keys and values are read-only copies; `for k in m` has no value name, `for k, v in m` names both.
+                if syntax.aux > 1L {
+                    fail_at_message(env, files, compiler, file_index, syntax.start, "a loop over a map names a key and at most a value: for key, value in map")
+                }
+                let map_scope = create_scope(env, files, compiler, frame.scope, function_id, node, file_index)
+                let key_binding = add_local_binding(env, source, files, tokens, tables, compiler, file_index, node, syntax.token, map_scope, map_key_type(compiler, collection_type), false, false, false)
+                if syntax.aux > 0L {
+                    let value_token = tables.extra[syntax.extra]
+                    let _ = add_local_binding(env, source, files, tokens, tables, compiler, file_index, node, value_token, map_scope, map_value_type(compiler, collection_type), false, false, false)
+                }
+                frame.phase = 81L
+                frame.result_ty = map_key_type(compiler, collection_type)
+                frame.auxiliary = map_scope
+                frame.child2 = frame.child1
+                prepare_loop_push_proofs(source, tokens, files, tables, compiler, node, frame.child2, frame.scope, map_capacity(compiler, collection_type), file_index, frame.loop_depth + 1L)
+                compiler.work[frame_index] = frame
+                push_check_frame(env, files, compiler, CheckFrame {
+                    node: frame.child2,
+                    scope: map_scope,
+                    expected: TY_UNIT,
+                    function_id,
+                    loop_depth: frame.loop_depth + 1L,
+                    is_test,
+                    phase: 0L,
+                    cursor: -1L,
+                    child0: -1L,
+                    child1: -1L,
+                    child2: -1L,
+                    result_ty: -1L,
+                    auxiliary: 1L,
+                    reachable: true,
+                })
+                continue
             }
             let mutable_view = compiler.bindings[collection_binding].mutable
             let view_scope = create_scope(env, files, compiler, frame.scope, function_id, node, file_index)
@@ -985,6 +1020,12 @@ fn check_one_body(
         }
         if kind == NodeKind.ForEach && frame.phase == 81L {
             finish_loop_push_proofs(compiler, node)
+            if type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_MAP {
+                let changed = map_loop_mutation(source, tokens, files, tables, compiler, frame.child1, frame.child0)
+                if changed >= 0L {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[changed].start, "a loop over a map cannot change that map; collect the keys first, or change it after the loop")
+                }
+            }
             let view_binding = binding_for_node(compiler, node)
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: view_binding, function: -1L, literal: compiler.facts[frame.child0].ty }
             match compiler.work.pop() { some(_) => (), none() => () }
