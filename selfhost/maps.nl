@@ -90,6 +90,8 @@ fn map_operand_by_pointer(compiler: CompilerTables, type_id: long) -> bool {
 
 // A key is a number, bool, enum, text or a struct (hashed and compared field by field).
 fn map_key_supported(compiler: CompilerTables, type_id: long) -> bool {
+    // a window would be hashed and compared by position; by-content keys need the arena (not done), so windows are refused
+    if type_contains_window(compiler, type_id, 0L) { return false }
     map_operand_is_text(compiler, type_id) || map_operand_is_scalar(compiler, type_id) ||
         ((type_kind(compiler, type_id) == TYPE_KIND_STRUCT || map_enum_plain(compiler, type_id)) && map_operand_is_aggregate(compiler, type_id))
 }
@@ -713,6 +715,7 @@ recursive fn map_struct_key_hashable(compiler: CompilerTables, type_id: long, de
     for offset in 0L..record.field_count {
         let field_ty = compiler.struct_fields[record.field_start + offset].ty
         let field_kind = type_kind(compiler, field_ty)
+        if type_contains_window(compiler, field_ty, 0L) { return false }
         if map_operand_is_text(compiler, field_ty) || map_enum_plain(compiler, field_ty) { continue }
         if map_operand_is_scalar(compiler, field_ty) && llvm_type_name(field_ty) != "double" && llvm_type_name(field_ty) != "float" { continue }
         if field_kind == TYPE_KIND_STRUCT && map_struct_key_hashable(compiler, field_ty, depth + 1L) { continue }

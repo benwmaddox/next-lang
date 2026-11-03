@@ -98,3 +98,16 @@ fn main(env: Env) {
     print(quick < "r")
     print(quick > "quick")
 }
+
+test "windows compare by content" {
+    var src: arena<100> = arena {}
+    let x = src.add("abc")
+    let y = src.add("abc")
+    let z = src.add("abd")
+    let same = x == y
+    let differ = x == z
+    expect same
+    expect !differ
+    let less = x < z
+    expect less
+}

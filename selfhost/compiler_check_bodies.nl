@@ -1425,6 +1425,9 @@ fn check_one_body(
         } else if kind == NodeKind.Expect {
             if !is_test { fail_at_message(env, files, compiler, file_index, syntax.start, "'expect' is only valid inside a test block") }
             let actual = if frame.child0 >= 0L { compiler.facts[frame.child0].ty } else { -1L }
+            if frame.child0 >= 0L && (compiler.facts[frame.child0].flags & FACT_WINDOW_OP) != 0L && tables.nodes[frame.child0].kind == NodeKind.Binary {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "expect cannot show windows: compare into a bool first (let same = a == b, then expect same)")
+            }
             if actual >= 0L { require_type(env, files, compiler, file_index, frame.child0, TY_BOOL, actual, tables) }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.Call {
@@ -1462,6 +1465,7 @@ fn check_one_body(
                 if !is_numeric_type(arg_ty) && arg_ty != TY_BOOL && arg_ty != TY_BYTE && arg_ty != TY_WINDOW && !is_aggregate_type(compiler, arg_ty) {
                     fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, window, and function values")
                 }
+                if arg_ty != TY_WINDOW && type_contains_window(compiler, arg_ty, 0L) { fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print shows a window only on its own: print(w), not inside a struct or array") }
                 if arg_ty == TY_WINDOW && !compiler.c_runtime { fail_at_message(env, files, compiler, file_index, syntax.start, "arenas and windows need the C runtime") }
                 compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: (if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }) | (if arg_ty == TY_WINDOW { FACT_WINDOW_OP } else { 0L }), binding: -1L, function: -1L, literal: if arg_ty == TY_WINDOW { WOP_PRINT } else { 0L } }
             } else if sort_builtin_kind(source, tokens, files, compiler, file_index, syntax.token, frame.scope) != SORT_NONE {
@@ -2165,6 +2169,7 @@ fn check_one_body(
                 }
                 ty = concat_result_ty
             } else if op >= 8L && op <= 13L {
+                if type_contains_window(compiler, left.ty, 0L) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "a struct or array holding a window would compare it by position; compare its window fields one by one") }
                 let text_pair = is_text_comparable(compiler, left.ty, right.ty)
                 if left.ty != right.ty && !text_pair { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, left.ty, right.ty) }
                 if (op == 8L || op == 9L) && (left.ty == TY_UNIT || left.ty == TY_NEVER) {

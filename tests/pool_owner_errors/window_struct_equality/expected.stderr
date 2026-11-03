@@ -1,0 +1,3 @@
+main.nl:4:7: error: a struct or array holding a window would compare it by position; compare its window fields one by one
+    4 |     a == b
+      |       ^

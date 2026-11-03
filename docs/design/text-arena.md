@@ -159,3 +159,34 @@ interpolation, arena reset, UTF-8 validation for `Text<src>`, a distinct window 
 All seven questions are decided (question 4 below).
 
 4. **Decided (2026-11-04): accept the waste and rely on bulk resets, keep `Text max N` for long-lived edited state.** Replacing an unbounded text leaves its old bytes until the arena is reset; arenas are per run, per job or per file version and are dropped whole. An arena reports how much it has used, and exhausting the declared capacity fails loudly, so a program that keeps replacing unbounded text in a long-lived field is caught, not silent. No free lists, no compaction (that would be a heap or a garbage collector). Rule for programmers: long-lived state whose text is edited in place uses `Text max N`; unbounded text is for per-run data and immutable inputs.
+
+## Built-in implementation (branch `text-builtin`, 2026-11-04)
+
+Implemented in the self-hosted compiler (`selfhost/windows.nl` plus small hooks), following the decisions above. Names are provisional and
+each is a single token to rename: the type `Window<arena>` (searched as `"Window"` in `compiler_types.nl`, `pool_owners.nl`,
+`compiler_tables.nl`, `compiler_unsupported_core_sys.nl`) and the arena `arena<N>` (parser, `collections.nl`).
+
+- **Arena**: `var src: arena<64000000> = arena {}`, a local, parameter or struct field. It is a pool of one-byte octets (so pass-by-address,
+  never copied, owner machinery and the "one struct value holding pools" rule all apply), with a 24-byte header (bytes used, capacity, open
+  builder mark) and N contiguous bytes. N is at most 2 GiB (windows are 32-bit). `src.used()` reports the bytes used; exhausting N fails
+  loudly (`arena capacity exhausted`).
+- **Window**: one `long`, start in the high 32 bits and length in the low 32; plain data, copied freely, no address. `Window<src>` names its
+  arena as an owner, checked like a pool id; a wrong arena is the build error `expected b.Window, got a.Window`. Read-only: nothing writes
+  into an arena except appending at its end.
+- **Operations**: `src.add(bounded)`, `w.len()`, `w.slice(a..b)` (no copy), `w[i]`, `==` `!=` `<` `<=` `>` `>=` (by content; the other side may be a
+  bounded Ascii/Bytes value, compared without copying), `w.to_bytes()` (checked copy-out to the expected `Bytes max N`/`Ascii max N`),
+  `print(w)`, `w.starts_with(x)`, `w.ends_with(x)`, `w.contains(x)`, `w.find(x)` (index or -1); `x` is a window of the same arena or a bounded value.
+  Operations that read bytes find the arena through the window's owner: the owner pass stores the arena's binding in the node, and for a
+  struct-field arena it uses the function's one value of that struct. Not done: interpolation `"{w}"`, `Text` (UTF-8) copy-out.
+- **Generated text** lives in the same arena: `src.begin()`, `src.append(bounded or window)`, `src.push(byte)`, `src.finish() -> Window`.
+  One builder is open per arena at a time. This is a **run-time rule** (the open mark is in the arena header): a second `begin`, an `add`
+  while a builder is open, and `push`/`append`/`finish` with none open fail with `arena builder misuse`. No compile-time tracking.
+- **Reset: deferred pending maintainer decision.** An arena lives and ends with its owner; there is no `reset`, `clear` or window assignment.
+  The implementation needs no lifetime reasoning: a window cannot outlive its arena because the arena is a pool (cannot be returned or copied)
+  and the window type names a parameter, local or field owner.
+- **Map keys by content: not done, and refused.** Map functions are generated per map type as IR over key bytes (`hash`, `hashslot`, `same`, `find`, `get`, `set`,
+  `remove`, `compact`); hashing a window needs the arena's bytes, which the map type does not know. Supporting it means threading an arena
+  pointer parameter through those eight functions and their call sites (the owner pass would supply it as it does for `w[i]`). A key record that
+  stored an arena address in the slots was rejected: it would put maps and arenas into lifetime tracking. Until then a window, or a struct/array
+  holding one, is refused as a map key, in `==` of aggregates, in `print` of aggregates and in `expect a == b` (they would compare or show the
+  packed position, not the text). `@nlw_hash` (FNV-1a over a window's bytes) is already emitted for the map work.

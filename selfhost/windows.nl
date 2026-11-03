@@ -367,3 +367,21 @@ fn emit_window_op(
     }
     compiler.ir_overflow = true
 }
+
+// Whether a type holds a window in a field or element (windows inside structs and arrays are plain data, but the generic
+// equality and printing of aggregates would treat the packed long as a number, so those are refused).
+recursive fn type_contains_window(compiler: CompilerTables, type_id: long, depth: long) -> bool {
+    if depth > 16L || type_id < 0L || type_id >= type_count(compiler) { return false }
+    if type_id == TY_WINDOW { return true }
+    let kind = type_kind(compiler, type_id)
+    if kind == TYPE_KIND_STRUCT {
+        let record = type_record(compiler, type_id)
+        for field_offset in 0L..record.field_count {
+            if type_contains_window(compiler, compiler.struct_fields[record.field_start + field_offset].ty, depth + 1L) { return true }
+        }
+    }
+    if kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) {
+        if kind != TYPE_KIND_POOL { return type_contains_window(compiler, collection_element_type(compiler, type_id), depth + 1L) }
+    }
+    false
+}

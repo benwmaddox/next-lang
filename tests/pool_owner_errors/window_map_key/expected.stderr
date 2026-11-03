@@ -1,0 +1,3 @@
+main.nl:4:16: error: not supported by the self-hosted compiler yet: maps whose keys or values are not numbers, bools, enums or text
+    4 |     var m: map<Window<src>, long, 8> = map {}
+      |                ^

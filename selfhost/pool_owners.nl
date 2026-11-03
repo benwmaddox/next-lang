@@ -25,6 +25,7 @@ struct OwnerState {
     scrutinee: long
     pool_declarations: long
     pool_values: long
+    scope_node: long
 }
 
 fn owner_binding_owner(st: OwnerState, binding: long) -> long {
@@ -461,9 +462,9 @@ fn owner_resolve_window_op(
         for candidate in 0L..compiler.struct_fields.count() {
             if compiler.struct_fields[candidate].node == owner { field = candidate; break }
         }
-        let function_node = compiler.functions[st.function_id].node
+        let function_node = st.scope_node
         let lowest = node_first_child(tables.nodes, function_node)
-        if field >= 0L && st.function_id >= 0L {
+        if field >= 0L && st.scope_node >= 0L {
             for binding in 0L..compiler.bindings.count() {
                 let holder = compiler.bindings[binding].node
                 if holder < lowest || holder > function_node || type_kind(compiler, compiler.bindings[binding].ty) != TYPE_KIND_STRUCT { continue }
@@ -725,7 +726,7 @@ fn check_pool_owners(
 ) {
     var st = OwnerState {
         visible_names: list {}, visible_keys: list {}, binding_ids: list {}, binding_owners: list {},
-        function_id: -1L, scrutinee: -1L, pool_declarations: 0L, pool_values: 0L,
+        function_id: -1L, scrutinee: -1L, pool_declarations: 0L, pool_values: 0L, scope_node: -1L,
     }
     for field in 0L..compiler.struct_fields.count() {
         if type_kind(compiler, compiler.struct_fields[field].ty) == TYPE_KIND_POOL { st.pool_declarations += 1L }
@@ -752,6 +753,7 @@ fn check_pool_owners(
         let function = compiler.functions[function_id]
         if function.file < 0L { continue }
         st.function_id = function_id
+        st.scope_node = function.node
         st.scrutinee = -1L
         for step in 0L..st.visible_names.count() { match st.visible_names.pop() { some(_) => (), none => () } }
         for step in 0L..st.visible_keys.count() { match st.visible_keys.pop() { some(_) => (), none => () } }
@@ -785,5 +787,15 @@ fn check_pool_owners(
                 }
             }
         }
+    }
+    // test blocks: the same checks (pool ids and windows used in a test)
+    for test_index in 0L..compiler.tests.count() {
+        let test = compiler.tests[test_index]
+        st.function_id = -1L
+        st.scrutinee = -1L
+        st.scope_node = test.node
+        for step in 0L..st.visible_names.count() { match st.visible_names.pop() { some(_) => (), none => () } }
+        for step in 0L..st.visible_keys.count() { match st.visible_keys.pop() { some(_) => (), none => () } }
+        owner_walk(env, source, files, tokens, tables, compiler, st, test.node, 0L)
     }
 }
