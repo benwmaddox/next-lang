@@ -104,7 +104,13 @@ fn check_one_body(
             let body_node = if pattern >= 0L { compiler.child_next[pattern] } else { -1L }
             let pattern_kind = tables.nodes[pattern].kind
             let has_wildcard = match_has_prior_wildcard(tables, compiler, node, arm)
+            // an or-pattern alternative: its arm has an empty marker body and the previous arm (frame.child1) may be another
+            let is_alternative = (tables.nodes[body_node].flags & FLAG_OR_ALTERNATIVE) != 0L
+            let previous_alternative = frame.child1
             if pattern_kind == NodeKind.WildcardPattern {
+                if is_alternative || previous_alternative >= 0L {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[pattern].start, "'_' cannot be an alternative of an or-pattern; use '_' as its own arm")
+                }
                 var already_total = false
                 if is_sum_type(compiler, matched_type) {
                     already_total = match_covered_count(tables, compiler, node, MATCH_PATTERN_CASE) == sum_case_count(compiler, matched_type)
@@ -189,10 +195,17 @@ fn check_one_body(
                     }
                     binding_node = compiler.child_next[binding_node]
                 }
+                if previous_alternative >= 0L {
+                    check_or_alternative_bindings(env, source, files, tokens, tables, compiler, file_index, previous_alternative, pattern)
+                }
                 frame.child1 = arm
                 frame.child2 = body_node
                 frame.phase = 71L
                 compiler.work[frame_index] = frame
+                if is_alternative {
+                    compiler.facts[body_node] = NodeFact { ty: TY_NEVER, flags: 0L, binding: -1L, function: -1L, literal: 0L }
+                    continue
+                }
                 push_check_frame(env, files, compiler, CheckFrame {
                     node: body_node,
                     scope: body_scope,
@@ -219,6 +232,10 @@ fn check_one_body(
             frame.child2 = body_node
             frame.phase = 71L
             compiler.work[frame_index] = frame
+            if is_alternative {
+                compiler.facts[body_node] = NodeFact { ty: TY_NEVER, flags: 0L, binding: -1L, function: -1L, literal: 0L }
+                continue
+            }
             push_check_frame(env, files, compiler, CheckFrame {
                 node: body_node,
                 scope: body_scope,
@@ -265,7 +282,8 @@ fn check_one_body(
                 } else { () }
             }
             frame.cursor = compiler.child_next[frame.child1]
-            frame.child1 = -1L
+            // an alternative arm stays in child1 so the next arm can compare its bindings with it
+            frame.child1 = if (tables.nodes[frame.child2].flags & FLAG_OR_ALTERNATIVE) != 0L { frame.child1 } else { -1L }
             frame.child2 = -1L
             frame.phase = 70L
             compiler.work[frame_index] = frame
@@ -2777,3 +2795,60 @@ fn populate_frame_slot_bytes(tables: ParseTables, compiler: write CompilerTables
     }
 }
 
+
+// The named payload bindings of two alternatives of one or-pattern must agree in names and types
+// (`_` ignores a payload and is free). The body is checked once, in the arm that ends the chain.
+fn check_or_alternative_bindings(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    previous_arm: long,
+    pattern: long,
+) {
+    let previous = compiler.child_first[previous_arm]
+    var binding = compiler.child_first[pattern]
+    for step in 0L..tables.nodes[pattern].subtree {
+        if binding < 0L { break }
+        if tables.nodes[binding].kind == NodeKind.PatternBinding {
+            let name_id = compiler.token_name_ids[tables.nodes[binding].token]
+            var other = compiler.child_first[previous]
+            var found = false
+            for other_step in 0L..tables.nodes[previous].subtree {
+                if other < 0L { break }
+                if tables.nodes[other].kind == NodeKind.PatternBinding && compiler.token_name_ids[tables.nodes[other].token] == name_id {
+                    found = true
+                    if compiler.facts[other].ty != compiler.facts[binding].ty {
+                        fail_or_pattern_binding(env, source, files, tokens, tables, compiler, file_index, pattern, tables.nodes[binding].token, true)
+                    }
+                }
+                other = compiler.child_next[other]
+            }
+            if !found {
+                fail_or_pattern_binding(env, source, files, tokens, tables, compiler, file_index, pattern, tables.nodes[binding].token, false)
+            }
+        }
+        binding = compiler.child_next[binding]
+    }
+    var other = compiler.child_first[previous]
+    for other_step in 0L..tables.nodes[previous].subtree {
+        if other < 0L { break }
+        if tables.nodes[other].kind == NodeKind.PatternBinding {
+            let name_id = compiler.token_name_ids[tables.nodes[other].token]
+            var mine = compiler.child_first[pattern]
+            var found = false
+            for mine_step in 0L..tables.nodes[pattern].subtree {
+                if mine < 0L { break }
+                if tables.nodes[mine].kind == NodeKind.PatternBinding && compiler.token_name_ids[tables.nodes[mine].token] == name_id { found = true }
+                mine = compiler.child_next[mine]
+            }
+            if !found {
+                fail_or_pattern_binding(env, source, files, tokens, tables, compiler, file_index, pattern, tables.nodes[other].token, false)
+            }
+        }
+        other = compiler.child_next[other]
+    }
+}

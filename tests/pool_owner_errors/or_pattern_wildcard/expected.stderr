@@ -1,0 +1,3 @@
+main.nl:6:13: error: '_' cannot be an alternative of an or-pattern; use '_' as its own arm
+    6 |         A | _ => 1
+      |             ^

@@ -614,6 +614,14 @@ fn emit_match_payload_bindings(
     let scrutinee = compiler.child_first[match_node]
     let pattern = compiler.child_first[arm]
     if tables.nodes[pattern].kind != NodeKind.CasePattern { return }
+    var chain_last_arm = arm
+    for chain_step in 0L..tables.nodes[match_node].subtree {
+        let chain_pattern = compiler.child_first[chain_last_arm]
+        let chain_body = if chain_pattern >= 0L { compiler.child_next[chain_pattern] } else { -1L }
+        if chain_body < 0L || (tables.nodes[chain_body].flags & FLAG_OR_ALTERNATIVE) == 0L { break }
+        chain_last_arm = compiler.child_next[chain_last_arm]
+    }
+    let chain_last_pattern = compiler.child_first[chain_last_arm]
     let source_kind = aggregate_source_kind(tables, compiler, scrutinee)
     let source_node = aggregate_source_id(tables, compiler, scrutinee)
     let matched_ty = compiler.facts[scrutinee].ty
@@ -627,7 +635,20 @@ fn emit_match_payload_bindings(
         let payload = if generic_sum { sum_payload_record(compiler, matched_ty, compiler.facts[pattern].literal, payload_index) }
             else { compiler.enum_payloads[case.payload_start + payload_index] }
         if tables.nodes[binding_node].kind == NodeKind.PatternBinding {
-            let binding = compiler.facts[binding_node].binding
+            var binding = compiler.facts[binding_node].binding
+            if chain_last_pattern != pattern {
+                // an alternative of an or-pattern writes the same-named binding of the chain's last arm
+                let binding_name = compiler.token_name_ids[tables.nodes[binding_node].token]
+                var target = compiler.child_first[chain_last_pattern]
+                for target_step in 0L..tables.nodes[chain_last_pattern].subtree {
+                    if target < 0L { break }
+                    if tables.nodes[target].kind == NodeKind.PatternBinding && compiler.token_name_ids[tables.nodes[target].token] == binding_name {
+                        binding = compiler.facts[target].binding
+                        break
+                    }
+                    target = compiler.child_next[target]
+                }
+            }
             let source_address = aggregate_source_location(compiler, source_kind, source_node)
             emit_layout_address(compiler, ir, binding_node, storage_location_with_offset(source_address, payload.offset))
             if payload.ty != TY_UNIT {
@@ -1958,8 +1979,36 @@ recursive fn emit_expr_linear(
                 let pattern = compiler.child_first[arm]
                 let body = if pattern >= 0L { compiler.child_next[pattern] } else { -1L }
                 ir_write_ascii(compiler, ir, "match.arm."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, ordinal); ir_write_ascii(compiler, ir, ":\n")
-                emit_region_scope_enter(files, tables, compiler, ir, arm, file_index)
-                emit_match_payload_bindings(tables, compiler, ir, current, arm)
+                // Or-pattern: every alternative binds its payload into the locals of the chain's last arm, then all of them
+                // branch to the one place that enters the last arm's scope and runs its body.
+                let is_alternative = body >= 0L && (tables.nodes[body].flags & FLAG_OR_ALTERNATIVE) != 0L
+                let after_alternative = frame.child2 >= 0L && (tables.nodes[frame.child2].flags & FLAG_OR_ALTERNATIVE) != 0L
+                if is_alternative || after_alternative {
+                    emit_match_payload_bindings(tables, compiler, ir, current, arm)
+                    var chain_last = ordinal
+                    var chain_arm = arm
+                    for chain_step in 0L..tables.nodes[current].subtree {
+                        let chain_pattern = compiler.child_first[chain_arm]
+                        let chain_body = if chain_pattern >= 0L { compiler.child_next[chain_pattern] } else { -1L }
+                        if chain_body < 0L || (tables.nodes[chain_body].flags & FLAG_OR_ALTERNATIVE) == 0L { break }
+                        chain_arm = compiler.child_next[chain_arm]
+                        chain_last += 1L
+                    }
+                    ir_write_ascii(compiler, ir, "  br label %match.enter."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, chain_last); ir_push_byte(compiler, ir, 10)
+                    if is_alternative {
+                        frame.cursor = compiler.child_next[arm]
+                        frame.child1 = arm
+                        frame.child2 = body
+                        frame.auxiliary += 1L
+                        compiler.expr_work[frame_index] = frame
+                        continue
+                    }
+                    ir_write_ascii(compiler, ir, "match.enter."); ir_write_number(compiler, ir, current); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, ordinal); ir_write_ascii(compiler, ir, ":\n")
+                    emit_region_scope_enter(files, tables, compiler, ir, arm, file_index)
+                } else {
+                    emit_region_scope_enter(files, tables, compiler, ir, arm, file_index)
+                    emit_match_payload_bindings(tables, compiler, ir, current, arm)
+                }
                 frame.cursor = compiler.child_next[arm]
                 frame.child1 = arm
                 frame.child2 = body

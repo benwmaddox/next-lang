@@ -1,0 +1,3 @@
+main.nl:7:9: error: unreachable duplicate pattern 'Kind.B'; remove this arm
+    7 |         B | C => 2
+      |         ^

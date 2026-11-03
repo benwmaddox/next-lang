@@ -395,6 +395,7 @@ const FLAG_EFFECT_WRITES: long = 2097152L
 const FLAG_BYTESTRING_NONASCII_HEX: long = 4194304L
 const FLAG_CAST_UNCHECKED: long = 8388608L
 const FLAG_FLOAT: long = 16777216L
+const FLAG_OR_ALTERNATIVE: long = 1099511627776L
 
 const PENDING_NAME: long = 1L
 const PENDING_QUALIFIED: long = 2L
@@ -2952,8 +2953,23 @@ recursive fn parse_match_after_scrutinee(
             }
             continue
         }
-        let arm_start = cursor_peek(tables, tokens, 0L)
-        let pattern = parse_pattern(source, tokens, tables)?
+        var arm_start = cursor_peek(tables, tokens, 0L)
+        var pattern = parse_pattern(source, tokens, tables)?
+        // `A | B => body`: every alternative but the last becomes an arm whose body is an empty marker block
+        // (FLAG_OR_ALTERNATIVE); the checker and emitter send it to the body of the arm that ends the chain.
+        for alternative in 0L..MAX_TOKENS_PER_FILE {
+            if cursor_peek(tables, tokens, 0L).kind != TokenKind.Or { break }
+            let alt_end = tables.state.last_end
+            let marker_first = tables.nodes.count()
+            append_node(tables, NodeKind.Block, marker_first, -1L, alt_end, alt_end, alt_end, FLAG_SYNTHETIC | FLAG_OR_ALTERNATIVE, -1L, 0L)?
+            append_node(tables, NodeKind.MatchArm, node_first_child(tables.nodes, pattern), -1L, arm_start.start, alt_end, arm_start.start, 0L, -1L, 0L)?
+            let counted = tables.match_frames[top]
+            tables.match_frames[top] = MatchFrame { match_token: counted.match_token, match_start: counted.match_start, scrutinee: counted.scrutinee, first: counted.first, arm_count: counted.arm_count + 1L, waiting_pattern: counted.waiting_pattern, waiting_arm_start: counted.waiting_arm_start }
+            cursor_next(tables, tokens)
+            cursor_skip_newlines(tables, tokens)
+            arm_start = cursor_peek(tables, tokens, 0L)
+            pattern = parse_pattern(source, tokens, tables)?
+        }
         cursor_expect(tables, tokens, TokenKind.FatArrow, ParseProblemKind.ExpectedMatchArrow)?
         cursor_skip_newlines(tables, tokens)
         if cursor_peek(tables, tokens, 0L).kind == TokenKind.LBrace {
