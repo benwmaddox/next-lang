@@ -569,7 +569,7 @@ fn collection_type_syntax_kind(
         TYPE_KIND_QUEUE
     } else if syntax.token >= 0L && token_is_word_at(source, tokens, files, file_index, syntax.token, "map") {
         TYPE_KIND_MAP
-    } else if syntax.token >= 0L && token_is_word_at(source, tokens, files, file_index, syntax.token, "pool") {
+    } else if syntax.token >= 0L && (token_is_word_at(source, tokens, files, file_index, syntax.token, "pool") || token_is_word_at(source, tokens, files, file_index, syntax.token, "arena")) {
         TYPE_KIND_POOL
     } else { 0L }
 }
@@ -603,6 +603,20 @@ fn intern_collection_type_syntax(
 
     var type_id = -1L
     var child = compiler.child_first[node]
+    if written_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, syntax.token, "arena") {
+        // `arena<N>`: a pool of one-byte octets whose capacity is a number of bytes (unbounded text lives in it).
+        if child < 0L || argument_count != 0L || constant_count != 1L { return -1L }
+        var arena_capacity = POOL_ANY_CAPACITY
+        if tables.nodes[child].kind != NodeKind.Name {
+            let capacity_value = evaluate_collection_capacity(tables, compiler, child, 0L)
+            if !capacity_value.constant || !capacity_value.valid { return -1L }
+            // Windows carry a 32-bit start and length, so an arena holds at most 2 GiB.
+            if capacity_value.value > 2147483647L || capacity_value.value <= 0L { return -1L }
+            arena_capacity = capacity_value.value
+        }
+        let arena_name_id = compiler.token_name_ids[syntax.token]
+        return intern_collection_type(compiler, TYPE_KIND_POOL, TY_OCTET, arena_capacity, file_index, node, arena_name_id, syntax.token)
+    }
     if written_kind == TYPE_KIND_POOL {
         // `pool<T, N>`, or `pool<T, N, P>` with an owner; a capacity that is a name rather than a constant
         // (`pool<T, N, P>` in a generic parameter) stands for any capacity.
@@ -859,7 +873,7 @@ recursive fn type_group_size(compiler: CompilerTables, type_id: long, copies: lo
         let element_size = type_group_size(compiler, record.field_start, 1L)
         if element_size < 0L { element_size } else { checked_size_product(record.field_count, element_size) }
     } else if collection_kind_is_list(kind) {
-        let header_size = collection_header_size(kind)
+        let header_size = if kind == TYPE_KIND_POOL && record.field_start == TY_OCTET { ARENA_HEADER_SIZE } else { collection_header_size(kind) }
         let element_align = value_type_align(compiler, record.field_start)
         let element_size = type_group_size(compiler, record.field_start, 1L)
         let slot_count = if record.field_count < 0L { 0L } else { record.field_count }
@@ -893,7 +907,7 @@ fn collection_element_base_offset(compiler: CompilerTables, type_id: long) -> lo
     else if kind == TYPE_KIND_ARRAY { 0L }
     else if collection_kind_is_list(kind) {
         let element_type = collection_element_type(compiler, type_id)
-        size_align_saturated(collection_header_size(kind), value_type_align(compiler, element_type))
+        size_align_saturated(if kind == TYPE_KIND_POOL && element_type == TY_OCTET { ARENA_HEADER_SIZE } else { collection_header_size(kind) }, value_type_align(compiler, element_type))
     } else { -1L }
 }
 
@@ -1783,6 +1797,11 @@ fn emit_collection_zero_storage(compiler: write CompilerTables, ir: grow Bytes m
         ir_write_ascii(compiler, ir, "  %coll.zero.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial); ir_write_ascii(compiler, ir, ", i64 0\n  store i64 "); ir_write_number(compiler, ir, live_count); ir_write_ascii(compiler, ir, ", ptr %coll.zero.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
         if type_kind(compiler, type_id) == TYPE_KIND_POOL {
             ir_write_ascii(compiler, ir, "  %coll.zero.capacity."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial); ir_write_ascii(compiler, ir, ", i64 8\n  store i64 "); ir_write_number(compiler, ir, collection_capacity(compiler, type_id)); ir_write_ascii(compiler, ir, ", ptr %coll.zero.capacity."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
+        }
+        if type_is_arena(compiler, type_id) {
+            // the builder mark (0: no builder open)
+            ir_write_ascii(compiler, ir, "  %coll.zero.builder."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial)
+            ir_write_ascii(compiler, ir, ", i64 16\n  store i64 0, ptr %coll.zero.builder."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
         }
         if type_kind(compiler, type_id) == TYPE_KIND_QUEUE {
             ir_write_ascii(compiler, ir, "  %coll.zero.head."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial); ir_write_ascii(compiler, ir, ", i64 8\n  store i64 0, ptr %coll.zero.head."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)

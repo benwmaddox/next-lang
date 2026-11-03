@@ -159,6 +159,11 @@ fn emit_pool_copy_helpers(compiler: write CompilerTables, ir: grow Bytes max IR_
         ir_write_ascii(compiler, ir, "  %pool.copy.source.cap = getelementptr i8, ptr %nl.source, i64 8\n")
         ir_write_ascii(compiler, ir, "  %pool.copy.cap = load i64, ptr %pool.copy.source.cap, align 1\n")
         ir_write_ascii(compiler, ir, "  %pool.copy.dest.cap = getelementptr i8, ptr %nl.dest, i64 8\n")
-        ir_write_ascii(compiler, ir, "  store i64 %pool.copy.cap, ptr %pool.copy.dest.cap, align 1\n  ret void\n}\n\n")
+        ir_write_ascii(compiler, ir, "  store i64 %pool.copy.cap, ptr %pool.copy.dest.cap, align 1\n")
+        if type_is_arena(compiler, type_id) {
+            // the arena's open-builder mark travels with its header (an arena literal copies a closed one)
+            ir_write_ascii(compiler, ir, "  %pool.copy.source.mark = getelementptr i8, ptr %nl.source, i64 16\n  %pool.copy.mark = load i64, ptr %pool.copy.source.mark, align 1\n  %pool.copy.dest.mark = getelementptr i8, ptr %nl.dest, i64 16\n  store i64 %pool.copy.mark, ptr %pool.copy.dest.mark, align 1\n")
+        }
+        ir_write_ascii(compiler, ir, "  ret void\n}\n\n")
     }
 }

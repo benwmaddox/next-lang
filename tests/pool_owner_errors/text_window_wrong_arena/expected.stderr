@@ -1,0 +1,3 @@
+main.nl:6:16: error: expected a.Window, got b.Window
+    6 |     print(w == v)
+      |                ^

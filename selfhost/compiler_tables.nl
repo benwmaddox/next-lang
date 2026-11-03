@@ -29,7 +29,11 @@ const TY_ARG: long = 11L
 const TY_DOUBLE: long = 12L
 const TY_HOST: long = 13L
 const TY_FLOAT: long = 14L
-const TY_STRUCT_BASE: long = 15L
+// The built-in unbounded text type (provisional name `Window<arena>`): one packed long, start in the high 32 bits, length in the low 32.
+const TY_WINDOW: long = 15L
+// The one-byte element of an arena's bytes (`arena<N>` is a pool of these).
+const TY_OCTET: long = 16L
+const TY_STRUCT_BASE: long = 17L
 // E3a1 begin: struct storage sizes are exact through signed long limits.
 const MAX_VALUE_SIZE: long = 9223372036854775807L
 // E3a1 end
@@ -558,6 +562,8 @@ fn seed_builtin_types(env: Env, types: write list<TypeRecord, TYPE_TABLE_CAPACIT
     types.push(builtin_type_record(TYPE_KIND_SCALAR, 8L, 8L)).unwrap()
     push_builtin_address_type(env, types)
     types.push(builtin_type_record(TYPE_KIND_SCALAR, 4L, 4L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 8L, 8L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 1L, 1L)).unwrap()
 }
 
 fn empty_compiler_tables() -> CompilerTables {
@@ -1266,6 +1272,8 @@ fn known_non_scalar_type(
     token_is_word_at(source, tokens, files, file_index, token, "Text") ||
     token_is_word_at(source, tokens, files, file_index, token, "Bytes") ||
     token_is_word_at(source, tokens, files, file_index, token, "Id") ||
+    token_is_word_at(source, tokens, files, file_index, token, "Window") ||
+    token_is_word_at(source, tokens, files, file_index, token, "arena") ||
     token_is_word_at(source, tokens, files, file_index, token, "Option") ||
     token_is_word_at(source, tokens, files, file_index, token, "Result") ||
     token_is_word_at(source, tokens, files, file_index, token, "list") ||

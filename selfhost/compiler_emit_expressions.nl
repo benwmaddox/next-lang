@@ -1006,7 +1006,11 @@ recursive fn emit_expr_linear(
         // `x.m(args)` on a user struct is a call of Type_m with x first (struct_methods.nl)
         let kind = if syntax.kind == NodeKind.MethodCall && (compiler.facts[current].flags & FACT_STRUCT_METHOD) != 0L { NodeKind.Call } else { syntax.kind }
         if frame.phase == 0L {
-            if kind == NodeKind.Integer && is_float_type(compiler.facts[current].ty) {
+            if (compiler.facts[current].flags & FACT_WINDOW_OP) != 0L {
+                frame.cursor = compiler.child_first[current]
+                frame.phase = 400L
+                compiler.expr_work[frame_index] = frame
+            } else if kind == NodeKind.Integer && is_float_type(compiler.facts[current].ty) {
                 emit_float_literal(source, files, tokens, tables, compiler, ir, current, file_index)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             } else if kind == NodeKind.Integer || kind == NodeKind.Bool {
@@ -1220,6 +1224,17 @@ recursive fn emit_expr_linear(
                 else { lower_scope_exit(compiler, ir, -1L, EXIT_CONTINUE, target_kind, loop.node, TY_UNIT, -1L) }
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             } else {
+                match compiler.expr_work.pop() { some(_) => (), none => () }
+            }
+        } else if frame.phase == 400L && (compiler.facts[current].flags & FACT_WINDOW_OP) != 0L {
+            // an operation on a window or an arena (windows.nl): evaluate the children in order, then emit the operation
+            if frame.cursor >= 0L {
+                let window_child = frame.cursor
+                frame.cursor = compiler.child_next[window_child]
+                compiler.expr_work[frame_index] = frame
+                compiler.expr_work.push(EmitExprFrame { node: window_child, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+            } else {
+                emit_window_op(files, tables, compiler, ir, current, file_index)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             }
         } else if kind == NodeKind.Field && frame.phase == 1L {

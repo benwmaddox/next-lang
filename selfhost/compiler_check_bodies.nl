@@ -1198,6 +1198,19 @@ fn check_one_body(
             let ty = frame.result_ty
             let flags = if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }
             compiler.facts[node] = NodeFact { ty, flags, binding: -1L, function: -1L, literal: 0L }
+        } else if kind == NodeKind.Index && frame.child0 >= 0L && compiler.facts[frame.child0].ty == TY_WINDOW {
+            // w[i]: the byte i of a window (its arena is found through the window's owner)
+            if !compiler.c_runtime { fail_at_message(env, files, compiler, file_index, syntax.start, "arenas and windows need the C runtime") }
+            let window_index_ty = if frame.child1 >= 0L { compiler.facts[frame.child1].ty } else { -1L }
+            if window_index_ty != TY_LONG { fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child1].start, "window indexes are long; cast an int index with .to_long()") }
+            if frame.expected >= 0L && frame.expected != TY_BYTE { require_type(env, files, compiler, file_index, node, frame.expected, TY_BYTE, tables) }
+            compiler.facts[node] = NodeFact { ty: TY_BYTE, flags: (if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }) | FACT_WINDOW_OP, binding: -1L, function: -1L, literal: WOP_AT }
+        } else if kind == NodeKind.Binary && syntax.flags >= 8L && syntax.flags <= 13L && compiler.facts[frame.child0].ty == TY_WINDOW {
+            // a == b, a < b, ... on two windows compare their bytes
+            if !compiler.c_runtime { fail_at_message(env, files, compiler, file_index, syntax.start, "arenas and windows need the C runtime") }
+            if compiler.facts[frame.child1].ty != TY_WINDOW { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, TY_WINDOW, compiler.facts[frame.child1].ty) }
+            if frame.expected >= 0L && frame.expected != TY_BOOL { require_type(env, files, compiler, file_index, node, frame.expected, TY_BOOL, tables) }
+            compiler.facts[node] = NodeFact { ty: TY_BOOL, flags: FACT_FALLS_THROUGH | FACT_WINDOW_OP, binding: -1L, function: -1L, literal: window_compare_op(syntax.flags) }
         } else if kind == NodeKind.Index {
             let receiver = frame.child0
             let index = frame.child1
@@ -1446,10 +1459,11 @@ fn check_one_body(
                 if arg_count != 1L { fail_at_message(env, files, compiler, file_index, syntax.start, "print takes one argument, but got an invalid number; call print(value)") }
                 let argument = child_at(tables, compiler, node, 0L)
                 let arg_ty = compiler.facts[argument].ty
-                if !is_numeric_type(arg_ty) && arg_ty != TY_BOOL && arg_ty != TY_BYTE && !is_aggregate_type(compiler, arg_ty) {
-                    fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values")
+                if !is_numeric_type(arg_ty) && arg_ty != TY_BOOL && arg_ty != TY_BYTE && arg_ty != TY_WINDOW && !is_aggregate_type(compiler, arg_ty) {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, window, and function values")
                 }
-                compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: 0L }
+                if arg_ty == TY_WINDOW && !compiler.c_runtime { fail_at_message(env, files, compiler, file_index, syntax.start, "arenas and windows need the C runtime") }
+                compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: (if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }) | (if arg_ty == TY_WINDOW { FACT_WINDOW_OP } else { 0L }), binding: -1L, function: -1L, literal: if arg_ty == TY_WINDOW { WOP_PRINT } else { 0L } }
             } else if sort_builtin_kind(source, tokens, files, compiler, file_index, syntax.token, frame.scope) != SORT_NONE {
                 let sort_kind = sort_builtin_kind(source, tokens, files, compiler, file_index, syntax.token, frame.scope)
                 let comparator = check_sort_builtin(env, source, tokens, files, tables, compiler, file_index, node, frame.scope, sort_kind)
@@ -1657,6 +1671,8 @@ fn check_one_body(
             if frame.expected >= 0L && frame.expected != method_ty { require_type(env, files, compiler, file_index, node, frame.expected, method_ty, tables) }
             let method_flags = if method_ty == TY_NEVER || !node_children_fall_through(tables, compiler, node) { FACT_NEVER } else { FACT_FALLS_THROUGH }
             compiler.facts[node] = NodeFact { ty: method_ty, flags: method_flags | FACT_STRUCT_METHOD, binding: -1L, function: target, literal: 0L }
+        } else if kind == NodeKind.MethodCall && check_window_method(env, source, tokens, files, tables, compiler, file_index, node, frame.child0, frame.expected) {
+            ()
         } else if kind == NodeKind.MethodCall {
             let operation = frame.auxiliary
             let receiver = frame.child0

@@ -748,6 +748,9 @@ _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col)
         case 22: message = "floating-point operation produced NaN"; break;
         case 23: message = "loop step budget exhausted"; break;
         case 24: message = "formatted number does not fit its text"; break;
+        case 25: message = "arena capacity exhausted"; break;
+        case 26: message = "arena builder misuse (begin while a builder is open, or push/append/finish without one, or add while a builder is open)"; break;
+        case 27: message = "unbounded text does not fit the bounded type (too long, or not ASCII)"; break;
         case 18: message = "data stack exhausted"; break;
         case 19: message = "recursion budget exhausted"; break;
         case 20: message = "standard output write failed"; break;
