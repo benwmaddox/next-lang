@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Driver for the self-hosted compiler: compile to LLVM IR with nlc-selfhost, then link with clang.
+#   nlc check <package>                                compile only (no link): report build errors fast, run nothing
 #   nlc build <package> [-o out] [--runtime=c|core]   compile and link a program
 #   nlc run   <package> [-- args...]                   build into a temporary directory and run
 #   nlc test  <package>                                build in test mode and run every test
@@ -17,6 +18,11 @@ find_compiler() {
     for candidate in "$here/nlc-selfhost" "$here/../nlc-selfhost" "$here/../.selfhost-stage-chain-aos/stage3"; do
         if [[ -x "$candidate" ]]; then echo "$candidate"; return; fi
     done
+    # A fresh checkout has no compiler yet: build it from seed/seed.ll.gz (cached, keyed by the sources).
+    if [[ -f "$here/build-selfhost-cached.py" ]] && command -v python3 > /dev/null; then
+        echo "nlc: building the self-hosted compiler from the seed (first use; cached afterwards)" >&2
+        python3 "$here/build-selfhost-cached.py" && return
+    fi
     echo "nlc: cannot find the self-hosted compiler; set NLC_SELFHOST" >&2
     exit 2
 }
@@ -225,6 +231,14 @@ case "$command" in
         link "$work/program.ll" "$work/program"
         "$work/program" "$@"
         ;;
+    check)
+        package="${1:?usage: nlc check <package>}"
+        work="$(mktemp -d ./.nlc-check.XXXXXX)"
+        trap 'rm -rf "$work"' EXIT
+        compile "$package" "$work/program.ll"
+        check_queries "$work/program.ll" "$package"
+        echo "nlc: $package: ok"
+        ;;
     test)
         package="${1:?usage: nlc test <package>}"
         work="$(mktemp -d ./.nlc-test.XXXXXX)"
@@ -243,8 +257,11 @@ case "$command" in
         [[ "${2:-}" == "-o" ]] || { echo "usage: nlc link <file.ll> -o out" >&2; exit 2; }
         link "$ir" "${3:?missing output}"
         ;;
+    help|-h|--help)
+        sed -n '2,/^set -/p' "${BASH_SOURCE[0]}" | sed -e '/^set -/d' -e 's/^# \{0,1\}//'
+        ;;
     *)
-        echo "usage: nlc build|run|test|test-ir|link ... (see the header of this script)" >&2
+        echo "usage: nlc check|build|run|test|test-ir|link ... (nlc --help lists them)" >&2
         exit 2
         ;;
 esac
