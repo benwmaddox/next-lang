@@ -110,6 +110,44 @@ fn owner_resolve_name(compiler: CompilerTables, st: OwnerState, name_id: long, f
     found
 }
 
+// The key (part 0) or value (part 1) type argument of a `map<K, V, N>` type node, else -1.
+fn owner_map_argument(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    type_node: long,
+    part: long,
+) -> long {
+    if type_node < 0L { return -1L }
+    let file_index = node_file_index(tables.nodes, files, type_node)
+    if !token_is_word_at(source, tokens, files, file_index, tables.nodes[type_node].token, "map") || (tables.nodes[type_node].meta1 & 2097151L) != 2L { return -1L }
+    var child = compiler.child_first[type_node]
+    for step in 0L..part {
+        if child < 0L { return -1L }
+        child = compiler.child_next[child]
+    }
+    if child >= 0L && tables.nodes[child].kind == NodeKind.TypeArgument { child } else { -1L }
+}
+
+// The declared type node of a collection place: a local with an annotation, a parameter or a struct field.
+fn owner_place_type_node(compiler: CompilerTables, tables: ParseTables, node: long) -> long {
+    if node < 0L { return -1L }
+    if tables.nodes[node].kind == NodeKind.Name {
+        let binding = compiler.facts[node].binding
+        if binding < 0L { return -1L }
+        let declaring = compiler.bindings[binding].node
+        let first = compiler.child_first[declaring]
+        if compiler.bindings[binding].parameter { return first }
+        if first >= 0L && tables.nodes[first].kind == NodeKind.Annotation { return first }
+    } else if tables.nodes[node].kind == NodeKind.Field {
+        let field = compiler.facts[node].literal
+        if field >= 0L && field < compiler.struct_fields.count() { return compiler.struct_fields[field].type_node }
+    } else { () }
+    -1L
+}
+
 // The owner an `Id<...>` inside a type node names: a declaring node, OWNER_NONE for an unowned id, OWNER_UNKNOWN when
 // the type has no id.
 fn owner_declared(
@@ -122,7 +160,8 @@ fn owner_declared(
     type_node: long,
     function_id: long,
 ) -> long {
-    let argument = owner_id_argument(source, files, tokens, tables, compiler, type_node, 0L)
+    let map_value = owner_map_argument(source, files, tokens, tables, compiler, type_node, 1L)
+    let argument = owner_id_argument(source, files, tokens, tables, compiler, if map_value >= 0L { map_value } else { type_node }, 0L)
     if argument < 0L { return OWNER_UNKNOWN }
     let found = owner_resolve_name(compiler, st, compiler.token_name_ids[tables.nodes[argument].token], function_id)
     if found == OWNER_AMBIGUOUS { OWNER_NONE } else { found }
@@ -217,7 +256,7 @@ recursive fn owner_of_value(
         if receiver >= 0L {
             let receiver_kind = type_kind(compiler, compiler.facts[receiver].ty)
             let method = compiler.facts[node].literal
-            if (receiver_kind == TYPE_KIND_MAP && method == COLLECTION_METHOD_MAP_GET) ||
+            if (receiver_kind == TYPE_KIND_MAP && (method == COLLECTION_METHOD_MAP_GET || method == COLLECTION_METHOD_MAP_REMOVE)) ||
                 ((collection_kind_is_list(receiver_kind) || receiver_kind == TYPE_KIND_QUEUE) && (method == COLLECTION_METHOD_POP || method == COLLECTION_METHOD_PEEK)) {
                 return owner_of_value(source, files, tokens, tables, compiler, st, receiver, depth + 1L)
             }
@@ -250,6 +289,13 @@ recursive fn owner_of_value(
             }
         }
         return declared
+    }
+    // `a ?? b` is an id of a's pool or of b's.
+    if kind == NodeKind.Binary && tables.nodes[node].flags == 21L {
+        let left = compiler.child_first[node]
+        let right = if left >= 0L { compiler.child_next[left] } else { -1L }
+        return owner_merge(owner_of_value(source, files, tokens, tables, compiler, st, left, depth + 1L),
+            owner_of_value(source, files, tokens, tables, compiler, st, right, depth + 1L))
     }
     if kind == NodeKind.ArrayLiteral {
         var merged = OWNER_NIL
@@ -409,7 +455,8 @@ recursive fn owner_walk(
     }
     if kind == NodeKind.PatternBinding {
         let binding = compiler.facts[node].binding
-        if binding >= 0L && st.scrutinee >= 0L && compiler.bindings[binding].ty == TY_LONG {
+        let binding_kind = if binding >= 0L { type_kind(compiler, compiler.bindings[binding].ty) } else { 0L }
+        if binding >= 0L && st.scrutinee >= 0L && (compiler.bindings[binding].ty == TY_LONG || collection_kind_is_list(binding_kind) || binding_kind == TYPE_KIND_ARRAY) {
             owner_set_binding(env, st, binding, owner_of_value(source, files, tokens, tables, compiler, st, st.scrutinee, 0L))
         }
     } else if kind == NodeKind.Let {
@@ -449,6 +496,22 @@ recursive fn owner_walk(
             compiler.facts[node].literal == COLLECTION_METHOD_PUSH {
             let element_owner = owner_of_value(source, files, tokens, tables, compiler, st, receiver, 0L)
             if element_owner >= 0L { owner_check_sink(env, source, files, tokens, tables, compiler, st, element_owner, argument) }
+        } else if receiver >= 0L && type_kind(compiler, compiler.facts[receiver].ty) == TYPE_KIND_MAP && argument >= 0L {
+            // A map declared with `Id<pool>` keys or values takes only ids of that pool.
+            let method = compiler.facts[node].literal
+            let map_type = owner_place_type_node(compiler, tables, receiver)
+            let function_scope = if tables.nodes[receiver].kind == NodeKind.Name { st.function_id } else { -1L }
+            let key_node = owner_map_argument(source, files, tokens, tables, compiler, map_type, 0L)
+            if (method == COLLECTION_METHOD_MAP_GET || method == COLLECTION_METHOD_MAP_SET || method == COLLECTION_METHOD_MAP_CONTAINS ||
+                method == COLLECTION_METHOD_MAP_REMOVE) && owner_type_is_direct_id(source, files, tokens, tables, key_node) {
+                owner_check_sink(env, source, files, tokens, tables, compiler, st,
+                    owner_declared(source, files, tokens, tables, compiler, st, key_node, function_scope), argument)
+            }
+            let value_node = owner_map_argument(source, files, tokens, tables, compiler, map_type, 1L)
+            if method == COLLECTION_METHOD_MAP_SET && owner_type_is_direct_id(source, files, tokens, tables, value_node) {
+                owner_check_sink(env, source, files, tokens, tables, compiler, st,
+                    owner_declared(source, files, tokens, tables, compiler, st, value_node, function_scope), compiler.child_next[argument])
+            }
         } else { () }
     } else if kind == NodeKind.Call {
         let function_id = compiler.facts[node].function
@@ -495,8 +558,31 @@ recursive fn owner_walk(
         if st.function_id >= 0L {
             let value = compiler.child_first[node]
             owner_check_return(env, source, files, tokens, tables, compiler, st, value)
+            owner_check_fresh_result(env, files, tables, compiler, st.function_id, value)
         }
     } else { () }
+}
+
+// A function may return a pool or a struct holding pools only if it builds the value right there (a struct literal,
+// `pool {}`, or a call of another function that does), so the returned value is the only one and no pool is ever copied.
+fn owner_check_fresh_result(
+    env: Env,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    function_id: long,
+    value: long,
+) {
+    if value < 0L || function_id < 0L { return }
+    let result_ty = compiler.functions[function_id].result_ty
+    if !(type_kind(compiler, result_ty) == TYPE_KIND_POOL || owner_value_is_pool_struct(compiler, result_ty)) { return }
+    let kind = tables.nodes[value].kind
+    if kind == NodeKind.StructInit || kind == NodeKind.PoolLiteral { return }
+    if kind == NodeKind.Call && compiler.facts[value].function >= 0L { return }
+    // Same wording as stage 0; a result holding a pool is allowed only when built in place (a struct literal, `pool {}` or a call).
+    let function_node = compiler.functions[function_id].node
+    fail_at_message(env, files, compiler, node_file_index(tables.nodes, files, function_node), tables.nodes[function_node].start,
+        "a value containing a pool cannot be returned; pool owners cannot escape a function")
 }
 
 fn owner_check_return(
@@ -589,6 +675,7 @@ fn check_pool_owners(
                 if last_kind == NodeKind.Name || last_kind == NodeKind.Field || last_kind == NodeKind.Index || last_kind == NodeKind.Call ||
                     last_kind == NodeKind.MethodCall || last_kind == NodeKind.Match || last_kind == NodeKind.If || last_kind == NodeKind.Block {
                     owner_check_return(env, source, files, tokens, tables, compiler, st, last)
+                    owner_check_fresh_result(env, files, tables, compiler, function_id, last)
                 }
             }
         }

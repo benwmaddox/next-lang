@@ -526,3 +526,216 @@ fn register_array_constants(
         }
     }
 }
+
+// ---- constants of struct, array, list and map type -----------------------------------------------------------------
+// A constant whose initializer is built only from literals: numbers, bools, text, struct literals naming every field,
+// array literals of the full length, and empty `list {}` / `map {}`. register_image_constants checks the shape (after the
+// types are sized); emit_file_globals writes the value as a byte image in an IR global, like an array constant, and a use
+// copies it into the use's own temporary.
+
+
+// The initializer field of struct literal `node` that names struct field `field`, else -1 (also when it is named twice).
+fn const_image_field_init(tables: ParseTables, compiler: CompilerTables, node: long, field: long) -> long {
+    var found = -1L
+    var child = compiler.child_first[node]
+    for step in 0L..tables.nodes[node].subtree {
+        if child < 0L { break }
+        if tables.nodes[child].kind == NodeKind.InitializerField &&
+            compiler.token_name_ids[tables.nodes[child].token] == compiler.struct_fields[field].name_id {
+            if found >= 0L { return -1L }
+            found = child
+        }
+        child = compiler.child_next[child]
+    }
+    found
+}
+
+recursive fn const_image_valid(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    node: long,
+    ty: long,
+    depth: long,
+) -> bool {
+    if depth > 8L || node < 0L || ty < 0L { return false }
+    let kind = type_kind(compiler, ty)
+    let syntax_kind = tables.nodes[node].kind
+    if ty == TY_BOOL { return syntax_kind == NodeKind.Bool }
+    if ty == TY_INT || ty == TY_LONG || ty == TY_BYTE {
+        if syntax_kind != NodeKind.Integer { return false }
+        let _checked = literal_value(env, source, tokens, files, compiler, tables, file_index, node, ty)
+        return true
+    }
+    if kind == TYPE_KIND_ASCII || kind == TYPE_KIND_BYTES {
+        let is_bytes = kind == TYPE_KIND_BYTES
+        let wanted = if is_bytes { NodeKind.BytesLiteral } else { NodeKind.ByteString }
+        if syntax_kind != wanted { return false }
+        let literal = if is_bytes { decode_string_token(source, tokens, files[file_index].base, tables.nodes[node].extra, true) } else { decode_string_token(source, tokens, files[file_index].base, tables.nodes[node].token, false) }
+        if literal.count() > text_max_bytes(compiler, ty) {
+            fail_text_literal_too_long(env, files, compiler, file_index, tables.nodes[node].start, is_bytes, literal.count(), text_max_bytes(compiler, ty))
+        }
+        return true
+    }
+    if kind == TYPE_KIND_STRUCT {
+        if syntax_kind != NodeKind.StructInit { return false }
+        let record = type_record(compiler, ty)
+        if compiler.token_name_ids[tables.nodes[node].token] != record.name_id { return false }
+        var children = 0L
+        var child = compiler.child_first[node]
+        for step in 0L..tables.nodes[node].subtree {
+            if child < 0L { break }
+            children += 1L
+            child = compiler.child_next[child]
+        }
+        if children != record.field_count { return false }
+        for offset in 0L..record.field_count {
+            let field = record.field_start + offset
+            let init = const_image_field_init(tables, compiler, node, field)
+            if init < 0L { return false }
+            if !const_image_valid(env, source, tokens, files, tables, compiler, file_index, compiler.child_first[init], compiler.struct_fields[field].ty, depth + 1L) { return false }
+        }
+        return true
+    }
+    if kind == TYPE_KIND_ARRAY {
+        if syntax_kind != NodeKind.ArrayLiteral { return false }
+        let element = collection_element_type(compiler, ty)
+        let capacity = collection_capacity(compiler, ty)
+        var item = compiler.child_first[node]
+        var count = 0L
+        for step in 0L..capacity + 1L {
+            if item < 0L { break }
+            if !const_image_valid(env, source, tokens, files, tables, compiler, file_index, item, element, depth + 1L) { return false }
+            count += 1L
+            item = compiler.child_next[item]
+        }
+        return count == capacity
+    }
+    if collection_kind_is_list(kind) { return syntax_kind == NodeKind.ListLiteral && compiler.child_first[node] < 0L }
+    if kind == TYPE_KIND_MAP { return syntax_kind == NodeKind.MapLiteral && compiler.child_first[node] < 0L }
+    false
+}
+
+fn register_image_constants(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+) {
+    for node in 0L..tables.nodes.count() {
+        if tables.nodes[node].kind != NodeKind.Const { continue }
+        if (compiler.facts[node].flags & FACT_CONSTANT_EVALUATED) != 0L { continue }
+        let type_node = compiler.child_first[node]
+        if type_node < 0L || (compiler.facts[type_node].flags & FACT_RESOLVED_TYPE) == 0L { continue }
+        let declared = compiler.facts[type_node].ty
+        let kind = type_kind(compiler, declared)
+        if kind != TYPE_KIND_STRUCT && kind != TYPE_KIND_ARRAY && !collection_kind_is_list(kind) && kind != TYPE_KIND_MAP { continue }
+        if value_type_size(compiler, declared) < 0L || type_contains_pool(compiler, declared, 0L) { continue }
+        let initializer = node_last_child(tables, compiler, node)
+        if initializer < 0L || initializer == type_node { continue }
+        let file_index = node_file_index(tables.nodes, files, node)
+        if !const_image_valid(env, source, tokens, files, tables, compiler, file_index, initializer, declared, 0L) { continue }
+        compiler.facts[node] = NodeFact {
+            ty: declared,
+            flags: FACT_CONSTANT_DECLARED | FACT_CONSTANT_EVALUATED | FACT_CONSTANT_ARRAY,
+            binding: -1L,
+            function: -1L,
+            literal: node,
+        }
+    }
+}
+
+fn const_image_zeros(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, count: long) {
+    for index in 0L..count { ir_write_hex_escaped(compiler, ir, 0L) }
+}
+
+// Write the bytes of the value of `node` as a variable of type `ty` holds it: exactly value_type_size(ty) bytes.
+recursive fn emit_const_image_bytes(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    file_index: long,
+    node: long,
+    ty: long,
+) {
+    let kind = type_kind(compiler, ty)
+    let size = value_type_size(compiler, ty)
+    if ty == TY_BOOL {
+        ir_write_hex_escaped(compiler, ir, if (tables.nodes[node].flags & FLAG_VALUE) != 0L { 1L } else { 0L })
+    } else if ty == TY_INT || ty == TY_LONG || ty == TY_BYTE {
+        let magnitude = tables.literals[tables.nodes[node].extra]
+        let raw = magnitude.limb1 * 4294967296L + magnitude.limb0
+        let value = if (tables.nodes[node].flags & FLAG_NEGATIVE) != 0L { 0L - raw } else { raw }
+        for shift in 0L..size { ir_write_hex_escaped(compiler, ir, (value >> (shift * 8L)) & 255L) }
+    } else if kind == TYPE_KIND_ASCII || kind == TYPE_KIND_BYTES {
+        // [length: i64][zero padding to the data offset][bytes][zero padding up to the size]
+        let literal = if kind == TYPE_KIND_BYTES { decode_string_token(source, tokens, files[file_index].base, tables.nodes[node].extra, true) } else { decode_string_token(source, tokens, files[file_index].base, tables.nodes[node].token, false) }
+        let data_offset = text_data_offset(compiler, ty)
+        for shift in 0L..8L { ir_write_hex_escaped(compiler, ir, (literal.count() >> (shift * 8L)) & 255L) }
+        const_image_zeros(compiler, ir, data_offset - 8L)
+        for position in 0L..literal.count() { ir_write_hex_escaped(compiler, ir, literal[position].to_long()) }
+        const_image_zeros(compiler, ir, size - data_offset - literal.count())
+    } else if kind == TYPE_KIND_STRUCT {
+        let record = type_record(compiler, ty)
+        var position = 0L
+        for offset in 0L..record.field_count {
+            let field = record.field_start + offset
+            let field_ty = compiler.struct_fields[field].ty
+            let field_offset = compiler.struct_fields[field].offset
+            const_image_zeros(compiler, ir, field_offset - position)
+            let init = const_image_field_init(tables, compiler, node, field)
+            let init_value = compiler.child_first[init]
+            emit_const_image_bytes(source, tokens, files, tables, compiler, ir, file_index, init_value, field_ty)
+            position = field_offset + value_type_size(compiler, field_ty)
+        }
+        const_image_zeros(compiler, ir, size - position)
+    } else if kind == TYPE_KIND_ARRAY {
+        let element = collection_element_type(compiler, ty)
+        let stride = value_type_size(compiler, element)
+        var item = compiler.child_first[node]
+        var written = 0L
+        for index in 0L..collection_capacity(compiler, ty) {
+            emit_const_image_bytes(source, tokens, files, tables, compiler, ir, file_index, item, element)
+            written += stride
+            item = compiler.child_next[item]
+        }
+        const_image_zeros(compiler, ir, size - written)
+    } else {
+        // an empty list or map is all zero bytes
+        const_image_zeros(compiler, ir, size)
+    }
+}
+
+fn emit_image_constant_global(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    declaration: long,
+) {
+    let declared = compiler.facts[declaration].ty
+    ir_write_ascii(compiler, ir, "@.nl.const."); ir_write_number(compiler, ir, declaration)
+    ir_write_ascii(compiler, ir, " = private unnamed_addr constant ["); ir_write_number(compiler, ir, value_type_size(compiler, declared))
+    ir_write_ascii(compiler, ir, " x i8] c\"")
+    emit_const_image_bytes(source, tokens, files, tables, compiler, ir, node_file_index(tables.nodes, files, declaration), node_last_child(tables, compiler, declaration), declared)
+    ir_write_ascii(compiler, ir, "\", align 8\n")
+}
+
+// Whether an array constant is written by emit_array_constant_global (int, long, byte or Ascii elements) rather than as an image.
+fn const_is_simple_array(compiler: CompilerTables, declaration: long) -> bool {
+    let declared = compiler.facts[declaration].ty
+    if type_kind(compiler, declared) != TYPE_KIND_ARRAY { return false }
+    let element = collection_element_type(compiler, declared)
+    element == TY_INT || element == TY_LONG || element == TY_BYTE || type_kind(compiler, element) == TYPE_KIND_ASCII
+}

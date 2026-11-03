@@ -1128,10 +1128,10 @@ fn check_one_body(
         if kind == NodeKind.Let {
             let value = frame.child0
             let value_fact = compiler.facts[value]
-            if owner_value_is_pool_struct(compiler, value_fact.ty) && tables.nodes[value].kind != NodeKind.StructInit {
+            if owner_value_is_pool_struct(compiler, value_fact.ty) && tables.nodes[value].kind != NodeKind.StructInit && !(tables.nodes[value].kind == NodeKind.Call && value_fact.function >= 0L) {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[value].start, "a value containing a pool cannot be copied; initialize a fresh pool owner")
             }
-            if type_kind(compiler, value_fact.ty) == TYPE_KIND_POOL && tables.nodes[value].kind != NodeKind.PoolLiteral {
+            if type_kind(compiler, value_fact.ty) == TYPE_KIND_POOL && tables.nodes[value].kind != NodeKind.PoolLiteral && !(tables.nodes[value].kind == NodeKind.Call && value_fact.function >= 0L) {
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: value, offset: tables.nodes[value].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[value].token })
             }
             if is_bytes_view_value(tables, compiler, value) {

@@ -246,7 +246,7 @@ fn unsupported_category_for_node(
     // copying one, or iterating one is refused.
     if is_type_node(value.kind) && value.token >= 0L && token_is_word_at(source, tokens, files, file_index, value.token, "pool") {
 
-        if value.kind != NodeKind.Annotation && value.kind != NodeKind.ParameterType && value.kind != NodeKind.FieldType { return UNSUPPORTED_POOL_USE }
+        if value.kind != NodeKind.Annotation && value.kind != NodeKind.ParameterType && value.kind != NodeKind.FieldType && value.kind != NodeKind.ResultType { return UNSUPPORTED_POOL_USE }
     }
     if is_type_node(value.kind) && (value.meta1 & 2097151L) == 1L && value.token >= 0L &&
         token_is_word_at(source, tokens, files, file_index, value.token, "Id") { return 0L }
@@ -397,7 +397,8 @@ fn unsupported_category_for_node(
             if declared == TY_INT || declared == TY_LONG || declared == TY_BYTE { 0L }
             else if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L &&
                 (type_kind(compiler, declared) == TYPE_KIND_ASCII || type_kind(compiler, declared) == TYPE_KIND_BYTES ||
-                    type_kind(compiler, declared) == TYPE_KIND_ARRAY) { 0L }
+                    type_kind(compiler, declared) == TYPE_KIND_ARRAY || type_kind(compiler, declared) == TYPE_KIND_STRUCT ||
+                    collection_kind_is_list(type_kind(compiler, declared)) || type_kind(compiler, declared) == TYPE_KIND_MAP) { 0L }
             else { UNSUPPORTED_NODE }
         },
         NodeKind.TypeArgument => 0L,

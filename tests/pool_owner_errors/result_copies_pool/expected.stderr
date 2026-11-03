@@ -1,0 +1,3 @@
+main.nl:4:1: error: a value containing a pool cannot be returned; pool owners cannot escape a function
+    4 | fn same(world: World) -> World {
+      | ^

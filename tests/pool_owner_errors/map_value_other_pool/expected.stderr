@@ -1,0 +1,3 @@
+main.nl:9:15: error: expected labels.Id, got nodes.Id
+    9 |     m.set(1L, a).unwrap()
+      |               ^

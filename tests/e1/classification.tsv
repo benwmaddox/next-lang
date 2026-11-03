@@ -285,7 +285,7 @@ diagnose	tests/run/t07_owner_mismatch
 diagnose	tests/run/t07_pool_array_element
 unsupported	tests/run/t07_pool_constant
 unsupported	tests/run/t07_pool_not_mutable
-unsupported	tests/run/t07_pool_return
+diagnose	tests/run/t07_pool_return
 build	tests/run/t07_pool_stack_limit
 unsupported	tests/run/t07_proven_add
 unsupported	tests/run/t07_snapshot
@@ -313,7 +313,7 @@ unsupported	tests/run/t09_key_write
 unsupported	tests/run/t09_maps_sets
 unsupported	tests/run/t09_nested_view_mutation
 unsupported	tests/run/t09_set_view_mutation
-unsupported	tests/run/t09_unhashable_key
+diagnose	tests/run/t09_unhashable_key
 unsupported	tests/run/t09_view_mutation
 unsupported	tests/run/t09_view_replace
 unsupported	tests/run/t09_view_replace_helper

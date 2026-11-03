@@ -1930,9 +1930,12 @@ fn intern_text_type_syntax(
         if constant_count != 1L { return -1L }
         let evaluated = evaluate_collection_capacity(tables, compiler, first_max, 0L)
         if !evaluated.constant {
+            // `Bytes max 16[3]` reads as a maximum of `16[3]`; an array of text is written with parentheses.
+            let indexed = first_max >= 0L && tables.nodes[first_max].kind == NodeKind.Index
             fail_at_message(env, files, compiler, file_index,
                 if first_max >= 0L { tables.nodes[first_max].start } else { syntax.start },
-                "maximum must be a constant integer expression")
+                if indexed { "maximum must be a constant integer expression; for an array of parameterised Ascii or Bytes, parenthesize the type first, e.g. '(Bytes max 16)[3]'" }
+                else { "maximum must be a constant integer expression" })
         }
         if !evaluated.valid { text_type_capacity_error(env, files, compiler, file_index, syntax.start, kind, true) }
         if evaluated.value < 0L { text_type_capacity_error(env, files, compiler, file_index, tables.nodes[first_max].start, kind, false) }
