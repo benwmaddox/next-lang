@@ -1250,7 +1250,7 @@ fn copy_core_name(name: Ascii max 64) -> Bytes max 4096 {
 // The core files whose helpers a C-runtime program compiles in directly. They use no core state and fail
 // nothing, and the compiled functions are internal, so only the ones the program calls survive.
 fn embedded_core_is_prelude_file(name: Ascii max 64) -> bool {
-    name == "text_format.nl" || name == "parse_number.nl" || name == "utf8_validate.nl" || name == "utf8_trusted.nl"
+    name == "text_format.nl" || name == "float_decimal.nl" || name == "parse_number.nl" || name == "utf8_validate.nl" || name == "utf8_trusted.nl"
 }
 
 fn append_embedded_core_sources(

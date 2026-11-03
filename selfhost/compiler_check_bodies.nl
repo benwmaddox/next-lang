@@ -1504,7 +1504,7 @@ fn check_one_body(
                 if arg_count != 1L { fail_at_message(env, files, compiler, file_index, syntax.start, "print takes one argument, but got an invalid number; call print(value)") }
                 let argument = child_at(tables, compiler, node, 0L)
                 let arg_ty = compiler.facts[argument].ty
-                if !is_numeric_type(arg_ty) && arg_ty != TY_BOOL && arg_ty != TY_BYTE && arg_ty != TY_WINDOW && !is_aggregate_type(compiler, arg_ty) {
+                if !is_numeric_type(arg_ty) && !(compiler.c_runtime && is_float_type(arg_ty)) && arg_ty != TY_BOOL && arg_ty != TY_BYTE && arg_ty != TY_WINDOW && !is_aggregate_type(compiler, arg_ty) {
                     fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, window, and function values")
                 }
                 if arg_ty != TY_WINDOW && type_contains_window(compiler, arg_ty, 0L) { fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print shows a window only on its own: print(w), not inside a struct or array") }

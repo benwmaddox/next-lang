@@ -39,8 +39,7 @@ class Interpolation(unittest.TestCase):
 
     def test_errors(self):
         for body, message in [
-            ('print($"a {pair} b")', "takes int, long, byte, bool, Ascii, Bytes or Text; found"),
-            ('print($"a {1.5} b")', "takes int, long, byte, bool, Ascii, Bytes or Text; found"),
+            ('print($"a {pair} b")', "takes int, long, byte, double, float, bool, Ascii, Bytes or Text; found"),
             ('print($"a {id")', "string literals cannot contain a newline"),
             ('print($"a } b")', "unexpected character '}'"),
             ('print($"a {} b")', "expected a value"),

@@ -16,6 +16,7 @@ Everything that can grow has a maximum the compiler knows. There is no heap, no 
 | Write | Meaning |
 | --- | --- |
 | `int`, `long`, `byte`, `bool` | 32-bit, 64-bit, 0 to 255, true/false. Literals: `5` is int, `5L` is long. Convert with `x.to_long()`. |
+| `double`, `float` | 64-bit and 32-bit IEEE numbers (C runtime). `print(x)`, `str(x)` and `{x}` in `$"..."` give the shortest text that reads back as the same value, in JavaScript's layout: plain digits for 1e-6 <= |x| < 1e21 (`0.000001`, `123.456`, `100`), else `1.5e+21` or `1e-7`; whole numbers have no `.0`; `-0` prints as `0`; infinities print as `Infinity` and `-Infinity` (a plain float never holds NaN). `str_fixed(x, n)` gives n digits after the point. `text.parse_double()` is an `Option<double>`, correctly rounded for any input (`[+-]digits[.digits][e[+-]digits]` or `[+-]Infinity`; `1e999` is `Infinity`, malformed text is `none`). |
 | `Ascii max 16`, `Bytes max 256` | text / raw bytes of at most that many; `Bytes.empty()` makes an empty one |
 | `list<T, 4>` | at most 4 elements; `list {}` is empty. `push` returns a result that can be `Full` |
 | `T[3]` | exactly 3 elements; `fill(0L)` makes one. an array of text is written `(Bytes max 16)[3]` (without the parentheses the `[3]` reads as part of the maximum) |
@@ -102,8 +103,8 @@ functions with a build-time maximum size. `bench/web` shows all of it; [design/m
 The compiler says "not supported by the self-hosted compiler yet: ..." and names the construct. Verified today: range
 types (`int 0..=100`, also as an alias or a field type; the message may say "type arguments" or "refined type forms"),
 the `Out` helpers `line`, `int` and `long` (message: "method calls"; use `print(x)` or `env.out.write(bytes)`), and
-anonymous functions (use a named top-level function). `print` takes ints, bools, text, enums, structs and collections but
-not floats. `--runtime=core` has further limits; the default is `--runtime=c`. Known workarounds are in [campfire-friction.md](campfire-friction.md).
+anonymous functions (use a named top-level function). `print` takes ints, bools, text, enums, structs and collections, and doubles and floats on their own, but
+not floats inside a struct or collection. `--runtime=core` has further limits; the default is `--runtime=c`. Known workarounds are in [campfire-friction.md](campfire-friction.md).
 
 ## Common mistakes
 

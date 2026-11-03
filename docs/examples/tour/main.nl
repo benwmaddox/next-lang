@@ -84,6 +84,7 @@ fn main() {
     print(word[1] == "1")                      // true: word[i] is one character, an Ascii max 1
     print(word[1].to_byte())                   // 49: its byte
     print(weight(0) + weight(5))               // 6: `0 | 1 => 1`
+    print(0.1 + 0.2)                           // 0.30000000000000004: the shortest text that reads back as the same double
 }
 
 // Tests live in the same package; `scripts/nlc test <package>` runs each in its own process.

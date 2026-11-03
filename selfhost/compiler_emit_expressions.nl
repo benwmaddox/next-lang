@@ -1713,6 +1713,10 @@ recursive fn emit_expr_linear(
                         let location = aggregate_source_location_for_node(tables, compiler, first_arg)
                         let pointer = emit_location_pointer_materialization(compiler, ir, location)
                         ir_write_ascii(compiler, ir, "  call void "); emit_type_helper_call_one(compiler, ir, arg_ty, HELPER_PRINT, location, pointer); ir_write_ascii(compiler, ir, "\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_newline", "nlc_print_newline"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx)\n")
+                    } else if compiler.c_runtime && is_float_type(arg_ty) {
+                        emit_float_bits_i64(compiler, ir, current, first_arg)
+                        ir_write_ascii(compiler, ir, "  call void @nl_print_float_bits(ptr %nl.ctx, i64 %fp.bits."); ir_write_number(compiler, ir, current)
+                        ir_write_ascii(compiler, ir, if arg_ty == TY_DOUBLE { ", i64 0)\n" } else { ", i64 1)\n" })
                     } else {
                         ir_write_ascii(compiler, ir, "  call void ")
                         if compiler.c_runtime && (arg_ty == TY_INT || arg_ty == TY_BYTE) {

@@ -19,11 +19,14 @@ Status 2026-11-03: **approved** by the maintainer unless noted.
    suffixes (`5u`, `5UL`), printing and parsing, ranges and storage widths as for `int` and
    `long`. Needed for typescript-go: flags (`uint32`), ids and hashes (`uint64`, xxh3),
    3,000+ unsigned sites in the checker.
-3. **Float text in the core library.** Shortest round-trip printing of `double` (Ryu-style)
-   and correctly rounded parsing (Eisel-Lemire-style, with a slow exact fallback), in plain
-   next-lang. Replaces go2nl's hand shims for `jsnum.FromString` and `Number.String`, which
-   are exact only for whole numbers and short decimals. Oracle: the parse-number test data
-   and round-trip checks named in PLAN.md (F1).
+3. **Float text in the core library: fast pass.** Done (2026-11-03, branch `nl-floattext`): exact shortest round-trip
+   printing of `double` and `float` and correctly rounded `parse_double` in plain next-lang (`core/float_decimal.nl`, big
+   integers of 28-bit limbs, about 1 microsecond for ordinary values), JavaScript layout, oracle test
+   `tests/c_runtime/float_oracle` (gen.py; Python repr/float and exact Fractions as the oracle). Remaining: Ryu for
+   printing and Eisel-Lemire for parsing as fast paths in front of the exact code (both need 64x64 to 128-bit multiply, so
+   the unsigned types first; the exact code stays as fallback and oracle); `parse_float` (32-bit, the core already
+   rounds for the 53-bit format only); printing doubles inside structs and collections; `{x:8}` padding and `{x:.3}`
+   precision holes for doubles; go2nl can now drop its `jsnum` shims (note `-0` prints as `0`, as in JavaScript).
 4. **Growable text arena.** Text that does not need a per-value maximum: a per-job arena of
    bytes where a text value is plain data (arena, start, length) or an id, so source files of
    1-16 MiB and thousands of small strings can coexist without every value reserving the
