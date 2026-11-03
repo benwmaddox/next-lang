@@ -72,6 +72,9 @@ fn main() {
     while i < 3 { i += 1 }
     for n in 0..3 { i += n }                   // 0..3 is 0, 1, 2; 0..=3 includes 3
     print(i)                                   // 6
+    let word: Ascii max 8 = "a1"
+    print(word[1] == "1")                      // true: word[i] is one character, an Ascii max 1
+    print(word[1].to_byte())                   // 49: its byte
 }
 
 // Tests live in the same package; `scripts/nlc test <package>` runs each in its own process.

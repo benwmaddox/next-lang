@@ -134,7 +134,7 @@ fn emit_compound_assignment(
     ty: long,
     op: long,
 ) {
-    if op == 1L && type_kind(compiler, ty) == TYPE_KIND_ASCII {
+    if is_ascii_append_assignment(op, ty, compiler) {
         emit_ascii_append_assignment(tables, compiler, ir, node, target, binding, value)
         return
     }
@@ -1105,6 +1105,9 @@ recursive fn emit_expr_linear(
                 if frame.child0 >= 0L {
                     compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
                 }
+            } else if (kind == NodeKind.ByteString || kind == NodeKind.BytesLiteral) && (compiler.facts[current].flags & FACT_ASCII_BYTE) != 0L {
+                // a one-character literal compared as a byte: its value is the constant
+                match compiler.expr_work.pop() { some(_) => (), none => () }
             } else if kind == NodeKind.ByteString || kind == NodeKind.BytesLiteral {
                 emit_text_literal_value(source, files, tokens, tables, compiler, ir, current, current, file_index, is_test || compiler.test_build)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
@@ -1268,7 +1271,9 @@ recursive fn emit_expr_linear(
             } else {
                 emit_collection_index_address(files, tables, compiler, ir, current, file_index)
                 let ty = compiler.facts[current].ty
-                if is_aggregate_type(compiler, ty) {
+                if is_ascii_char_index(tables, compiler, current) {
+                    emit_ascii_char_value(tables, compiler, ir, current)
+                } else if is_aggregate_type(compiler, ty) {
                     if !collection_index_has_field_projection(tables, compiler, current) && !region_node_is_collection_method_receiver(tables, compiler, current) {
                         emit_collection_gather_index_value(tables, compiler, ir, current)
                     }
@@ -1550,9 +1555,9 @@ recursive fn emit_expr_linear(
                 emit_double_binary(files, tables, compiler, ir, current, file_index, op, left, right)
             } else if op == 14L || op == 15L {
                 ir_write_ascii(compiler, ir, "  store i1 "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n  br label %logic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\nlogic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load i1, ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n")
-            } else if op >= 8L && op <= 13L && is_text_comparable(compiler, compiler.facts[left].ty, compiler.facts[right].ty) {
+            } else if op >= 8L && op <= 13L && (compiler.facts[current].flags & FACT_ASCII_BYTE) == 0L && is_text_comparable(compiler, compiler.facts[left].ty, compiler.facts[right].ty) {
                 emit_text_compare(tables, compiler, ir, current, op)
-            } else if (op == 8L || op == 9L) && is_aggregate_type(compiler, compiler.facts[left].ty) {
+            } else if (op == 8L || op == 9L) && (compiler.facts[current].flags & FACT_ASCII_BYTE) == 0L && is_aggregate_type(compiler, compiler.facts[left].ty) {
                 let ty = compiler.facts[left].ty
                 let left_location = if tables.nodes[left].kind == NodeKind.Name || tables.nodes[left].kind == NodeKind.Field { compiler_location(compiler, 0L, left, 0L) }
                     else { aggregate_source_location_for_node(tables, compiler, left) }

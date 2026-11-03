@@ -295,6 +295,10 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "byte_len") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "slice") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "bytes") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "to_byte") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "to_bytes") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "first") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "last") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "contains") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "starts_with") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "validate_utf8") ||

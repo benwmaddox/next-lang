@@ -1,0 +1,3 @@
+main.nl:3:32: error: expected Ascii max 100, found Ascii max 1000
+    3 |     let small: Ascii max 100 = big
+      |                                ^
