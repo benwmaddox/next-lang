@@ -1,6 +1,6 @@
 # Text arena: unbounded text as windows into an arena
 
-Status: design note, 2026-11-03. Stage 1 is implemented as a library written in next-lang itself
+Status: design note with open proposals, 2026-11-03. Stage 1 is implemented as a library written in next-lang itself
 (`tests/c_runtime/text_arena/text_arena.nl`, no compiler change); the built-in spelling below is the target. Backlog item 4.
 
 ## Why
@@ -10,17 +10,56 @@ copied by value. go2nl converts Go `string` to `Bytes max N` with one N for a 1-
 frames are huge and scanner time is quadratic (407 KB: 206 ms vs Go 3.8 ms; 1.63 MB: 5.1 s). A string longer than N fails. Text should
 not need a maximum.
 
-## The rule
+## What is decided, and what is only proposed
 
-- `Text max N`, `Ascii max N`, `Bytes max N` stay as they are: **inline at the declared maximum and mutable** (in-place append and
-  replace). Use them for small bounded fields (identifiers, names) and for long-lived state that edits text repeatedly.
-- Text **without** a maximum is the unbounded form. It is a **window**: plain data (start, length; 8 bytes in stage 1), copied freely,
-  never owning bytes. It **names its arena as an owner**, like `Id<nodes>`. Built-in spelling: `Text<src>` (UTF-8) and `Bytes<src>`
-  (raw); stage 1 spells the raw form `Id<src>`. A window of arena A cannot be used with arena B (build error from the pool-owner check:
-  `expected b.Id, got a.Id`). There is never an ambient arena: every operation names the arena (`src.add(...)`).
-- An **arena** is `pool<byte, N>`: one region of declared capacity N, owned by its declaring local, parameter or struct field, never
-  copied (pools are passed by address). Windows are ranges of it.
-- **Unbounded text is immutable.** A window's content never changes; "editing" builds a new window.
+**Decided** (BACKLOG item 4): a growable text arena exists as a concept: text without a per-value maximum, whose bytes live in an arena of
+declared capacity, so a value is small plain data and many values coexist with large ones.
+
+**Everything below marked PROPOSAL is open for the maintainer.** Stage 1 is a deliberately minimal, provisional library built only to
+test the core idea (arena, window, slice without copy, content equality, copy-out); names and shapes are easy to change.
+
+### The core idea (what stage 1 tests)
+
+- An **arena** is a byte region of declared capacity N, owned by its declaring local, parameter or struct field, never copied. Stage 1
+  uses `pool<byte, N>` because pools already give the capacity, pass-by-address and owner machinery.
+- A **window** is plain data (start, length; one long in stage 1): copied freely, never owning bytes. A window of arena A cannot be used
+  with arena B: stage 1 reuses the pool-owner check (`expected b.Id, got a.Id`), spelled `Id<src>`.
+- `slice` makes a smaller window without copying; equality and order are by content; copy-out to a bounded value is checked.
+
+### PROPOSALS (open)
+
+1. **Surface type.** (a) A separate type without a maximum, e.g. `Text<src>` / `Bytes<src>` (leading proposal: a missing `max` means
+   unbounded, and the angle bracket names the arena). (b) An option on the existing types, e.g. `Text max *` or `Text in src`. (c) A new
+   name such as `Window<src>` or `View<src>` (BACKLOG's explicit-environment note proposes a `View` family). Tradeoff: (a) reads
+   naturally but makes `Text` and `Text<src>` look like one type while behaving differently (immutable, arena-bound); (c) is honest
+   but adds a name.
+2. **Which arena.** (a) The window names its arena as an owner, like pool ids; every creating operation takes the arena (`src.add(s)`).
+   Explicit, matches the explicit-environment principle, costs a parameter. (b) An implicit per-job arena: no parameter, windows are
+   not tied to an arena by the type, but it is exactly the ambient state the principle rejects and breaks when two arenas (source,
+   generated text) are wanted.
+3. **Mutability.** (a) Windows immutable; bounded `Text max N` stays mutable (in-place append/replace). Zero-copy `slice` is then sound:
+   substrings alias safely with no write-through hazard. (b) Windows mutable in place: slices would alias writable bytes, so `slice` would
+   have to copy or the language needs a rule for who may write. (c) Windows immutable plus an explicit `Text max N` buffer to edit and
+   `add` to freeze it. (a) or (c) is recommended.
+4. **Small values inline.** Option B in the table below (inline when short, spill to the arena): two shapes, every operation branches.
+   Leave out until measurement shows most windows are tiny.
+5. **Construction.** Appending to the arena's end through a builder (one open per arena, or builders with their own region) is the
+   natural way to make generated text; whether it is a builder object, a `write` parameter, or just `add` of bounded pieces is open.
+   Stage 1 has only the minimum needed to fill a large arena in the test.
+6. **Conversions.** bounded -> unbounded is a copy into the arena; unbounded -> bounded is a checked copy-out that fails when too long.
+   Comparison, ordering and hashing by content across both kinds. Windows as pool/struct fields and map keys (content hash) are plain
+   data under the owner rule. All proposed; only copy-out and equality are in stage 1.
+
+### Questions for the maintainer, in plain words
+
+1. Should unbounded text be a separate type, or an option on `Text`? What should it be called?
+2. Must a text value always say which arena it belongs to, or may a job have one implicit arena?
+3. Is unbounded text read-only once made? (Needed for cheap, safe substrings; editing then means making a new text.)
+4. Is it acceptable that replacing an unbounded text field wastes the old bytes until the whole arena is reset? Or should such state keep
+   `Text max N`?
+5. Are small strings worth a special inline form, or is one 8-16 byte window for everything enough?
+6. Where does a compiler's generated text (unescaped strings, messages) live: the same arena as the source, or a second one?
+7. Should the arena size limits (2 GiB, start/length packing) matter, or is a larger window (16 bytes) wanted from the start?
 
 ## Why this is not a heap
 
@@ -48,21 +87,21 @@ would pay only if measurements show most windows are tiny and 8-16 bytes per win
 2. Generated text (escape-processed token values, canonical numbers, messages): appended through a builder to a generated-text region
    of the same arena or a second arena. Both are append-only until reset.
 
-## Operations
+## Operations (provisional names; the built-in column is a proposal)
 
 All take the arena first. Exhaustion, a bad slice and a bad index fail the program.
 
 | Operation | Stage 1 library | Built-in target |
 |---|---|---|
-| create from literal / bounded value | `arena_add_ascii(src, s)`, `arena_add_bytes(src, b)` | `src.add(s)` |
+| create from literal / bounded value | `arena_add_ascii(src, s)` | `src.add(s)` |
 | length | `arena_len(src, w)` | `w.len()` |
 | slice, no copy | `arena_slice(src, w, a, b)` | `w.slice(a..b)` |
 | byte at | `arena_at(src, w, i)` | `src[w][i]` |
-| equal / order / hash by content | `arena_equal`, `arena_less`, `arena_hash` | `==`, `<`, map key hash |
-| starts_with, find (offset or -1) | `arena_starts_with`, `arena_find` | methods |
-| checked copy-out to bounded | `arena_to_bytes_256`, `arena_to_bytes_4096` | `w.to_bytes()` (N from the expected type) |
+| equal / order by content (hash: not in stage 1) | `arena_equal`, `arena_less`, | `==`, `<`, map key hash |
+| starts_with, find, hash | not in stage 1 (easy on top of `arena_at`) | methods, map key hash |
+| checked copy-out to bounded | `arena_to_bytes_256` | `w.to_bytes()` (N from the expected type) |
 | print | `arena_print(env, src, w)` | `print(w)`, interpolation |
-| builder | `m = arena_begin(src)`, `arena_push`, `arena_append_ascii/bytes/window`, `arena_finish(src, m)` | `src.begin()` .. `.finish()` |
+| builder | `m = arena_begin(src)`, `arena_push`, `arena_append_ascii`, `arena_finish(src, m)` | `src.begin()` .. `.finish()` |
 
 Departure from the first sketch: `w[i]` needs the bytes, and a window carries no address (DESIGN.md: stored data holds no addresses; a
 window is (start, length) plus a *static* owner), so byte reads name the arena. A built-in `==` between windows of the same owner would
@@ -71,15 +110,15 @@ read the arena known from the type.
 Conversions: bounded -> unbounded is a copy into the arena (`add`). Unbounded -> bounded is a checked copy-out that fails when too long.
 Comparison, ordering and hashing are by content across both kinds (the built-in compares a window with an inline value without
 copying). A window may be a struct field, a pool or list element, or a map key (hash by content): plain data under the owner rule. Stage 1
-gives `arena_hash`; map keys by content need a compiler hook and are not done.
+is not done: map keys by content need a compiler hook and are not done.
 
-## Builder
+## Builder (PROPOSAL; stage 1 has only begin/push/finish)
 
 A builder writes at the arena's end, so **one builder is open per arena**: `begin` returns the start mark and `finish(mark)` the window of
 everything appended since. Other appends in between would interleave, and the built-in `begin` should hold the arena's write access until
 `finish`. Builders with their own region (a second arena for generated text) allow several at once.
 
-## Immutability and zero-copy slices
+## Immutability and zero-copy slices (follows from proposal 3a)
 
 Because a window's bytes never change, any number of windows alias the same bytes safely: a substring is a smaller (start, length), with
 no write-through hazard and no copy. The arena only grows, so windows never dangle before a reset. The library never overwrites arena
@@ -92,7 +131,7 @@ text suits per-run/per-job data and immutable inputs. Long-lived mutable state t
 Stage 1 limits: start and length are packed in one long (arena up to 2 GiB); the library window type `Id<src>` is the same type as the
 arena's own byte slot ids (the built-in `Text<src>` would be distinct); the helper `arena_slot` is the one place that builds an id by arithmetic.
 
-## Go port mapping (stage 3 sketch)
+## Go port mapping (stage 3 sketch, assumes the proposals above)
 
 - Go `string` -> unbounded window `Text<src>`; `s[a:b]` -> `slice`; `len(s)` -> `len`; `s[i]` -> byte read; `==`, `<` -> content compare.
 - `strings.*` shims (`HasPrefix`, `Index`, `Contains`, `TrimPrefix`) -> `starts_with`, `find`, `slice` over windows.
@@ -103,7 +142,7 @@ arena's own byte slot ids (the built-in `Text<src>` would be distinct); the help
 
 ## Stage 1 status
 
-Done: library with every operation above including the builder; test `tests/c_runtime/text_arena` (5 MB arena, 3 million slices, a
+Done: provisional library (add, len, slice, at, equal, less, copy-out to 256 bytes, print, minimal builder); test `tests/c_runtime/text_arena` (5 MB arena, 3 million slices, a
 read-only 5 MB arena through 2000 recursive calls, which would overflow the stack if copied) and negative test
 `tests/pool_owner_errors/text_arena_wrong_arena`. Remaining: the built-in `Text<src>` / `Bytes<src>` types and sugar, content-hash map keys,
 interpolation, arena reset, UTF-8 validation for `Text<src>`, a distinct window type.

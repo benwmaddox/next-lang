@@ -36,15 +36,7 @@ fn arena_add_ascii<N>(text: write pool<byte, N>, s: Ascii max 4096) -> Id<text> 
     start * 4294967296L + s.len()
 }
 
-fn arena_add_bytes<N>(text: write pool<byte, N>, s: Bytes max 4096) -> Id<text> {
-    let start = text.count()
-    for i in 0L..s.count() {
-        discard text.add(s[i]).unwrap()
-    }
-    start * 4294967296L + s.count()
-}
-
-// Stage 2 builder: `mark = arena_begin(text)`, any number of arena_push / arena_append_*, then `arena_finish(text, mark)`.
+// Provisional builder (just enough to fill a large arena): `mark = arena_begin(text)`, any number of arena_push / arena_append_*, then `arena_finish(text, mark)`.
 // The builder writes at the arena's end, so only one builder may be open at a time (appends of another would interleave).
 fn arena_begin<N>(text: pool<byte, N>) -> long {
     text.count()
@@ -57,18 +49,6 @@ fn arena_push<N>(text: write pool<byte, N>, b: byte) {
 fn arena_append_ascii<N>(text: write pool<byte, N>, s: Ascii max 4096) {
     for i in 0L..s.len() {
         discard text.add(s[i]).unwrap()
-    }
-}
-
-fn arena_append_bytes<N>(text: write pool<byte, N>, s: Bytes max 4096) {
-    for i in 0L..s.count() {
-        discard text.add(s[i]).unwrap()
-    }
-}
-
-fn arena_append_window<N>(text: write pool<byte, N>, w: Id<text>) {
-    for i in 0L..arena_len(text, w) {
-        discard text.add(arena_get(text, w, i)).unwrap()
     }
 }
 
@@ -111,43 +91,9 @@ fn arena_less<N>(text: pool<byte, N>, a: Id<text>, b: Id<text>) -> bool {
     na < nb
 }
 
-// A content hash in 0..2^31-1, equal for equal windows, whichever arena region they sit in.
-fn arena_hash<N>(text: pool<byte, N>, w: Id<text>) -> long {
-    var h = 5381L
-    for i in 0L..arena_len(text, w) {
-        h = (h * 33L + arena_get(text, w, i).to_long()) % 2147483647L
-    }
-    h
-}
-
-fn arena_starts_with<N>(text: pool<byte, N>, w: Id<text>, prefix: Id<text>) -> bool {
-    let n = prefix & 4294967295L
-    if n > (w & 4294967295L) { return false }
-    arena_equal(text, arena_slice(text, w, 0L, n), prefix)
-}
-
-// The offset of the first occurrence of needle in w, or -1.
-fn arena_find<N>(text: pool<byte, N>, w: Id<text>, needle: Id<text>) -> long {
-    let n = w & 4294967295L
-    let m = needle & 4294967295L
-    if m > n { return -1L }
-    for at in 0L..(n - m + 1L) {
-        if arena_equal(text, arena_slice(text, w, at, at + m), needle) { return at }
-    }
-    -1L
-}
-
 // Copy out to a bounded value; fails when the window is longer than the bound.
 fn arena_to_bytes_256<N>(text: pool<byte, N>, w: Id<text>) -> Bytes max 256 {
     var out: Bytes max 256 = Bytes.empty()
-    for i in 0L..arena_len(text, w) {
-        discard out.push(arena_get(text, w, i)).unwrap()
-    }
-    out
-}
-
-fn arena_to_bytes_4096<N>(text: pool<byte, N>, w: Id<text>) -> Bytes max 4096 {
-    var out: Bytes max 4096 = Bytes.empty()
     for i in 0L..arena_len(text, w) {
         discard out.push(arena_get(text, w, i)).unwrap()
     }

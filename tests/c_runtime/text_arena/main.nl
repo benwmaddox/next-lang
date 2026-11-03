@@ -37,17 +37,11 @@ fn main(env: Env) {
     print(arena_less(small, h, o))
     print(arena_less(small, o, h))
     print(arena_less(small, h, w))
-    print(arena_hash(small, h) == arena_hash(small, again))
-    print(arena_hash(small, h) == arena_hash(small, o))
-    print(arena_starts_with(small, w, h))
-    print(arena_starts_with(small, w, o))
-    print(arena_find(small, w, o))
-    print(arena_find(small, w, arena_add_ascii(small, "xyz")))
 
     // builder: text generated piece by piece, then a window over it
     let mark = arena_begin(small)
     arena_append_ascii(small, "<")
-    arena_append_window(small, h)
+    arena_append_ascii(small, "hello")
     arena_push(small, (byte)62)
     let built = arena_finish(small, mark)
     print(arena_to_bytes_256(small, built))
