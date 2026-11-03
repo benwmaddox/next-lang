@@ -14,6 +14,7 @@ const COLLECTION_METHOD_POP: long = 1007L
 const COLLECTION_METHOD_PEEK: long = 1008L
 const COLLECTION_METHOD_POOL_ADD: long = 1009L
 const COLLECTION_METHOD_POOL_GET: long = 1010L
+const COLLECTION_METHOD_POOL_SET: long = 1011L
 
 // A pool written with a capacity parameter (`pool<T, N, P>`) is the type of a parameter that accepts a pool
 // of any capacity. The capacity then comes from the pool's own header word at run time.
@@ -64,6 +65,7 @@ fn collection_method_kind(
     else if receiver_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, method_token, "count") { COLLECTION_METHOD_COUNT }
     else if receiver_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, method_token, "add") { COLLECTION_METHOD_POOL_ADD }
     else if receiver_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, method_token, "get") { COLLECTION_METHOD_POOL_GET }
+    else if receiver_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, method_token, "set") { COLLECTION_METHOD_POOL_SET }
     else { 0L }
 }
 
@@ -1848,7 +1850,7 @@ fn emit_collection_method(
 ) {
     let receiver = compiler.child_first[node]
     let argument = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
-    let value_argument = if method == COLLECTION_METHOD_INSERT && argument >= 0L { compiler.child_next[argument] } else { argument }
+    let value_argument = if (method == COLLECTION_METHOD_INSERT || method == COLLECTION_METHOD_POOL_SET) && argument >= 0L { compiler.child_next[argument] } else { argument }
     let type_id = compiler.facts[receiver].ty
     let kind = type_kind(compiler, type_id)
     if kind == TYPE_KIND_MAP {
@@ -1887,6 +1889,10 @@ fn emit_collection_method(
     }
     if method == COLLECTION_METHOD_POOL_GET {
         emit_pool_get(tables, compiler, ir, node, location, pointer_serial, element, stride, base_offset)
+        return
+    }
+    if method == COLLECTION_METHOD_POOL_SET {
+        emit_pool_set(tables, compiler, ir, node, location, pointer_serial, element, stride, base_offset, argument, value_argument)
         return
     }
     if method == COLLECTION_METHOD_PUSH || method == COLLECTION_METHOD_POOL_ADD {

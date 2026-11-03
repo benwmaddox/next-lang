@@ -20,6 +20,7 @@ Everything that can grow has a maximum the compiler knows. There is no heap, no 
 | `list<T, 4>` | at most 4 elements; `list {}` is empty. `push` returns a result that can be `Full` |
 | `T[3]` | exactly 3 elements; `fill(0L)` makes one |
 | `map<K, V, 8>` | at most 8 entries; `set`, `get`, `contains`, `remove` |
+| `pool<T, 8>`, `Id<T>` | `pool {}` is empty; `add` returns `ok(id)`, `get(id)` is an `Option` copy, `set(id, value)` overwrites in place and returns whether the id was in use. `Id<T>` is a `long` slot number usable in struct fields; write the "no element" id as `-1L`. No `remove` yet (stale ids are not detected). |
 | `Option<T>`, `Result<T, E>` | `some(x)` / `none`, `ok(x)` / `err(e)` |
 
 Overflow, division by zero and out-of-range indexes stop the program with a failure; they never wrap silently.

@@ -432,6 +432,8 @@ fn body_child_expected(
         else if method == COLLECTION_METHOD_INSERT && child_index == 0L { TY_LONG }
         else if method == COLLECTION_METHOD_INSERT && child_index == 1L { collection_element_type(compiler, compiler.facts[frame.child0].ty) }
         else if method == COLLECTION_METHOD_REMOVE && child_index == 0L { TY_LONG }
+        else if method == COLLECTION_METHOD_POOL_SET && child_index == 0L { TY_LONG }
+        else if method == COLLECTION_METHOD_POOL_SET && child_index == 1L { collection_element_type(compiler, compiler.facts[frame.child0].ty) }
         else { -1L }
     } else if kind == NodeKind.MethodCall && frame.child0 >= 0L &&
         (type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_ASCII ||

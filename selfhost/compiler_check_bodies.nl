@@ -1727,7 +1727,7 @@ fn check_one_body(
                 }
                 let actual_count = count_children(tables, compiler, node) - 1L
                 let wanted_count = if method == COLLECTION_METHOD_PUSH || method == COLLECTION_METHOD_REMOVE || method == COLLECTION_METHOD_POOL_ADD || method == COLLECTION_METHOD_POOL_GET { 1L }
-                    else if method == COLLECTION_METHOD_INSERT { 2L } else { 0L }
+                    else if method == COLLECTION_METHOD_INSERT || method == COLLECTION_METHOD_POOL_SET { 2L } else { 0L }
                 if actual_count != wanted_count { fail_at_message(env, files, compiler, file_index, syntax.start, "collection method has the wrong number of arguments") }
                 var argument = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
                 var operation_result_type = TY_UNIT
@@ -1744,6 +1744,13 @@ fn check_one_body(
                 } else if method == COLLECTION_METHOD_POOL_GET {
                     if argument < 0L || compiler.facts[argument].ty != TY_LONG { fail_at_message(env, files, compiler, file_index, if argument >= 0L { tables.nodes[argument].start } else { syntax.start }, "a pool is looked up by id; pass the id that add returned") }
                     operation_result_type = intern_sum_type(compiler, TYPE_KIND_OPTION, collection_element_type(compiler, receiver_ty), -1L, file_index, node, -1L, -1L)
+                } else if method == COLLECTION_METHOD_POOL_SET {
+                    let receiver_binding = compiler.facts[receiver].binding
+                    if receiver_binding < 0L || !compiler.bindings[receiver_binding].mutable { fail_at_message(env, files, compiler, file_index, syntax.start, "pool.set requires a writable local, parameter, or field place") }
+                    if argument < 0L || compiler.facts[argument].ty != TY_LONG { fail_at_message(env, files, compiler, file_index, if argument >= 0L { tables.nodes[argument].start } else { syntax.start }, "a pool is addressed by id; pass the id that add returned") }
+                    let set_value = compiler.child_next[argument]
+                    require_type(env, files, compiler, file_index, set_value, collection_element_type(compiler, receiver_ty), compiler.facts[set_value].ty, tables)
+                    operation_result_type = TY_BOOL
                 } else if method == COLLECTION_METHOD_POOL_ADD {
                     let receiver_binding = compiler.facts[receiver].binding
                     if receiver_binding < 0L || !compiler.bindings[receiver_binding].mutable {
