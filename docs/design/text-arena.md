@@ -192,3 +192,5 @@ each is a single token to rename: the type `Window<arena>` (searched as `"Window
   stored an arena address in the slots was rejected: it would put maps and arenas into lifetime tracking. Until then a window, or a struct/array
   holding one, is refused as a map key, in `==` of aggregates, in `print` of aggregates and in `expect a == b` (they would compare or show the
   packed position, not the text). `@nlw_hash` (FNV-1a over a window's bytes) is already emitted for the map work.
+
+9. **Decided (2026-11-04): windows are not map keys.** A map keyed by Go strings copies each key into a bounded `Ascii max N` / `Bytes max N` (go2nl does the copy and picks N by configuration). Content-keyed maps over windows (explicit arena parameter or interning) are not planned for now.
