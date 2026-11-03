@@ -6,7 +6,7 @@ import unittest
 
 from support import ROOT, selfhost
 
-POSITIVE = ["pools", "pools_ids", "pools_set", "pool_fields", "pool_owners", "pool_nested_call", "pool_owner_flow", "pool_index", "list_of_arrays_foreach", "enum_list_literals", "nested_foreach", "nested_foreach_probes", "map_rich", "map_ids", "map_foreach", "sort_lib", "pool_readonly_params", "pool_results", "const_images", "text_arrays", "text_arena", "text_window", "ascii_char", "ascii_index_long", "text_chars", "or_match_unit", "or_match_payload", "float_oracle"]
+POSITIVE = ["pools", "pools_ids", "pools_set", "pool_fields", "pool_owners", "pool_nested_call", "pool_owner_flow", "pool_index", "list_of_arrays_foreach", "enum_list_literals", "nested_foreach", "nested_foreach_probes", "map_rich", "map_ids", "map_foreach", "sort_lib", "pool_readonly_params", "pool_results", "const_images", "text_arrays", "text_arena", "text_window", "ascii_char", "ascii_index_long", "text_chars", "or_match_unit", "or_match_payload", "float_oracle", "unsigned_basic", "unsigned_collections", "unsigned_floats", "unsigned_narrow", "unsigned_library"]
 
 
 def nlc(*args):
@@ -23,6 +23,22 @@ class PoolOwners(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
                 expected = (ROOT / "tests" / "c_runtime" / name / "expected.stdout").read_bytes()
                 self.assertEqual(result.stdout, expected)
+
+    def test_unsigned_failures_exit_with_a_message(self):
+        failures = ROOT / "tests" / "c_runtime"
+        for directory in sorted(failures.glob("unsigned_fail_*")):
+            with self.subTest(directory.name):
+                result = nlc("run", f"tests/c_runtime/{directory.name}")
+                self.assertEqual(result.returncode, 1, result.stdout.decode() + result.stderr.decode())
+                self.assertEqual(result.stderr, (directory / "expected.stderr").read_bytes())
+
+    def test_unsigned_misuse_is_a_build_error(self):
+        errors = ROOT / "tests" / "unsigned_errors"
+        for directory in sorted(errors.iterdir()):
+            with self.subTest(directory.name):
+                result = nlc("check", f"tests/unsigned_errors/{directory.name}")
+                self.assertEqual(result.returncode, 2, result.stdout.decode() + result.stderr.decode())
+                self.assertEqual(result.stderr, (directory / "expected.stderr").read_bytes())
 
     def test_mixing_pools_is_a_build_error(self):
         errors = ROOT / "tests" / "pool_owner_errors"

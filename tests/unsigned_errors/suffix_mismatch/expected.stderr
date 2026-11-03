@@ -1,0 +1,3 @@
+main.nl:2:20: error: expected ulong, found uint; cast explicitly with (ulong)value
+    2 |     let u: ulong = 5u
+      |                    ^

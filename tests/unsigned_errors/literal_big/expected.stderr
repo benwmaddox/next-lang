@@ -1,0 +1,3 @@
+main.nl:2:19: error: integer literal does not fit uint
+    2 |     let u: uint = 4294967296u
+      |                   ^

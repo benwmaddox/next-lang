@@ -123,6 +123,10 @@ const NUMERIC_BUILTIN_MIN: long = 1L
 const NUMERIC_BUILTIN_MAX: long = 2L
 const NUMERIC_BUILTIN_ABS: long = 3L
 const NUMERIC_BUILTIN_CLAMP: long = 4L
+// mul_hi(a, b): the high 64 bits of the 128-bit product of two ulong; rotl(x, n) and rotr(x, n) rotate a uint or ulong by n (taken modulo the width)
+const NUMERIC_BUILTIN_MUL_HI: long = 5L
+const NUMERIC_BUILTIN_ROTL: long = 6L
+const NUMERIC_BUILTIN_ROTR: long = 7L
 // Added to the kind of a clamp that is computed as an int and narrowed to a byte.
 const NUMERIC_BUILTIN_NARROW_TO_BYTE: long = 100L
 
@@ -142,6 +146,9 @@ fn numeric_builtin_kind(
         else if token_is_word_at(source, tokens, files, file_index, token, "max") { NUMERIC_BUILTIN_MAX }
         else if token_is_word_at(source, tokens, files, file_index, token, "abs") { NUMERIC_BUILTIN_ABS }
         else if token_is_word_at(source, tokens, files, file_index, token, "clamp") { NUMERIC_BUILTIN_CLAMP }
+        else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, token, "mul_hi") { NUMERIC_BUILTIN_MUL_HI }
+        else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, token, "rotl") { NUMERIC_BUILTIN_ROTL }
+        else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, token, "rotr") { NUMERIC_BUILTIN_ROTR }
         else { NUMERIC_BUILTIN_NONE }
     if kind == NUMERIC_BUILTIN_NONE { return NUMERIC_BUILTIN_NONE }
     let name_id = compiler.token_name_ids[token]
@@ -712,7 +719,7 @@ fn require_text_read_argument(
 }
 
 fn is_unsuffixed_integer(tables: ParseTables, node: long) -> bool {
-    node >= 0L && tables.nodes[node].kind == NodeKind.Integer && (tables.nodes[node].flags & (FLAG_LONG_SUFFIX | FLAG_FLOAT)) == 0L
+    node >= 0L && tables.nodes[node].kind == NodeKind.Integer && (tables.nodes[node].flags & (FLAG_LONG_SUFFIX | FLAG_FLOAT | FLAG_UNSIGNED_SUFFIX)) == 0L
 }
 
 fn is_float_literal(tables: ParseTables, node: long) -> bool {
@@ -732,7 +739,7 @@ recursive fn natural_node_type(
     if node < 0L { return -1L }
     let value = tables.nodes[node]
     match value.kind {
-        NodeKind.Integer => if (value.flags & FLAG_FLOAT) != 0L { TY_DOUBLE } else if (value.flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else { TY_INT },
+        NodeKind.Integer => if (value.flags & FLAG_FLOAT) != 0L { TY_DOUBLE } else if (value.flags & FLAG_UNSIGNED_SUFFIX) != 0L { if (value.flags & FLAG_LONG_SUFFIX) != 0L { TY_ULONG } else { TY_UINT } } else if (value.flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else { TY_INT },
         NodeKind.Bool => TY_BOOL,
         NodeKind.Unit => TY_UNIT,
         NodeKind.Name => {
@@ -804,6 +811,11 @@ recursive fn natural_node_type(
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "byte") { TY_BYTE }
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "double") { TY_DOUBLE }
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "float") { TY_FLOAT }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "uint") { TY_UINT }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "ulong") { TY_ULONG }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "ushort") { TY_USHORT }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "short") { TY_SHORT }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "sbyte") { TY_SBYTE }
             else { -1L }
         },
         NodeKind.Fit => {

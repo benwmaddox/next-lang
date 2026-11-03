@@ -273,6 +273,11 @@ fn scalar_type_name(ty: long) -> Ascii max 16 {
     else if ty == TY_BYTE { "byte" }
     else if ty == TY_DOUBLE { "double" }
     else if ty == TY_FLOAT { "float" }
+    else if ty == TY_UINT { "uint" }
+    else if ty == TY_ULONG { "ulong" }
+    else if ty == TY_USHORT { "ushort" }
+    else if ty == TY_SHORT { "short" }
+    else if ty == TY_SBYTE { "sbyte" }
     else if ty == TY_WINDOW { "Window" }
     else if ty == TY_UNIT { "()" }
     else if ty == TY_ADDR { "sys.Addr" }
@@ -333,6 +338,11 @@ fn is_builtin_type_name(
     token_is_word_at(source, tokens, files, file_index, token, "long") ||
     token_is_word_at(source, tokens, files, file_index, token, "bool") ||
     token_is_word_at(source, tokens, files, file_index, token, "byte") ||
+    token_is_word_at(source, tokens, files, file_index, token, "uint") ||
+    token_is_word_at(source, tokens, files, file_index, token, "ulong") ||
+    token_is_word_at(source, tokens, files, file_index, token, "ushort") ||
+    token_is_word_at(source, tokens, files, file_index, token, "short") ||
+    token_is_word_at(source, tokens, files, file_index, token, "sbyte") ||
     token_is_word_at(source, tokens, files, file_index, token, "Ascii") ||
     token_is_word_at(source, tokens, files, file_index, token, "Text") ||
     token_is_word_at(source, tokens, files, file_index, token, "Bytes") ||

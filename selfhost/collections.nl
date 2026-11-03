@@ -1243,7 +1243,7 @@ fn emit_collection_scalar_print(compiler: write CompilerTables, ir: grow Bytes m
     if ty == TY_BOOL {
         ir_write_ascii(compiler, ir, "  %coll.print.bool."); ir_write_ascii(compiler, ir, value_name); ir_write_ascii(compiler, ir, " = trunc i8 %coll.print.value."); ir_write_ascii(compiler, ir, value_name); ir_write_ascii(compiler, ir, " to i1\n  call void "); emit_context_runtime_symbol(compiler, ir, "nl_print_bool_raw", "nlc_print_bool_raw"); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i1 zeroext %coll.print.bool."); ir_write_ascii(compiler, ir, value_name); ir_write_ascii(compiler, ir, ")\n")
     } else {
-        ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, if ty == TY_LONG { "nl_print_long_raw" } else { "nl_print_int_raw" }, if ty == TY_LONG { "nlc_print_long_raw" } else { "nlc_print_int_raw" }); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " %coll.print.value."); ir_write_ascii(compiler, ir, value_name); ir_write_ascii(compiler, ir, ")\n")
+        ir_write_ascii(compiler, ir, "  call void "); emit_context_runtime_symbol(compiler, ir, print_raw_name(ty), print_raw_nlc_name(ty)); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " %coll.print.value."); ir_write_ascii(compiler, ir, value_name); ir_write_ascii(compiler, ir, ")\n")
     }
 }
 

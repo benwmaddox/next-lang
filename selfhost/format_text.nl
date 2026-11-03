@@ -90,7 +90,7 @@ fn format_text_width_maximum(
     value.value
 }
 
-fn format_text_numeric_type(ty: long) -> bool { ty == TY_INT || ty == TY_LONG || ty == TY_BYTE }
+fn format_text_numeric_type(ty: long) -> bool { ty == TY_INT || ty == TY_LONG || ty == TY_BYTE || ty == TY_UINT || ty == TY_USHORT || ty == TY_SHORT || ty == TY_SBYTE }
 
 fn format_text_check_capacity(
     env: Env,
@@ -275,9 +275,9 @@ fn emit_format_text_numeric_i64(
     ir_write_ascii(compiler, ir, "  %text.format.number."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = ")
     if ty == TY_LONG {
         ir_write_ascii(compiler, ir, "add i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", 0\n")
-    } else if ty == TY_BYTE {
+    } else if ty == TY_BYTE || ty == TY_UINT || ty == TY_USHORT {
         ir_write_ascii(compiler, ir, "zext i32 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n")
-    } else if ty == TY_INT {
+    } else if ty == TY_INT || ty == TY_SHORT || ty == TY_SBYTE {
         ir_write_ascii(compiler, ir, "sext i32 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n")
     } else { compiler.ir_overflow = true }
 }
@@ -292,7 +292,7 @@ fn emit_format_text_width_i64(
     ir_write_ascii(compiler, ir, "  %text.format.width."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = ")
     if ty == TY_LONG {
         ir_write_ascii(compiler, ir, "add i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", 0\n")
-    } else if ty == TY_INT {
+    } else if ty == TY_INT || ty == TY_SHORT || ty == TY_SBYTE {
         ir_write_ascii(compiler, ir, "sext i32 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n")
     } else { compiler.ir_overflow = true }
 }

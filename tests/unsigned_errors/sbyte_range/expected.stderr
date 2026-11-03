@@ -1,0 +1,3 @@
+main.nl:2:20: error: integer literal does not fit sbyte
+    2 |     let u: sbyte = 128
+      |                    ^

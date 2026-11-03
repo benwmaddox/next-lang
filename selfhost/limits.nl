@@ -28,7 +28,7 @@ const SCOPE_TABLE_CAPACITY: long = MAX_TREE_NODES
 // linear in syntax plus field entries for the E2 default/call closure.
 const CALL_EDGE_CAPACITY: long = EXTRA_STORAGE_CAPACITY
 // Seven scalar builtin slots plus the E3c TextError and Utf8Error records.
-const TYPE_TABLE_CAPACITY: long = MAX_TREE_NODES + 9L
+const TYPE_TABLE_CAPACITY: long = MAX_TREE_NODES + 14L
 const FIELD_TABLE_CAPACITY: long = MAX_TREE_NODES + 1L
 // E2i has no cleanup producers; the first cleanup owner derives and expands this.
 const EXIT_CLEANUP_CAPACITY: long = 1L

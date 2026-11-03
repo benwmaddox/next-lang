@@ -13,9 +13,13 @@ fn literal_value(
     let magnitude = tables.literals[syntax.extra]
     let negative = (syntax.flags & FLAG_NEGATIVE) != 0L
     let max_low = if ty == TY_BYTE { if negative { 0L } else { 255L } }
+        else if ty == TY_UINT || ty == TY_USHORT { if negative { 0L } else if ty == TY_UINT { 4294967295L } else { 65535L } }
+        else if ty == TY_ULONG { if negative { 0L } else { 4294967295L } }
+        else if ty == TY_SHORT { if negative { 32768L } else { 32767L } }
+        else if ty == TY_SBYTE { if negative { 128L } else { 127L } }
         else if ty == TY_INT { if negative { 2147483648L } else { 2147483647L } }
         else if negative { 0L } else { 4294967295L }
-    let max_high = if ty == TY_BYTE || ty == TY_INT { 0L } else { if negative { 2147483648L } else { 2147483647L } }
+    let max_high = if ty == TY_BYTE || ty == TY_INT || is_new_int_type(ty) && ty != TY_ULONG { 0L } else if ty == TY_ULONG { if negative { 0L } else { 4294967295L } } else { if negative { 2147483648L } else { 2147483647L } }
     let too_big = magnitude.limb3 != 0L || magnitude.limb2 != 0L || magnitude.limb1 > max_high || (magnitude.limb1 == max_high && magnitude.limb0 > max_low)
     if too_big {
         let file = files[file_index]
@@ -33,15 +37,16 @@ fn literal_value(
         }
         match env.err.write(b": error: integer literal does not fit ") { ok(_) => (), err(_) => env.exit(3) }
         match env.err.write(scalar_type_name(ty).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        if is_new_int_type(ty) { match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) } }
         match env.err.write(b"; add 'L' for long or give it a long context\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
     }
     if negative && ty == TY_LONG && magnitude.limb1 == 2147483648L && magnitude.limb0 == 0L { return -9223372036854775807L - 1L }
-    let unsigned = magnitude.limb1 * 4294967296L + magnitude.limb0
+    let unsigned = magnitude.limb1 *% 4294967296L +% magnitude.limb0
     if negative {
         if ty == TY_INT && magnitude.limb1 == 0L && magnitude.limb0 == 2147483648L { return -2147483647L - 1L }
         -unsigned
     } else {
-        unsigned
+        if ty == TY_UINT && unsigned > 2147483647L { unsigned - 4294967296L } else { unsigned }
     }
 }
 
@@ -114,6 +119,11 @@ fn scalar_constant_declaration_type(
     let ty = if token_is_word_at(source, tokens, files, file_index, syntax.token, "byte") { TY_BYTE }
         else if token_is_word_at(source, tokens, files, file_index, syntax.token, "int") { TY_INT }
         else if token_is_word_at(source, tokens, files, file_index, syntax.token, "long") { TY_LONG }
+        else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "uint") { TY_UINT }
+        else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "ulong") { TY_ULONG }
+        else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "ushort") { TY_USHORT }
+        else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "short") { TY_SHORT }
+        else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "sbyte") { TY_SBYTE }
         else { -1L }
     if ty >= 0L && syntax.flags == 0L && syntax.meta0 == 1L && syntax.meta1 == 0L &&
         compiler.child_first[type_node] < 0L {
@@ -196,7 +206,15 @@ recursive fn evaluate_scalar_constant_expression(
     }
     let syntax = tables.nodes[node]
     let file_index = node_file_index(tables.nodes, files, node)
+    // constants of the unsigned and narrow types are literals (or other such constants); folding arithmetic on them is not done
+    if is_new_int_type(expected_ty) && syntax.kind != NodeKind.Integer && syntax.kind != NodeKind.Name { return unsupported_scalar_constant() }
     if syntax.kind == NodeKind.Integer {
+        if (syntax.flags & FLAG_UNSIGNED_SUFFIX) != 0L && expected_ty != (if (syntax.flags & FLAG_LONG_SUFFIX) != 0L { TY_ULONG } else { TY_UINT }) {
+            fail_scalar_constant_type(env, files, compiler, tables, file_index, node, expected_ty)
+        }
+        if (syntax.flags & FLAG_UNSIGNED_SUFFIX) == 0L && (syntax.flags & FLAG_LONG_SUFFIX) != 0L && is_new_int_type(expected_ty) {
+            fail_scalar_constant_type(env, files, compiler, tables, file_index, node, expected_ty)
+        }
         if (expected_ty == TY_INT || expected_ty == TY_BYTE) && (syntax.flags & FLAG_LONG_SUFFIX) != 0L {
             fail_scalar_constant_type(env, files, compiler, tables, file_index, node, expected_ty)
         }

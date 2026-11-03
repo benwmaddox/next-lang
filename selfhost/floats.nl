@@ -26,7 +26,7 @@ fn double_method_kind(
 ) -> long {
     if !compiler.c_runtime { return 0L }
     if token_is_word_at(source, tokens, files, file_index, token, "to_double") &&
-        (receiver_ty == TY_INT || receiver_ty == TY_LONG || receiver_ty == TY_BYTE) { return DOUBLE_METHOD_TO_DOUBLE }
+        (is_integer_type(receiver_ty) || receiver_ty == TY_BYTE) { return DOUBLE_METHOD_TO_DOUBLE }
     if token_is_word_at(source, tokens, files, file_index, token, "parse_double") &&
         type_kind(compiler, receiver_ty) == TYPE_KIND_ASCII { return DOUBLE_METHOD_PARSE }
     0L
@@ -124,7 +124,7 @@ fn emit_double_cast(
         return
     }
     if is_float_type(target_ty) {
-        let conversion: Ascii max 8 = if is_float_type(source_ty) { if target_ty == TY_DOUBLE { "fpext " } else { "fptrunc " } } else { "sitofp " }
+        let conversion: Ascii max 8 = if is_float_type(source_ty) { if target_ty == TY_DOUBLE { "fpext " } else { "fptrunc " } } else if source_ty == TY_UINT || source_ty == TY_ULONG { "uitofp " } else { "sitofp " }
         ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = "); ir_write_ascii(compiler, ir, conversion); ir_write_ascii(compiler, ir, llvm_type_name(source_ty))
         ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, operand); ir_write_ascii(compiler, ir, " to "); ir_write_ascii(compiler, ir, llvm_type_name(target_ty)); ir_push_byte(compiler, ir, 10)
         return
@@ -136,8 +136,8 @@ fn emit_double_cast(
     // double to an integer: truncate toward zero, then fail unless the result fits
     // fptosi truncates toward zero; the value fits when it lies strictly between the neighbours of the type range.
     let low_predicate: Ascii max 8 = if target_ty == TY_LONG { "oge" } else { "ogt" }
-    let low: Ascii max 32 = if target_ty == TY_LONG { "-9.223372036854775808e18" } else if target_ty == TY_INT { "-2147483649.0" } else { "-1.0" }
-    let high: Ascii max 32 = if target_ty == TY_LONG { "9.223372036854775808e18" } else if target_ty == TY_INT { "2147483648.0" } else { "256.0" }
+    let low: Ascii max 32 = if target_ty == TY_LONG { "-9.223372036854775808e18" } else if target_ty == TY_INT { "-2147483649.0" } else if target_ty == TY_SHORT { "-32769.0" } else if target_ty == TY_SBYTE { "-129.0" } else { "-1.0" }
+    let high: Ascii max 32 = if target_ty == TY_LONG { "9.223372036854775808e18" } else if target_ty == TY_INT { "2147483648.0" } else if target_ty == TY_ULONG { "1.8446744073709551616e19" } else if target_ty == TY_UINT { "4294967296.0" } else if target_ty == TY_USHORT { "65536.0" } else if target_ty == TY_SHORT { "32768.0" } else if target_ty == TY_SBYTE { "128.0" } else { "256.0" }
     ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fcmp "); ir_write_ascii(compiler, ir, low_predicate)
     ir_write_ascii(compiler, ir, " double "); write_cast_operand(compiler, ir, operand, node, source_ty); ir_write_ascii(compiler, ir, ", ")
     ir_write_ascii(compiler, ir, low)
@@ -146,8 +146,15 @@ fn emit_double_cast(
     ir_write_ascii(compiler, ir, "\n  %cast.fits."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, "\n  %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = xor i1 %cast.fits."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", true\n")
     emit_runtime_failure(files, tables, compiler, ir, node, file_index, 10L)
+    if target_ty == TY_ULONG {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fptoui double "); write_cast_operand(compiler, ir, operand, node, source_ty); ir_write_ascii(compiler, ir, " to i64\n")
+    } else if target_ty == TY_UINT {
+        ir_write_ascii(compiler, ir, "  %cast.wide."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fptosi double "); write_cast_operand(compiler, ir, operand, node, source_ty); ir_write_ascii(compiler, ir, " to i64\n  %v")
+        ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = trunc i64 %cast.wide."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i32\n")
+    } else {
     ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fptosi double "); write_cast_operand(compiler, ir, operand, node, source_ty); ir_write_ascii(compiler, ir, " to ")
     ir_write_ascii(compiler, ir, llvm_type_name(target_ty)); ir_push_byte(compiler, ir, 10)
+    }
 }
 
 // The operand of a float to integer cast: a float source was widened into %cast.ext.<node>.
@@ -196,7 +203,7 @@ fn emit_double_method(
 ) {
     let receiver = compiler.child_first[node]
     if method == DOUBLE_METHOD_TO_DOUBLE {
-        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sitofp "); ir_write_ascii(compiler, ir, llvm_type_name(compiler.facts[receiver].ty))
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = "); ir_write_ascii(compiler, ir, if compiler.facts[receiver].ty == TY_UINT || compiler.facts[receiver].ty == TY_ULONG { "uitofp " } else { "sitofp " }); ir_write_ascii(compiler, ir, llvm_type_name(compiler.facts[receiver].ty))
         ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, receiver); ir_write_ascii(compiler, ir, " to double\n")
         return
     }

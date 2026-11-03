@@ -259,7 +259,7 @@ fn ir_write_expect_global(
 
 fn llvm_type_name(ty: long) -> Ascii max 8 {
     if ty == TY_INT { "i32" }
-    else if ty == TY_LONG { "i64" }
+    else if ty == TY_LONG || ty == TY_ULONG { "i64" }
     else if ty == TY_BOOL { "i1" }
     else if ty == TY_BYTE { "i32" }
     else if ty == TY_DOUBLE { "double" }

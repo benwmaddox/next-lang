@@ -33,7 +33,14 @@ const TY_FLOAT: long = 14L
 const TY_WINDOW: long = 15L
 // The one-byte element of an arena's bytes (`arena<N>` is a pool of these).
 const TY_OCTET: long = 16L
-const TY_STRUCT_BASE: long = 17L
+// The unsigned and narrow integer types (docs/DESIGN.md "Names, as in C#"). uint and ulong are unsigned 32 and 64 bit;
+// ushort, short and sbyte are held in 32-bit registers with their value kept in range. All five are C-runtime only, like double.
+const TY_UINT: long = 17L
+const TY_ULONG: long = 18L
+const TY_USHORT: long = 19L
+const TY_SHORT: long = 20L
+const TY_SBYTE: long = 21L
+const TY_STRUCT_BASE: long = 22L
 // E3a1 begin: struct storage sizes are exact through signed long limits.
 const MAX_VALUE_SIZE: long = 9223372036854775807L
 // E3a1 end
@@ -564,6 +571,11 @@ fn seed_builtin_types(env: Env, types: write list<TypeRecord, TYPE_TABLE_CAPACIT
     types.push(builtin_type_record(TYPE_KIND_SCALAR, 4L, 4L)).unwrap()
     types.push(builtin_type_record(TYPE_KIND_SCALAR, 8L, 8L)).unwrap()
     types.push(builtin_type_record(TYPE_KIND_SCALAR, 1L, 1L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 4L, 4L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 8L, 8L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 4L, 4L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 4L, 4L)).unwrap()
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 4L, 4L)).unwrap()
 }
 
 fn empty_compiler_tables() -> CompilerTables {

@@ -275,6 +275,11 @@ fn unsupported_category_for_node(
                 token_is_word_at(source, tokens, files, file_index, value.token, "byte") ||
                 (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "double")) ||
                 (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "float")) ||
+                (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "uint")) ||
+                (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "ulong")) ||
+                (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "ushort")) ||
+                (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "short")) ||
+                (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "sbyte")) ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "Ascii") { 0L }
             else if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L &&
                 (compiler.facts[node].ty == TY_INT || compiler.facts[node].ty == TY_LONG || compiler.facts[node].ty == TY_BYTE) { 0L }
@@ -405,7 +410,7 @@ fn unsupported_category_for_node(
         NodeKind.AliasedType => if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L { 0L } else { UNSUPPORTED_TYPE },
         NodeKind.DeclaredType => {
             let declared = compiler.facts[node].ty
-            if declared == TY_INT || declared == TY_LONG || declared == TY_BYTE { 0L }
+            if declared == TY_INT || declared == TY_LONG || declared == TY_BYTE || is_new_int_type(declared) { 0L }
             else if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L &&
                 (type_kind(compiler, declared) == TYPE_KIND_ASCII || type_kind(compiler, declared) == TYPE_KIND_BYTES ||
                     type_kind(compiler, declared) == TYPE_KIND_ARRAY || type_kind(compiler, declared) == TYPE_KIND_STRUCT ||
@@ -467,7 +472,7 @@ fn unsupported_category_for_node(
         NodeKind.Test => if value.aux > 0L { UNSUPPORTED_NODE } else { 0L },
         NodeKind.Block => 0L,
         NodeKind.Let => 0L,
-        NodeKind.Assign => if value.flags < 0L || value.flags > 10L { UNSUPPORTED_ASSIGNMENT } else { 0L },
+        NodeKind.Assign => if value.flags < 0L || value.flags > 10L && !(compiler.c_runtime && value.flags <= 13L) { UNSUPPORTED_ASSIGNMENT } else { 0L },
         NodeKind.ReturnStatement => 0L,
         NodeKind.ExpressionStatement => 0L,
         NodeKind.For => 0L,

@@ -902,6 +902,7 @@ fn wire_token_tag(kind: TokenKind) -> long {
         TokenKind.InterpEnd => 52L,
         TokenKind.Tilde => 51L, TokenKind.ShlEq => 52L, TokenKind.AndEq => 53L,
         TokenKind.OrEq => 54L, TokenKind.CaretEq => 55L,
+        TokenKind.WrapPlusEq => 56L, TokenKind.WrapMinusEq => 57L, TokenKind.WrapStarEq => 58L,
     }
 }
 

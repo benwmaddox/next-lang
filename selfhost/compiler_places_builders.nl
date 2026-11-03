@@ -191,6 +191,10 @@ fn check_call_write_modes(
 
 fn is_numeric_type(ty: long) -> bool { ty == TY_INT || ty == TY_LONG }
 fn is_float_type(ty: long) -> bool { ty == TY_DOUBLE || ty == TY_FLOAT }
+// uint, ulong, ushort, short, sbyte (integers.nl)
+fn is_new_int_type(ty: long) -> bool { ty >= TY_UINT && ty <= TY_SBYTE }
+// every integer type an unsuffixed literal can take: int, long and the five new ones (not byte)
+fn is_integer_type(ty: long) -> bool { ty == TY_INT || ty == TY_LONG || (ty >= TY_UINT && ty <= TY_SBYTE) }
 
 fn fail_at_message(
     env: Env,
@@ -492,16 +496,16 @@ fn body_child_expected(
             let other = if child == frame.child0 { frame.child1 } else { frame.child0 }
             let known = natural_node_type(source, tokens, files, tables, compiler, other, frame.scope, file_index)
             let both_unsuffixed = is_unsuffixed_integer(tables, frame.child0) && is_unsuffixed_integer(tables, frame.child1)
-            if both_unsuffixed && frame.expected >= TY_INT && frame.expected <= TY_LONG { frame.expected }
-            else if is_numeric_type(known) && is_unsuffixed_integer(tables, child) && !is_unsuffixed_integer(tables, other) { known }
-            else if frame.expected >= TY_INT && frame.expected <= TY_LONG { frame.expected }
+            if both_unsuffixed && is_integer_type(frame.expected) { frame.expected }
+            else if is_integer_type(known) && is_unsuffixed_integer(tables, child) && !is_unsuffixed_integer(tables, other) { known }
+            else if is_integer_type(frame.expected) { frame.expected }
             else { -1L }
-        } else if frame.expected >= TY_INT && frame.expected <= TY_LONG { frame.expected }
+        } else if is_integer_type(frame.expected) { frame.expected }
         else if frame.expected == TY_FLOAT { TY_FLOAT }
         else {
             let other = if child == frame.child0 { frame.child1 } else { frame.child0 }
             let known = natural_node_type(source, tokens, files, tables, compiler, other, frame.scope, file_index)
-            if (is_numeric_type(known) && is_unsuffixed_integer(tables, child)) || (known == TY_FLOAT && is_float_literal(tables, child)) { known } else { -1L }
+            if (is_integer_type(known) && is_unsuffixed_integer(tables, child)) || (known == TY_FLOAT && is_float_literal(tables, child)) { known } else { -1L }
         }
     } else if kind == NodeKind.If {
         if child == frame.child0 { TY_BOOL } else { frame.expected }
