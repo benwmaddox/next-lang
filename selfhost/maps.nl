@@ -66,11 +66,20 @@ fn map_operand_is_scalar(compiler: CompilerTables, type_id: long) -> bool {
         (size == 1L || size == 4L || size == 8L)
 }
 
+// An enum none of whose cases carries a payload: its value is a 4-byte tag.
+fn map_enum_plain(compiler: CompilerTables, type_id: long) -> bool {
+    if type_kind(compiler, type_id) != TYPE_KIND_ENUM { return false }
+    for tag in 0L..sum_case_count(compiler, type_id) {
+        if sum_case_payload_count(compiler, type_id, tag) != 0L { return false }
+    }
+    true
+}
+
 // A struct, array, list or map stored in a map entry as plain bytes and passed by pointer. A type holding a pool is
 // refused (a pool value must stay unique).
 fn map_operand_is_aggregate(compiler: CompilerTables, type_id: long) -> bool {
     let kind = type_kind(compiler, type_id)
-    (kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) || kind == TYPE_KIND_MAP) &&
+    (kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) || kind == TYPE_KIND_MAP || map_enum_plain(compiler, type_id)) &&
         !type_contains_pool(compiler, type_id, 0L)
 }
 
@@ -82,7 +91,7 @@ fn map_operand_by_pointer(compiler: CompilerTables, type_id: long) -> bool {
 // A key is a number, bool, enum, text or a struct (hashed and compared field by field).
 fn map_key_supported(compiler: CompilerTables, type_id: long) -> bool {
     map_operand_is_text(compiler, type_id) || map_operand_is_scalar(compiler, type_id) ||
-        (type_kind(compiler, type_id) == TYPE_KIND_STRUCT && map_operand_is_aggregate(compiler, type_id))
+        ((type_kind(compiler, type_id) == TYPE_KIND_STRUCT || map_enum_plain(compiler, type_id)) && map_operand_is_aggregate(compiler, type_id))
 }
 
 fn map_operand_supported(compiler: CompilerTables, type_id: long) -> bool {
@@ -277,6 +286,14 @@ recursive fn emit_map_hash_fields(compiler: write CompilerTables, ir: grow Bytes
             }
             ir_write_ascii(compiler, ir, "\n  %hs."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = mul i64 %hx."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, MAP_FNV_PRIME); ir_push_byte(compiler, ir, 10)
             current = next
+        } else if map_enum_plain(compiler, field.ty) {
+            let next = current + 1L
+            ir_write_ascii(compiler, ir, "  %hp."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %k, i64 "); ir_write_number(compiler, ir, at)
+            ir_write_ascii(compiler, ir, "\n  %hr."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = load i32, ptr %hp."); ir_write_number(compiler, ir, next)
+            ir_write_ascii(compiler, ir, "\n  %hv."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = zext i32 %hr."); ir_write_number(compiler, ir, next)
+            ir_write_ascii(compiler, ir, " to i64\n  %hx."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = xor i64 %hs."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %hv."); ir_write_number(compiler, ir, next)
+            ir_write_ascii(compiler, ir, "\n  %hs."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = mul i64 %hx."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, MAP_FNV_PRIME); ir_push_byte(compiler, ir, 10)
+            current = next
         } else if type_kind(compiler, field.ty) == TYPE_KIND_STRUCT {
             current = emit_map_hash_fields(compiler, ir, field.ty, at, current)
         } else { () }
@@ -295,7 +312,8 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
     let value_offset = map_value_offset(compiler, type_id)
     let key_is_text = map_operand_is_text(compiler, key)
     let key_is_struct = type_kind(compiler, key) == TYPE_KIND_STRUCT
-    let key_by_pointer = key_is_text || key_is_struct
+    let key_is_enum = map_enum_plain(compiler, key)
+    let key_by_pointer = key_is_text || key_is_struct || key_is_enum
     let value_is_text = map_operand_is_text(compiler, value)
     let value_by_pointer = map_operand_by_pointer(compiler, value)
     let key_size = value_type_size(compiler, key)
@@ -319,6 +337,8 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
         ir_write_ascii(compiler, ir, "  %hs.0 = add i64 0, "); ir_write_number(compiler, ir, MAP_FNV_OFFSET); ir_push_byte(compiler, ir, 10)
         let last = emit_map_hash_fields(compiler, ir, key, 0L, 0L)
         ir_write_ascii(compiler, ir, "  %m = mul i64 %hs."); ir_write_number(compiler, ir, last); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, MAP_HASH_MULTIPLIER)
+    } else if key_is_enum {
+        ir_write_ascii(compiler, ir, "  %t = load i32, ptr %k\n  %tz = zext i32 %t to i64\n  %m = mul i64 %tz, "); ir_write_number(compiler, ir, MAP_HASH_MULTIPLIER)
     } else {
         ir_write_ascii(compiler, ir, "  %m = mul i64 %k, "); ir_write_number(compiler, ir, MAP_HASH_MULTIPLIER)
     }
@@ -345,6 +365,8 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
     } else if key_is_struct {
         ir_write_ascii(compiler, ir, "  %z = call i1 "); emit_type_helper_symbol(compiler, ir, key, HELPER_EQUAL)
         ir_write_ascii(compiler, ir, "(ptr null, ptr %k, ptr %p)\n  ret i1 %z\n}\n\n")
+    } else if key_is_enum {
+        ir_write_ascii(compiler, ir, "  %la = load i32, ptr %k\n  %lb = load i32, ptr %p\n  %z = icmp eq i32 %la, %lb\n  ret i1 %z\n}\n\n")
     } else {
         emit_map_scalar_load(compiler, ir, key_size, "p", "v")
         ir_write_ascii(compiler, ir, "  %z = icmp eq i64 %k, %v\n  ret i1 %z\n}\n\n")
@@ -418,7 +440,7 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
     ir_write_ascii(compiler, ir, "(ptr %map)\n  br label %place\nplace:\n  %e = load i64, ptr %usedp\n  %eoff = mul i64 %e, "); ir_write_number(compiler, ir, slot_size)
     ir_write_ascii(compiler, ir, "\n  %eo = add i64 %eoff, 16\n  %ep = getelementptr i8, ptr %map, i64 %eo\n  store i64 1, ptr %ep\n  %kp = getelementptr i8, ptr %ep, i64 "); ir_write_number(compiler, ir, key_offset); ir_push_byte(compiler, ir, 10)
     if key_is_text { emit_map_text_copy(compiler, ir, key_data, "kp", "k", 2L) }
-    else if key_is_struct { emit_map_aggregate_copy(compiler, ir, key_size, "kp", "k", 2L) }
+    else if key_is_struct || key_is_enum { emit_map_aggregate_copy(compiler, ir, key_size, "kp", "k", 2L) }
     else { emit_map_scalar_store(compiler, ir, key_size, "kp", "k", 2L) }
     ir_write_ascii(compiler, ir, "  %vp = getelementptr i8, ptr %ep, i64 "); ir_write_number(compiler, ir, value_offset); ir_push_byte(compiler, ir, 10)
     if value_is_text { emit_map_text_copy(compiler, ir, value_data, "vp", "v", 3L) }
@@ -483,7 +505,7 @@ fn emit_map_operand_prepare(
     if map_operand_by_pointer(compiler, type_id) {
         let source_kind = if tables.nodes[argument].kind == NodeKind.Name && compiler.facts[argument].binding >= 0L {
             if compiler.bindings[compiler.facts[argument].binding].parameter { 2L } else { 1L }
-        } else if tables.nodes[argument].kind == NodeKind.Field { 3L } else { 0L }
+        } else if tables.nodes[argument].kind == NodeKind.Field && !is_enum_case_field(tables, compiler, argument) { 3L } else { 0L }
         let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[argument].binding } else { argument }
         let location = aggregate_source_location(compiler, source_kind, source_id)
         let pointer = emit_location_pointer_materialization(compiler, ir, location)
@@ -682,4 +704,40 @@ recursive fn map_blocking_child(compiler: write CompilerTables, type_id: long) -
         } else { () }
     }
     -1L
+}
+
+// Whether a struct can be a map key: every field is a number, bool, enum, text or a struct that can itself be a key.
+recursive fn map_struct_key_hashable(compiler: CompilerTables, type_id: long, depth: long) -> bool {
+    if depth > 8L { return false }
+    let record = type_record(compiler, type_id)
+    for offset in 0L..record.field_count {
+        let field_ty = compiler.struct_fields[record.field_start + offset].ty
+        let field_kind = type_kind(compiler, field_ty)
+        if map_operand_is_text(compiler, field_ty) || map_enum_plain(compiler, field_ty) { continue }
+        if map_operand_is_scalar(compiler, field_ty) && llvm_type_name(field_ty) != "double" && llvm_type_name(field_ty) != "float" { continue }
+        if field_kind == TYPE_KIND_STRUCT && map_struct_key_hashable(compiler, field_ty, depth + 1L) { continue }
+        return false
+    }
+    true
+}
+
+// After the struct fields are resolved: refuse a map whose struct key has a field that cannot be hashed.
+fn check_map_keys(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+) {
+    for type_id in 0L..type_count(compiler) {
+        if type_kind(compiler, type_id) != TYPE_KIND_MAP { continue }
+        let key = map_key_type(compiler, type_id)
+        if type_kind(compiler, key) != TYPE_KIND_STRUCT || map_struct_key_hashable(compiler, key, 0L) { continue }
+        let record = type_record(compiler, type_id)
+        let key_node = compiler.child_first[record.node]
+        if key_node < 0L { continue }
+        fail_dynamic_checker_error(env, source, files, tokens, compiler, record.file, tables.nodes[key_node].start,
+            "map key type '", tables.nodes[key_node].token, "' is not hashable; use Ascii, integers, bool, enums, ids, or structs built from those types")
+    }
 }

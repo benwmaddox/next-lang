@@ -579,9 +579,10 @@ fn owner_check_fresh_result(
     let kind = tables.nodes[value].kind
     if kind == NodeKind.StructInit || kind == NodeKind.PoolLiteral { return }
     if kind == NodeKind.Call && compiler.facts[value].function >= 0L { return }
-    let file_index = node_file_index(tables.nodes, files, value)
-    fail_at_message(env, files, compiler, file_index, tables.nodes[value].start,
-        "a function result holding a pool must be built in place: a struct literal, pool {}, or a call of another function that does")
+    // Same wording as stage 0; a result holding a pool is allowed only when built in place (a struct literal, `pool {}` or a call).
+    let function_node = compiler.functions[function_id].node
+    fail_at_message(env, files, compiler, node_file_index(tables.nodes, files, function_node), tables.nodes[function_node].start,
+        "a value containing a pool cannot be returned; pool owners cannot escape a function")
 }
 
 fn owner_check_return(

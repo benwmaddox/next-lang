@@ -93,4 +93,14 @@ fn main() {
     numbers.push(5).unwrap()
     book.names.set("n", numbers).unwrap()
     match book.names.get("n") { some(l) => print(l[0]), none => print(-1L) }
+
+    // enum keys and values
+    var by_color: map<Color, Color, 4> = map {}
+    by_color.set(Color.Red, Color.Blue).unwrap()
+    by_color.set(Color.Green, Color.Green).unwrap()
+    by_color.set(Color.Red, Color.Red).unwrap()
+    print(by_color.count())
+    match by_color.get(Color.Red) { some(c) => print(c == Color.Red), none => print(false) }
+    match by_color.get(Color.Blue) { some(c) => print(c == Color.Red), none => print(false) }
+    print(by_color.contains(Color.Green))
 }
