@@ -371,5 +371,5 @@ connection) is 3-5 ms for all of them.
   rounded up to 16 KiB steps (140 KiB for the web job and Campfire, against 5.6-32 KB used), instead of 1 MiB; an entry with recursion or
   function values keeps 1 MiB. Virtual size at 1000 connections 1.7 GB -> 0.6 GB. Sizing it exposed a latent leak: `send` on a mailbox
   made its message slot with a bare `alloca` where it was used, so a send retried in a loop (a full mailbox) grew the native stack by
-  16 bytes per try and a 1 MiB stack hid it for 65k tries; the slot is now released after the call (`llvm.stackrestore`).
+  16 bytes per try and a 1 MiB stack hid it for 65k tries; the slot is now made once at the function entry like the other temporaries (no stack movement per send).
 - Binary: next-lang 1.35 MB with SQLite and the runtime linked in; the Rust servers 2.5 and 3.0 MB.

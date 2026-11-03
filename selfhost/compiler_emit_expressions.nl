@@ -2866,6 +2866,7 @@ fn emit_function_definition(
     for node in 0L..tables.nodes.count() {
         if node < body_first || node > function.body { continue }
         emit_c_runtime_method_storage(source, files, tokens, tables, compiler, ir, node, function.file)
+        emit_mailbox_send_slot(tables, compiler, ir, node)
         if tables.nodes[node].kind == NodeKind.OptionalCall && compiler.facts[node].function >= 0L {
             let target = compiler.functions[compiler.facts[node].function]
             let receiver_parameter = compiler.parameters[target.param_start]
@@ -2963,6 +2964,7 @@ fn emit_test_definition(
     for node in 0L..tables.nodes.count() {
         if node < body_first || node > test.body { continue }
         emit_c_runtime_method_storage(source, files, tokens, tables, compiler, ir, node, test.file)
+        emit_mailbox_send_slot(tables, compiler, ir, node)
         if tables.nodes[node].kind == NodeKind.OptionalCall && compiler.facts[node].function >= 0L {
             let target = compiler.functions[compiler.facts[node].function]
             let receiver_parameter = compiler.parameters[target.param_start]
