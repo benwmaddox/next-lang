@@ -892,7 +892,9 @@ fn emit_type_helpers_for_kind(
         emit_sum_print_helpers(compiler, ir)
     } else if kind == TYPE_KIND_RESULT {
         ()
-    } else if kind == TYPE_KIND_QUEUE || kind == TYPE_KIND_POOL {
+    } else if kind == TYPE_KIND_POOL {
+        emit_pool_copy_helpers(compiler, ir)
+    } else if kind == TYPE_KIND_QUEUE {
         ()
     } else if kind == TYPE_KIND_MAP {
         emit_map_copy_helpers(compiler, ir)
@@ -1465,6 +1467,7 @@ fn compile_selfhost_package(
     let entry = check_entry_signature(env, source, files, tokens, tables, compiler, !want_test_build)
     check_struct_defaults(env, source, files, tokens, tables, config, compiler)
     check_package_bodies(env, source, files, tokens, tables, config, compiler)
+    check_pool_owners(env, source, files, tokens, tables, compiler)
     check_deferred_large_value_gate(env, source, files, tokens, tables, compiler)
     add_default_call_graph_edges(tables, compiler)
     check_call_cycles(env, source, files, tokens, tables, compiler)

@@ -241,18 +241,12 @@ fn unsupported_category_for_node(
             return UNSUPPORTED_TYPE_FORM
         } else { () }
     }
-    // Pools are supported for one pool variable (a local or a parameter) with add, get and count. Anything
-    // that could mix two pools' ids, store or copy a pool, or iterate one is refused until owners are checked.
+    // Pools are supported as locals, parameters and struct fields, with add, get, set and count. Their ids are
+    // checked against their pool by check_pool_owners (pool_owners.nl). Storing a pool in a list or array element,
+    // copying one, or iterating one is refused.
     if is_type_node(value.kind) && value.token >= 0L && token_is_word_at(source, tokens, files, file_index, value.token, "pool") {
 
-        if value.kind != NodeKind.Annotation && value.kind != NodeKind.ParameterType { return UNSUPPORTED_POOL_USE }
-        if value.kind == NodeKind.Annotation {
-            for earlier in 0L..node {
-                if tables.nodes[earlier].kind == NodeKind.Annotation && tables.nodes[earlier].token >= 0L &&
-                    node_file_index(tables.nodes, files, earlier) == file_index &&
-                    token_is_word_at(source, tokens, files, file_index, tables.nodes[earlier].token, "pool") { return UNSUPPORTED_POOL_USE }
-            }
-        }
+        if value.kind != NodeKind.Annotation && value.kind != NodeKind.ParameterType && value.kind != NodeKind.FieldType { return UNSUPPORTED_POOL_USE }
     }
     if is_type_node(value.kind) && (value.meta1 & 2097151L) == 1L && value.token >= 0L &&
         token_is_word_at(source, tokens, files, file_index, value.token, "Id") { return 0L }
@@ -640,7 +634,7 @@ fn check_package_eligibility(
         if !is_type_node(tables.nodes[node].kind) { continue }
         let file_index = node_file_index(tables.nodes, files, node)
         let type_id = resolve_value_type(source, tokens, files, tables, compiler, file_index, node)
-        if type_id >= 0L && type_kind(compiler, type_id) == TYPE_KIND_LIST && compiler.child_first[node] >= 0L &&
+        if type_id >= 0L && (type_kind(compiler, type_id) == TYPE_KIND_LIST || type_kind(compiler, type_id) == TYPE_KIND_ARRAY) && compiler.child_first[node] >= 0L &&
             type_contains_pool(compiler, collection_element_type(compiler, type_id), 0L) {
             fail_at_message(env, files, compiler, file_index, tables.nodes[compiler.child_first[node]].start,
                 "pools cannot appear inside array or list elements; each repeated element would need a distinct owner")

@@ -147,3 +147,18 @@ recursive fn type_contains_pool(compiler: CompilerTables, type_id: long, depth: 
     }
     false
 }
+
+// The copy helper of a pool type copies only the 16-byte header (count and capacity). A pool is never copied
+// with elements: the checker allows a pool to be copied only from a `pool {}` literal, which is empty.
+fn emit_pool_copy_helpers(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
+    for type_id in 0L..type_count(compiler) {
+        if type_kind(compiler, type_id) != TYPE_KIND_POOL || !has_type_helper(compiler, type_id, HELPER_COPY) { continue }
+        ir_write_ascii(compiler, ir, "define internal void "); emit_type_helper_symbol(compiler, ir, type_id, HELPER_COPY)
+        ir_write_ascii(compiler, ir, "(ptr %nl.ctx, ptr %nl.dest, ptr %nl.source) {\nentry:\n  %pool.copy.count = load i64, ptr %nl.source, align 1\n")
+        ir_write_ascii(compiler, ir, "  store i64 %pool.copy.count, ptr %nl.dest, align 1\n")
+        ir_write_ascii(compiler, ir, "  %pool.copy.source.cap = getelementptr i8, ptr %nl.source, i64 8\n")
+        ir_write_ascii(compiler, ir, "  %pool.copy.cap = load i64, ptr %pool.copy.source.cap, align 1\n")
+        ir_write_ascii(compiler, ir, "  %pool.copy.dest.cap = getelementptr i8, ptr %nl.dest, i64 8\n")
+        ir_write_ascii(compiler, ir, "  store i64 %pool.copy.cap, ptr %pool.copy.dest.cap, align 1\n  ret void\n}\n\n")
+    }
+}

@@ -1,0 +1,3 @@
+main.nl:10:5: error: only one value of a struct holding pools can exist, since its pools' ids would otherwise mix; pass that value down as write
+   10 |     var two = World { nodes: pool {}, labels: pool {} }
+      |     ^

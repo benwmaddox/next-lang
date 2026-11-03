@@ -1,0 +1,3 @@
+main.nl:1:33: error: with more than one pool in the package, an id must name its pool: write Id<pool name> (owner parameters such as Id<P> are not supported yet)
+    1 | struct Node { value: int, next: Id<Node> }
+      |                                 ^

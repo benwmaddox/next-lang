@@ -1128,6 +1128,9 @@ fn check_one_body(
         if kind == NodeKind.Let {
             let value = frame.child0
             let value_fact = compiler.facts[value]
+            if owner_value_is_pool_struct(compiler, value_fact.ty) && tables.nodes[value].kind != NodeKind.StructInit {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[value].start, "a value containing a pool cannot be copied; initialize a fresh pool owner")
+            }
             if type_kind(compiler, value_fact.ty) == TYPE_KIND_POOL && tables.nodes[value].kind != NodeKind.PoolLiteral {
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: value, offset: tables.nodes[value].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[value].token })
             }
@@ -1234,6 +1237,9 @@ fn check_one_body(
             let binding = target_fact.binding
             if type_kind(compiler, target_fact.ty) == TYPE_KIND_POOL {
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: target, offset: tables.nodes[target].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[target].token })
+            }
+            if owner_value_is_pool_struct(compiler, target_fact.ty) {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "a value containing a pool cannot be replaced or assigned; pool copies and resets are not supported")
             }
             if binding < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "assignment target must be a writable local, field, or collection element") }
             if !compiler.bindings[binding].mutable { fail_assignment_error(env, source, files, tokens, tables, compiler, file_index, node, binding) }
