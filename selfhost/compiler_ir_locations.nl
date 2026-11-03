@@ -761,7 +761,7 @@ fn emit_dynamic_field_lane_offset_for_descriptor(
     -1L
 }
 
-fn emit_parameter_field_path_address(
+recursive fn emit_parameter_field_path_address(
     tables: ParseTables,
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
@@ -817,7 +817,10 @@ fn emit_parameter_field_path_address(
     var base = compiler_location(compiler, 3L, binding, 0L)
     if is_view {
         let collection = compiler.child_first[compiler.bindings[binding].node]
-        let collection_base = collection_value_location(tables, compiler, collection)
+        var collection_base = collection_value_location(tables, compiler, collection)
+        if tables.nodes[collection].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[collection].binding) {
+            collection_base = compiler_location(compiler, 2L, emit_late_place_address(tables, compiler, ir, collection), 0L)
+        }
         base = compiler_location(compiler, collection_base.anchor_kind, collection_base.anchor_node, collection_base.byte_offset)
     }
     let pointer = emit_location_pointer_materialization(compiler, ir, base)
@@ -844,7 +847,10 @@ fn emit_collection_view_name_address(
         else { value_type_size(compiler, element_type) }
     let base_offset = collection_element_base_offset(compiler, collection_type)
     if stride < 0L || base_offset < 0L { compiler.ir_overflow = true; return true }
-    let base = collection_value_location(tables, compiler, collection)
+    var base = collection_value_location(tables, compiler, collection)
+    if tables.nodes[collection].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[collection].binding) {
+        base = compiler_location(compiler, 2L, emit_late_place_address(tables, compiler, ir, collection), 0L)
+    }
     let pointer_location = compiler_location(compiler, base.anchor_kind, base.anchor_node, base.byte_offset)
     let pointer = emit_location_pointer_materialization(compiler, ir, pointer_location)
     ir_write_ascii(compiler, ir, "  %coll.view.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %for.each.current."); ir_write_number(compiler, ir, loop_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)

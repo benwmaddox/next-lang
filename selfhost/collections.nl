@@ -1246,7 +1246,7 @@ fn emit_collection_print_helpers(compiler: write CompilerTables, ir: grow Bytes 
         if collection_kind_is_list(collection_kind) {
             ir_write_ascii(compiler, ir, "  %coll.print.count."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = load i64, ptr %nl.value, align 1\n")
         }
-        if type_kind(compiler, element) == TYPE_KIND_STRUCT || is_sum_type(compiler, element) {
+        if type_kind(compiler, element) == TYPE_KIND_STRUCT || is_sum_type(compiler, element) || is_aggregate_type(compiler, element) {
             let element_size = value_type_size(compiler, element)
             let element_align = value_type_align(compiler, element)
             if element_size < 0L || element_align < 0L { compiler.ir_overflow = true; continue }
@@ -1559,7 +1559,7 @@ fn emit_collection_gather_view_value(
     let element_type = collection_element_type(compiler, collection_type)
     let capacity = collection_capacity(compiler, collection_type)
     let base_offset = collection_element_base_offset(compiler, collection_type)
-    let source = if tables.nodes[collection].kind == NodeKind.Field {
+    let source = if tables.nodes[collection].kind == NodeKind.Field || (tables.nodes[collection].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[collection].binding)) {
         let address_id = emit_late_place_address(tables, compiler, ir, collection)
         compiler_location(compiler, 2L, address_id, 0L)
     } else { collection_value_location(tables, compiler, collection) }
@@ -1591,7 +1591,7 @@ fn emit_collection_gather_index_value(
         compiler.ir_overflow = true
         return
     }
-    let source = if tables.nodes[collection].kind == NodeKind.Field {
+    let source = if tables.nodes[collection].kind == NodeKind.Field || (tables.nodes[collection].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[collection].binding)) {
         let address_id = emit_late_place_address(tables, compiler, ir, collection)
         compiler_location(compiler, 2L, address_id, 0L)
     } else { collection_value_location(tables, compiler, collection) }

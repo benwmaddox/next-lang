@@ -2739,7 +2739,12 @@ recursive fn emit_function_body(
             let collection_type = compiler.facts[collection].ty
             let collection_kind = type_kind(compiler, collection_type)
             let capacity = collection_capacity(compiler, collection_type)
-            let location = collection_value_location(tables, compiler, collection)
+            var location = collection_value_location(tables, compiler, collection)
+            // A collection that is itself a for-each view (nested loops) is addressed through its own collection.
+            if tables.nodes[collection].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[collection].binding) {
+                let view_address = emit_late_place_address(tables, compiler, ir, collection)
+                location = compiler_location(compiler, 2L, view_address, 0L)
+            }
             let pointer = emit_location_pointer_materialization(compiler, ir, location)
             if collection_kind_is_list(collection_kind) {
                 ir_write_ascii(compiler, ir, "  %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 0\n  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 1\n")

@@ -268,6 +268,26 @@ recursive fn emit_late_place_address(
         if emit_collection_field_path_address(tables, compiler, ir, node, address_id) { return address_id }
         if emit_parameter_field_path_address(tables, compiler, ir, node, address_id) { return address_id }
     }
+    if tables.nodes[node].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[node].binding) {
+        // A for-each view over another view (a third nesting level): the outer view's address plus current * stride.
+        let loop_node = compiler.bindings[compiler.facts[node].binding].node
+        let outer = compiler.child_first[loop_node]
+        if tables.nodes[outer].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[outer].binding) {
+            let outer_address = emit_late_place_address(tables, compiler, ir, outer)
+            let outer_base = compiler_location(compiler, 2L, outer_address, 0L)
+            let outer_pointer = emit_location_pointer_materialization(compiler, ir, outer_base)
+            let outer_type = compiler.facts[outer].ty
+            let view_stride = value_type_size(compiler, collection_element_type(compiler, outer_type))
+            let view_base_offset = collection_element_base_offset(compiler, outer_type)
+            if view_stride < 0L || view_base_offset < 0L { compiler.ir_overflow = true; return address_id }
+            ir_write_ascii(compiler, ir, "  %late.view.index."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = mul i64 %for.each.current."); ir_write_number(compiler, ir, loop_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, view_stride); ir_push_byte(compiler, ir, 10)
+            ir_write_ascii(compiler, ir, "  %late.view.offset."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = add i64 %late.view.index."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, view_base_offset); ir_push_byte(compiler, ir, 10)
+            ir_write_ascii(compiler, ir, "  %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
+            emit_location_pointer_reference(compiler, ir, outer_base, outer_pointer)
+            ir_write_ascii(compiler, ir, ", i64 %late.view.offset."); ir_write_number(compiler, ir, address_id); ir_push_byte(compiler, ir, 10)
+            return address_id
+        }
+    }
     if tables.nodes[node].kind == NodeKind.Index {
         let collection = compiler.child_first[node]
         let index_node = if collection >= 0L { compiler.child_next[collection] } else { -1L }
