@@ -6,7 +6,7 @@ import unittest
 
 from support import ROOT, selfhost
 
-POSITIVE = ["pools", "pools_ids", "pools_set", "pool_fields", "pool_owners", "pool_nested_call", "pool_owner_flow"]
+POSITIVE = ["pools", "pools_ids", "pools_set", "pool_fields", "pool_owners", "pool_nested_call", "pool_owner_flow", "pool_index"]
 
 
 def nlc(*args):

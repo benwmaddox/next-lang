@@ -431,6 +431,12 @@ recursive fn owner_walk(
             if owner < 0L { owner = owner_of_value(source, files, tokens, tables, compiler, st, value, 0L) }
             owner_set_binding(env, st, binding, owner)
         }
+    } else if kind == NodeKind.Index {
+        // pool[id]: the index must be an id of that pool.
+        let receiver = compiler.child_first[node]
+        if receiver >= 0L && type_kind(compiler, compiler.facts[receiver].ty) == TYPE_KIND_POOL {
+            owner_check_sink(env, source, files, tokens, tables, compiler, st, owner_of_pool_place(compiler, tables, receiver), compiler.child_next[receiver])
+        }
     } else if kind == NodeKind.MethodCall {
         let receiver = compiler.child_first[node]
         let argument = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }

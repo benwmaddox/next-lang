@@ -1,0 +1,3 @@
+main.nl:12:26: error: expected labels.Id, got nodes.Id
+   12 |             world.labels[id].text = 3
+      |                          ^

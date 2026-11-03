@@ -1165,8 +1165,8 @@ fn check_one_body(
             if collection_kind == TYPE_KIND_QUEUE {
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node, offset: syntax.start, category: UNSUPPORTED_QUEUE_USE, token: syntax.token })
             }
-            if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST && collection_kind != TYPE_KIND_BYTES && collection_kind != TYPE_KIND_ASCII {
-                fail_at_message(env, files, compiler, file_index, syntax.start, "this value cannot be indexed; use an array, list, Bytes, or Ascii")
+            if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST && collection_kind != TYPE_KIND_POOL && collection_kind != TYPE_KIND_BYTES && collection_kind != TYPE_KIND_ASCII {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "this value cannot be indexed; use an array, list, pool, Bytes, or Ascii")
             }
             let index_ty = if index >= 0L { compiler.facts[index].ty } else { -1L }
             if index_ty != TY_LONG {
