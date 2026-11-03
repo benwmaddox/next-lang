@@ -472,7 +472,7 @@ fn unsupported_category_for_node(
         NodeKind.Test => if value.aux > 0L { UNSUPPORTED_NODE } else { 0L },
         NodeKind.Block => 0L,
         NodeKind.Let => 0L,
-        NodeKind.Assign => if value.flags < 0L || value.flags > 10L { UNSUPPORTED_ASSIGNMENT } else { 0L },
+        NodeKind.Assign => if value.flags < 0L || value.flags > 10L && !(compiler.c_runtime && value.flags <= 13L) { UNSUPPORTED_ASSIGNMENT } else { 0L },
         NodeKind.ReturnStatement => 0L,
         NodeKind.ExpressionStatement => 0L,
         NodeKind.For => 0L,

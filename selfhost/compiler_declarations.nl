@@ -123,6 +123,10 @@ const NUMERIC_BUILTIN_MIN: long = 1L
 const NUMERIC_BUILTIN_MAX: long = 2L
 const NUMERIC_BUILTIN_ABS: long = 3L
 const NUMERIC_BUILTIN_CLAMP: long = 4L
+// mul_hi(a, b): the high 64 bits of the 128-bit product of two ulong; rotl(x, n) and rotr(x, n) rotate a uint or ulong by n (taken modulo the width)
+const NUMERIC_BUILTIN_MUL_HI: long = 5L
+const NUMERIC_BUILTIN_ROTL: long = 6L
+const NUMERIC_BUILTIN_ROTR: long = 7L
 // Added to the kind of a clamp that is computed as an int and narrowed to a byte.
 const NUMERIC_BUILTIN_NARROW_TO_BYTE: long = 100L
 
@@ -142,6 +146,9 @@ fn numeric_builtin_kind(
         else if token_is_word_at(source, tokens, files, file_index, token, "max") { NUMERIC_BUILTIN_MAX }
         else if token_is_word_at(source, tokens, files, file_index, token, "abs") { NUMERIC_BUILTIN_ABS }
         else if token_is_word_at(source, tokens, files, file_index, token, "clamp") { NUMERIC_BUILTIN_CLAMP }
+        else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, token, "mul_hi") { NUMERIC_BUILTIN_MUL_HI }
+        else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, token, "rotl") { NUMERIC_BUILTIN_ROTL }
+        else if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, token, "rotr") { NUMERIC_BUILTIN_ROTR }
         else { NUMERIC_BUILTIN_NONE }
     if kind == NUMERIC_BUILTIN_NONE { return NUMERIC_BUILTIN_NONE }
     let name_id = compiler.token_name_ids[token]

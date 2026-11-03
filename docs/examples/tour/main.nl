@@ -75,6 +75,11 @@ fn main() {
     let word: Ascii max 8 = "a1"
     print(word[1] == "1")                      // true: word[i] is one character, an Ascii max 1
     print(word[1].to_byte())                   // 49: its byte
+    let flags: uint = 4000000000u              // uint, ulong, ushort, short, sbyte: `5u` is a uint, `5UL` a ulong
+    print(flags + 294967295u)                  // 4294967295; one more would fail, and so would 0u - 1u
+    print(0u -% 1u)                            // 4294967295: `+%` `-%` `*%` wrap at the type's width
+    print((ulong)flags * 4UL)                  // 16000000000: conversions are casts, checked when narrowing
+    print(unchecked((uint)(0 - 1)))            // 4294967295: unchecked keeps the low bits
 }
 
 // Tests live in the same package; `scripts/nlc test <package>` runs each in its own process.

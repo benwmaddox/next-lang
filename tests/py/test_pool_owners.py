@@ -6,7 +6,7 @@ import unittest
 
 from support import ROOT, selfhost
 
-POSITIVE = ["unsigned_basic", "unsigned_collections", "unsigned_floats", "pools", "pools_ids", "pools_set", "pool_fields", "pool_owners", "pool_nested_call", "pool_owner_flow", "pool_index", "list_of_arrays_foreach", "enum_list_literals", "nested_foreach", "nested_foreach_probes", "map_rich", "map_ids", "map_foreach", "sort_lib", "pool_readonly_params", "pool_results", "const_images", "text_arrays", "text_arena", "text_window", "ascii_char", "ascii_index_long", "text_chars"]
+POSITIVE = ["unsigned_basic", "unsigned_collections", "unsigned_floats", "unsigned_narrow", "unsigned_library", "pools", "pools_ids", "pools_set", "pool_fields", "pool_owners", "pool_nested_call", "pool_owner_flow", "pool_index", "list_of_arrays_foreach", "enum_list_literals", "nested_foreach", "nested_foreach_probes", "map_rich", "map_ids", "map_foreach", "sort_lib", "pool_readonly_params", "pool_results", "const_images", "text_arrays", "text_arena", "text_window", "ascii_char", "ascii_index_long", "text_chars"]
 
 
 def nlc(*args):

@@ -192,7 +192,7 @@ fn emit_new_int_compound(
     op: long,
     place_target: bool,
 ) {
-    let binary_op = if op <= 5L { op - 1L } else if op == 6L { 20L } else if op == 7L { 19L } else if op == 8L { 16L } else if op == 9L { 17L } else { 18L }
+    let binary_op = if op >= 11L { op - 6L } else if op <= 5L { op - 1L } else if op == 6L { 20L } else if op == 7L { 19L } else if op == 8L { 16L } else if op == 9L { 17L } else { 18L }
     emit_new_int_binary(files, tables, compiler, ir, node, file_index, binary_op, target, value, ty)
     let address_id = if place_target { emit_late_place_address(tables, compiler, ir, target) } else { -1L }
     int_w(compiler, ir, "  store "); int_w(compiler, ir, llvm_type_name(ty)); int_w(compiler, ir, " %v"); int_n(compiler, ir, node)

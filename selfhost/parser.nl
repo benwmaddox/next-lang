@@ -1816,6 +1816,9 @@ recursive fn parse_expression_statement_candidate(
         else if next.kind == TokenKind.AndEq { 8L }
         else if next.kind == TokenKind.OrEq { 9L }
         else if next.kind == TokenKind.CaretEq { 10L }
+        else if next.kind == TokenKind.WrapPlusEq { 11L }
+        else if next.kind == TokenKind.WrapMinusEq { 12L }
+        else if next.kind == TokenKind.WrapStarEq { 13L }
         else { -1L }
     if assignment >= 0L {
         let kind = tables.nodes[expression].kind

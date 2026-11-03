@@ -1,0 +1,3 @@
+main.nl:3:18: error: mul_hi needs ulong values
+    3 |     print(mul_hi(x, x))
+      |                  ^

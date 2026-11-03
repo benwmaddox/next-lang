@@ -1514,7 +1514,13 @@ fn check_one_body(
                 }
                 let first_argument = child_at(tables, compiler, node, 0L)
                 let ty = compiler.facts[first_argument].ty
-                if ty != TY_INT && ty != TY_LONG {
+                let rotation = builtin_kind == NUMERIC_BUILTIN_ROTL || builtin_kind == NUMERIC_BUILTIN_ROTR
+                if builtin_kind == NUMERIC_BUILTIN_MUL_HI && ty != TY_ULONG {
+                    fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, tables.nodes[first_argument].start, "", syntax.token, " needs ulong values")
+                } else if rotation && ty != TY_UINT && ty != TY_ULONG {
+                    fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, tables.nodes[first_argument].start, "", syntax.token, " needs uint or ulong values")
+                } else if builtin_kind <= NUMERIC_BUILTIN_CLAMP && ty != TY_INT && ty != TY_LONG &&
+                    !((builtin_kind == NUMERIC_BUILTIN_MIN || builtin_kind == NUMERIC_BUILTIN_MAX) && is_new_int_type(ty)) {
                     fail_dynamic_checker_error(env, source, files, tokens, compiler, file_index, tables.nodes[first_argument].start, "", syntax.token, " needs int or long values")
                 }
                 for argument_index in 1L..required_args {

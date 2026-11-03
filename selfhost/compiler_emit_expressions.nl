@@ -149,6 +149,19 @@ fn emit_compound_assignment(
         emit_double_compound(files, tables, compiler, ir, node, file_index, target, binding, value, place_target, op)
         return
     }
+    if op >= 11L {
+        // x +%= y, -%=, *%=: wrap at the type's width
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = ")
+        ir_write_ascii(compiler, ir, if op == 11L { "add " } else if op == 12L { "sub " } else { "mul " })
+        ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, value); ir_push_byte(compiler, ir, 10)
+        let wrap_address = if place_target { emit_late_place_address(tables, compiler, ir, target) } else { -1L }
+        ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, node)
+        if place_target { ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, wrap_address); ir_write_ascii(compiler, ir, ", align 1") }
+        else { ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1") }
+        emit_program_storage_tbaa(compiler, ir)
+        ir_push_byte(compiler, ir, 10)
+        return
+    }
     if op == 1L || op == 2L || op == 3L {
         let binary_op = op - 1L
         ir_write_ascii(compiler, ir, "  %ov.pair."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call { "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", i1 } @llvm.s")
@@ -3118,11 +3131,24 @@ fn emit_numeric_builtin(
     let first = compiler.child_first[node]
     let second = if first >= 0L { compiler.child_next[first] } else { -1L }
     let third = if second >= 0L { compiler.child_next[second] } else { -1L }
-    if kind == NUMERIC_BUILTIN_MIN || kind == NUMERIC_BUILTIN_MAX {
+    if kind == NUMERIC_BUILTIN_MUL_HI {
+        ir_write_ascii(compiler, ir, "  %mh.a."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i64 "); ir_write_value_ref(compiler, ir, first)
+        ir_write_ascii(compiler, ir, " to i128\n  %mh.b."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = zext i64 "); ir_write_value_ref(compiler, ir, second)
+        ir_write_ascii(compiler, ir, " to i128\n  %mh.p."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i128 %mh.a."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", %mh.b."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n  %mh.h."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = lshr i128 %mh.p."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 64\n  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = trunc i128 %mh.h."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i64\n")
+    } else if kind == NUMERIC_BUILTIN_ROTL || kind == NUMERIC_BUILTIN_ROTR {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call "); ir_write_ascii(compiler, ir, llvm_ty)
+        ir_write_ascii(compiler, ir, if kind == NUMERIC_BUILTIN_ROTL { " @llvm.fshl." } else { " @llvm.fshr." }); ir_write_ascii(compiler, ir, llvm_ty)
+        ir_write_ascii(compiler, ir, "("); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, first)
+        ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, first)
+        ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, second); ir_write_ascii(compiler, ir, ")\n")
+    } else if kind == NUMERIC_BUILTIN_MIN || kind == NUMERIC_BUILTIN_MAX {
         ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = call ")
         ir_write_ascii(compiler, ir, llvm_ty)
-        ir_write_ascii(compiler, ir, if kind == NUMERIC_BUILTIN_MIN { " @llvm.smin." } else { " @llvm.smax." })
+        ir_write_ascii(compiler, ir, if int_type_signed(ty) { if kind == NUMERIC_BUILTIN_MIN { " @llvm.smin." } else { " @llvm.smax." } } else if kind == NUMERIC_BUILTIN_MIN { " @llvm.umin." } else { " @llvm.umax." })
         ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, "("); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " ")
         ir_write_value_ref(compiler, ir, first)
         ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, llvm_ty); ir_write_ascii(compiler, ir, " ")

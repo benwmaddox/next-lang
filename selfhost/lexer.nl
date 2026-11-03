@@ -57,6 +57,9 @@ enum TokenKind {
     Eof,
     Dollar,
     InterpEnd,
+    WrapPlusEq,
+    WrapMinusEq,
+    WrapStarEq,
 }
 
 struct Token {
@@ -547,8 +550,13 @@ fn lex_file(
                     kind = TokenKind.Arrow
                     unit_width = 2L
                 } else if remaining >= 2L && source[absolute + 1L] == 37 {
-                    kind = TokenKind.WrapMinus
-                    unit_width = 2L
+                    if remaining >= 3L && source[absolute + 2L] == 61 {
+                        kind = TokenKind.WrapMinusEq
+                        unit_width = 3L
+                    } else {
+                        kind = TokenKind.WrapMinus
+                        unit_width = 2L
+                    }
                 } else if remaining >= 2L && source[absolute + 1L] == 61 {
                     kind = TokenKind.MinusEq
                     unit_width = 2L
@@ -559,8 +567,13 @@ fn lex_file(
             },
             43 => {
                 if remaining >= 2L && source[absolute + 1L] == 37 {
-                    kind = TokenKind.WrapPlus
-                    unit_width = 2L
+                    if remaining >= 3L && source[absolute + 2L] == 61 {
+                        kind = TokenKind.WrapPlusEq
+                        unit_width = 3L
+                    } else {
+                        kind = TokenKind.WrapPlus
+                        unit_width = 2L
+                    }
                 } else if remaining >= 2L && source[absolute + 1L] == 61 {
                     kind = TokenKind.PlusEq
                     unit_width = 2L
@@ -571,8 +584,13 @@ fn lex_file(
             },
             42 => {
                 if remaining >= 2L && source[absolute + 1L] == 37 {
-                    kind = TokenKind.WrapStar
-                    unit_width = 2L
+                    if remaining >= 3L && source[absolute + 2L] == 61 {
+                        kind = TokenKind.WrapStarEq
+                        unit_width = 3L
+                    } else {
+                        kind = TokenKind.WrapStar
+                        unit_width = 2L
+                    }
                 } else if remaining >= 2L && source[absolute + 1L] == 61 {
                     kind = TokenKind.StarEq
                     unit_width = 2L
