@@ -657,9 +657,14 @@ fn fail_type_mismatch(
     match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b": error: expected ") { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(mismatch_type_name(compiler, expected).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    // two Ascii (or Text, or Bytes) types that differ only in their maxima print the maxima
+    let same_kind_text = type_kind(compiler, expected) == type_kind(compiler, actual) &&
+        (type_kind(compiler, expected) == TYPE_KIND_ASCII || type_kind(compiler, expected) == TYPE_KIND_TEXT || type_kind(compiler, expected) == TYPE_KIND_BYTES)
+    let expected_name: Ascii max 80 = if same_kind_text { text_type_with_maxima(compiler, expected) } else { mismatch_type_name(compiler, expected) }
+    let actual_name: Ascii max 80 = if same_kind_text { text_type_with_maxima(compiler, actual) } else { mismatch_type_name(compiler, actual) }
+    match env.err.write(expected_name.bytes()) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b", found ") { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(mismatch_type_name(compiler, actual).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(actual_name.bytes()) { ok(_) => (), err(_) => env.exit(3) }
     // A cast only makes sense between scalars.
     if is_plain_scalar_type(compiler, expected) && is_plain_scalar_type(compiler, actual) {
         match env.err.write(b"; cast explicitly with (") { ok(_) => (), err(_) => env.exit(3) }
@@ -778,7 +783,9 @@ recursive fn natural_node_type(
             let receiver = compiler.child_first[node]
             if receiver >= 0L {
                 let receiver_ty = natural_node_type(source, tokens, files, tables, compiler, receiver, scope, file_index)
-                collection_element_type(compiler, receiver_ty)
+                // Ascii[i] is an Ascii max 1 (once that type exists), not a byte
+                if type_kind(compiler, receiver_ty) == TYPE_KIND_ASCII { text_type_matches(compiler, TYPE_KIND_ASCII, 1L, 0L) }
+                else { collection_element_type(compiler, receiver_ty) }
             } else { -1L }
         },
         NodeKind.StructInit => {
@@ -1010,3 +1017,16 @@ fn fail_call_arity(
     match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
 }
 
+
+// `Ascii max 100`, `Bytes max 8`, `Text max 4` (or `Text max 4 bytes max 10` when the byte budget is not 4 per code point)
+fn text_type_with_maxima(compiler: CompilerTables, ty: long) -> Ascii max 80 {
+    let kind = type_kind(compiler, ty)
+    let bytes = text_max_bytes(compiler, ty)
+    if kind == TYPE_KIND_ASCII { "Ascii max " + str(bytes) }
+    else if kind == TYPE_KIND_BYTES { "Bytes max " + str(bytes) }
+    else {
+        let points = text_max_codepoints(compiler, ty)
+        if bytes == points * 4L { "Text max " + str(points) }
+        else { "Text max " + str(points) + " bytes max " + str(bytes) }
+    }
+}

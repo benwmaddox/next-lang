@@ -154,7 +154,7 @@ fn limit_error(env: Env, what: Ascii max 128) -> never {
 }
 
 fn put(out: write Buf, text: Ascii max 1024) {
-    for index in 0L..text.len() { discard out.push(text[index]) }
+    for index in 0L..text.len() { discard out.push(text[index].to_byte()) }
 }
 
 fn put_name(out: write Buf, text: Name) {
@@ -171,7 +171,7 @@ fn put_buf(out: write Buf, text: Buf) {
 
 fn put_num(out: write Buf, value: long) {
     let digits = str(value)
-    for index in 0L..digits.len() { discard out.push(digits[index]) }
+    for index in 0L..digits.len() { discard out.push(digits[index].to_byte()) }
 }
 
 // The file at `path` into g.file.
@@ -202,7 +202,7 @@ fn lower(c: long) -> long { if c >= 65L && c <= 90L { c + 32L } else { c } }
 fn name_is(name: Name, text: Ascii max 64) -> bool {
     if name.count() != text.len() { return false }
     for index in 0L..text.len() {
-        if name[index] != text[index] { return false }
+        if name[index] != text[index].to_byte() { return false }
     }
     true
 }
@@ -218,7 +218,7 @@ fn names_equal(a: Name, b: Name) -> bool {
 fn starts_with_at(buffer: Buf, at: long, end: long, text: Ascii max 64) -> bool {
     if at + text.len() > end { return false }
     for index in 0L..text.len() {
-        if buffer[at + index] != text[index] { return false }
+        if buffer[at + index] != text[index].to_byte() { return false }
     }
     true
 }
@@ -226,7 +226,7 @@ fn starts_with_at(buffer: Buf, at: long, end: long, text: Ascii max 64) -> bool 
 fn name_starts_with(name: Name, text: Ascii max 16) -> bool {
     if name.count() < text.len() { return false }
     for index in 0L..text.len() {
-        if name[index] != text[index] { return false }
+        if name[index] != text[index].to_byte() { return false }
     }
     true
 }

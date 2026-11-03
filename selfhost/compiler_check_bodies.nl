@@ -1094,6 +1094,8 @@ fn check_one_body(
                 if frame.cursor == 0L { child = frame.child0; frame.cursor = 1L }
                 else if frame.cursor == 1L {
                     frame.result_ty = if frame.child0 >= 0L { compiler.facts[frame.child0].ty } else { -1L }
+                    // `text += ascii`: the appended value keeps its own type (an Ascii value is valid Text)
+                    if tables.nodes[node].flags == 1L && type_kind(compiler, frame.result_ty) == TYPE_KIND_TEXT { frame.result_ty = -1L }
                     child = frame.child1
                     frame.cursor = 2L
                 }
@@ -1214,7 +1216,13 @@ fn check_one_body(
                 if index_ty == TY_INT { fail_at_message(env, files, compiler, file_index, tables.nodes[index].start, "collection indexes are long; cast an int index with .to_long()") }
                 else { fail_at_message(env, files, compiler, file_index, tables.nodes[index].start, "collection indexes must be long") }
             }
-            let element_ty = if collection_kind == TYPE_KIND_BYTES || collection_kind == TYPE_KIND_ASCII { TY_BYTE } else { collection_element_type(compiler, collection_ty) }
+            // Bytes[i] is a byte; Ascii[i] is one character, an `Ascii max 1` (decided 2026-11-04).
+            let element_ty = if collection_kind == TYPE_KIND_BYTES { TY_BYTE }
+                else if collection_kind == TYPE_KIND_ASCII {
+                    let char_ty = intern_text_type(compiler, TYPE_KIND_ASCII, 1L, 0L, file_index, node, -1L, -1L)
+                    if char_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Ascii character type exceeds compiler capacity") }
+                    char_ty
+                } else { collection_element_type(compiler, collection_ty) }
             if frame.expected >= 0L && frame.expected != element_ty { require_type(env, files, compiler, file_index, node, frame.expected, element_ty, tables) }
             let flags = if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }
             compiler.facts[node] = NodeFact { ty: element_ty, flags, binding: compiler.facts[receiver].binding, function: -1L, literal: collection_ty }
@@ -1291,8 +1299,15 @@ fn check_one_body(
             }
             let op = syntax.flags
             let value_fact = compiler.facts[value]
+            if tables.nodes[target].kind == NodeKind.Index && compiler.child_first[target] >= 0L &&
+                (type_kind(compiler, compiler.facts[compiler.child_first[target]].ty) == TYPE_KIND_ASCII ||
+                 type_kind(compiler, compiler.facts[compiler.child_first[target]].ty) == TYPE_KIND_BYTES) {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[target].start, "Ascii and Bytes are append-only; build a new value, or use list<byte, N> / byte[N] for mutable bytes")
+            }
             if is_ascii_append_assignment(op, target_fact.ty, compiler) {
-                require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables)
+                // a Text builder also takes Ascii (an Ascii value is valid Text)
+                if type_kind(compiler, target_fact.ty) == TYPE_KIND_TEXT && type_kind(compiler, value_fact.ty) == TYPE_KIND_ASCII { () }
+                else { require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables) }
                 if binding_is_write_parameter(compiler, binding) && !binding_is_grow_parameter(compiler, binding) {
                     fail_at_message(env, files, compiler, file_index, syntax.start,
                         "appending through a parameter requires 'grow' mode; 'write' cannot increase its length")
@@ -1307,7 +1322,16 @@ fn check_one_body(
                 let appended_maximum = if appended_length >= 0L { appended_length } else { text_max_bytes(compiler, value_fact.ty) }
                 let loop_proven = frame.loop_depth == 0L || appended_maximum == 0L ||
                     loop_push_is_proven(compiler, binding, frame.loop_depth)
-                if maximum < 0L || current_maximum > maximum || appended_maximum < 0L ||
+                // a Text builder also has a limit on code points; the code points so far are at most the bytes so far
+                var points_unproven = false
+                if type_kind(compiler, target_fact.ty) == TYPE_KIND_TEXT {
+                    let points_maximum = text_max_codepoints(compiler, target_fact.ty)
+                    let points_so_far = if tracked_length >= 0L && tracked_length < points_maximum { tracked_length } else { points_maximum }
+                    let appended_points = if appended_length >= 0L && type_kind(compiler, value_fact.ty) == TYPE_KIND_ASCII { appended_length }
+                        else { text_max_codepoints(compiler, value_fact.ty) }
+                    if appended_points < 0L || appended_points > points_maximum - points_so_far { points_unproven = true }
+                }
+                if maximum < 0L || current_maximum > maximum || appended_maximum < 0L || points_unproven ||
                     appended_maximum > maximum - current_maximum || !loop_proven {
                     let conditional_loop = conditional_builder_loop_ancestor(tables, node)
                     if !loop_proven && conditional_loop >= 0L {
@@ -1886,6 +1910,7 @@ fn check_one_body(
                 var argument = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
                 var method_result_ty = TY_LONG
                 if method == TEXT_METHOD_SLICE {
+                    let first_bound = argument
                     for bound in 0L..2L {
                         if argument < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "slice is missing a bound") }
                         if compiler.facts[argument].ty != TY_LONG {
@@ -1894,6 +1919,48 @@ fn check_one_body(
                         argument = compiler.child_next[argument]
                     }
                     method_result_ty = receiver_ty
+                    // constant bounds give a tight maximum: slice(999..1000) of an Ascii max 1000 is an Ascii max 1
+                    let last_bound = compiler.child_next[first_bound]
+                    let low_known = tables.nodes[first_bound].kind == NodeKind.Integer || (compiler.facts[first_bound].flags & FACT_CONSTANT_VALUE) != 0L
+                    let high_known = tables.nodes[last_bound].kind == NodeKind.Integer || (compiler.facts[last_bound].flags & FACT_CONSTANT_VALUE) != 0L
+                    if low_known && high_known {
+                        let low = compiler.facts[first_bound].literal
+                        let last_value = compiler.facts[last_bound].literal
+                        let high = if syntax.extra == 1L && last_value < 4611686018427387904L { last_value + 1L } else { last_value }
+                        let receiver_bytes = text_max_bytes(compiler, receiver_ty)
+                        if low >= 0L && high >= low && high < 4611686018427387904L {
+                            let count = high - low
+                            if receiver_kind == TYPE_KIND_TEXT {
+                                if count < text_max_codepoints(compiler, receiver_ty) {
+                                    let tight_bytes = if count * 4L < receiver_bytes { count * 4L } else { receiver_bytes }
+                                    method_result_ty = intern_text_type(compiler, TYPE_KIND_TEXT, tight_bytes, count, file_index, node, -1L, -1L)
+                                }
+                            } else if count < receiver_bytes {
+                                method_result_ty = intern_text_type(compiler, receiver_kind, count, 0L, file_index, node, -1L, -1L)
+                            }
+                            if method_result_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "slice type exceeds compiler capacity") }
+                        }
+                    }
+                } else if method == TEXT_METHOD_TO_BYTE {
+                    if text_max_bytes(compiler, receiver_ty) != 1L {
+                        fail_at_message(env, files, compiler, file_index, syntax.anchor, "to_byte() needs a one-character value (Ascii max 1), such as text[i]; use to_bytes() to copy longer text into Bytes")
+                    }
+                    if is_ascii_char_index(tables, compiler, receiver) {
+                        compiler.facts[receiver].flags = compiler.facts[receiver].flags | FACT_ASCII_BYTE
+                    }
+                    method_result_ty = TY_BYTE
+                } else if method == TEXT_METHOD_FIRST || method == TEXT_METHOD_LAST {
+                    // the first or last character: none when the text is empty
+                    let char_ty = if type_kind(compiler, receiver_ty) == TYPE_KIND_TEXT { intern_text_type(compiler, TYPE_KIND_TEXT, 4L, 1L, file_index, node, -1L, -1L) }
+                        else { intern_text_type(compiler, TYPE_KIND_ASCII, 1L, 0L, file_index, node, -1L, -1L) }
+                    if char_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "character type exceeds compiler capacity") }
+                    method_result_ty = intern_sum_type(compiler, TYPE_KIND_OPTION, char_ty, -1L, file_index, node, -1L, -1L)
+                    if method_result_ty < 0L || sum_layout_has_invalid_overflow(compiler, method_result_ty) {
+                        fail_at_message(env, files, compiler, file_index, syntax.start, "first()/last() Option layout overflows")
+                    }
+                } else if method == TEXT_METHOD_TO_BYTES {
+                    method_result_ty = intern_text_type(compiler, TYPE_KIND_BYTES, text_max_bytes(compiler, receiver_ty), 0L, file_index, node, -1L, -1L)
+                    if method_result_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Bytes copy type exceeds the supported value size") }
                 } else if method == TEXT_METHOD_BYTES {
                     method_result_ty = intern_text_type(compiler, TYPE_KIND_BYTES, text_max_bytes(compiler, receiver_ty), 0L, file_index, node, -1L, -1L)
                     if method_result_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Bytes view type exceeds the supported value size") }
@@ -2063,6 +2130,7 @@ fn check_one_body(
             else if left.ty == TY_INT && right.ty == TY_BYTE { right.ty = TY_INT }
             else { () }
             var ty = -1L
+            var byte_compare = false
             if op == 14L || op == 15L {
                 require_type(env, files, compiler, file_index, frame.child0, TY_BOOL, left.ty, tables)
                 require_type(env, files, compiler, file_index, frame.child1, TY_BOOL, right.ty, tables)
@@ -2156,6 +2224,7 @@ fn check_one_body(
                 }
                 if op >= 10L && !is_numeric_type(left.ty) && left.ty != TY_BYTE && !is_float_type(left.ty) && !text_pair { fail_at_message(env, files, compiler, file_index, syntax.anchor, "ordered comparisons require int, long, or byte values") }
                 ty = TY_BOOL
+                if text_pair && mark_ascii_byte_compare(source, tokens, files, tables, compiler, file_index, frame.child0, frame.child1) { byte_compare = true }
             } else if op >= 16L && op <= 20L {
                 if !is_numeric_type(left.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "bitwise operators require int or long values") }
                 if left.ty != right.ty { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, left.ty, right.ty) }
@@ -2169,7 +2238,7 @@ fn check_one_body(
                 ty = left.ty
             }
             if frame.expected >= 0L && ty != TY_NEVER && ty != frame.expected { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
-            compiler.facts[node] = NodeFact { ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+            compiler.facts[node] = NodeFact { ty, flags: if byte_compare { FACT_FALLS_THROUGH | FACT_ASCII_BYTE } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.If {
             let condition = compiler.facts[frame.child0]
             require_type(env, files, compiler, file_index, frame.child0, TY_BOOL, condition.ty, tables)

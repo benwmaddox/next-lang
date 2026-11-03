@@ -54,6 +54,23 @@ globals: state is a local in `main` and is passed down.
 `$"{u.name}: {u.hp} hp"` builds text in place; its maximum length is computed at build time and must fit the destination.
 `Ascii` is for ASCII only; use `Bytes` for arbitrary bytes. `x.count()` is the length of a list or bytes, `x.len()` of text.
 
+Characters and bytes (tests: `tests/c_runtime/ascii_char`, `tests/c_runtime/text_chars`):
+
+| Form | Meaning |
+|---|---|
+| `a[i]` on `Ascii` | one character, an `Ascii max 1` (fails when out of range). `a[i] == "x"`, `"0" <= a[i] && a[i] <= "9"` compare by content (plain byte compares in the generated code); `out += a[i]` appends it |
+| `b[i]` on `Bytes` | a `byte` |
+| `c.to_byte()` | the byte of an `Ascii max 1` (`a[i].to_byte()` is a plain byte load); fails unless exactly one character |
+| `a.to_bytes()`, `t.to_bytes()` | copy into `Bytes max N` (`4N` for `Text max N`); not to be confused with `to_byte()` |
+| `a.first()`, `a.last()` | `Option<Ascii max 1>`, `none` when empty |
+| `t.first()`, `t.last()` | `Option<Text max 1>` (one code point, at most 4 bytes; `last` steps back over at most 3 continuation bytes); `Text` is still not indexable by position |
+| `t += x` | appends `Text` or `Ascii` to a `Text` like `Ascii +=`: the append must be provable to fit bytes and code points, else use `try_append` (no append in loops yet) |
+| `s.push(byte)` | on `Ascii` and `Text` the byte must be below 128 (a failure otherwise); returns `Result<(), Full>` like `Bytes.push` |
+| `a.slice(3..4)` | with constant bounds the maximum is the range length (`Ascii max 1000` gives `Ascii max 1`), so it appends into small destinations; `Bytes` and `Text` likewise |
+| `s[i] = x`, `b[i] = x`, `b[i] += x` | build errors: `Ascii` and `Bytes` are append-only (whole-value assignment and appends are fine); use `list<byte, N>` or `byte[N]` for mutable bytes |
+
+A type mismatch between texts that differ only in their maxima prints them: `expected Ascii max 100, found Ascii max 1000`.
+
 `sort(xs)` orders a writable list or array of numbers (bytes unsigned, floats by value) or text (bytes, then shorter first) in place; `sort_by(xs, ctx, before)` orders any list or array with the named function `before(ctx, a, b) -> bool` ("a goes before b", read-only parameters). `ctx` is an int, long or bool, or a variable or field holding a record, array, list, map or text (including a record that holds pools), passed by address and never copied; it may not be, or contain, the list being sorted. Both are stable merge sorts: O(n log n), with scratch space on the data stack the size of the list.
 
 ## Tests

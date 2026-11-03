@@ -221,7 +221,11 @@ fn fail_ascii_append_unproven(
     match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(b": error: cannot prove this append fits Ascii max ") { ok(_) => (), err(_) => env.exit(3) }
+    if type_kind(compiler, compiler.facts[target].ty) == TYPE_KIND_TEXT {
+        match env.err.write(b": error: cannot prove this append fits Text bytes max ") { ok(_) => (), err(_) => env.exit(3) }
+    } else {
+        match env.err.write(b": error: cannot prove this append fits Ascii max ") { ok(_) => (), err(_) => env.exit(3) }
+    }
     match env.err.write(str(maximum).bytes()) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b"; use '") { ok(_) => (), err(_) => env.exit(3) }
     match write_token_raw(env.err, source, tokens, files[file_index].base, tables.nodes[target].token) { ok(_) => (), err(_) => env.exit(3) }

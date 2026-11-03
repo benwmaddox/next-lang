@@ -31,7 +31,7 @@ fn arena_get<N>(text: pool<byte, N>, w: Id<text>, i: long) -> byte {
 fn arena_add_ascii<N>(text: write pool<byte, N>, s: Ascii max 4096) -> Id<text> {
     let start = text.count()
     for i in 0L..s.len() {
-        discard text.add(s[i]).unwrap()
+        discard text.add(s[i].to_byte()).unwrap()
     }
     start * 4294967296L + s.len()
 }
@@ -48,7 +48,7 @@ fn arena_push<N>(text: write pool<byte, N>, b: byte) {
 
 fn arena_append_ascii<N>(text: write pool<byte, N>, s: Ascii max 4096) {
     for i in 0L..s.len() {
-        discard text.add(s[i]).unwrap()
+        discard text.add(s[i].to_byte()).unwrap()
     }
 }
 

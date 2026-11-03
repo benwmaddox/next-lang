@@ -191,6 +191,10 @@ const TEXT_METHOD_TO_ASCII: long = 2009L
 const TEXT_METHOD_EMPTY: long = 2010L
 const TEXT_METHOD_TRY_APPEND: long = 2011L
 const TEXT_METHOD_PUSH: long = 2012L
+const TEXT_METHOD_TO_BYTE: long = 2013L
+const TEXT_METHOD_TO_BYTES: long = 2014L
+const TEXT_METHOD_FIRST: long = 2015L
+const TEXT_METHOD_LAST: long = 2016L
 
 fn grow_text_width_matches(compiler: CompilerTables, actual: long, expected: long) -> bool {
     let actual_kind = type_kind(compiler, actual)
@@ -262,6 +266,8 @@ recursive fn known_text_byte_length(
         } else { -1L }
     } else if syntax.kind == NodeKind.MethodCall && compiler.facts[node].literal == TEXT_METHOD_EMPTY {
         0L
+    } else if is_ascii_char_index(tables, compiler, node) {
+        1L
     } else if syntax.kind == NodeKind.Binary && syntax.flags == 0L {
         let left = compiler.child_first[node]
         let right = if left >= 0L { compiler.child_next[left] } else { -1L }
@@ -811,7 +817,15 @@ fn text_method_kind(
 ) -> long {
     if (receiver_kind == TYPE_KIND_ASCII || receiver_kind == TYPE_KIND_TEXT || receiver_kind == TYPE_KIND_BYTES) &&
         token_is_word_at(source, tokens, files, file_index, method_token, "try_append") { TEXT_METHOD_TRY_APPEND }
-    else if receiver_kind == TYPE_KIND_BYTES && token_is_word_at(source, tokens, files, file_index, method_token, "push") { TEXT_METHOD_PUSH }
+    else if (receiver_kind == TYPE_KIND_ASCII || receiver_kind == TYPE_KIND_TEXT || receiver_kind == TYPE_KIND_BYTES) &&
+        token_is_word_at(source, tokens, files, file_index, method_token, "push") { TEXT_METHOD_PUSH }
+    else if receiver_kind == TYPE_KIND_ASCII && token_is_word_at(source, tokens, files, file_index, method_token, "to_byte") { TEXT_METHOD_TO_BYTE }
+    else if (receiver_kind == TYPE_KIND_ASCII || receiver_kind == TYPE_KIND_TEXT) &&
+        token_is_word_at(source, tokens, files, file_index, method_token, "to_bytes") { TEXT_METHOD_TO_BYTES }
+    else if (receiver_kind == TYPE_KIND_ASCII || receiver_kind == TYPE_KIND_TEXT) &&
+        token_is_word_at(source, tokens, files, file_index, method_token, "first") { TEXT_METHOD_FIRST }
+    else if (receiver_kind == TYPE_KIND_ASCII || receiver_kind == TYPE_KIND_TEXT) &&
+        token_is_word_at(source, tokens, files, file_index, method_token, "last") { TEXT_METHOD_LAST }
     else if (receiver_kind == TYPE_KIND_ASCII || receiver_kind == TYPE_KIND_TEXT || receiver_kind == TYPE_KIND_BYTES) &&
         token_is_word_at(source, tokens, files, file_index, method_token, "len") { TEXT_METHOD_LEN }
     else if receiver_kind == TYPE_KIND_BYTES && token_is_word_at(source, tokens, files, file_index, method_token, "count") { TEXT_METHOD_LEN }
@@ -856,11 +870,15 @@ fn emit_text_method_call(
             ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
             ir_write_ascii(compiler, ir, " = add i64 %text.method.length."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
         }
+    } else if method == TEXT_METHOD_TO_BYTE {
+        emit_ascii_to_byte(files, tables, compiler, ir, node, file_index)
+    } else if method == TEXT_METHOD_FIRST || method == TEXT_METHOD_LAST {
+        emit_text_edge_char(tables, compiler, ir, node, method == TEXT_METHOD_LAST)
     } else if method == TEXT_METHOD_TRY_APPEND || method == TEXT_METHOD_PUSH {
-        emit_text_builder_method(tables, compiler, ir, node, method, is_test)
+        emit_text_builder_method(files, tables, compiler, ir, node, method, file_index, is_test)
     } else if method == TEXT_METHOD_SLICE {
         emit_text_slice(source, files, tokens, tables, compiler, ir, node, file_index, is_test)
-    } else if method == TEXT_METHOD_BYTES {
+    } else if method == TEXT_METHOD_BYTES || method == TEXT_METHOD_TO_BYTES {
         emit_text_bytes_view(tables, compiler, ir, node, is_test)
     } else if method == TEXT_METHOD_CONTAINS || method == TEXT_METHOD_STARTS_WITH {
         emit_ascii_search(tables, compiler, ir, node, method == TEXT_METHOD_STARTS_WITH)
@@ -870,11 +888,13 @@ fn emit_text_method_call(
 }
 
 fn emit_text_builder_method(
+    files: list<SourceFile, MAX_SOURCE_FILES>,
     tables: ParseTables,
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
     node: long,
     method: long,
+    file_index: long,
     is_test: bool,
 ) {
     let receiver = compiler.child_first[node]
@@ -899,15 +919,46 @@ fn emit_text_builder_method(
     ir_write_ascii(compiler, ir, ", align 1\n")
     if method == TEXT_METHOD_PUSH {
         let maximum = text_max_bytes(compiler, receiver_ty)
+        if receiver_kind != TYPE_KIND_BYTES {
+            // Ascii and Text take only a byte below 128 (an ASCII character); anything else fails
+            ir_write_ascii(compiler, ir, "  %ov.flag."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = icmp ugt i32 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", 127\n")
+            emit_runtime_failure(files, tables, compiler, ir, node, file_index, 10L)
+        }
+        if receiver_kind == TYPE_KIND_TEXT {
+            // a Text builder is full when it holds its maximum code points (an ASCII byte adds one)
+            ir_write_ascii(compiler, ir, "  %text.builder.push.points.addr."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, receiver_location, receiver_pointer)
+            ir_write_ascii(compiler, ir, ", i64 8\n  %text.builder.push.points.old."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = load i64, ptr %text.builder.push.points.addr."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", align 1\n")
+        }
         ir_write_ascii(compiler, ir, "  %text.builder.receiver.room."); ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, " = icmp ult i64 %text.builder.receiver.length."); ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, maximum)
+        if receiver_kind == TYPE_KIND_TEXT {
+            ir_write_ascii(compiler, ir, ".points = icmp ult i64 %text.builder.push.points.old."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, text_max_codepoints(compiler, receiver_ty))
+            ir_write_ascii(compiler, ir, "\n  %text.builder.receiver.room."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ".bytes = icmp ult i64 %text.builder.receiver.length."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, maximum)
+            ir_write_ascii(compiler, ir, "\n  %text.builder.receiver.room."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = and i1 %text.builder.receiver.room."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ".points, %text.builder.receiver.room."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ".bytes")
+        } else {
+            ir_write_ascii(compiler, ir, " = icmp ult i64 %text.builder.receiver.length."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, maximum)
+        }
         ir_write_ascii(compiler, ir, "\n  br i1 %text.builder.receiver.room."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", label %text.builder.push.success."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", label %text.builder.push.full."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         ir_write_ascii(compiler, ir, "text.builder.push.success."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
         ir_write_ascii(compiler, ir, "  %text.builder.push.offset."); ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, " = add i64 %text.builder.receiver.length."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 8\n")
+        ir_write_ascii(compiler, ir, " = add i64 %text.builder.receiver.length."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, text_data_offset(compiler, receiver_ty)); ir_write_ascii(compiler, ir, "\n")
+        if receiver_kind == TYPE_KIND_TEXT {
+            ir_write_ascii(compiler, ir, "  %text.builder.push.points.new."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = add i64 %text.builder.push.points.old."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", 1\n  store i64 %text.builder.push.points.new."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", ptr %text.builder.push.points.addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+        }
         ir_write_ascii(compiler, ir, "  %text.builder.push.data."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, receiver_location, receiver_pointer)
         ir_write_ascii(compiler, ir, ", i64 %text.builder.push.offset."); ir_write_number(compiler, ir, node)
@@ -1106,9 +1157,24 @@ fn emit_ascii_append_assignment(
     let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
     emit_text_source_length(compiler, ir, receiver_location, receiver_pointer, node, "builder.receiver")
     emit_text_source_length(compiler, ir, source_location, source_pointer, node, "builder.source")
+    if type_kind(compiler, compiler.facts[target].ty) == TYPE_KIND_TEXT {
+        // a Text builder also counts code points: the receiver's plus the appended text's
+        let appended_ty = compiler.facts[value].ty
+        emit_text_source_points(compiler, ir, appended_ty, source_location, source_pointer, node, "builder.source")
+        ir_write_ascii(compiler, ir, "  %text.builder.points.addr."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, receiver_location, receiver_pointer)
+        ir_write_ascii(compiler, ir, ", i64 8\n  %text.builder.points.old."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = load i64, ptr %text.builder.points.addr."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", align 1\n  %text.builder.points.new."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = add i64 %text.builder.points.old."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", %text.builder.source.points."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "\n  store i64 %text.builder.points.new."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", ptr %text.builder.points.addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+    }
     ir_write_ascii(compiler, ir, "  %text.builder.receiver.data."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, receiver_location, receiver_pointer)
-    ir_write_ascii(compiler, ir, ", i64 8\n  %text.builder.destination.data."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_data_offset(compiler, compiler.facts[target].ty))
+    ir_write_ascii(compiler, ir, "\n  %text.builder.destination.data."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %text.builder.receiver.data."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, ", i64 %text.builder.receiver.length."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, "\n  %text.builder.source.data."); ir_write_number(compiler, ir, node)
@@ -1976,4 +2042,240 @@ fn intern_text_type_syntax(
         }
         intern_text_type(compiler, kind, max_bytes, max_codepoints, file_index, node, name_id, syntax.token)
     }
+}
+
+// Ascii[i] is a one-character `Ascii max 1`. When its only consumer wants the byte (`a[i].to_byte()`, or a
+// comparison with a one-character literal) the check marks the node FACT_ASCII_BYTE and the emitter leaves the
+// byte in %v<node> with no descriptor.
+const FACT_ASCII_BYTE: long = 65536L
+
+fn is_ascii_char_index(tables: ParseTables, compiler: CompilerTables, node: long) -> bool {
+    if node < 0L || tables.nodes[node].kind != NodeKind.Index { return false }
+    let receiver = compiler.child_first[node]
+    receiver >= 0L && type_kind(compiler, compiler.facts[receiver].ty) == TYPE_KIND_ASCII
+}
+
+// the byte a one-character Ascii literal without escapes stands for, or -1
+fn ascii_char_literal_byte(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    file_index: long,
+    node: long,
+) -> long {
+    if node < 0L || node >= tables.nodes.count() || tables.nodes[node].kind != NodeKind.ByteString { return -1L }
+    let token = tables.nodes[node].token
+    if token < 0L || token >= tokens.count() || tokens[token].length != 3L { return -1L }
+    let value = source[files[file_index].base + tokens[token].start + 1L]
+    if value == 92 || value >= 128 { -1L } else { value.to_long() }
+}
+
+// %addr.<node> points at the indexed byte: load it and either leave it in %v<node> (byte-only) or build the
+// one-character descriptor in the node's destination.
+fn emit_ascii_char_value(
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+) {
+    ir_write_ascii(compiler, ir, "  %text.index.byte."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = load i8, ptr %addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+    if (compiler.facts[node].flags & FACT_ASCII_BYTE) != 0L {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = zext i8 %text.index.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i32\n")
+        return
+    }
+    let destination = aggregate_destination_location(compiler, 0L, node)
+    let pointer = emit_location_pointer_materialization(compiler, ir, destination)
+    ir_write_ascii(compiler, ir, "  store i64 1, ptr "); emit_location_pointer_reference(compiler, ir, destination, pointer); ir_write_ascii(compiler, ir, ", align 1\n")
+    ir_write_ascii(compiler, ir, "  %text.index.data."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, pointer); ir_write_ascii(compiler, ir, ", i64 8\n")
+    ir_write_ascii(compiler, ir, "  store i8 %text.index.byte."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", ptr %text.index.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+}
+
+// `a[i] == "x"`, `"0" <= a[i]`, `a[i] < b[j]`: when both sides are Ascii[i] or a one-character literal the
+// comparison is a plain byte comparison. Marks the operands and returns true.
+fn mark_ascii_byte_compare(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    file_index: long,
+    left: long,
+    right: long,
+) -> bool {
+    let left_index = is_ascii_char_index(tables, compiler, left)
+    let right_index = is_ascii_char_index(tables, compiler, right)
+    if !left_index && !right_index { return false }
+    let left_literal = if left_index { -1L } else { ascii_char_literal_byte(source, tokens, files, tables, file_index, left) }
+    let right_literal = if right_index { -1L } else { ascii_char_literal_byte(source, tokens, files, tables, file_index, right) }
+    if !left_index && left_literal < 0L { return false }
+    if !right_index && right_literal < 0L { return false }
+    if left_index { compiler.facts[left].flags = compiler.facts[left].flags | FACT_ASCII_BYTE }
+    else { compiler.facts[left].flags = compiler.facts[left].flags | FACT_ASCII_BYTE | FACT_CONSTANT_VALUE; compiler.facts[left].literal = left_literal }
+    if right_index { compiler.facts[right].flags = compiler.facts[right].flags | FACT_ASCII_BYTE }
+    else { compiler.facts[right].flags = compiler.facts[right].flags | FACT_ASCII_BYTE | FACT_CONSTANT_VALUE; compiler.facts[right].literal = right_literal }
+    true
+}
+
+// text.to_byte(): the byte of a one-character value. A text[i] receiver marked FACT_ASCII_BYTE already left it in
+// %v<receiver>; any other value is checked for length 1 first.
+fn emit_ascii_to_byte(
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    file_index: long,
+) {
+    let receiver = compiler.child_first[node]
+    if (compiler.facts[receiver].flags & FACT_ASCII_BYTE) != 0L {
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = add i32 %v"); ir_write_number(compiler, ir, receiver); ir_write_ascii(compiler, ir, ", 0\n")
+        return
+    }
+    let source = text_method_receiver_location(tables, compiler, ir, node)
+    let pointer = emit_location_pointer_materialization(compiler, ir, source)
+    emit_text_source_length(compiler, ir, source, pointer, node, "tobyte")
+    ir_write_ascii(compiler, ir, "  %ov.flag."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = icmp ne i64 %text.tobyte.length."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n")
+    emit_runtime_failure(files, tables, compiler, ir, node, file_index, 10L)
+    ir_write_ascii(compiler, ir, "  %text.tobyte.data."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, source, pointer)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_location_data_offset(compiler, compiler.facts[receiver].ty, source))
+    ir_write_ascii(compiler, ir, "\n  %text.tobyte.byte."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = load i8, ptr %text.tobyte.data."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", align 1\n  %v"); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = zext i8 %text.tobyte.byte."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to i32\n")
+}
+
+// text.first() / text.last(): Option of the first or last character (a code point for Text, found by stepping
+// back over at most 3 continuation bytes), none when empty.
+fn emit_text_edge_char(
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    is_last: bool,
+) {
+    let receiver = compiler.child_first[node]
+    let receiver_ty = compiler.facts[receiver].ty
+    let is_text = type_kind(compiler, receiver_ty) == TYPE_KIND_TEXT
+    let result_ty = compiler.facts[node].ty
+    let source = text_method_receiver_location(tables, compiler, ir, node)
+    let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
+    let destination = aggregate_destination_location(compiler, 0L, node)
+    let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
+    let payload = sum_payload_record(compiler, result_ty, 0L, 0L).offset
+    emit_text_source_length(compiler, ir, source, source_pointer, node, "edge")
+    ir_write_ascii(compiler, ir, "  %text.edge.tag.addr."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
+    ir_write_ascii(compiler, ir, ", i64 0\n  %text.edge.empty."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = icmp eq i64 %text.edge.length."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", 0\n  br i1 %text.edge.empty."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", label %text.edge.none."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", label %text.edge.some."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, "\ntext.edge.none."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ":\n  store i32 1, ptr %text.edge.tag.addr."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", align 1\n  br label %text.edge.done."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, "\ntext.edge.some."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ":\n  store i32 0, ptr %text.edge.tag.addr."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", align 1\n  %text.edge.data."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, source, source_pointer)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_location_data_offset(compiler, receiver_ty, source))
+    ir_write_ascii(compiler, ir, "\n  %text.edge.value."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, destination, destination_pointer)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, payload)
+    ir_write_ascii(compiler, ir, "\n  %text.edge.out."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %text.edge.value."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, if is_text { 16L } else { 8L }); ir_write_ascii(compiler, ir, "\n")
+    if !is_text {
+        // Ascii: one byte, at index 0 or length - 1
+        if is_last {
+            ir_write_ascii(compiler, ir, "  %text.edge.index."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = sub i64 %text.edge.length."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n")
+        }
+        ir_write_ascii(compiler, ir, "  %text.edge.byte.addr."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %text.edge.data."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 ")
+        if is_last { ir_write_ascii(compiler, ir, "%text.edge.index."); ir_write_number(compiler, ir, node) } else { ir_write_ascii(compiler, ir, "0") }
+        ir_write_ascii(compiler, ir, "\n  %text.edge.byte."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = load i8, ptr %text.edge.byte.addr."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", align 1\n  store i8 %text.edge.byte."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", ptr %text.edge.out."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", align 1\n  store i64 1, ptr %text.edge.value."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+    } else {
+        // Text: find the first byte of the character (first: 0; last: step back over continuation bytes),
+        // then its length from the lead byte (first) or the distance to the end (last)
+        if is_last {
+            ir_write_ascii(compiler, ir, "  %text.edge.last."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = sub i64 %text.edge.length."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", 1\n  br label %text.edge.back."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, "\ntext.edge.back."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ":\n  %text.edge.start."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = phi i64 [ %text.edge.last."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", %text.edge.some."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " ], [ %text.edge.prior."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", %text.edge.back."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " ]\n  %text.edge.lead.addr."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %text.edge.data."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", i64 %text.edge.start."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, "\n  %text.edge.lead."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = load i8, ptr %text.edge.lead.addr."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", align 1\n  %text.edge.bits."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = and i8 %text.edge.lead."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", -64\n  %text.edge.continuation."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = icmp eq i8 %text.edge.bits."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", -128\n  %text.edge.prior."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = sub i64 %text.edge.start."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", 1\n  br i1 %text.edge.continuation."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", label %text.edge.back."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", label %text.edge.found."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, "\ntext.edge.found."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ":\n  %text.edge.size."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = sub i64 %text.edge.length."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", %text.edge.start."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\n")
+        } else {
+            ir_write_ascii(compiler, ir, "  %text.edge.start."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = add i64 0, 0\n  %text.edge.lead."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = load i8, ptr %text.edge.data."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", align 1\n  %text.edge.two."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = icmp uge i8 %text.edge.lead."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", -64\n  %text.edge.three."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = icmp uge i8 %text.edge.lead."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", -32\n  %text.edge.four."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = icmp uge i8 %text.edge.lead."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", -16\n  %text.edge.plus2."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = zext i1 %text.edge.two."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " to i64\n  %text.edge.plus3."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = zext i1 %text.edge.three."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " to i64\n  %text.edge.plus4."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = zext i1 %text.edge.four."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " to i64\n  %text.edge.size0."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = add i64 %text.edge.plus2."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", %text.edge.plus3."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, "\n  %text.edge.size1."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = add i64 %text.edge.size0."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, ", %text.edge.plus4."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, "\n  %text.edge.size."); ir_write_number(compiler, ir, node)
+            ir_write_ascii(compiler, ir, " = add i64 %text.edge.size1."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n")
+        }
+        ir_write_ascii(compiler, ir, "  %text.edge.from."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %text.edge.data."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 %text.edge.start."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "\n  %text.edge.copy."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call ptr @memmove(ptr %text.edge.out."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", ptr %text.edge.from."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 %text.edge.size."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ")\n  store i64 %text.edge.size."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", ptr %text.edge.value."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", align 1\n  %text.edge.points.addr."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %text.edge.value."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ", i64 8\n  store i64 1, ptr %text.edge.points.addr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+    }
+    ir_write_ascii(compiler, ir, "  br label %text.edge.done."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, "\ntext.edge.done."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
 }

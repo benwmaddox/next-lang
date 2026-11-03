@@ -67,7 +67,7 @@ fn cookie_value(cookie: Bytes max 512, name: Ascii max 32) -> Bytes max 64 {
         while first < end && cookie[first] == 32 { first += 1L }
         var matches = end - first > name.len() && cookie[first + name.len()] == 61
         for index in 0L..name.len() {
-            if matches && cookie[first + index] != name[index] { matches = false }
+            if matches && cookie[first + index] != name[index].to_byte() { matches = false }
         }
         if matches {
             for index in first + name.len() + 1L..end { discard found.push(cookie[index]) }
@@ -95,7 +95,7 @@ fn form_value(body: Bytes max 1024, name: Ascii max 32) -> Bytes max 128 {
         while end < body.count() && body[end] != 38 { end += 1L }
         var matches = end - start > name.len() && body[start + name.len()] == 61
         for index in 0L..name.len() {
-            if matches && body[start + index] != name[index] { matches = false }
+            if matches && body[start + index] != name[index].to_byte() { matches = false }
         }
         if matches {
             var at = start + name.len() + 1L
@@ -121,7 +121,7 @@ fn form_value(body: Bytes max 1024, name: Ascii max 32) -> Bytes max 128 {
 fn target_is(target: Bytes max 256, text: Ascii max 32) -> bool {
     if target.count() != text.len() { return false }
     for index in 0L..text.len() {
-        if target[index] != text[index] { return false }
+        if target[index] != text[index].to_byte() { return false }
     }
     true
 }
