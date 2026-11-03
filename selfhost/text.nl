@@ -2047,7 +2047,7 @@ fn intern_text_type_syntax(
 // Ascii[i] is a one-character `Ascii max 1`. When its only consumer wants the byte (`a[i].to_byte()`, or a
 // comparison with a one-character literal) the check marks the node FACT_ASCII_BYTE and the emitter leaves the
 // byte in %v<node> with no descriptor.
-const FACT_ASCII_BYTE: long = 65536L
+const FACT_ASCII_BYTE: long = 16384L
 
 fn is_ascii_char_index(tables: ParseTables, compiler: CompilerTables, node: long) -> bool {
     if node < 0L || tables.nodes[node].kind != NodeKind.Index { return false }
