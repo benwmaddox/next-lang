@@ -1306,7 +1306,9 @@ fn emit_collection_index_address(
     let base_offset = if is_text_bytes { text_data_offset(compiler, collection_ty) } else { collection_element_base_offset(compiler, collection_ty) }
     if capacity < 0L || stride < 0L || base_offset < 0L { compiler.ir_overflow = true; return }
     var location = collection_value_location(tables, compiler, receiver)
-    if tables.nodes[receiver].kind == NodeKind.Field || tables.nodes[receiver].kind == NodeKind.Index {
+    // A for-each variable over a collection of arrays or lists is a view into the collection, not a local of its own.
+    let receiver_is_view = tables.nodes[receiver].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[receiver].binding)
+    if tables.nodes[receiver].kind == NodeKind.Field || tables.nodes[receiver].kind == NodeKind.Index || receiver_is_view {
         let address_id = emit_late_place_address(tables, compiler, ir, receiver)
         location = compiler_location(compiler, 2L, address_id, 0L)
     }
