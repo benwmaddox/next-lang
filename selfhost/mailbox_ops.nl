@@ -20,6 +20,25 @@ fn emit_mailbox_handle_pointer(
     ir_write_ascii(compiler, ir, " = inttoptr i64 %mb.handle."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to ptr\n")
 }
 
+// A send of a scalar message passes the message by address, so each send site needs a slot to hold it. It is made once at the
+// function's entry (the same place as the other temporaries), not where the send runs: a send retried in a loop would otherwise
+// take more native stack with every try.
+fn emit_mailbox_send_slot(
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+) {
+    if tables.nodes[node].kind != NodeKind.MethodCall || (compiler.facts[node].flags & FACT_DOUBLE_METHOD) != 0L { return }
+    if compiler.facts[node].literal != MAILBOX_METHOD_SEND { return }
+    let receiver = compiler.child_first[node]
+    if receiver < 0L { return }
+    let record = mailbox_record_of_type(compiler, compiler.facts[receiver].ty)
+    if is_aggregate_type(compiler, record.element) { return }
+    ir_write_ascii(compiler, ir, "  %mb.message."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(record.element)); ir_write_ascii(compiler, ir, ", align 8\n")
+}
+
 // sender(), receiver(), close(), send(x), recv(), recv_wait().
 fn emit_mailbox_method(
     tables: ParseTables,
@@ -67,10 +86,7 @@ fn emit_mailbox_method(
             ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, source_location, source_pointer)
             ir_write_ascii(compiler, ir, ", i64 0\n")
         } else {
-            // the slot is made where the send happens, so the stack is given back after the call: a send retried in a loop must not grow it
-            ir_write_ascii(compiler, ir, "  %mb.stack."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @llvm.stacksave()\n")
-            ir_write_ascii(compiler, ir, "  %mb.message."); ir_write_number(compiler, ir, node)
-            ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(record.element)); ir_write_ascii(compiler, ir, ", align 8\n")
+            // the slot was made at the function's entry (emit_mailbox_send_slot), once however often the send runs
             ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(record.element)); ir_push_byte(compiler, ir, 32)
             ir_write_value_ref(compiler, ir, message)
             ir_write_ascii(compiler, ir, ", ptr %mb.message."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
@@ -79,9 +95,6 @@ fn emit_mailbox_method(
         ir_write_ascii(compiler, ir, " = call i1 @nl.mbox.send(ptr %mb.ring."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", ptr %mb.message."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ")\n")
-        if !is_aggregate_type(compiler, record.element) {
-            ir_write_ascii(compiler, ir, "  call void @llvm.stackrestore(ptr %mb.stack."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ")\n")
-        }
         ir_write_ascii(compiler, ir, "  br i1 %mb.sent."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", label %mb.send.ok."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", label %mb.send.full."); ir_write_number(compiler, ir, node)
