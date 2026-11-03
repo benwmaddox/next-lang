@@ -263,6 +263,7 @@ fn llvm_type_name(ty: long) -> Ascii max 8 {
     else if ty == TY_BOOL { "i1" }
     else if ty == TY_BYTE { "i32" }
     else if ty == TY_DOUBLE { "double" }
+    else if ty == TY_FLOAT { "float" }
     else if ty == TY_UNIT { "void" }
     else if ty == TY_NEVER { "void" }
     else if ty == TY_ADDR || (ty >= TY_ENV && ty <= TY_ARG) || ty == TY_HOST { "ptr" }

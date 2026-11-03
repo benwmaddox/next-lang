@@ -2829,7 +2829,7 @@ recursive fn parse_parenthesized(
 fn is_cast_start(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
     let first = cursor_peek(tables, tokens, 0L)
     let second = cursor_peek(tables, tokens, 1L)
-    let simple = token_is_word(source, tokens, first.token, tables.state.file_base, "int") || token_is_word(source, tokens, first.token, tables.state.file_base, "long") || token_is_word(source, tokens, first.token, tables.state.file_base, "bool") || token_is_word(source, tokens, first.token, tables.state.file_base, "byte") || token_is_word(source, tokens, first.token, tables.state.file_base, "double")
+    let simple = token_is_word(source, tokens, first.token, tables.state.file_base, "int") || token_is_word(source, tokens, first.token, tables.state.file_base, "long") || token_is_word(source, tokens, first.token, tables.state.file_base, "bool") || token_is_word(source, tokens, first.token, tables.state.file_base, "byte") || token_is_word(source, tokens, first.token, tables.state.file_base, "double") || token_is_word(source, tokens, first.token, tables.state.file_base, "float")
     let ascii_max = token_is_word(source, tokens, first.token, tables.state.file_base, "Ascii") && token_is_word(source, tokens, second.token, tables.state.file_base, "max")
     let uppercase = first.kind == TokenKind.Ident && is_upper_ascii(source[tables.state.file_base + first.start])
     (simple && second.kind == TokenKind.RParen) || (uppercase && (second.kind == TokenKind.RParen || ascii_max))

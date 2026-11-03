@@ -628,7 +628,7 @@ fn check_one_body(
                 let target_ty = if target_text_kind == TYPE_KIND_ASCII {
                     intern_text_type_syntax(env, source, tokens, files, tables, compiler, file_index, type_node)
                 } else { parse_scalar_type(env, source, tokens, files, tables, compiler, file_index, type_node) }
-                if !is_numeric_type(target_ty) && target_ty != TY_BYTE && target_ty != TY_DOUBLE && type_kind(compiler, target_ty) != TYPE_KIND_ASCII {
+                if !is_numeric_type(target_ty) && target_ty != TY_BYTE && !is_float_type(target_ty) && type_kind(compiler, target_ty) != TYPE_KIND_ASCII {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "casts in this subset require int, long, byte, or a bounded Ascii type")
                 }
                 frame.child0 = value_node
@@ -824,8 +824,9 @@ fn check_one_body(
                 if !compiler.c_runtime {
                     report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node, offset: syntax.start, category: UNSUPPORTED_FLOAT, token: syntax.token })
                 }
-                if frame.expected >= 0L && frame.expected != TY_DOUBLE { require_type(env, files, compiler, file_index, node, frame.expected, TY_DOUBLE, tables) }
-                compiler.facts[node] = NodeFact { ty: TY_DOUBLE, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+                let literal_ty = if frame.expected == TY_FLOAT { TY_FLOAT } else { TY_DOUBLE }
+                if frame.expected >= 0L && frame.expected != literal_ty { require_type(env, files, compiler, file_index, node, frame.expected, literal_ty, tables) }
+                compiler.facts[node] = NodeFact { ty: literal_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
             } else if kind == NodeKind.Integer {
                 let ty = if (syntax.flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else if is_numeric_type(frame.expected) || frame.expected == TY_BYTE { frame.expected } else { TY_INT }
                 if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
@@ -1287,8 +1288,8 @@ fn check_one_body(
                 }
             } else if is_ascii_append_assignment(op, target_fact.ty, compiler) { () }
             else {
-                if target_fact.ty == TY_DOUBLE && op > 4L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "double supports += -= *= /= only") }
-                if !is_numeric_type(target_fact.ty) && target_fact.ty != TY_DOUBLE { fail_at_message(env, files, compiler, file_index, syntax.anchor, "compound assignment requires int, long or double") }
+                if is_float_type(target_fact.ty) && op > 4L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "float and double support += -= *= /= only") }
+                if !is_numeric_type(target_fact.ty) && !is_float_type(target_fact.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "compound assignment requires int, long or double") }
                 require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables)
             }
             if collection_kind_is_list(type_kind(compiler, target_fact.ty)) && binding < compiler.bindings.count() {
@@ -1322,7 +1323,7 @@ fn check_one_body(
             }
             for parameter_index in 0L..target.param_count {
                 let parameter = compiler.parameters[target.param_start + parameter_index]
-                let numeric = parameter.ty == TY_INT || parameter.ty == TY_LONG || parameter.ty == TY_BOOL || parameter.ty == TY_BYTE || parameter.ty == TY_DOUBLE
+                let numeric = parameter.ty == TY_INT || parameter.ty == TY_LONG || parameter.ty == TY_BOOL || parameter.ty == TY_BYTE || is_float_type(parameter.ty)
                 let handle = mailbox_role_of_type(compiler, parameter.ty) != 0L || parameter.ty == TY_ENV ||
                     (type_kind(compiler, parameter.ty) == TYPE_KIND_STRUCT && job_copyable_type(compiler, parameter.ty))
                 if (!numeric && !handle) || (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
@@ -1965,7 +1966,7 @@ fn check_one_body(
                 if type_kind(compiler, source_ty) != TYPE_KIND_ASCII {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "Ascii casts require an Ascii input")
                 } else { () }
-            } else if (!is_numeric_type(source_ty) && source_ty != TY_BYTE && source_ty != TY_DOUBLE) || (!is_numeric_type(target_ty) && target_ty != TY_BYTE && target_ty != TY_DOUBLE) {
+            } else if (!is_numeric_type(source_ty) && source_ty != TY_BYTE && !is_float_type(source_ty)) || (!is_numeric_type(target_ty) && target_ty != TY_BYTE && !is_float_type(target_ty)) {
                 fail_at_message(env, files, compiler, file_index, syntax.start, "casts in this subset require int, long, or byte")
             } else { () }
             if frame.expected >= 0L && frame.expected != target_ty {
@@ -1993,7 +1994,7 @@ fn check_one_body(
                 require_type(env, files, compiler, file_index, child, TY_BOOL, value.ty, tables)
                 compiler.facts[node] = NodeFact { ty: TY_BOOL, flags: value.flags, binding: -1L, function: -1L, literal: 0L }
             } else {
-                if !is_numeric_type(value.ty) && !(value.ty == TY_DOUBLE && syntax.flags != 2L) {
+                if !is_numeric_type(value.ty) && !(is_float_type(value.ty) && syntax.flags != 2L) {
                     if syntax.flags == 2L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "unary '~' requires int or long") }
                     else { fail_at_message(env, files, compiler, file_index, syntax.anchor, "unary '-' requires int or long") }
                 }
@@ -2099,7 +2100,7 @@ fn check_one_body(
                 if (op == 8L || op == 9L) && (left.ty == TY_UNIT || left.ty == TY_NEVER) {
                     fail_at_message(env, files, compiler, file_index, syntax.anchor, "equality requires values other than ()")
                 }
-                if op >= 10L && !is_numeric_type(left.ty) && left.ty != TY_BYTE && left.ty != TY_DOUBLE && !text_pair { fail_at_message(env, files, compiler, file_index, syntax.anchor, "ordered comparisons require int, long, or byte values") }
+                if op >= 10L && !is_numeric_type(left.ty) && left.ty != TY_BYTE && !is_float_type(left.ty) && !text_pair { fail_at_message(env, files, compiler, file_index, syntax.anchor, "ordered comparisons require int, long, or byte values") }
                 ty = TY_BOOL
             } else if op >= 16L && op <= 20L {
                 if !is_numeric_type(left.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "bitwise operators require int or long values") }
@@ -2107,9 +2108,9 @@ fn check_one_body(
                 require_type(env, files, compiler, file_index, frame.child1, left.ty, right.ty, tables)
                 ty = left.ty
             } else {
-                if left.ty == TY_DOUBLE && op > 3L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "double supports + - * / and comparisons only") }
-                if !is_numeric_type(left.ty) && left.ty != TY_DOUBLE { fail_at_message(env, files, compiler, file_index, syntax.anchor, "arithmetic operators require int or long values") }
-                if (is_numeric_type(right.ty) || right.ty == TY_DOUBLE) && left.ty != right.ty { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, left.ty, right.ty) }
+                if is_float_type(left.ty) && op > 3L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "float and double support + - * / and comparisons only") }
+                if !is_numeric_type(left.ty) && !is_float_type(left.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "arithmetic operators require int or long values") }
+                if (is_numeric_type(right.ty) || is_float_type(right.ty)) && left.ty != right.ty { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, left.ty, right.ty) }
                 require_type(env, files, compiler, file_index, frame.child1, left.ty, right.ty, tables)
                 ty = left.ty
             }

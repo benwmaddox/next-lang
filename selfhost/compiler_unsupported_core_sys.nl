@@ -280,6 +280,7 @@ fn unsupported_category_for_node(
                 token_is_word_at(source, tokens, files, file_index, value.token, "long") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "byte") ||
                 (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "double")) ||
+                (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "float")) ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "Ascii") { 0L }
             else if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L &&
                 (compiler.facts[node].ty == TY_INT || compiler.facts[node].ty == TY_LONG || compiler.facts[node].ty == TY_BYTE) { 0L }
