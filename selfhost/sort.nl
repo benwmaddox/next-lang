@@ -51,7 +51,17 @@ fn is_sort_comparator_name(
 }
 
 fn sort_element_is_number(type_id: long) -> bool {
-    type_id == TY_INT || type_id == TY_LONG || type_id == TY_BYTE
+    type_id == TY_INT || type_id == TY_LONG || type_id == TY_BYTE || type_id == TY_FLOAT || type_id == TY_DOUBLE
+}
+
+// How a number element sits in memory (a byte is one byte; as a value it is an i32).
+fn sort_element_memory_type(type_id: long) -> Ascii max 8 {
+    if type_id == TY_BYTE { "i8" } else { llvm_type_name(type_id) }
+}
+
+// A context that is a record, array, list, map or text is passed by address (read-only); numbers and bools by value.
+fn sort_context_by_address(compiler: CompilerTables, type_id: long) -> bool {
+    type_id != TY_INT && type_id != TY_LONG && type_id != TY_BOOL
 }
 
 fn check_sort_builtin(
@@ -86,14 +96,20 @@ fn check_sort_builtin(
     let element = collection_element_type(compiler, collection_ty)
     var comparator = -1L
     if sort_kind == SORT_PLAIN {
-        if !sort_element_is_number(element) {
-            fail_at_message(env, files, compiler, file_index, tables.nodes[collection].start, "sort needs a list or array of int, long or byte; use sort_by for other elements")
+        if !sort_element_is_number(element) && !collection_text_leaf(type_kind(compiler, element)) {
+            fail_at_message(env, files, compiler, file_index, tables.nodes[collection].start, "sort needs a list or array of numbers or text; use sort_by for other elements")
         }
     } else {
         let context = child_at(tables, compiler, node, 1L)
         let context_ty = compiler.facts[context].ty
         if context_ty != TY_INT && context_ty != TY_LONG && context_ty != TY_BOOL {
-            fail_at_message(env, files, compiler, file_index, tables.nodes[context].start, "sort_by context must be an int, long or bool")
+            // A record, array, list, map or text context is read in place: it must be a place, and not the sorted list or part of it.
+            if !is_aggregate_type(compiler, context_ty) || !is_assignable_place(tables, context) || place_root_binding(tables, compiler, context) < 0L {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[context].start, "sort_by context must be an int, long, bool, or a variable or field holding a record, array, list, map or text")
+            }
+            if map_loop_place_conflict(tables, compiler, collection, context) || map_loop_place_conflict(tables, compiler, context, collection) {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[context].start, "sort_by context overlaps the list being sorted; pass a part of the record that does not contain it")
+            }
         }
         if !sort_element_is_number(element) && !is_aggregate_type(compiler, element) {
             fail_at_message(env, files, compiler, file_index, tables.nodes[collection].start, "sort_by needs a list or array of numbers or records")
@@ -136,9 +152,21 @@ fn emit_sort_function(
     let element_llvm = if sort_element_is_number(element) { llvm_type_name(element) } else { "ptr" }
     if stride <= 0L || base_offset < 0L { compiler.ir_overflow = true; return }
 
+    if comparator < 0L && !sort_element_is_number(element) {
+        // text order: bytes, then the shorter first
+        ir_write_ascii(compiler, ir, "define internal i1 @nl.sort.text."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, "(ptr %a, ptr %b) {\nentry:\n  %la = load i64, ptr %a\n  %lb = load i64, ptr %b\n  %da = getelementptr i8, ptr %a, i64 "); ir_write_number(compiler, ir, text_data_offset(compiler, element))
+        ir_write_ascii(compiler, ir, "\n  %db = getelementptr i8, ptr %b, i64 "); ir_write_number(compiler, ir, text_data_offset(compiler, element))
+        ir_write_ascii(compiler, ir, "\n  %shorter = icmp ult i64 %la, %lb\n  %min = select i1 %shorter, i64 %la, i64 %lb\n  %c = call i32 @memcmp(ptr %da, ptr %db, i64 %min)\n")
+        ir_write_ascii(compiler, ir, "  %neg = icmp slt i32 %c, 0\n  %zero = icmp eq i32 %c, 0\n  %tie = and i1 %zero, %shorter\n  %r = or i1 %neg, %tie\n  ret i1 %r\n}\n\n")
+    }
     ir_write_ascii(compiler, ir, "define void @nl.sort."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %nl.top, ptr %list")
-    if comparator >= 0L { ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, llvm_type_name(context_ty)); ir_write_ascii(compiler, ir, " %c") }
+    if comparator >= 0L {
+        ir_write_ascii(compiler, ir, ", ")
+        if sort_context_by_address(compiler, context_ty) { ir_write_ascii(compiler, ir, "ptr") } else { ir_write_ascii(compiler, ir, llvm_type_name(context_ty)) }
+        ir_write_ascii(compiler, ir, " %c")
+    }
     ir_write_ascii(compiler, ir, ") {\nentry:\n")
     if is_list {
         ir_write_ascii(compiler, ir, "  %n = load i64, ptr %list\n")
@@ -158,21 +186,35 @@ fn emit_sort_function(
     ir_write_ascii(compiler, ir, "  %ja = mul i64 %j, "); ir_write_number(compiler, ir, stride)
     ir_write_ascii(compiler, ir, "\n  %pa = getelementptr i8, ptr %data, i64 %ja\n  %ib = mul i64 %i, "); ir_write_number(compiler, ir, stride)
     ir_write_ascii(compiler, ir, "\n  %pb = getelementptr i8, ptr %data, i64 %ib\n")
-    if comparator < 0L {
-        ir_write_ascii(compiler, ir, "  %va = load "); ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, ", ptr %pa\n  %vb = load ")
-        ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, ", ptr %pb\n  %less = icmp slt "); ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, " %va, %vb\n")
+    if comparator < 0L && !sort_element_is_number(element) {
+        ir_write_ascii(compiler, ir, "  %less = call i1 @nl.sort.text."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "(ptr %pa, ptr %pb)\n")
     } else {
         var left_argument: Ascii max 48 = "ptr %pa, i64 0"
         var right_argument: Ascii max 48 = "ptr %pb, i64 0"
         if sort_element_is_number(element) {
-            ir_write_ascii(compiler, ir, "  %va = load "); ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, ", ptr %pa\n  %vb = load "); ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, ", ptr %pb\n")
+            // pa is the element from the right run: it goes first only when it is strictly less than pb
+            if element == TY_BYTE {
+                ir_write_ascii(compiler, ir, "  %va.raw = load i8, ptr %pa\n  %vb.raw = load i8, ptr %pb\n  %va = zext i8 %va.raw to i32\n  %vb = zext i8 %vb.raw to i32\n")
+            } else {
+                ir_write_ascii(compiler, ir, "  %va = load "); ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, ", ptr %pa\n  %vb = load "); ir_write_ascii(compiler, ir, element_llvm); ir_write_ascii(compiler, ir, ", ptr %pb\n")
+            }
             left_argument = "i32 %va"
             right_argument = "i32 %vb"
             if element == TY_LONG { left_argument = "i64 %va"; right_argument = "i64 %vb" }
+            if element == TY_DOUBLE { left_argument = "double %va"; right_argument = "double %vb" }
+            if element == TY_FLOAT { left_argument = "float %va"; right_argument = "float %vb" }
         }
-        ir_write_ascii(compiler, ir, "  %less = call i1 @nl_fn_"); ir_write_number(compiler, ir, comparator); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %tmp.top, ")
-        ir_write_ascii(compiler, ir, llvm_type_name(context_ty)); ir_write_ascii(compiler, ir, " %c, "); ir_write_ascii(compiler, ir, left_argument); ir_write_ascii(compiler, ir, ", ")
-        ir_write_ascii(compiler, ir, right_argument); ir_write_ascii(compiler, ir, ")\n")
+        if comparator < 0L {
+            let compare = if element == TY_DOUBLE || element == TY_FLOAT { "fcmp olt" } else if element == TY_BYTE { "icmp ult" } else { "icmp slt" }
+            let compare_type = if element == TY_BYTE { "i32" } else { element_llvm }
+            ir_write_ascii(compiler, ir, "  %less = "); ir_write_ascii(compiler, ir, compare); ir_push_byte(compiler, ir, 32); ir_write_ascii(compiler, ir, compare_type); ir_write_ascii(compiler, ir, " %va, %vb\n")
+        } else {
+            ir_write_ascii(compiler, ir, "  %less = call i1 @nl_fn_"); ir_write_number(compiler, ir, comparator); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 %tmp.top, ")
+            if sort_context_by_address(compiler, context_ty) { ir_write_ascii(compiler, ir, "ptr %c, i64 0") }
+            else { ir_write_ascii(compiler, ir, llvm_type_name(context_ty)); ir_write_ascii(compiler, ir, " %c") }
+            ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, left_argument); ir_write_ascii(compiler, ir, ", ")
+            ir_write_ascii(compiler, ir, right_argument); ir_write_ascii(compiler, ir, ")\n")
+        }
     }
     ir_write_ascii(compiler, ir, "  br i1 %less, label %take.right, label %take.left\n")
     ir_write_ascii(compiler, ir, "take.left:\n  %src.l = mul i64 %i, "); ir_write_number(compiler, ir, stride)
@@ -214,13 +256,28 @@ fn emit_sort_call(
         location = compiler_location(compiler, 2L, address_id, 0L)
     }
     let pointer_serial = emit_location_pointer_materialization(compiler, ir, location)
-    emit_current_top_load(compiler, ir, node)
     let comparator = compiler.facts[node].literal
+    let context = if comparator >= 0L { compiler.child_next[collection] } else { -1L }
+    // a record, array, list, map or text context is passed by address; materialize it before the call line starts
+    let context_by_address = context >= 0L && sort_context_by_address(compiler, compiler.facts[context].ty)
+    var context_location = location
+    var context_serial = 0L
+    if context_by_address {
+        context_location = collection_value_location(tables, compiler, context)
+        if tables.nodes[context].kind == NodeKind.Field {
+            let context_address = emit_late_place_address(tables, compiler, ir, context)
+            context_location = compiler_location(compiler, 2L, context_address, 0L)
+        }
+        context_serial = emit_location_pointer_materialization(compiler, ir, context_location)
+    }
+    emit_current_top_load(compiler, ir, node)
     ir_write_ascii(compiler, ir, "  call void @nl.sort."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "(ptr %nl.ctx, i64 ")
     emit_current_top_reference(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr ")
     emit_location_pointer_reference(compiler, ir, location, pointer_serial)
-    if comparator >= 0L {
-        let context = compiler.child_next[collection]
+    if context_by_address {
+        ir_write_ascii(compiler, ir, ", ptr ")
+        emit_location_pointer_reference(compiler, ir, context_location, context_serial)
+    } else if context >= 0L {
         ir_write_ascii(compiler, ir, ", "); ir_write_ascii(compiler, ir, llvm_type_name(compiler.facts[context].ty)); ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, context)
     }
     ir_write_ascii(compiler, ir, ")\n")

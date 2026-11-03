@@ -1,0 +1,3 @@
+main.nl:9:24: error: sort_by context overlaps the list being sorted; pass a part of the record that does not contain it
+    9 |     sort_by(bag.items, bag, before)
+      |                        ^

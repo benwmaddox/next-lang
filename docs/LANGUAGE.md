@@ -53,6 +53,8 @@ globals: state is a local in `main` and is passed down.
 `$"{u.name}: {u.hp} hp"` builds text in place; its maximum length is computed at build time and must fit the destination.
 `Ascii` is for ASCII only; use `Bytes` for arbitrary bytes. `x.count()` is the length of a list or bytes, `x.len()` of text.
 
+`sort(xs)` orders a writable list or array of numbers (bytes unsigned, floats by value) or text (bytes, then shorter first) in place; `sort_by(xs, ctx, before)` orders any list or array with the named function `before(ctx, a, b) -> bool` ("a goes before b", read-only parameters). `ctx` is an int, long or bool, or a variable or field holding a record, array, list, map or text (including a record that holds pools), passed by address and never copied; it may not be, or contain, the list being sorted. Both are stable merge sorts: O(n log n), with scratch space on the data stack the size of the list.
+
 ## Tests
 
 ```
