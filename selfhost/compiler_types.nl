@@ -1198,6 +1198,16 @@ fn size_package_types(
                         continue
                     }
                     let child_kind = type_kind(compiler, ty)
+                    if child_kind == TYPE_KIND_MAP && type_state(compiler, ty) == 0L {
+                        let blocking = map_blocking_child(compiler, ty)
+                        if blocking >= 0L {
+                            set_type_state(compiler, blocking, 1L)
+                            compiler.type_walk.push(initial_type_walk_frame(compiler, blocking)).unwrap()
+                            continue
+                        }
+                        layout_map_type(compiler, ty)
+                        if type_state(compiler, ty) != 0L { continue }
+                    }
                     if (child_kind == TYPE_KIND_STRUCT || is_sum_type(compiler, ty) || child_kind == TYPE_KIND_ARRAY || collection_kind_is_list(child_kind)) && type_state(compiler, ty) == 0L {
                         set_type_state(compiler, ty, 1L)
                         compiler.type_walk.push(initial_type_walk_frame(compiler, ty)).unwrap()
@@ -1314,6 +1324,7 @@ fn size_package_types(
             compiler.type_walk.clear()
         }
     }
+    size_pending_maps(compiler)
 }
 
 // E3a1 begin: shared compiler integration.

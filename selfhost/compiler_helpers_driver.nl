@@ -60,6 +60,12 @@ fn mark_struct_helpers(
         let result_ty = compiler.functions[function_id].result_ty
         add_type_helper_flag(compiler, result_ty, 1L)
     }
+    // A struct used as a map key is compared by its equality helper.
+    for type_id in 0L..type_count(compiler) {
+        if type_kind(compiler, type_id) == TYPE_KIND_MAP && type_kind(compiler, map_key_type(compiler, type_id)) == TYPE_KIND_STRUCT {
+            add_type_helper_flag(compiler, map_key_type(compiler, type_id), 2L)
+        }
+    }
     for field_index in 0L..compiler.struct_fields.count() {
         let field = compiler.struct_fields[field_index]
         if field.default_node >= 0L && is_aggregate_type(compiler, field.ty) { add_type_helper_flag(compiler, field.ty, 1L) }
