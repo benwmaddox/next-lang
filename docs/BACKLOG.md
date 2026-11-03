@@ -76,3 +76,11 @@ local is a build error naming it. A block using no locals needs no list. A page'
 and list what they use") and the examples in DESIGN.md / EXAMPLES.md are updated. Not
 implemented yet: the self-hosted compiler has no scoped blocks at all; implement the syntax
 and the unlisted-local check together with the first block (`db.read`).
+
+### Text arena decisions (2026-11-04)
+
+Separate unbounded text type; always names its arena; read-only once made; one window
+representation; generated text in the same arena; 32-bit start and length. Library stage 1
+(`tests/c_runtime/text_arena`) and design note `docs/design/text-arena.md` are merged. Next:
+the built-in type and sugar, content hashing for map keys, `starts_with`/`find`, interpolation,
+arena reset. Open: question 4 (replaced fields leave dead bytes until reset).

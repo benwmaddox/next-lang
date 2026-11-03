@@ -146,3 +146,14 @@ Done: provisional library (add, len, slice, at, equal, less, copy-out to 256 byt
 read-only 5 MB arena through 2000 recursive calls, which would overflow the stack if copied) and negative test
 `tests/pool_owner_errors/text_arena_wrong_arena`. Remaining: the built-in `Text<src>` / `Bytes<src>` types and sugar, content-hash map keys,
 interpolation, arena reset, UTF-8 validation for `Text<src>`, a distinct window type.
+
+## Decisions (maintainer, 2026-11-04)
+
+1. Unbounded text is a **separate type** (not an option on `Text`). Name still to choose.
+2. A text value **always names its arena** (owner-checked like pool ids); no implicit per-job arena.
+3. Unbounded text is **read-only once made**; editing means making a new text. This is what makes zero-copy substrings safe.
+5. **One window representation** for all unbounded text; no special small-string inline form.
+6. Generated text lives in the **same arena** as the source (append-only region of it).
+7. A **32-bit start and 32-bit length** window is fine (Go's own positions are 32-bit); about 2 GiB per arena.
+
+Open: question 4 (what to do about bytes left behind when an unbounded field is replaced); see below.
