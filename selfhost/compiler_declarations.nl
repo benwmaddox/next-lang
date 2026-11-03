@@ -710,6 +710,10 @@ fn is_unsuffixed_integer(tables: ParseTables, node: long) -> bool {
     node >= 0L && tables.nodes[node].kind == NodeKind.Integer && (tables.nodes[node].flags & (FLAG_LONG_SUFFIX | FLAG_FLOAT)) == 0L
 }
 
+fn is_float_literal(tables: ParseTables, node: long) -> bool {
+    node >= 0L && tables.nodes[node].kind == NodeKind.Integer && (tables.nodes[node].flags & FLAG_FLOAT) != 0L
+}
+
 recursive fn natural_node_type(
     source: Bytes max SOURCE_BUFFER_CAPACITY,
     tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
@@ -761,6 +765,13 @@ recursive fn natural_node_type(
                     let case_index = enum_case_matches(compiler, type_id, compiler.token_name_ids[value.token])
                     if case_index >= 0L { type_id } else { -1L }
                 } else { -1L }
+            } else if receiver >= 0L {
+                // only float fields are typed here, so a literal beside them takes the field's type
+                let receiver_ty = natural_node_type(source, tokens, files, tables, compiler, receiver, scope, file_index)
+                if receiver_ty >= 0L && type_kind(compiler, receiver_ty) == TYPE_KIND_STRUCT {
+                    let field_index = struct_field_matches(compiler, struct_type_index(compiler, receiver_ty), compiler.token_name_ids[value.token])
+                    if field_index >= 0L && is_float_type(compiler.struct_fields[field_index].ty) { compiler.struct_fields[field_index].ty } else { -1L }
+                } else { -1L }
             } else { -1L }
         },
         NodeKind.Index => {
@@ -784,6 +795,8 @@ recursive fn natural_node_type(
             if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "int") { TY_INT }
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "long") { TY_LONG }
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "byte") { TY_BYTE }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "double") { TY_DOUBLE }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "float") { TY_FLOAT }
             else { -1L }
         },
         NodeKind.Fit => {
@@ -795,8 +808,26 @@ recursive fn natural_node_type(
             } else { -1L }
         },
         NodeKind.ToLong => TY_LONG,
-        NodeKind.Unary => -1L,
-        NodeKind.Binary => if value.flags >= 8L && value.flags <= 15L { TY_BOOL } else { -1L },
+        NodeKind.Unary => {
+            // only a float operand gives a known type: a literal beside `-x` takes x's type
+            let operand = compiler.child_first[node]
+            let operand_ty = if value.flags != 1L && value.flags != 2L && !is_float_literal(tables, operand) { natural_node_type(source, tokens, files, tables, compiler, operand, scope, file_index) } else { -1L }
+            if is_float_type(operand_ty) { operand_ty } else { -1L }
+        },
+        NodeKind.Binary => {
+            if value.flags >= 8L && value.flags <= 15L { TY_BOOL }
+            else if value.flags < 8L {
+                // a bare float literal is not a known type: it takes the type of what it meets
+                let left_node = compiler.child_first[node]
+                let right_node = compiler.child_next[left_node]
+                let left_ty = if is_float_literal(tables, left_node) { -1L } else { natural_node_type(source, tokens, files, tables, compiler, left_node, scope, file_index) }
+                if is_float_type(left_ty) { left_ty }
+                else {
+                    let right_ty = if is_float_literal(tables, right_node) { -1L } else { natural_node_type(source, tokens, files, tables, compiler, right_node, scope, file_index) }
+                    if is_float_type(right_ty) { right_ty } else { -1L }
+                }
+            } else { -1L }
+        },
         _ => -1L,
     }
 }

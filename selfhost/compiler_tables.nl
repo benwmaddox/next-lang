@@ -28,7 +28,8 @@ const TY_ARGS: long = 10L
 const TY_ARG: long = 11L
 const TY_DOUBLE: long = 12L
 const TY_HOST: long = 13L
-const TY_STRUCT_BASE: long = 14L
+const TY_FLOAT: long = 14L
+const TY_STRUCT_BASE: long = 15L
 // E3a1 begin: struct storage sizes are exact through signed long limits.
 const MAX_VALUE_SIZE: long = 9223372036854775807L
 // E3a1 end
@@ -556,6 +557,7 @@ fn seed_builtin_types(env: Env, types: write list<TypeRecord, TYPE_TABLE_CAPACIT
     push_builtin_address_type(env, types)
     types.push(builtin_type_record(TYPE_KIND_SCALAR, 8L, 8L)).unwrap()
     push_builtin_address_type(env, types)
+    types.push(builtin_type_record(TYPE_KIND_SCALAR, 4L, 4L)).unwrap()
 }
 
 fn empty_compiler_tables() -> CompilerTables {

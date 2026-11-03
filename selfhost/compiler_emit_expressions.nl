@@ -141,7 +141,7 @@ fn emit_compound_assignment(
     let field_target = tables.nodes[target].kind == NodeKind.Field
     let place_target = field_target || tables.nodes[target].kind == NodeKind.Index || binding_is_write_parameter(compiler, binding) || binding_is_view(compiler, binding)
     if !place_target { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
-    if ty == TY_DOUBLE {
+    if is_float_type(ty) {
         emit_double_compound(files, tables, compiler, ir, node, file_index, target, binding, value, place_target, op)
         return
     }
@@ -1006,7 +1006,7 @@ recursive fn emit_expr_linear(
         // `x.m(args)` on a user struct is a call of Type_m with x first (struct_methods.nl)
         let kind = if syntax.kind == NodeKind.MethodCall && (compiler.facts[current].flags & FACT_STRUCT_METHOD) != 0L { NodeKind.Call } else { syntax.kind }
         if frame.phase == 0L {
-            if kind == NodeKind.Integer && compiler.facts[current].ty == TY_DOUBLE {
+            if kind == NodeKind.Integer && is_float_type(compiler.facts[current].ty) {
                 emit_float_literal(source, files, tokens, tables, compiler, ir, current, file_index)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             } else if kind == NodeKind.Integer || kind == NodeKind.Bool {
@@ -1356,7 +1356,7 @@ recursive fn emit_expr_linear(
             let ty = compiler.facts[current].ty
             if syntax.flags == 1L {
                 ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = xor i1 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", true\n")
-            } else if ty == TY_DOUBLE {
+            } else if is_float_type(ty) {
                 emit_double_negate(compiler, ir, current, frame.child0)
             } else if syntax.flags == 2L {
                 ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = xor "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", -1\n")
@@ -1375,7 +1375,7 @@ recursive fn emit_expr_linear(
         } else if kind == NodeKind.Cast && frame.phase == 1L {
             let source_ty = compiler.facts[frame.child0].ty
             let target_ty = frame.auxiliary
-            if source_ty == TY_DOUBLE || target_ty == TY_DOUBLE {
+            if is_float_type(source_ty) || is_float_type(target_ty) {
                 emit_double_cast(files, tables, compiler, ir, current, file_index, frame.child0, source_ty, target_ty)
             } else if type_kind(compiler, target_ty) == TYPE_KIND_ASCII {
                 emit_ascii_cast(files, tables, compiler, ir, current, file_index, frame.child0, target_ty)
@@ -1531,7 +1531,7 @@ recursive fn emit_expr_linear(
             let left = frame.child0
             let right = frame.child1
             let op = syntax.flags
-            if compiler.facts[left].ty == TY_DOUBLE && op != 14L && op != 15L && op != 21L {
+            if is_float_type(compiler.facts[left].ty) && op != 14L && op != 15L && op != 21L {
                 emit_double_binary(files, tables, compiler, ir, current, file_index, op, left, right)
             } else if op == 14L || op == 15L {
                 ir_write_ascii(compiler, ir, "  store i1 "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n  br label %logic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\nlogic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load i1, ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n")
