@@ -22,6 +22,7 @@ recursive fn stack_worst_case(
     depth: long,
     path: write list<long, 48>,
     budget: write long,
+    levels: write long,
 ) -> long {
     if function_id < 0L || function_id >= compiler.functions.count() || depth > STACK_BOUND_CALL_DEPTH { return -1L }
     for earlier in path {
@@ -30,6 +31,7 @@ recursive fn stack_worst_case(
     if function_id >= compiler.function_frames.count() { return -1L }
     let frame = compiler.function_frames[function_id]
     if frame < 0L { return -1L }
+    if depth + 1L > levels { levels = depth + 1L }
     let body = compiler.functions[function_id].body
     if body < 0L || body >= tables.nodes.count() { return -1L }
     let first = body - tables.nodes[body].subtree + 1L
@@ -54,7 +56,7 @@ recursive fn stack_worst_case(
             var is_job_call = false
             for job_call in job_calls { if job_call == node { is_job_call = true } }
             if is_job_call { continue }
-            let below = stack_worst_case(tables, compiler, compiler.facts[node].function, depth + 1L, path, budget)
+            let below = stack_worst_case(tables, compiler, compiler.facts[node].function, depth + 1L, path, budget, levels)
             if below < 0L {
                 stack_path_pop(path)
                 return -1L
@@ -78,7 +80,27 @@ fn stack_reservation_estimate(tables: ParseTables, compiler: CompilerTables, fun
     if !compiler.c_runtime || compiler.core_mode { return 4096L }
     var path: list<long, 48> = list {}
     var budget = STACK_BOUND_SCAN_BUDGET
-    let bound = stack_worst_case(tables, compiler, function_id, 0L, path, budget)
+    var levels = 0L
+    let bound = stack_worst_case(tables, compiler, function_id, 0L, path, budget, levels)
     if bound < 0L || bound > 4611686018427387904L / 4L { return 4096L }
     ((bound + STACK_BOUND_FLOOR_BYTES - 1L) / STACK_BOUND_FLOOR_BYTES) * STACK_BOUND_FLOOR_BYTES
+}
+
+// The native stack a job started at this entry point needs: room for the runtime and the libraries it calls (the SQLite engine, the
+// formatting functions: 17 KB at most in the programs measured, which the job's recursion budget also keeps 80 KiB clear of) plus
+// a generous 4 KiB for each level of the entry's call chain, since generated functions keep their records on the data stack and only
+// scalars and a few descriptors on the native one. Only for an entry whose calls form a bounded chain; any other entry (recursion,
+// function values) gets 0, which means the runtime's 1 MiB default.
+const NATIVE_STACK_RUNTIME_BYTES: long = 131072L
+const NATIVE_STACK_LEVEL_BYTES: long = 4096L
+
+fn native_stack_estimate(tables: ParseTables, compiler: CompilerTables, function_id: long) -> long {
+    if !compiler.c_runtime || compiler.core_mode { return 0L }
+    var path: list<long, 48> = list {}
+    var budget = STACK_BOUND_SCAN_BUDGET
+    var levels = 0L
+    let bound = stack_worst_case(tables, compiler, function_id, 0L, path, budget, levels)
+    if bound < 0L { return 0L }
+    let bytes = NATIVE_STACK_RUNTIME_BYTES + NATIVE_STACK_LEVEL_BYTES * levels
+    ((bytes + STACK_BOUND_FLOOR_BYTES - 1L) / STACK_BOUND_FLOOR_BYTES) * STACK_BOUND_FLOOR_BYTES
 }

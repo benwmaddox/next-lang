@@ -367,4 +367,9 @@ connection) is 3-5 ms for all of them.
   job: 64 MiB -> 16 KiB (web benchmark), 64 MiB -> 304 KiB (Campfire, against 290 KiB used); virtual size of the web server 33.9 GB at start -> 112 MB, and
   100 GB -> 1.7 GB at 1000 connections (Rust 0.28 GB; the rest is each job's 1 MiB of native stack reservation, of which 6-17 KB is
   used). Resident memory is unchanged (17.9 MB at 1000 connections).
+- Native stack per job (2026-11-02): the build computes 128 KiB for the runtime and libraries plus 4 KiB per level of the entry's call chain,
+  rounded up to 16 KiB steps (140 KiB for the web job and Campfire, against 5.6-32 KB used), instead of 1 MiB; an entry with recursion or
+  function values keeps 1 MiB. Virtual size at 1000 connections 1.7 GB -> 0.6 GB. Sizing it exposed a latent leak: `send` on a mailbox
+  made its message slot with a bare `alloca` where it was used, so a send retried in a loop (a full mailbox) grew the native stack by
+  16 bytes per try and a 1 MiB stack hid it for 65k tries; the slot is now released after the call (`llvm.stackrestore`).
 - Binary: next-lang 1.35 MB with SQLite and the runtime linked in; the Rust servers 2.5 and 3.0 MB.

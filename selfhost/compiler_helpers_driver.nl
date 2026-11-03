@@ -1490,7 +1490,7 @@ fn compile_selfhost_package(
         }
         ir_write_ascii(compiler, ir, "\n")
     }
-    ir_write_ascii(compiler, ir, "source_filename = \"next-lang\"\n\ndeclare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.smul.with.overflow.i32(i32, i32)\ndeclare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)\ndeclare void @llvm.trap()\ndeclare i32 @llvm.smin.i32(i32, i32)\ndeclare i32 @llvm.smax.i32(i32, i32)\ndeclare i64 @llvm.smin.i64(i64, i64)\ndeclare i64 @llvm.smax.i64(i64, i64)\ndeclare i32 @llvm.abs.i32(i32, i1)\ndeclare i64 @llvm.abs.i64(i64, i1)\n")
+    ir_write_ascii(compiler, ir, "source_filename = \"next-lang\"\n\ndeclare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)\ndeclare ptr @llvm.stacksave()\ndeclare void @llvm.stackrestore(ptr)\ndeclare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)\ndeclare { i32, i1 } @llvm.smul.with.overflow.i32(i32, i32)\ndeclare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)\ndeclare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)\ndeclare void @llvm.trap()\ndeclare i32 @llvm.smin.i32(i32, i32)\ndeclare i32 @llvm.smax.i32(i32, i32)\ndeclare i64 @llvm.smin.i64(i64, i64)\ndeclare i64 @llvm.smax.i64(i64, i64)\ndeclare i32 @llvm.abs.i32(i32, i1)\ndeclare i64 @llvm.abs.i64(i64, i1)\n")
     ir_write_ascii(compiler, ir, "\n")
     if compiler.c_runtime { emit_c_runtime_adapters(compiler, ir) }
     for function_id in 0L..compiler.functions.count() {

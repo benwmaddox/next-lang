@@ -67,6 +67,8 @@ fn emit_mailbox_method(
             ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, source_location, source_pointer)
             ir_write_ascii(compiler, ir, ", i64 0\n")
         } else {
+            // the slot is made where the send happens, so the stack is given back after the call: a send retried in a loop must not grow it
+            ir_write_ascii(compiler, ir, "  %mb.stack."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call ptr @llvm.stacksave()\n")
             ir_write_ascii(compiler, ir, "  %mb.message."); ir_write_number(compiler, ir, node)
             ir_write_ascii(compiler, ir, " = alloca "); ir_write_ascii(compiler, ir, llvm_type_name(record.element)); ir_write_ascii(compiler, ir, ", align 8\n")
             ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, llvm_type_name(record.element)); ir_push_byte(compiler, ir, 32)
@@ -76,7 +78,11 @@ fn emit_mailbox_method(
         ir_write_ascii(compiler, ir, "  %mb.sent."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, " = call i1 @nl.mbox.send(ptr %mb.ring."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", ptr %mb.message."); ir_write_number(compiler, ir, node)
-        ir_write_ascii(compiler, ir, ")\n  br i1 %mb.sent."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, ")\n")
+        if !is_aggregate_type(compiler, record.element) {
+            ir_write_ascii(compiler, ir, "  call void @llvm.stackrestore(ptr %mb.stack."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ")\n")
+        }
+        ir_write_ascii(compiler, ir, "  br i1 %mb.sent."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", label %mb.send.ok."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, ", label %mb.send.full."); ir_write_number(compiler, ir, node)
         ir_write_ascii(compiler, ir, "\nmb.send.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")

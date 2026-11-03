@@ -96,8 +96,7 @@ what unblocks the most:
   and soft affinity.
 - **Stack estimation: step 1 done (2026-11-02), see below.** The build now computes a data-stack bound per entry point from each
   function's block sizes and the call graph (selfhost/stack_estimates.nl) and the runtime reserves that; `NLC_REPORT_STACKS=1` prints
-  what each job used and reserved; tests/py/test_stack_estimates.py checks reserved >= used and well below the old default. Left: the
-  native-stack bound, the typical-run estimate to start commit from, exact (not summed) frame sizes, recursion bounded by the
+  what each job used and reserved; tests/py/test_stack_estimates.py checks reserved >= used and well below the old default. Native-stack sizing done (128 KiB + 4 KiB per call level, 16 KiB steps). Left: the typical-run estimate to start commit from, exact (not summed) frame sizes, recursion bounded by the
   recursion budget, and the other items below.
 - **Fix the stack estimation process, then size every job from it (Ben, 2026-11-02).** Before step 1 the sizes were constants: a job reserved
   64 MiB of address space for its data stack (`NLC_JOB_STACK_RESERVE_BYTES`) and 1 MiB for its native stack (coroutines; 64 MiB for plain
