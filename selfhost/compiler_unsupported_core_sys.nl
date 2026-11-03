@@ -246,7 +246,7 @@ fn unsupported_category_for_node(
     // copying one, or iterating one is refused.
     if is_type_node(value.kind) && value.token >= 0L && token_is_word_at(source, tokens, files, file_index, value.token, "pool") {
 
-        if value.kind != NodeKind.Annotation && value.kind != NodeKind.ParameterType && value.kind != NodeKind.FieldType { return UNSUPPORTED_POOL_USE }
+        if value.kind != NodeKind.Annotation && value.kind != NodeKind.ParameterType && value.kind != NodeKind.FieldType && value.kind != NodeKind.ResultType { return UNSUPPORTED_POOL_USE }
     }
     if is_type_node(value.kind) && (value.meta1 & 2097151L) == 1L && value.token >= 0L &&
         token_is_word_at(source, tokens, files, file_index, value.token, "Id") { return 0L }

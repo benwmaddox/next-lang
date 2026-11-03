@@ -1,0 +1,3 @@
+main.nl:5:5: error: a function result holding a pool must be built in place: a struct literal, pool {}, or a call of another function that does
+    5 |     world
+      |     ^

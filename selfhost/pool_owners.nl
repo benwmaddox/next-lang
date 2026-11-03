@@ -558,8 +558,30 @@ recursive fn owner_walk(
         if st.function_id >= 0L {
             let value = compiler.child_first[node]
             owner_check_return(env, source, files, tokens, tables, compiler, st, value)
+            owner_check_fresh_result(env, files, tables, compiler, st.function_id, value)
         }
     } else { () }
+}
+
+// A function may return a pool or a struct holding pools only if it builds the value right there (a struct literal,
+// `pool {}`, or a call of another function that does), so the returned value is the only one and no pool is ever copied.
+fn owner_check_fresh_result(
+    env: Env,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    function_id: long,
+    value: long,
+) {
+    if value < 0L || function_id < 0L { return }
+    let result_ty = compiler.functions[function_id].result_ty
+    if !(type_kind(compiler, result_ty) == TYPE_KIND_POOL || owner_value_is_pool_struct(compiler, result_ty)) { return }
+    let kind = tables.nodes[value].kind
+    if kind == NodeKind.StructInit || kind == NodeKind.PoolLiteral { return }
+    if kind == NodeKind.Call && compiler.facts[value].function >= 0L { return }
+    let file_index = node_file_index(tables.nodes, files, value)
+    fail_at_message(env, files, compiler, file_index, tables.nodes[value].start,
+        "a function result holding a pool must be built in place: a struct literal, pool {}, or a call of another function that does")
 }
 
 fn owner_check_return(
@@ -652,6 +674,7 @@ fn check_pool_owners(
                 if last_kind == NodeKind.Name || last_kind == NodeKind.Field || last_kind == NodeKind.Index || last_kind == NodeKind.Call ||
                     last_kind == NodeKind.MethodCall || last_kind == NodeKind.Match || last_kind == NodeKind.If || last_kind == NodeKind.Block {
                     owner_check_return(env, source, files, tokens, tables, compiler, st, last)
+                    owner_check_fresh_result(env, files, tables, compiler, function_id, last)
                 }
             }
         }
