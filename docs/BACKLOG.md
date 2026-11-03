@@ -103,3 +103,11 @@ it, update LANGUAGE.md, and map Go `[]byte` to `list<byte, N>` in go2nl. Open: `
 No `reset()` and no scope-based freeing of arena memory (it needs lifetime tracking). Arenas
 are dropped whole with their owner (job, run, struct). The append-only bounded-text proposal
 above is still only a leaning.
+
+### Small ergonomics found testing text appends (2026-11-04)
+
+- `Text` has no `+=` (`Ascii` does): "compound assignment requires int, long or double". Make `Text +=` (and interpolation append) work like `Ascii`.
+- Appending one byte to `Ascii`: `outer += a[i]` fails ("expected Ascii, found byte"). Add `push(byte)` for `Ascii` (checked < 128) and for `Text`, as `Bytes` has.
+- `a.slice(999..1000)` of an `Ascii max 1000` has type `Ascii max 1000`; with constant range bounds the result type could be `Ascii max 1`, so it appends into `Ascii max 100` without `try_append`.
+- The error "expected Ascii, found Ascii" when only the maxima differ should print the maxima (`Ascii max 100` vs `Ascii max 1000`).
+- Measured OK: a value declared inside a loop body is fresh each iteration with flat memory (3,000,000 iterations x 1,000 appends: peak RSS 1.6 MB), so loop-scoped declaration is the way to reuse a buffer without `clear()`.
