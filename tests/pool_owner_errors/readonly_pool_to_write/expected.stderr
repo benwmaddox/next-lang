@@ -1,0 +1,3 @@
+main.nl:7:10: error: a write argument must be a var, a field of a var, or another write parameter
+    7 |     bump(h)
+      |          ^
