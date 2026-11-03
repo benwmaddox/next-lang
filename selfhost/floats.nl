@@ -3,7 +3,9 @@
 // Infinities are allowed. Literals are kept as written and rounded to the nearest double by LLVM.
 // Conversions are written as casts: (double)n for an int or long, (long)d / (int)d / (byte)d the other
 // way, which truncate toward zero and fail when the result does not fit. `n.to_double()` is the short
-// form of the widening cast, `ascii.parse_double()` gives an Option<double>, and `str_fixed(x, n)` is
+// form of the widening cast, `ascii.parse_double()` gives an Option<double> (correctly rounded; none for malformed
+// text; too large reads as Infinity), print(x), str(x) and {x} give the shortest text that reads back as the same
+// value (JavaScript layout, see docs/LANGUAGE.md) for double and float, and `str_fixed(x, n)` is
 // the text of x with n digits after the point (Rust's {:.n}).
 
 const FACT_DOUBLE_METHOD: long = 8192L
@@ -210,7 +212,7 @@ fn emit_double_method(
     ir_write_ascii(compiler, ir, "  %parse.length."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer)
     ir_write_ascii(compiler, ir, ", align 1\n  %parse.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer)
     ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, data_offset)
-    ir_write_ascii(compiler, ir, "\n  %parse.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call i1 @nl_parse_double(ptr %parse.data."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, "\n  %parse.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = call i1 @nl_parse_double(ptr %nl.ctx, ptr %parse.data."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, ", i64 %parse.length."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address)
     ir_write_ascii(compiler, ir, ")\n  br i1 %parse.ok."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %parse.some."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, ", label %parse.none."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nparse.some."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")

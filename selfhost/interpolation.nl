@@ -144,6 +144,14 @@ fn emit_interp_pieces(
                     ir_write_ascii(compiler, ir, ", ptr "); interp_name(compiler, ir, "boolp", root, tag, index * 8L + position)
                     ir_write_ascii(compiler, ir, ", align 1\n")
                 }
+            } else if is_float_type(argument_type) {
+                // a double or float: its shortest round-trip text is written where it goes
+                let fp_id = leaf + (tag + 1L) * 100000000L
+                emit_float_bits_i64(compiler, ir, fp_id, argument)
+                ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "len", root, tag, index)
+                ir_write_ascii(compiler, ir, " = call i64 @nl_format_float_bits(ptr %nl.ctx, i64 %fp.bits."); ir_write_number(compiler, ir, fp_id)
+                ir_write_ascii(compiler, ir, if argument_type == TY_DOUBLE { ", i64 0, ptr " } else { ", i64 1, ptr " })
+                interp_name(compiler, ir, "dst", root, tag, index); ir_write_ascii(compiler, ir, ")\n")
             } else {
                 // a number: its digits are written where they go
                 ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "num", root, tag, index); ir_write_ascii(compiler, ir, " = ")

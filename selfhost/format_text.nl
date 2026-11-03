@@ -158,6 +158,9 @@ fn check_format_text_builtin(
     } else if kind == FORMAT_TEXT_STR && is_hole && argument_type == TY_BOOL {
         // "true" or "false"
         result_type = intern_text_type(compiler, TYPE_KIND_ASCII, 5L, 0L, file_index, node, -1L, -1L)
+    } else if kind == FORMAT_TEXT_STR && compiler.c_runtime && is_float_type(argument_type) {
+        // shortest round-trip text of a double (at most 25 bytes) or a float (at most 22)
+        result_type = intern_text_type(compiler, TYPE_KIND_ASCII, if argument_type == TY_DOUBLE { 25L } else { 22L }, 0L, file_index, node, -1L, -1L)
     } else if kind == FORMAT_TEXT_STR || kind == FORMAT_TEXT_HEX || kind == FORMAT_TEXT_BIN {
         if !format_text_numeric_type(argument_type) {
             let name = if kind == FORMAT_TEXT_STR { "str" }
@@ -166,7 +169,7 @@ fn check_format_text_builtin(
             let found_type = type_name_or_fallback(argument_type)
             if tables.nodes[node].token >= 0L && tokens[tables.nodes[node].token].kind == TokenKind.Dollar {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start,
-                    "a hole in an interpolated string takes int, long, byte, bool, Ascii, Bytes or Text; found " + found_type)
+                    "a hole in an interpolated string takes int, long, byte, double, float, bool, Ascii, Bytes or Text; found " + found_type)
             }
             fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start,
                 name + " needs int, long, or byte; found " + found_type)
@@ -351,6 +354,12 @@ fn emit_format_text_builtin(
         ir_write_ascii(compiler, ir, ", ptr %text.format.output.data."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, FIXED_TEXT_MAXIMUM)
         ir_write_ascii(compiler, ir, ")\n  %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp slt i64 %text.format.written."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 0\n")
         emit_runtime_failure(files, tables, compiler, ir, node, file_index, FAILURE_FIXED_TEXT)
+    } else if kind == FORMAT_TEXT_STR && is_float_type(argument_type) {
+        emit_float_bits_i64(compiler, ir, node, argument)
+        ir_write_ascii(compiler, ir, "  %text.format.written."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, " = call i64 @nl_format_float_bits(ptr %nl.ctx, i64 %fp.bits."); ir_write_number(compiler, ir, node)
+        ir_write_ascii(compiler, ir, if argument_type == TY_DOUBLE { ", i64 0" } else { ", i64 1" })
+        ir_write_ascii(compiler, ir, ", ptr %text.format.output.data."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 41); ir_push_byte(compiler, ir, 10)
     } else if (kind == FORMAT_TEXT_STR && type_kind(compiler, argument_type) != TYPE_KIND_ASCII && type_kind(compiler, argument_type) != TYPE_KIND_TEXT) || kind == FORMAT_TEXT_HEX || kind == FORMAT_TEXT_BIN {
         emit_format_text_numeric_i64(compiler, ir, node, argument)
         let radix = if kind == FORMAT_TEXT_HEX { 16L } else if kind == FORMAT_TEXT_BIN { 2L } else { 10L }
