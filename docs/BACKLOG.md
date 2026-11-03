@@ -66,3 +66,13 @@ Open question that follows from it: DESIGN.md's *scoped blocks* (`db.read { }`,
 locals", which is implicit capture by another name (the compiler makes a helper whose context
 is passed explicitly, but the programmer does not see that). Decide whether to keep them
 as they are, make the context visible in the syntax, or list the read locals at the block.
+
+### Decided 2026-11-03: option C, `using (...)` on blocks that run elsewhere or later
+
+`db.read`, `db.transaction`, `transaction`, route tables and `parallel for` bodies list the
+enclosing function's locals they use: `db.read using (room_key) { ... }`. Using an unlisted
+local is a build error naming it. A block using no locals needs no list. A page's `for` and
+`if` run in place and are unchanged. Wording in DESIGN.md ("Scoped blocks aren't closures,
+and list what they use") and the examples in DESIGN.md / EXAMPLES.md are updated. Not
+implemented yet: the self-hosted compiler has no scoped blocks at all; implement the syntax
+and the unlisted-local check together with the first block (`db.read`).

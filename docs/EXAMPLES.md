@@ -413,7 +413,7 @@ fn refill(bucket: Bucket, now: Instant) -> Bucket {
 // The time is read there, from the monotonic clock (which never jumps back), so a
 // request that waited in the queue can't make time run backwards.
 fn take_token(address: Address, clock: Clock) -> bool {
-    let result = transaction {
+    let result = transaction using (address, clock) {
         let now = clock.monotonic()
         let known = limits.by_address.get(address) ?? Bucket { refilled_through: now }   // a new address starts full
         var bucket = refill(known, now)
@@ -431,7 +431,7 @@ fn take_token(address: Address, clock: Clock) -> bool {
 // Every minute, forget addresses that have been quiet for a minute (their bucket
 // would be full again anyway), so the map doesn't stay full.
 task every 60s prune_limits(clock: Clock) {
-    transaction {
+    transaction using (clock) {
         let cutoff = clock.monotonic() - Duration.seconds(60)
         limits.by_address.remove_where(.refilled_through < cutoff)
     }
@@ -447,7 +447,7 @@ enum ApiError { NotFound, TooMany }
 api get_messages(room_key: Room.Key, before: Option<Message.Key>, req: Request,
                  db: Db<Chat>, clock: Clock) -> Result<list<MessageOut, 100>, ApiError> {
     if !take_token(req.address, clock) { return err(ApiError.TooMany) }
-    let rows = db.read {
+    let rows = db.read using (room_key, before) {
         if Room.get(room_key).is_none() { return err(ApiError.NotFound) }   // leaves get_messages
         match before {
             none => Message.where(.room == room_key).order(.key desc).limit(100)
@@ -493,7 +493,7 @@ test "the fraction survives a long wait too" {
 scenario "a reader pages back through history" {
     let db = Db.memory(Chat)
     let room = db.transaction { Room.add(Room { name: "General" }) }.unwrap()
-    for i in 0..250 { db.transaction { Message.add(Message { room, author: "ann", body: "m" + str(i) }) }.unwrap() }
+    for i in 0..250 { db.transaction using (room, i) { Message.add(Message { room, author: "ann", body: "m" + str(i) }) }.unwrap() }
     let first = call get_messages(room, none) from "198.51.100.1" with db
     expect first.status == 200 && first.json.len() == 100
     let second = call get_messages(room, some(first.json.last().key)) from "198.51.100.1" with db
