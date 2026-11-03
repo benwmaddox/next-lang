@@ -372,4 +372,8 @@ connection) is 3-5 ms for all of them.
   function values keeps 1 MiB. Virtual size at 1000 connections 1.7 GB -> 0.6 GB. Sizing it exposed a latent leak: `send` on a mailbox
   made its message slot with a bare `alloca` where it was used, so a send retried in a loop (a full mailbox) grew the native stack by
   16 bytes per try and a 1 MiB stack hid it for 65k tries; the slot is now made once at the function entry like the other temporaries (no stack movement per send).
+  Measured against the build before the change (3 interleaved rounds, server on 4 cores): 4 connections 77-86k vs 78-90k req/s, 16 connections
+  about 200k vs 200k, 64 connections about 296k vs 300k; p50 latency unchanged (16: 70-75 us, 64: about 188 us). tokio in the same session: 67-69k,
+  246k, 281-287k. Memory at 0/4/64/1000 connections (resident, next-lang vs tokio): 2.5/4.6/5.3/18.3 MB vs 3.7/4.4/4.9/13.2 MB; virtual at
+  1000 connections 602 MB vs 285 MB.
 - Binary: next-lang 1.35 MB with SQLite and the runtime linked in; the Rust servers 2.5 and 3.0 MB.
