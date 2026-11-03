@@ -213,6 +213,15 @@ recursive fn owner_of_value(
         if receiver >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[node].token, "unwrap") {
             return owner_of_value(source, files, tokens, tables, compiler, st, receiver, depth + 1L)
         }
+        // map.get, list.pop and queue.peek/pop hand out an element (inside an Option): its ids belong to the collection's pool.
+        if receiver >= 0L {
+            let receiver_kind = type_kind(compiler, compiler.facts[receiver].ty)
+            let method = compiler.facts[node].literal
+            if (receiver_kind == TYPE_KIND_MAP && method == COLLECTION_METHOD_MAP_GET) ||
+                ((collection_kind_is_list(receiver_kind) || receiver_kind == TYPE_KIND_QUEUE) && (method == COLLECTION_METHOD_POP || method == COLLECTION_METHOD_PEEK)) {
+                return owner_of_value(source, files, tokens, tables, compiler, st, receiver, depth + 1L)
+            }
+        }
         return OWNER_UNKNOWN
     }
     if kind == NodeKind.Call {
@@ -241,6 +250,16 @@ recursive fn owner_of_value(
             }
         }
         return declared
+    }
+    if kind == NodeKind.ArrayLiteral {
+        var merged = OWNER_NIL
+        var element = compiler.child_first[node]
+        for step in 0L..tables_child_limit() {
+            if element < 0L { break }
+            merged = owner_merge(merged, owner_of_value(source, files, tokens, tables, compiler, st, element, depth + 1L))
+            element = compiler.child_next[element]
+        }
+        return merged
     }
     if kind == NodeKind.Block {
         let last = owner_last_child(compiler, node)
@@ -360,6 +379,14 @@ recursive fn owner_walk(
             arm = compiler.child_next[arm]
         }
         return
+    }
+    // A for-each variable over a collection of ids carries the collection's pool into the loop body.
+    if kind == NodeKind.ForEach {
+        let collection = compiler.child_first[node]
+        let binding = compiler.facts[node].binding
+        if collection >= 0L && binding >= 0L && compiler.bindings[binding].ty == TY_LONG {
+            owner_set_binding(env, st, binding, owner_of_value(source, files, tokens, tables, compiler, st, collection, 0L))
+        }
     }
     var child = compiler.child_first[node]
     for step in 0L..tables_child_limit() {
