@@ -1,0 +1,3 @@
+main.nl:11:22: error: expected nodes.Id, got labels.Id
+   11 |     print(m.contains(b))
+      |                      ^

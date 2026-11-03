@@ -1,0 +1,3 @@
+main.nl:12:17: error: expected nodes.Id, got labels.Id
+   12 |     print(nodes[got].v)
+      |                 ^
