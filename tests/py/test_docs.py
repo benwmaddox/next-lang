@@ -25,6 +25,9 @@ class Docs(unittest.TestCase):
         ran = nlc("test", "docs/examples/tour")
         self.assertEqual(ran.returncode, 0, ran.stdout.decode(errors="replace"))
         self.assertIn("2 passed, 0 failed", ran.stdout.decode())
+        only = nlc("test", "--filter", "hurt", "docs/examples/tour")
+        self.assertIn("1 passed, 0 failed", only.stdout.decode())
+        self.assertNotIn("a bad input", only.stdout.decode())
 
     def test_check_accepts_a_good_package_and_rejects_a_bad_one(self):
         good = nlc("check", "docs/examples/tour")
@@ -38,6 +41,13 @@ class Docs(unittest.TestCase):
             self.assertNotEqual(bad.returncode, 0)
             self.assertIn("expected int, found bool", bad.stderr.decode())
             self.assertFalse(list(ROOT.glob(".nlc-check.*")), "check leaves no temporary files")
+            if os.name != "nt":
+                # the driver adds the source line and a caret under the column; --json gives one object per error
+                lines = bad.stderr.decode().splitlines()
+                self.assertTrue(lines[1].endswith("| fn main() { let x: int = true }"), lines)
+                self.assertEqual(lines[2].index("^"), lines[1].index("| ") + 2 + 25, lines)
+                as_json = nlc("check", "--json", ".docs-check-bad")
+                self.assertIn('"line":1,"col":26,"severity":"error"', as_json.stderr.decode())
         finally:
             (bad_dir / "main.nl").unlink()
             bad_dir.rmdir()

@@ -84,4 +84,5 @@ not floats. `--runtime=core` has further limits; the default is `--runtime=c`. K
 - `none` as a variable name is refused (it is the empty `Option`).
 - Variables cannot shadow other variables, parameters, functions or types in scope.
 - `expected int, found never` on a string literal usually means the function's return type is wrong, not the literal.
-- The compiler reports **one** error and stops; fix it and run `nlc check` again.
+- The compiler reports **one** error and stops; fix it and run `nlc check` again. `nlc` adds the source line and a caret
+  under the column; `nlc check --json <package>` prints each error as a JSON object (file, line, col, severity, message, source).

@@ -25,7 +25,9 @@ A package is a directory of `.nl` files and must be given as a path relative to 
 
 ## Testing
 
-- While working: run the focused Python test for the area, e.g. `python3 -m unittest discover -s tests/py -p test_jobs.py`
+- While working: `scripts/test-related.sh` runs the Python tests that map to the files you changed (or name them:
+  `scripts/test-related.sh jobs mailbox`); `scripts/nlc test --filter <text> <package>` runs only the tests whose name
+  contains the text. Or run one Python test by hand, e.g. `python3 -m unittest discover -s tests/py -p test_jobs.py`
   (`pytest` is not installed), or, for compiler test packages (a few seconds),
   `scripts/run-frozen-suite.sh "$(python3 scripts/build-selfhost-cached.py)" --only 'tests/e3/b1_byte*'`.
 - Before committing: the pre-commit hook (`scripts/install-hooks.sh`) runs the whole selfhost suite (3 to 4 minutes; skipped for
