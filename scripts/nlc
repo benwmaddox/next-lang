@@ -2,6 +2,7 @@
 # Driver for the self-hosted compiler: compile to LLVM IR with nlc-selfhost, then link with clang.
 #   nlc check [--json] <package>                      compile only (no link): report build errors fast, run nothing;
 #                                                      --json (or NLC_DIAGNOSTICS=json) prints one JSON object per error on stderr
+#   nlc fmt [--check] <package|file.nl>...             normalise whitespace (tabs, trailing spaces, blank runs, final newline)
 #   nlc build <package> [-o out] [--runtime=c|core]   compile and link a program
 #   nlc run   <package> [-- args...]                   build into a temporary directory and run
 #   nlc test  [--filter text] <package>                build in test mode and run every test (or those whose name has `text`)
@@ -16,12 +17,12 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 find_compiler() {
     if [[ -n "${NLC_SELFHOST:-}" ]]; then echo "$NLC_SELFHOST"; return; fi
-    for candidate in "$here/nlc-selfhost" "$here/../nlc-selfhost" "$here/../.selfhost-stage-chain-aos/stage3"; do
+    for candidate in "$here/nlc-selfhost" "$here/../nlc-selfhost"; do
         if [[ -x "$candidate" ]]; then echo "$candidate"; return; fi
     done
-    # A fresh checkout has no compiler yet: build it from seed/seed.ll.gz (cached, keyed by the sources).
+    # No compiler named: build it from the current selfhost/ and core/ sources with the seed (cached, keyed by the sources),
+    # so an edit to the compiler is what the next `nlc check` runs.
     if [[ -f "$here/build-selfhost-cached.py" ]] && command -v python3 > /dev/null; then
-        echo "nlc: building the self-hosted compiler from the seed (first use; cached afterwards)" >&2
         python3 "$here/build-selfhost-cached.py" && return
     fi
     echo "nlc: cannot find the self-hosted compiler; set NLC_SELFHOST" >&2
@@ -162,6 +163,7 @@ compile() {
     fi
     local compiler diagnostics status=0
     compiler="$(find_compiler)"
+    export NLC_SELFHOST="$compiler"   # found once; the generators below use the same one
     diagnostics="$(mktemp "${TMPDIR:-/tmp}/nlc-diag.XXXXXX")"
     "$compiler" build "$package" -o "$ir" "$runtime" "${flags[@]}" 2> "$diagnostics" || status=$?
     show_diagnostics "$package" "$diagnostics"
@@ -280,6 +282,23 @@ case "$command" in
         check_queries "$work/program.ll" "$package"
         link "$work/program.ll" "$work/program"
         "$work/program" "$@"
+        ;;
+    fmt)
+        # Whitespace only (tabs, trailing spaces, blank-line runs, final newline); --check lists files that would change.
+        check_only=0
+        if [[ "${1:-}" == "--check" ]]; then check_only=1; shift; fi
+        [[ $# -gt 0 ]] || { echo "usage: nlc fmt [--check] <package or file.nl>..." >&2; exit 2; }
+        changed=0
+        while IFS= read -r file; do
+            formatted="$(mktemp "${TMPDIR:-/tmp}/nlc-fmt.XXXXXX")"
+            awk -f "$here/nlc-fmt.awk" "$file" > "$formatted"
+            if ! cmp -s "$file" "$formatted"; then
+                changed=$((changed + 1))
+                if [[ $check_only -eq 1 ]]; then echo "would reformat $file"; else cat "$formatted" > "$file"; echo "reformatted $file"; fi
+            fi
+            rm -f "$formatted"
+        done < <(for target in "$@"; do if [[ -d "$target" ]]; then find "$target" -name '*.nl' -type f ! -name '*.gen.nl'; else echo "$target"; fi; done | sort)
+        [[ $check_only -eq 0 || $changed -eq 0 ]]
         ;;
     check)
         if [[ "${1:-}" == "--json" ]]; then export NLC_DIAGNOSTICS=json; shift; fi

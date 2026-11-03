@@ -580,7 +580,7 @@ fn report_unsupported(
         if node.kind == NodeKind.TypeArgument || node.meta0 > 1L || (node.flags & FLAG_RANGE) != 0L {
             match env.err.write(b"generic, array, or refined type forms") { ok(_) => (), err(_) => env.exit(3) }
         } else {
-            match env.err.write(b"type arguments") { ok(_) => (), err(_) => env.exit(3) }
+            match env.err.write(b"type arguments, or a name that stands for a range type such as int 0..=100") { ok(_) => (), err(_) => env.exit(3) }
         }
     } else if hit.category == UNSUPPORTED_OPERATOR {
         let spelling: Ascii max 32 = match tables.nodes[hit.node].flags {

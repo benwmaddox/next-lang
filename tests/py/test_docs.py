@@ -53,5 +53,40 @@ class Docs(unittest.TestCase):
             bad_dir.rmdir()
 
 
+    @unittest.skipIf(os.name == "nt", "nlc fmt is Linux-only for now")
+    def test_fmt_normalises_whitespace_and_leaves_multiline_strings_alone(self):
+        directory = ROOT / ".docs-fmt"
+        directory.mkdir(exist_ok=True)
+        path = directory / "a.nl"
+        try:
+            path.write_text('fn a() {\n\tlet x = 1  \n\n\n\n    x\n}\nconst T = """\n  keep  \n\n\n  this\n"""\n\n\n')
+            self.assertEqual(nlc("fmt", "--check", ".docs-fmt").returncode, 1)
+            self.assertEqual(nlc("fmt", ".docs-fmt").returncode, 0)
+            self.assertEqual(path.read_text(), 'fn a() {\n    let x = 1\n\n    x\n}\nconst T = """\n  keep  \n\n\n  this\n"""\n')
+            self.assertEqual(nlc("fmt", "--check", ".docs-fmt").returncode, 0)
+        finally:
+            path.unlink(missing_ok=True)
+            directory.rmdir()
+
+    def test_mismatch_errors_name_the_real_types(self):
+        cases = [
+            ("fn a() -> int { \"x\" }\nfn main() { print(a()) }\n", "expected int, found Ascii\n"),
+            ("struct P { x: int }\nfn a() -> P { 1 }\nfn main() { a() }\n", "expected a struct, found int\n"),
+            ("type Score = int 0..=100\nstruct U { hp: Score }\nfn main() { }\n", "range type"),
+        ]
+        bad_dir = ROOT / ".docs-mismatch-bad"
+        bad_dir.mkdir(exist_ok=True)
+        try:
+            for source, wanted in cases:
+                (bad_dir / "main.nl").write_text(source)
+                ran = nlc("check", ".docs-mismatch-bad")
+                self.assertNotEqual(ran.returncode, 0)
+                self.assertIn(wanted.strip(), ran.stderr.decode().splitlines()[0])
+                self.assertNotIn("never", ran.stderr.decode())
+        finally:
+            (bad_dir / "main.nl").unlink(missing_ok=True)
+            bad_dir.rmdir()
+
+
 if __name__ == "__main__":
     unittest.main()

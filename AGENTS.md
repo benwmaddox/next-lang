@@ -15,8 +15,13 @@ Linux or WSL with `clang` 18 and `python3`. On Windows run everything through `w
 scripts/nlc check <package>    # compile only, ~50 ms: the fast way to find build errors (one error is reported at a time)
 scripts/nlc run   <package>    # build and run (arguments after --)
 scripts/nlc test  <package>    # run the package's `test` blocks
+scripts/nlc fmt [--check] <package>   # whitespace only (tabs, trailing spaces, blank runs); not a layout formatter yet
 scripts/nlc --help
 ```
+
+`scripts/nlc` builds the compiler from the current `selfhost/` and `core/` sources (seed first, cached by the sources; about
+20 seconds after an edit), so a change to the compiler is what the next `nlc check` runs. `check` prints the source line with a
+caret; `check --json` prints one JSON object per error.
 
 A package is a directory of `.nl` files and must be given as a path relative to the current directory. Language reference:
 [docs/LANGUAGE.md](docs/LANGUAGE.md) (what compiles today) with a runnable tour in `docs/examples/tour`. Design intent:

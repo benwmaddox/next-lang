@@ -615,6 +615,31 @@ fn type_name_or_fallback(ty: long) -> Ascii max 16 {
     scalar_type_name(ty)
 }
 
+// The name a type mismatch error shows. A scalar has its own name; any other type is described by its kind, because this
+// error does not have the source text to print the declared name.
+fn is_plain_scalar_type(compiler: CompilerTables, ty: long) -> bool {
+    let kind = type_kind(compiler, ty)
+    kind == TYPE_KIND_SCALAR || kind == TYPE_KIND_UNIT || kind == TYPE_KIND_NEVER
+}
+
+fn mismatch_type_name(compiler: CompilerTables, ty: long) -> Ascii max 24 {
+    if is_plain_scalar_type(compiler, ty) { return scalar_type_name(ty) }
+    let kind = type_kind(compiler, ty)
+    if kind == TYPE_KIND_ASCII { "Ascii" }
+    else if kind == TYPE_KIND_TEXT { "Text" }
+    else if kind == TYPE_KIND_BYTES { "Bytes" }
+    else if kind == TYPE_KIND_STRUCT { "a struct" }
+    else if kind == TYPE_KIND_ENUM { "an enum" }
+    else if kind == TYPE_KIND_OPTION { "an Option" }
+    else if kind == TYPE_KIND_RESULT { "a Result" }
+    else if kind == TYPE_KIND_ARRAY { "an array" }
+    else if kind == TYPE_KIND_LIST { "a list" }
+    else if kind == TYPE_KIND_MAP { "a map" }
+    else if kind == TYPE_KIND_POOL { "a pool" }
+    else if kind == TYPE_KIND_QUEUE { "a queue" }
+    else { "another type" }
+}
+
 fn fail_type_mismatch(
     env: Env,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -632,12 +657,15 @@ fn fail_type_mismatch(
     match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b": error: expected ") { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(type_name_or_fallback(expected).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(mismatch_type_name(compiler, expected).bytes()) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b", found ") { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(type_name_or_fallback(actual).bytes()) { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(b"; cast explicitly with (") { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(type_name_or_fallback(expected).bytes()) { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(b")value") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(mismatch_type_name(compiler, actual).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    // A cast only makes sense between scalars.
+    if is_plain_scalar_type(compiler, expected) && is_plain_scalar_type(compiler, actual) {
+        match env.err.write(b"; cast explicitly with (") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(mismatch_type_name(compiler, expected).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b")value") { ok(_) => (), err(_) => env.exit(3) }
+    }
     match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
 }
