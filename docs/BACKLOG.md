@@ -111,3 +111,5 @@ above is still only a leaning.
 - `a.slice(999..1000)` of an `Ascii max 1000` has type `Ascii max 1000`; with constant range bounds the result type could be `Ascii max 1`, so it appends into `Ascii max 100` without `try_append`.
 - The error "expected Ascii, found Ascii" when only the maxima differ should print the maxima (`Ascii max 100` vs `Ascii max 1000`).
 - Measured OK: a value declared inside a loop body is fresh each iteration with flat memory (3,000,000 iterations x 1,000 appends: peak RSS 1.6 MB), so loop-scoped declaration is the way to reuse a buffer without `clear()`.
+
+- One character out of text (maintainer, 2026-11-04: `last()` is fine; a single item of `Ascii` is itself `Ascii`): keep `a[i]` as a byte for `Ascii`/`Bytes` (arithmetic; Go's `s[i]` is a byte) and add explicit character operations: `last()` / `first()` returning `Ascii max 1` for `Ascii` and `Text max 4` for `Text` (O(1)), `char_at(i)` for `Ascii` returning `Ascii max 1` (`Option` if out of range), and a checked byte-to-`Ascii max 1` conversion (fails for 128 or more). Names are proposals. `Text` stays unindexable by position (the n-th code point needs a scan).
