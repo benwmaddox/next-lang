@@ -84,3 +84,16 @@ representation; generated text in the same arena; 32-bit start and length. Libra
 (`tests/c_runtime/text_arena`) and design note `docs/design/text-arena.md` are merged. Next:
 the built-in type and sugar, content hashing for map keys, `starts_with`/`find`, interpolation,
 arena reset, usage counter. Question 4 decided: accept dead bytes until bulk reset; long-lived edited state keeps `Text max N`.
+
+### Append-only bounded text (maintainer leaning, 2026-11-04; not yet decided)
+
+`Text max N`, `Ascii max N` and `Bytes max N` become append-only apart from whole-value
+assignment: no index assignment or range replacement (today index assignment on `Ascii` and
+`Bytes` is accepted but miscompiled: `b[0] = 72` clears `b[1]..b[3]`, `s[1] = 69` has no
+effect; `Text` already refuses it). No `clear()`: memory is dismissed by normal scoping and
+bump allocation (a value declared inside a loop body is fresh each iteration and its storage
+goes with the scope mark), and `s = ""` stays as ordinary whole-value assignment. Mutable
+byte data is `list<byte, N>` or `byte[N]`. Windows stay arena-only. To do if adopted: make
+index assignment on `Ascii`/`Bytes` a build error, fix what in `selfhost/` and `core/` used
+it, update LANGUAGE.md, and map Go `[]byte` to `list<byte, N>` in go2nl. Open: `truncate(n)`
+(not allowed in this proposal).
