@@ -83,4 +83,4 @@ Separate unbounded text type; always names its arena; read-only once made; one w
 representation; generated text in the same arena; 32-bit start and length. Library stage 1
 (`tests/c_runtime/text_arena`) and design note `docs/design/text-arena.md` are merged. Next:
 the built-in type and sugar, content hashing for map keys, `starts_with`/`find`, interpolation,
-arena reset. Open: question 4 (replaced fields leave dead bytes until reset).
+arena reset, usage counter. Question 4 decided: accept dead bytes until bulk reset; long-lived edited state keeps `Text max N`.

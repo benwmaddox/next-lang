@@ -156,4 +156,6 @@ interpolation, arena reset, UTF-8 validation for `Text<src>`, a distinct window 
 6. Generated text lives in the **same arena** as the source (append-only region of it).
 7. A **32-bit start and 32-bit length** window is fine (Go's own positions are 32-bit); about 2 GiB per arena.
 
-Open: question 4 (what to do about bytes left behind when an unbounded field is replaced); see below.
+All seven questions are decided (question 4 below).
+
+4. **Decided (2026-11-04): accept the waste and rely on bulk resets, keep `Text max N` for long-lived edited state.** Replacing an unbounded text leaves its old bytes until the arena is reset; arenas are per run, per job or per file version and are dropped whole. An arena reports how much it has used, and exhausting the declared capacity fails loudly, so a program that keeps replacing unbounded text in a long-lived field is caught, not silent. No free lists, no compaction (that would be a heap or a garbage collector). Rule for programmers: long-lived state whose text is edited in place uses `Text max N`; unbounded text is for per-run data and immutable inputs.
