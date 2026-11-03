@@ -43,6 +43,10 @@ globals: state is a local in `main` and is passed down.
 
 - `if c { a } else { b }`, `match v { Low => 0  High(n) => n }` (exhaustive), `for i in 0..n` (`0..=n` includes n),
   `for item in list`, `for k, v in map`, `while c`, `break`, `continue`, `return`. The last expression of a block is its value.
+- Or-patterns: `match op { Add(x) | Sub(x) => x * 2  Nop | Reset => 0 }` and `0 | 1 | 2 => ...`. Alternatives share one body (emitted once);
+  exhaustiveness and duplicate-case checks count every alternative; each alternative must bind the same names with the same
+  types (`_` is free), otherwise the build fails naming the binding; `_` is not an alternative (write it as its own arm).
+  This replaces repeating a body per case, e.g. in go2nl's converted interface type switches.
 - `f()?` returns early with the error (works for `Result` and `Option`). `opt ?? fallback` uses the fallback when empty;
   the fallback may be `return x`, `break` or `continue`.
 - `discard expr` drops a value you do not need, but only a plain value or an operation whose sole error is `Full`

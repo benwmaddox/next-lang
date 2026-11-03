@@ -7,7 +7,7 @@ Status 2026-11-03: **approved** by the maintainer unless noted.
 
 ## Approved
 
-1. **Or-patterns in `match`.** `A | B => body` so a case that handles several variants
+1. **Or-patterns in `match`** (done, branch nl-ormatch). `A | B => body` so a case that handles several variants
    does not repeat its body. go2nl's interface type switches with several types per case
    repeat the body once per type today. Check exhaustiveness as before; bindings in an
    or-pattern must have the same names and types in every alternative.

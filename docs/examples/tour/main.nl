@@ -31,6 +31,14 @@ fn level(k: Kind) -> int {
     }
 }
 
+// Cases that share a body are joined with `|` (with payloads they must bind the same names with the same types).
+fn weight(n: int) -> int {
+    match n {
+        0 | 1 => 1
+        _ => n
+    }
+}
+
 // Result and `?`: the error is returned to the caller at once.
 fn check(n: int) -> Result<int, Oops> {
     if n < 0 { return err(Oops.Negative) }
@@ -75,6 +83,7 @@ fn main() {
     let word: Ascii max 8 = "a1"
     print(word[1] == "1")                      // true: word[i] is one character, an Ascii max 1
     print(word[1].to_byte())                   // 49: its byte
+    print(weight(0) + weight(5))               // 6: `0 | 1 => 1`
 }
 
 // Tests live in the same package; `scripts/nlc test <package>` runs each in its own process.

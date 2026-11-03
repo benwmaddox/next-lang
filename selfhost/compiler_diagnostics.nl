@@ -625,3 +625,30 @@ fn fail_view_live_method(
     match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
 }
+
+fn fail_or_pattern_binding(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    file_index: long,
+    pattern: long,
+    binding_token: long,
+    different_type: bool,
+) -> never {
+    let position = position_for_offset(file_index, files[file_index].base + tables.nodes[pattern].start, compiler)
+    match env.err.write(files[file_index].name) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.line).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(b": error: or-pattern binding '") { ok(_) => (), err(_) => env.exit(3) }
+    match write_token_raw(env.err, source, tokens, files[file_index].base, binding_token) { ok(_) => (), err(_) => env.exit(3) }
+    if different_type {
+        match env.err.write(b"' has a different type in another alternative; every alternative must bind the same names with the same types\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+    } else {
+        match env.err.write(b"' is not bound in every alternative; every alternative must bind the same names with the same types\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
+    }
+}

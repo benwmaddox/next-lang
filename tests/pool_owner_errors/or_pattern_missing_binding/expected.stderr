@@ -1,0 +1,3 @@
+main.nl:6:18: error: or-pattern binding 'x' is not bound in every alternative; every alternative must bind the same names with the same types
+    6 |         Add(x) | Nop => 1
+      |                  ^
