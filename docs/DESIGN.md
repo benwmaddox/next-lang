@@ -58,7 +58,7 @@ struct Presence { who: map<Room.Key, set<Name, 200>, 1000> }
 // chat/pages.nl: what people see
 @[page]
 fn room(room_key: Room.Key, db: Db<Chat>, online: shared Presence) -> Html {
-    let found = db.read {                      // reads only the room; Messages may see a newer version
+    let found = db.read using (room_key) {    // reads only the room; Messages may see a newer version
         Room.get(room_key)
     }
     let r = found ?? return not_found()        // no such room: answer 404 and stop
@@ -75,7 +75,7 @@ fn room(room_key: Room.Key, db: Db<Chat>, online: shared Presence) -> Html {
 // open pages re-run this piece, which loads the current rows itself.
 @[piece]
 fn Messages(room_key: Room.Key, db: Db<Chat>) -> Html {
-    let recent = db.read {
+    let recent = db.read using (room_key) {
         Message.where(.room == room_key).order(.key desc).limit(50)   // newest 50, by key
     }
     <ul>
@@ -87,7 +87,7 @@ fn Messages(room_key: Room.Key, db: Db<Chat>) -> Html {
 @[action]
 fn post(room_key: Room.Key, body: Body, me: Viewer, db: Db<Chat>) -> Result<(), PostError> {
     if body.trim() == "" { return err(PostError.Empty) }
-    let added = db.transaction {
+    let added = db.transaction using (room_key, me, body) {
         Message.add(Message { room: room_key, author: me.name, body })
     }
     match added {                              // every error the insert can return, by name
@@ -682,10 +682,11 @@ The cancellation, batch-settlement, and pooled-stack cleanup steps above are an 
 - **Functions can be passed:** a named function is a value of a function type, `fn(int, int) -> bool`, so it can be an argument, a field or an element of a collection: `sort_by(units, by_hp)`, a table of handlers, a callback list.
 - **No closures:** there are no anonymous functions and nothing captures local variables. A function value is just a pointer to a named, top-level function. That keeps the memory model simple (nothing can hold a reference past its scope, Memory), keeps every call's effects and stack needs visible, and costs no allocation.
 - **Context is passed explicitly:** where another language would capture a variable, the callee takes it as a parameter, and generic helpers pass it along: `for_each(units, ctx, update)` calls `update(ctx, unit)`. The context is an ordinary argument, so the usual rules apply (read, write or grow mode, no overlapping arguments).
+- **Explicit environment, never hoisting** (Ben, 2026-11-03): whatever a function uses beyond its own parameters arrives as an argument, as data the caller built and can see. Nothing is picked up silently from the surrounding scope, however convenient, because that hoisting is where mistakes hide: which variable was copied, which is shared, whether a later change is seen. The fitting shape is a small, named value type that collects a few details plus a reference to something and is passed like any other argument: a *view* (a reference with a start and an end, which is how a slice of a list or of text is passed), a *cursor* (an iterator's state, advanced by the function that drives it), an *environment record* (the values a callback needs, with the id of the named function that uses them). The record is built where the caller writes it, its fields are listed there, and the callee's parameter shows its type. Converting a Go closure (go2nl) produces exactly that record rather than a closure (go2nl docs/closures-as-data.md). Names for the family are open; see BACKLOG.md.
 - **A function type is a full contract:** everything the compiler needs to check and compile a call without knowing which function it is. That's its parameters' types and modes (read, write, grow), its result and whether it can be built in append mode, its effects, whether it may suspend, whether it reads a snapshot or program state, and its stack contract with its data-stack and native-stack byte bounds (How the compiler places values). A function whose contract exceeds the type's isn't accepted for it, and the error names the difference (`fn(Unit) -> int` with no effects can't be given one that writes to the database). The analyses that walk the call graph (stack assignment, recursion cycles, effects) follow indirect calls through every function that can be stored in a value of that type, so a call through a value is checked and compiled as tightly as a direct one.
 - A `writes P` effect bound also covers reads of `P` and paths under `P`; a `reads P` bound does not cover writes.
 - **Function values in saves:** a function value is stored as a symbolic id (the function's name and its contract's hash), checked against the running build when a save or replay is loaded, never as a memory address.
-- **Scoped blocks aren't closures** (decided 2026-10-24): the built-in blocks `db.read { }`, `db.transaction { }`, `transaction { }`, route tables, `parallel for` bodies and a page's `for` and `if` may read the surrounding locals. The compiler turns each into a named helper whose context (the locals it reads, copied or viewed under the usual rules) is passed explicitly and bounded. A block can't be stored, returned or called later, which is what would make it a closure; it runs where it's written (or, for a transaction, on the writer or the database connection, with its context copied there). A `return` inside a scoped block leaves the enclosing function, as it reads; the compiler carries it out through the generated helper.
+- **Scoped blocks aren't closures, and list what they use** (decided 2026-10-24, revised 2026-11-03): a block that runs somewhere other than where it is written, or later, takes its context explicitly. `db.read using (room_key) { ... }`, `db.transaction using (room_key, me, body) { ... }`, `transaction using (clock) { ... }` and a `parallel for ... using (data, scale) { ... }` body name every local of the enclosing function they use, and using any other local is a build error that names it ("block uses `page_size`; add it to the using list"); a block that uses no locals may leave the list out. The block receives exactly those values, copied or viewed under the usual rules, so what it sees is read off the line that starts it; this is the explicit-environment rule (Explicit environment, never hoisting, above). The compiler still turns each block into a named helper whose context is that list, bounded. Route tables use the same list. A page's `for` and `if` run in place where they are written, capture nothing, and keep reading locals as ordinary code. A block can't be stored, returned or called later, which is what would make it a closure; it runs where it's written (or, for a transaction, on the writer or the database connection, with its context copied there). A `return` inside a scoped block leaves the enclosing function, as it reads; the compiler carries it out through the generated helper. Parameters, other functions, constants and shared state reached through capabilities are not locals and need no listing.
 - **Bindings aren't closures either:** `<form action={post(room_key)}>` and `signal Messages(room_key)` name a function and give some of its arguments now. They're declarative: the compiler records the function's id and a bounded copy of those arguments, and when the form is posted or the signal fires, the server supplies the rest (form fields, the session's viewer, capabilities). They can only name actions and page pieces.
 - **Query predicates aren't closures:** `Message.where(.room == room_key)` reads like one, but it's a query expression the compiler turns into SQL (or an in-memory scan), with `room_key` passed as a parameter; it can't be stored or called.
 - **Iteration is `for`:** with no closures there are no `map`/`filter` chains taking lambdas; loops (`for x, i in list`) and named helper functions do that work, which also keeps every loop visible to the loop-growth rules.

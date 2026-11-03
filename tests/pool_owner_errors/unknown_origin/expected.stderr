@@ -1,0 +1,3 @@
+main.nl:13:35: error: expected nodes.Id, got an id whose pool is not known (arithmetic on an id loses its pool)
+   13 |             match world.nodes.get(next) {
+      |                                   ^

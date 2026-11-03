@@ -1,0 +1,3 @@
+main.nl:8:30: error: expected second.Id, got first.Id
+    8 |             match second.get(id) {
+      |                              ^

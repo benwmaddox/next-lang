@@ -420,6 +420,7 @@ fn resolve_value_type(
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "bool") { return TY_BOOL }
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "byte") { return TY_BYTE }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "double") { return TY_DOUBLE }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "float") { return TY_FLOAT }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Env") { return TY_ENV }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Fs") { return TY_FS }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Out") { return TY_OUT }
@@ -428,6 +429,8 @@ fn resolve_value_type(
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Host") { return TY_HOST }
     // `Id<P>`: a pool slot number. The owner P is checked by the language design but erased here.
     if (syntax.meta1 & 2097151L) == 1L && token_is_word_at(source, tokens, files, file_index, syntax.token, "Id") { return TY_LONG }
+    // `Window<P>` (provisional name): unbounded read-only text, a range of the bytes of arena P (see docs/design/text-arena.md).
+    if (syntax.meta1 & 2097151L) == 1L && token_is_word_at(source, tokens, files, file_index, syntax.token, "Window") { return TY_WINDOW }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Path") {
         return collection_type_matches(compiler, TYPE_KIND_LIST, TY_BYTE, 4096L)
     }
@@ -1197,6 +1200,16 @@ fn size_package_types(
                         continue
                     }
                     let child_kind = type_kind(compiler, ty)
+                    if child_kind == TYPE_KIND_MAP && type_state(compiler, ty) == 0L {
+                        let blocking = map_blocking_child(compiler, ty)
+                        if blocking >= 0L {
+                            set_type_state(compiler, blocking, 1L)
+                            compiler.type_walk.push(initial_type_walk_frame(compiler, blocking)).unwrap()
+                            continue
+                        }
+                        layout_map_type(compiler, ty)
+                        if type_state(compiler, ty) != 0L { continue }
+                    }
                     if (child_kind == TYPE_KIND_STRUCT || is_sum_type(compiler, ty) || child_kind == TYPE_KIND_ARRAY || collection_kind_is_list(child_kind)) && type_state(compiler, ty) == 0L {
                         set_type_state(compiler, ty, 1L)
                         compiler.type_walk.push(initial_type_walk_frame(compiler, ty)).unwrap()
@@ -1313,6 +1326,7 @@ fn size_package_types(
             compiler.type_walk.clear()
         }
     }
+    size_pending_maps(compiler)
 }
 
 // E3a1 begin: shared compiler integration.

@@ -9,8 +9,8 @@ fn main(env: Env) {
   two "quoted" \"escaped\"
 three"""
     print(text.len())
-    print(text[3])
-    print(text[4 + 2])
+    print(text[3].to_byte())
+    print(text[4 + 2].to_byte())
     var items: list<Item, 5> = list {}
     print(env.db_rows("""
         from items

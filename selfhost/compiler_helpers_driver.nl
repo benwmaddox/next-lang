@@ -60,6 +60,12 @@ fn mark_struct_helpers(
         let result_ty = compiler.functions[function_id].result_ty
         add_type_helper_flag(compiler, result_ty, 1L)
     }
+    // A struct used as a map key is compared by its equality helper.
+    for type_id in 0L..type_count(compiler) {
+        if type_kind(compiler, type_id) == TYPE_KIND_MAP && type_kind(compiler, map_key_type(compiler, type_id)) == TYPE_KIND_STRUCT {
+            add_type_helper_flag(compiler, map_key_type(compiler, type_id), 2L)
+        }
+    }
     for field_index in 0L..compiler.struct_fields.count() {
         let field = compiler.struct_fields[field_index]
         if field.default_node >= 0L && is_aggregate_type(compiler, field.ty) { add_type_helper_flag(compiler, field.ty, 1L) }
@@ -892,7 +898,9 @@ fn emit_type_helpers_for_kind(
         emit_sum_print_helpers(compiler, ir)
     } else if kind == TYPE_KIND_RESULT {
         ()
-    } else if kind == TYPE_KIND_QUEUE || kind == TYPE_KIND_POOL {
+    } else if kind == TYPE_KIND_POOL {
+        emit_pool_copy_helpers(compiler, ir)
+    } else if kind == TYPE_KIND_QUEUE {
         ()
     } else if kind == TYPE_KIND_MAP {
         emit_map_copy_helpers(compiler, ir)
@@ -997,7 +1005,8 @@ fn emit_file_globals(
     }
     for node in 0L..tables.nodes.count() {
         if tables.nodes[node].kind == NodeKind.Const && (compiler.facts[node].flags & FACT_CONSTANT_ARRAY) != 0L {
-            emit_array_constant_global(source, tokens, files, tables, compiler, ir, node)
+            if const_is_simple_array(compiler, node) { emit_array_constant_global(source, tokens, files, tables, compiler, ir, node) }
+            else { emit_image_constant_global(source, tokens, files, tables, compiler, ir, node) }
         }
     }
     let first_file_id = compiler_file_id_base(compiler)
@@ -1465,6 +1474,7 @@ fn compile_selfhost_package(
     let entry = check_entry_signature(env, source, files, tokens, tables, compiler, !want_test_build)
     check_struct_defaults(env, source, files, tokens, tables, config, compiler)
     check_package_bodies(env, source, files, tokens, tables, config, compiler)
+    check_pool_owners(env, source, files, tokens, tables, compiler)
     check_deferred_large_value_gate(env, source, files, tokens, tables, compiler)
     add_default_call_graph_edges(tables, compiler)
     check_call_cycles(env, source, files, tokens, tables, compiler)

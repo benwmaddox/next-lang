@@ -1,4 +1,5 @@
 # Driver for the self-hosted compiler on Windows: compile to LLVM IR with nlc-selfhost.exe, then link with clang.
+#   nlc.ps1 check <package>                 compile only (no link): report build errors fast
 #   nlc.ps1 build <package> [-o out.exe]    compile and link a program
 #   nlc.ps1 run   <package> [args...]       build into a temporary directory and run
 #   nlc.ps1 link  <file.ll> -o out.exe      link IR the compiler already wrote
@@ -63,6 +64,14 @@ switch ($command) {
             Link-Ir $ir $output
         } finally { Remove-Item -ErrorAction SilentlyContinue $ir }
     }
+    'check' {
+        if ($rest.Count -ne 1) { throw 'usage: nlc.ps1 check <package>' }
+        $ir = ".nlc-check-$PID.ll"
+        try {
+            Compile-Package $rest[0] $ir
+            Write-Output "nlc: $($rest[0]): ok"
+        } finally { Remove-Item -ErrorAction SilentlyContinue $ir }
+    }
     'run' {
         if ($rest.Count -lt 1) { throw 'usage: nlc.ps1 run <package> [args...]' }
         $work = ".nlc-run-$PID"
@@ -78,5 +87,5 @@ switch ($command) {
         if ($rest.Count -ne 3 -or $rest[1] -ne '-o') { throw 'usage: nlc.ps1 link <file.ll> -o out.exe' }
         Link-Ir $rest[0] $rest[2]
     }
-    default { throw 'usage: nlc.ps1 build|run|link ... (see the header of this script)' }
+    default { throw 'usage: nlc.ps1 check|build|run|link ... (see the header of this script)' }
 }

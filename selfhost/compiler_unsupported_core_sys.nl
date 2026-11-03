@@ -241,21 +241,15 @@ fn unsupported_category_for_node(
             return UNSUPPORTED_TYPE_FORM
         } else { () }
     }
-    // Pools are supported for one pool variable (a local or a parameter) with add, get and count. Anything
-    // that could mix two pools' ids, store or copy a pool, or iterate one is refused until owners are checked.
+    // Pools are supported as locals, parameters and struct fields, with add, get, set and count. Their ids are
+    // checked against their pool by check_pool_owners (pool_owners.nl). Storing a pool in a list or array element,
+    // copying one, or iterating one is refused.
     if is_type_node(value.kind) && value.token >= 0L && token_is_word_at(source, tokens, files, file_index, value.token, "pool") {
 
-        if value.kind != NodeKind.Annotation && value.kind != NodeKind.ParameterType { return UNSUPPORTED_POOL_USE }
-        if value.kind == NodeKind.Annotation {
-            for earlier in 0L..node {
-                if tables.nodes[earlier].kind == NodeKind.Annotation && tables.nodes[earlier].token >= 0L &&
-                    node_file_index(tables.nodes, files, earlier) == file_index &&
-                    token_is_word_at(source, tokens, files, file_index, tables.nodes[earlier].token, "pool") { return UNSUPPORTED_POOL_USE }
-            }
-        }
+        if value.kind != NodeKind.Annotation && value.kind != NodeKind.ParameterType && value.kind != NodeKind.FieldType && value.kind != NodeKind.ResultType { return UNSUPPORTED_POOL_USE }
     }
     if is_type_node(value.kind) && (value.meta1 & 2097151L) == 1L && value.token >= 0L &&
-        token_is_word_at(source, tokens, files, file_index, value.token, "Id") { return 0L }
+        (token_is_word_at(source, tokens, files, file_index, value.token, "Id") || token_is_word_at(source, tokens, files, file_index, value.token, "Window")) { return 0L }
     match value.kind {
         NodeKind.Program => 0L,
         NodeKind.Enum => 0L,
@@ -280,6 +274,7 @@ fn unsupported_category_for_node(
                 token_is_word_at(source, tokens, files, file_index, value.token, "long") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "byte") ||
                 (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "double")) ||
+                (compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, value.token, "float")) ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "Ascii") { 0L }
             else if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L &&
                 (compiler.facts[node].ty == TY_INT || compiler.facts[node].ty == TY_LONG || compiler.facts[node].ty == TY_BYTE) { 0L }
@@ -300,6 +295,10 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "byte_len") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "slice") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "bytes") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "to_byte") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "to_bytes") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "first") ||
+            token_is_word_at(source, tokens, files, file_index, value.token, "last") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "contains") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "starts_with") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "validate_utf8") ||
@@ -315,6 +314,13 @@ fn unsupported_category_for_node(
             token_is_word_at(source, tokens, files, file_index, value.token, "set") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "get") ||
             token_is_word_at(source, tokens, files, file_index, value.token, "add") ||
+            (compiler.c_runtime && (token_is_word_at(source, tokens, files, file_index, value.token, "used") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "begin") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "append") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "finish") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "to_bytes") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "ends_with") ||
+                token_is_word_at(source, tokens, files, file_index, value.token, "find"))) ||
             (compiler.c_runtime && (token_is_word_at(source, tokens, files, file_index, value.token, "to_double") ||
                 token_is_word_at(source, tokens, files, file_index, value.token, "parse_double"))) ||
             token_is_word_at(source, tokens, files, file_index, value.token, "empty") ||
@@ -402,7 +408,8 @@ fn unsupported_category_for_node(
             if declared == TY_INT || declared == TY_LONG || declared == TY_BYTE { 0L }
             else if (compiler.facts[node].flags & FACT_RESOLVED_TYPE) != 0L &&
                 (type_kind(compiler, declared) == TYPE_KIND_ASCII || type_kind(compiler, declared) == TYPE_KIND_BYTES ||
-                    type_kind(compiler, declared) == TYPE_KIND_ARRAY) { 0L }
+                    type_kind(compiler, declared) == TYPE_KIND_ARRAY || type_kind(compiler, declared) == TYPE_KIND_STRUCT ||
+                    collection_kind_is_list(type_kind(compiler, declared)) || type_kind(compiler, declared) == TYPE_KIND_MAP) { 0L }
             else { UNSUPPORTED_NODE }
         },
         NodeKind.TypeArgument => 0L,
@@ -580,7 +587,7 @@ fn report_unsupported(
         if node.kind == NodeKind.TypeArgument || node.meta0 > 1L || (node.flags & FLAG_RANGE) != 0L {
             match env.err.write(b"generic, array, or refined type forms") { ok(_) => (), err(_) => env.exit(3) }
         } else {
-            match env.err.write(b"type arguments") { ok(_) => (), err(_) => env.exit(3) }
+            match env.err.write(b"type arguments, or a name that stands for a range type such as int 0..=100") { ok(_) => (), err(_) => env.exit(3) }
         }
     } else if hit.category == UNSUPPORTED_OPERATOR {
         let spelling: Ascii max 32 = match tables.nodes[hit.node].flags {
@@ -639,7 +646,7 @@ fn check_package_eligibility(
         if !is_type_node(tables.nodes[node].kind) { continue }
         let file_index = node_file_index(tables.nodes, files, node)
         let type_id = resolve_value_type(source, tokens, files, tables, compiler, file_index, node)
-        if type_id >= 0L && type_kind(compiler, type_id) == TYPE_KIND_LIST && compiler.child_first[node] >= 0L &&
+        if type_id >= 0L && (type_kind(compiler, type_id) == TYPE_KIND_LIST || type_kind(compiler, type_id) == TYPE_KIND_ARRAY) && compiler.child_first[node] >= 0L &&
             type_contains_pool(compiler, collection_element_type(compiler, type_id), 0L) {
             fail_at_message(env, files, compiler, file_index, tables.nodes[compiler.child_first[node]].start,
                 "pools cannot appear inside array or list elements; each repeated element would need a distinct owner")

@@ -628,7 +628,7 @@ fn check_one_body(
                 let target_ty = if target_text_kind == TYPE_KIND_ASCII {
                     intern_text_type_syntax(env, source, tokens, files, tables, compiler, file_index, type_node)
                 } else { parse_scalar_type(env, source, tokens, files, tables, compiler, file_index, type_node) }
-                if !is_numeric_type(target_ty) && target_ty != TY_BYTE && target_ty != TY_DOUBLE && type_kind(compiler, target_ty) != TYPE_KIND_ASCII {
+                if !is_numeric_type(target_ty) && target_ty != TY_BYTE && !is_float_type(target_ty) && type_kind(compiler, target_ty) != TYPE_KIND_ASCII {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "casts in this subset require int, long, byte, or a bounded Ascii type")
                 }
                 frame.child0 = value_node
@@ -824,8 +824,9 @@ fn check_one_body(
                 if !compiler.c_runtime {
                     report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node, offset: syntax.start, category: UNSUPPORTED_FLOAT, token: syntax.token })
                 }
-                if frame.expected >= 0L && frame.expected != TY_DOUBLE { require_type(env, files, compiler, file_index, node, frame.expected, TY_DOUBLE, tables) }
-                compiler.facts[node] = NodeFact { ty: TY_DOUBLE, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+                let literal_ty = if frame.expected == TY_FLOAT { TY_FLOAT } else { TY_DOUBLE }
+                if frame.expected >= 0L && frame.expected != literal_ty { require_type(env, files, compiler, file_index, node, frame.expected, literal_ty, tables) }
+                compiler.facts[node] = NodeFact { ty: literal_ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
             } else if kind == NodeKind.Integer {
                 let ty = if (syntax.flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else if is_numeric_type(frame.expected) || frame.expected == TY_BYTE { frame.expected } else { TY_INT }
                 if frame.expected >= 0L && frame.expected != ty { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
@@ -927,7 +928,7 @@ fn check_one_body(
         if kind == NodeKind.ForEach && frame.phase == 80L {
             let collection_type = compiler.facts[frame.child0].ty
             let collection_kind = type_kind(compiler, collection_type)
-            if collection_kind == TYPE_KIND_MAP {
+            if collection_kind == TYPE_KIND_MAP && !compiler.c_runtime {
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: frame.child0, offset: tables.nodes[frame.child0].start, category: UNSUPPORTED_MAP_USE, token: tables.nodes[frame.child0].token })
             }
             if collection_kind == TYPE_KIND_QUEUE {
@@ -937,12 +938,47 @@ fn check_one_body(
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: frame.child0, offset: tables.nodes[frame.child0].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[frame.child0].token })
             }
             if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST &&
-                collection_kind != TYPE_KIND_ASCII && collection_kind != TYPE_KIND_BYTES {
-                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "for-each loops require an array, list, Ascii, or Bytes")
+                collection_kind != TYPE_KIND_ASCII && collection_kind != TYPE_KIND_BYTES && collection_kind != TYPE_KIND_MAP {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "for-each loops require an array, list, map, Ascii, or Bytes")
             }
             let collection_binding = place_root_binding(tables, compiler, frame.child0)
             if !is_assignable_place(tables, frame.child0) || collection_binding < 0L {
                 fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "collection iteration needs a local, parameter, or field place; bind the value to a local first")
+            }
+            if collection_kind == TYPE_KIND_MAP {
+                // Keys and values are read-only copies; `for k in m` has no value name, `for k, v in m` names both.
+                if syntax.aux > 1L {
+                    fail_at_message(env, files, compiler, file_index, syntax.start, "a loop over a map names a key and at most a value: for key, value in map")
+                }
+                let map_scope = create_scope(env, files, compiler, frame.scope, function_id, node, file_index)
+                let key_binding = add_local_binding(env, source, files, tokens, tables, compiler, file_index, node, syntax.token, map_scope, map_key_type(compiler, collection_type), false, false, false)
+                if syntax.aux > 0L {
+                    let value_token = tables.extra[syntax.extra]
+                    let _ = add_local_binding(env, source, files, tokens, tables, compiler, file_index, node, value_token, map_scope, map_value_type(compiler, collection_type), false, false, false)
+                }
+                frame.phase = 81L
+                frame.result_ty = map_key_type(compiler, collection_type)
+                frame.auxiliary = map_scope
+                frame.child2 = frame.child1
+                prepare_loop_push_proofs(source, tokens, files, tables, compiler, node, frame.child2, frame.scope, map_capacity(compiler, collection_type), file_index, frame.loop_depth + 1L)
+                compiler.work[frame_index] = frame
+                push_check_frame(env, files, compiler, CheckFrame {
+                    node: frame.child2,
+                    scope: map_scope,
+                    expected: TY_UNIT,
+                    function_id,
+                    loop_depth: frame.loop_depth + 1L,
+                    is_test,
+                    phase: 0L,
+                    cursor: -1L,
+                    child0: -1L,
+                    child1: -1L,
+                    child2: -1L,
+                    result_ty: -1L,
+                    auxiliary: 1L,
+                    reachable: true,
+                })
+                continue
             }
             let mutable_view = compiler.bindings[collection_binding].mutable
             let view_scope = create_scope(env, files, compiler, frame.scope, function_id, node, file_index)
@@ -984,6 +1020,12 @@ fn check_one_body(
         }
         if kind == NodeKind.ForEach && frame.phase == 81L {
             finish_loop_push_proofs(compiler, node)
+            if type_kind(compiler, compiler.facts[frame.child0].ty) == TYPE_KIND_MAP {
+                let changed = map_loop_mutation(source, tokens, files, tables, compiler, frame.child1, frame.child0)
+                if changed >= 0L {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[changed].start, "a loop over a map cannot change that map; collect the keys first, or change it after the loop")
+                }
+            }
             let view_binding = binding_for_node(compiler, node)
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: view_binding, function: -1L, literal: compiler.facts[frame.child0].ty }
             match compiler.work.pop() { some(_) => (), none() => () }
@@ -1052,6 +1094,8 @@ fn check_one_body(
                 if frame.cursor == 0L { child = frame.child0; frame.cursor = 1L }
                 else if frame.cursor == 1L {
                     frame.result_ty = if frame.child0 >= 0L { compiler.facts[frame.child0].ty } else { -1L }
+                    // `text += ascii`: the appended value keeps its own type (an Ascii value is valid Text)
+                    if tables.nodes[node].flags == 1L && type_kind(compiler, frame.result_ty) == TYPE_KIND_TEXT { frame.result_ty = -1L }
                     child = frame.child1
                     frame.cursor = 2L
                 }
@@ -1127,7 +1171,10 @@ fn check_one_body(
         if kind == NodeKind.Let {
             let value = frame.child0
             let value_fact = compiler.facts[value]
-            if type_kind(compiler, value_fact.ty) == TYPE_KIND_POOL && tables.nodes[value].kind != NodeKind.PoolLiteral {
+            if owner_value_is_pool_struct(compiler, value_fact.ty) && tables.nodes[value].kind != NodeKind.StructInit && !(tables.nodes[value].kind == NodeKind.Call && value_fact.function >= 0L) {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[value].start, "a value containing a pool cannot be copied; initialize a fresh pool owner")
+            }
+            if type_kind(compiler, value_fact.ty) == TYPE_KIND_POOL && tables.nodes[value].kind != NodeKind.PoolLiteral && !(tables.nodes[value].kind == NodeKind.Call && value_fact.function >= 0L) {
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: value, offset: tables.nodes[value].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[value].token })
             }
             if is_bytes_view_value(tables, compiler, value) {
@@ -1153,6 +1200,19 @@ fn check_one_body(
             let ty = frame.result_ty
             let flags = if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }
             compiler.facts[node] = NodeFact { ty, flags, binding: -1L, function: -1L, literal: 0L }
+        } else if kind == NodeKind.Index && frame.child0 >= 0L && compiler.facts[frame.child0].ty == TY_WINDOW {
+            // w[i]: the byte i of a window (its arena is found through the window's owner)
+            if !compiler.c_runtime { fail_at_message(env, files, compiler, file_index, syntax.start, "arenas and windows need the C runtime") }
+            let window_index_ty = if frame.child1 >= 0L { compiler.facts[frame.child1].ty } else { -1L }
+            if window_index_ty != TY_LONG { fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child1].start, "window indexes are long; cast an int index with .to_long()") }
+            if frame.expected >= 0L && frame.expected != TY_BYTE { require_type(env, files, compiler, file_index, node, frame.expected, TY_BYTE, tables) }
+            compiler.facts[node] = NodeFact { ty: TY_BYTE, flags: (if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }) | FACT_WINDOW_OP, binding: -1L, function: -1L, literal: WOP_AT }
+        } else if kind == NodeKind.Binary && syntax.flags >= 8L && syntax.flags <= 13L && compiler.facts[frame.child0].ty == TY_WINDOW {
+            // a == b, a < b, ... on two windows compare their bytes
+            if !compiler.c_runtime { fail_at_message(env, files, compiler, file_index, syntax.start, "arenas and windows need the C runtime") }
+            if compiler.facts[frame.child1].ty != TY_WINDOW && type_kind(compiler, compiler.facts[frame.child1].ty) != TYPE_KIND_ASCII && type_kind(compiler, compiler.facts[frame.child1].ty) != TYPE_KIND_BYTES { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, TY_WINDOW, compiler.facts[frame.child1].ty) }
+            if frame.expected >= 0L && frame.expected != TY_BOOL { require_type(env, files, compiler, file_index, node, frame.expected, TY_BOOL, tables) }
+            compiler.facts[node] = NodeFact { ty: TY_BOOL, flags: FACT_FALLS_THROUGH | FACT_WINDOW_OP, binding: -1L, function: -1L, literal: window_compare_op(syntax.flags) }
         } else if kind == NodeKind.Index {
             let receiver = frame.child0
             let index = frame.child1
@@ -1161,15 +1221,21 @@ fn check_one_body(
             if collection_kind == TYPE_KIND_QUEUE {
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node, offset: syntax.start, category: UNSUPPORTED_QUEUE_USE, token: syntax.token })
             }
-            if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST && collection_kind != TYPE_KIND_BYTES && collection_kind != TYPE_KIND_ASCII {
-                fail_at_message(env, files, compiler, file_index, syntax.start, "this value cannot be indexed; use an array, list, Bytes, or Ascii")
+            if collection_kind != TYPE_KIND_ARRAY && collection_kind != TYPE_KIND_LIST && collection_kind != TYPE_KIND_POOL && collection_kind != TYPE_KIND_BYTES && collection_kind != TYPE_KIND_ASCII {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "this value cannot be indexed; use an array, list, pool, Bytes, or Ascii")
             }
             let index_ty = if index >= 0L { compiler.facts[index].ty } else { -1L }
             if index_ty != TY_LONG {
                 if index_ty == TY_INT { fail_at_message(env, files, compiler, file_index, tables.nodes[index].start, "collection indexes are long; cast an int index with .to_long()") }
                 else { fail_at_message(env, files, compiler, file_index, tables.nodes[index].start, "collection indexes must be long") }
             }
-            let element_ty = if collection_kind == TYPE_KIND_BYTES || collection_kind == TYPE_KIND_ASCII { TY_BYTE } else { collection_element_type(compiler, collection_ty) }
+            // Bytes[i] is a byte; Ascii[i] is one character, an `Ascii max 1` (decided 2026-11-04).
+            let element_ty = if collection_kind == TYPE_KIND_BYTES { TY_BYTE }
+                else if collection_kind == TYPE_KIND_ASCII {
+                    let char_ty = intern_text_type(compiler, TYPE_KIND_ASCII, 1L, 0L, file_index, node, -1L, -1L)
+                    if char_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Ascii character type exceeds compiler capacity") }
+                    char_ty
+                } else { collection_element_type(compiler, collection_ty) }
             if frame.expected >= 0L && frame.expected != element_ty { require_type(env, files, compiler, file_index, node, frame.expected, element_ty, tables) }
             let flags = if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }
             compiler.facts[node] = NodeFact { ty: element_ty, flags, binding: compiler.facts[receiver].binding, function: -1L, literal: collection_ty }
@@ -1234,6 +1300,9 @@ fn check_one_body(
             if type_kind(compiler, target_fact.ty) == TYPE_KIND_POOL {
                 report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: target, offset: tables.nodes[target].start, category: UNSUPPORTED_POOL_USE, token: tables.nodes[target].token })
             }
+            if owner_value_is_pool_struct(compiler, target_fact.ty) {
+                fail_at_message(env, files, compiler, file_index, syntax.start, "a value containing a pool cannot be replaced or assigned; pool copies and resets are not supported")
+            }
             if binding < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "assignment target must be a writable local, field, or collection element") }
             if !compiler.bindings[binding].mutable { fail_assignment_error(env, source, files, tokens, tables, compiler, file_index, node, binding) }
             // A text field cannot be replaced through a loop view (stage 0 refuses it too); scalar fields can.
@@ -1243,8 +1312,15 @@ fn check_one_body(
             }
             let op = syntax.flags
             let value_fact = compiler.facts[value]
+            if tables.nodes[target].kind == NodeKind.Index && compiler.child_first[target] >= 0L &&
+                (type_kind(compiler, compiler.facts[compiler.child_first[target]].ty) == TYPE_KIND_ASCII ||
+                 type_kind(compiler, compiler.facts[compiler.child_first[target]].ty) == TYPE_KIND_BYTES) {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[target].start, "Ascii and Bytes are append-only; build a new value, or use list<byte, N> / byte[N] for mutable bytes")
+            }
             if is_ascii_append_assignment(op, target_fact.ty, compiler) {
-                require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables)
+                // a Text builder also takes Ascii (an Ascii value is valid Text)
+                if type_kind(compiler, target_fact.ty) == TYPE_KIND_TEXT && type_kind(compiler, value_fact.ty) == TYPE_KIND_ASCII { () }
+                else { require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables) }
                 if binding_is_write_parameter(compiler, binding) && !binding_is_grow_parameter(compiler, binding) {
                     fail_at_message(env, files, compiler, file_index, syntax.start,
                         "appending through a parameter requires 'grow' mode; 'write' cannot increase its length")
@@ -1259,7 +1335,16 @@ fn check_one_body(
                 let appended_maximum = if appended_length >= 0L { appended_length } else { text_max_bytes(compiler, value_fact.ty) }
                 let loop_proven = frame.loop_depth == 0L || appended_maximum == 0L ||
                     loop_push_is_proven(compiler, binding, frame.loop_depth)
-                if maximum < 0L || current_maximum > maximum || appended_maximum < 0L ||
+                // a Text builder also has a limit on code points; the code points so far are at most the bytes so far
+                var points_unproven = false
+                if type_kind(compiler, target_fact.ty) == TYPE_KIND_TEXT {
+                    let points_maximum = text_max_codepoints(compiler, target_fact.ty)
+                    let points_so_far = if tracked_length >= 0L && tracked_length < points_maximum { tracked_length } else { points_maximum }
+                    let appended_points = if appended_length >= 0L && type_kind(compiler, value_fact.ty) == TYPE_KIND_ASCII { appended_length }
+                        else { text_max_codepoints(compiler, value_fact.ty) }
+                    if appended_points < 0L || appended_points > points_maximum - points_so_far { points_unproven = true }
+                }
+                if maximum < 0L || current_maximum > maximum || appended_maximum < 0L || points_unproven ||
                     appended_maximum > maximum - current_maximum || !loop_proven {
                     let conditional_loop = conditional_builder_loop_ancestor(tables, node)
                     if !loop_proven && conditional_loop >= 0L {
@@ -1287,8 +1372,8 @@ fn check_one_body(
                 }
             } else if is_ascii_append_assignment(op, target_fact.ty, compiler) { () }
             else {
-                if target_fact.ty == TY_DOUBLE && op > 4L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "double supports += -= *= /= only") }
-                if !is_numeric_type(target_fact.ty) && target_fact.ty != TY_DOUBLE { fail_at_message(env, files, compiler, file_index, syntax.anchor, "compound assignment requires int, long or double") }
+                if is_float_type(target_fact.ty) && op > 4L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "float and double support += -= *= /= only") }
+                if !is_numeric_type(target_fact.ty) && !is_float_type(target_fact.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "compound assignment requires int, long or double") }
                 require_type(env, files, compiler, file_index, value, target_fact.ty, value_fact.ty, tables)
             }
             if collection_kind_is_list(type_kind(compiler, target_fact.ty)) && binding < compiler.bindings.count() {
@@ -1322,7 +1407,7 @@ fn check_one_body(
             }
             for parameter_index in 0L..target.param_count {
                 let parameter = compiler.parameters[target.param_start + parameter_index]
-                let numeric = parameter.ty == TY_INT || parameter.ty == TY_LONG || parameter.ty == TY_BOOL || parameter.ty == TY_BYTE || parameter.ty == TY_DOUBLE
+                let numeric = parameter.ty == TY_INT || parameter.ty == TY_LONG || parameter.ty == TY_BOOL || parameter.ty == TY_BYTE || is_float_type(parameter.ty)
                 let handle = mailbox_role_of_type(compiler, parameter.ty) != 0L || parameter.ty == TY_ENV ||
                     (type_kind(compiler, parameter.ty) == TYPE_KIND_STRUCT && job_copyable_type(compiler, parameter.ty))
                 if (!numeric && !handle) || (parameter_mode(parameter) & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L {
@@ -1364,6 +1449,9 @@ fn check_one_body(
         } else if kind == NodeKind.Expect {
             if !is_test { fail_at_message(env, files, compiler, file_index, syntax.start, "'expect' is only valid inside a test block") }
             let actual = if frame.child0 >= 0L { compiler.facts[frame.child0].ty } else { -1L }
+            if frame.child0 >= 0L && (compiler.facts[frame.child0].flags & FACT_WINDOW_OP) != 0L && tables.nodes[frame.child0].kind == NodeKind.Binary {
+                fail_at_message(env, files, compiler, file_index, tables.nodes[frame.child0].start, "expect cannot show windows: compare into a bool first (let same = a == b, then expect same)")
+            }
             if actual >= 0L { require_type(env, files, compiler, file_index, frame.child0, TY_BOOL, actual, tables) }
             compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.Call {
@@ -1398,10 +1486,12 @@ fn check_one_body(
                 if arg_count != 1L { fail_at_message(env, files, compiler, file_index, syntax.start, "print takes one argument, but got an invalid number; call print(value)") }
                 let argument = child_at(tables, compiler, node, 0L)
                 let arg_ty = compiler.facts[argument].ty
-                if !is_numeric_type(arg_ty) && arg_ty != TY_BOOL && arg_ty != TY_BYTE && !is_aggregate_type(compiler, arg_ty) {
-                    fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, and function values")
+                if !is_numeric_type(arg_ty) && arg_ty != TY_BOOL && arg_ty != TY_BYTE && arg_ty != TY_WINDOW && !is_aggregate_type(compiler, arg_ty) {
+                    fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print supports int, long, bool, Ascii, enum, struct, array, list, queue, ring, grid, map, set, pool, window, and function values")
                 }
-                compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }, binding: -1L, function: -1L, literal: 0L }
+                if arg_ty != TY_WINDOW && type_contains_window(compiler, arg_ty, 0L) { fail_at_message(env, files, compiler, file_index, tables.nodes[argument].start, "print shows a window only on its own: print(w), not inside a struct or array") }
+                if arg_ty == TY_WINDOW && !compiler.c_runtime { fail_at_message(env, files, compiler, file_index, syntax.start, "arenas and windows need the C runtime") }
+                compiler.facts[node] = NodeFact { ty: TY_UNIT, flags: (if node_children_fall_through(tables, compiler, node) { FACT_FALLS_THROUGH } else { FACT_NEVER }) | (if arg_ty == TY_WINDOW { FACT_WINDOW_OP } else { 0L }), binding: -1L, function: -1L, literal: if arg_ty == TY_WINDOW { WOP_PRINT } else { 0L } }
             } else if sort_builtin_kind(source, tokens, files, compiler, file_index, syntax.token, frame.scope) != SORT_NONE {
                 let sort_kind = sort_builtin_kind(source, tokens, files, compiler, file_index, syntax.token, frame.scope)
                 let comparator = check_sort_builtin(env, source, tokens, files, tables, compiler, file_index, node, frame.scope, sort_kind)
@@ -1609,6 +1699,8 @@ fn check_one_body(
             if frame.expected >= 0L && frame.expected != method_ty { require_type(env, files, compiler, file_index, node, frame.expected, method_ty, tables) }
             let method_flags = if method_ty == TY_NEVER || !node_children_fall_through(tables, compiler, node) { FACT_NEVER } else { FACT_FALLS_THROUGH }
             compiler.facts[node] = NodeFact { ty: method_ty, flags: method_flags | FACT_STRUCT_METHOD, binding: -1L, function: target, literal: 0L }
+        } else if kind == NodeKind.MethodCall && check_window_method(env, source, tokens, files, tables, compiler, file_index, node, frame.child0, frame.expected) {
+            ()
         } else if kind == NodeKind.MethodCall {
             let operation = frame.auxiliary
             let receiver = frame.child0
@@ -1726,7 +1818,7 @@ fn check_one_body(
                 }
                 let actual_count = count_children(tables, compiler, node) - 1L
                 let wanted_count = if method == COLLECTION_METHOD_PUSH || method == COLLECTION_METHOD_REMOVE || method == COLLECTION_METHOD_POOL_ADD || method == COLLECTION_METHOD_POOL_GET { 1L }
-                    else if method == COLLECTION_METHOD_INSERT { 2L } else { 0L }
+                    else if method == COLLECTION_METHOD_INSERT || method == COLLECTION_METHOD_POOL_SET { 2L } else { 0L }
                 if actual_count != wanted_count { fail_at_message(env, files, compiler, file_index, syntax.start, "collection method has the wrong number of arguments") }
                 var argument = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
                 var operation_result_type = TY_UNIT
@@ -1743,6 +1835,13 @@ fn check_one_body(
                 } else if method == COLLECTION_METHOD_POOL_GET {
                     if argument < 0L || compiler.facts[argument].ty != TY_LONG { fail_at_message(env, files, compiler, file_index, if argument >= 0L { tables.nodes[argument].start } else { syntax.start }, "a pool is looked up by id; pass the id that add returned") }
                     operation_result_type = intern_sum_type(compiler, TYPE_KIND_OPTION, collection_element_type(compiler, receiver_ty), -1L, file_index, node, -1L, -1L)
+                } else if method == COLLECTION_METHOD_POOL_SET {
+                    let receiver_binding = compiler.facts[receiver].binding
+                    if receiver_binding < 0L || !compiler.bindings[receiver_binding].mutable { fail_at_message(env, files, compiler, file_index, syntax.start, "pool.set requires a writable local, parameter, or field place") }
+                    if argument < 0L || compiler.facts[argument].ty != TY_LONG { fail_at_message(env, files, compiler, file_index, if argument >= 0L { tables.nodes[argument].start } else { syntax.start }, "a pool is addressed by id; pass the id that add returned") }
+                    let set_value = compiler.child_next[argument]
+                    require_type(env, files, compiler, file_index, set_value, collection_element_type(compiler, receiver_ty), compiler.facts[set_value].ty, tables)
+                    operation_result_type = TY_BOOL
                 } else if method == COLLECTION_METHOD_POOL_ADD {
                     let receiver_binding = compiler.facts[receiver].binding
                     if receiver_binding < 0L || !compiler.bindings[receiver_binding].mutable {
@@ -1831,6 +1930,7 @@ fn check_one_body(
                 var argument = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
                 var method_result_ty = TY_LONG
                 if method == TEXT_METHOD_SLICE {
+                    let first_bound = argument
                     for bound in 0L..2L {
                         if argument < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "slice is missing a bound") }
                         if compiler.facts[argument].ty != TY_LONG {
@@ -1839,6 +1939,48 @@ fn check_one_body(
                         argument = compiler.child_next[argument]
                     }
                     method_result_ty = receiver_ty
+                    // constant bounds give a tight maximum: slice(999..1000) of an Ascii max 1000 is an Ascii max 1
+                    let last_bound = compiler.child_next[first_bound]
+                    let low_known = tables.nodes[first_bound].kind == NodeKind.Integer || (compiler.facts[first_bound].flags & FACT_CONSTANT_VALUE) != 0L
+                    let high_known = tables.nodes[last_bound].kind == NodeKind.Integer || (compiler.facts[last_bound].flags & FACT_CONSTANT_VALUE) != 0L
+                    if low_known && high_known {
+                        let low = compiler.facts[first_bound].literal
+                        let last_value = compiler.facts[last_bound].literal
+                        let high = if syntax.extra == 1L && last_value < 4611686018427387904L { last_value + 1L } else { last_value }
+                        let receiver_bytes = text_max_bytes(compiler, receiver_ty)
+                        if low >= 0L && high >= low && high < 4611686018427387904L {
+                            let count = high - low
+                            if receiver_kind == TYPE_KIND_TEXT {
+                                if count < text_max_codepoints(compiler, receiver_ty) {
+                                    let tight_bytes = if count * 4L < receiver_bytes { count * 4L } else { receiver_bytes }
+                                    method_result_ty = intern_text_type(compiler, TYPE_KIND_TEXT, tight_bytes, count, file_index, node, -1L, -1L)
+                                }
+                            } else if count < receiver_bytes {
+                                method_result_ty = intern_text_type(compiler, receiver_kind, count, 0L, file_index, node, -1L, -1L)
+                            }
+                            if method_result_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "slice type exceeds compiler capacity") }
+                        }
+                    }
+                } else if method == TEXT_METHOD_TO_BYTE {
+                    if text_max_bytes(compiler, receiver_ty) != 1L {
+                        fail_at_message(env, files, compiler, file_index, syntax.anchor, "to_byte() needs a one-character value (Ascii max 1), such as text[i]; use to_bytes() to copy longer text into Bytes")
+                    }
+                    if is_ascii_char_index(tables, compiler, receiver) {
+                        compiler.facts[receiver].flags = compiler.facts[receiver].flags | FACT_ASCII_BYTE
+                    }
+                    method_result_ty = TY_BYTE
+                } else if method == TEXT_METHOD_FIRST || method == TEXT_METHOD_LAST {
+                    // the first or last character: none when the text is empty
+                    let char_ty = if type_kind(compiler, receiver_ty) == TYPE_KIND_TEXT { intern_text_type(compiler, TYPE_KIND_TEXT, 4L, 1L, file_index, node, -1L, -1L) }
+                        else { intern_text_type(compiler, TYPE_KIND_ASCII, 1L, 0L, file_index, node, -1L, -1L) }
+                    if char_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "character type exceeds compiler capacity") }
+                    method_result_ty = intern_sum_type(compiler, TYPE_KIND_OPTION, char_ty, -1L, file_index, node, -1L, -1L)
+                    if method_result_ty < 0L || sum_layout_has_invalid_overflow(compiler, method_result_ty) {
+                        fail_at_message(env, files, compiler, file_index, syntax.start, "first()/last() Option layout overflows")
+                    }
+                } else if method == TEXT_METHOD_TO_BYTES {
+                    method_result_ty = intern_text_type(compiler, TYPE_KIND_BYTES, text_max_bytes(compiler, receiver_ty), 0L, file_index, node, -1L, -1L)
+                    if method_result_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Bytes copy type exceeds the supported value size") }
                 } else if method == TEXT_METHOD_BYTES {
                     method_result_ty = intern_text_type(compiler, TYPE_KIND_BYTES, text_max_bytes(compiler, receiver_ty), 0L, file_index, node, -1L, -1L)
                     if method_result_ty < 0L { fail_at_message(env, files, compiler, file_index, syntax.start, "Bytes view type exceeds the supported value size") }
@@ -1965,7 +2107,7 @@ fn check_one_body(
                 if type_kind(compiler, source_ty) != TYPE_KIND_ASCII {
                     fail_at_message(env, files, compiler, file_index, syntax.start, "Ascii casts require an Ascii input")
                 } else { () }
-            } else if (!is_numeric_type(source_ty) && source_ty != TY_BYTE && source_ty != TY_DOUBLE) || (!is_numeric_type(target_ty) && target_ty != TY_BYTE && target_ty != TY_DOUBLE) {
+            } else if (!is_numeric_type(source_ty) && source_ty != TY_BYTE && !is_float_type(source_ty)) || (!is_numeric_type(target_ty) && target_ty != TY_BYTE && !is_float_type(target_ty)) {
                 fail_at_message(env, files, compiler, file_index, syntax.start, "casts in this subset require int, long, or byte")
             } else { () }
             if frame.expected >= 0L && frame.expected != target_ty {
@@ -1993,7 +2135,7 @@ fn check_one_body(
                 require_type(env, files, compiler, file_index, child, TY_BOOL, value.ty, tables)
                 compiler.facts[node] = NodeFact { ty: TY_BOOL, flags: value.flags, binding: -1L, function: -1L, literal: 0L }
             } else {
-                if !is_numeric_type(value.ty) && !(value.ty == TY_DOUBLE && syntax.flags != 2L) {
+                if !is_numeric_type(value.ty) && !(is_float_type(value.ty) && syntax.flags != 2L) {
                     if syntax.flags == 2L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "unary '~' requires int or long") }
                     else { fail_at_message(env, files, compiler, file_index, syntax.anchor, "unary '-' requires int or long") }
                 }
@@ -2008,6 +2150,7 @@ fn check_one_body(
             else if left.ty == TY_INT && right.ty == TY_BYTE { right.ty = TY_INT }
             else { () }
             var ty = -1L
+            var byte_compare = false
             if op == 14L || op == 15L {
                 require_type(env, files, compiler, file_index, frame.child0, TY_BOOL, left.ty, tables)
                 require_type(env, files, compiler, file_index, frame.child1, TY_BOOL, right.ty, tables)
@@ -2094,27 +2237,29 @@ fn check_one_body(
                 }
                 ty = concat_result_ty
             } else if op >= 8L && op <= 13L {
+                if type_contains_window(compiler, left.ty, 0L) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "a struct or array holding a window would compare it by position; compare its window fields one by one") }
                 let text_pair = is_text_comparable(compiler, left.ty, right.ty)
                 if left.ty != right.ty && !text_pair { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, left.ty, right.ty) }
                 if (op == 8L || op == 9L) && (left.ty == TY_UNIT || left.ty == TY_NEVER) {
                     fail_at_message(env, files, compiler, file_index, syntax.anchor, "equality requires values other than ()")
                 }
-                if op >= 10L && !is_numeric_type(left.ty) && left.ty != TY_BYTE && left.ty != TY_DOUBLE && !text_pair { fail_at_message(env, files, compiler, file_index, syntax.anchor, "ordered comparisons require int, long, or byte values") }
+                if op >= 10L && !is_numeric_type(left.ty) && left.ty != TY_BYTE && !is_float_type(left.ty) && !text_pair { fail_at_message(env, files, compiler, file_index, syntax.anchor, "ordered comparisons require int, long, or byte values") }
                 ty = TY_BOOL
+                if text_pair && mark_ascii_byte_compare(source, tokens, files, tables, compiler, file_index, frame.child0, frame.child1) { byte_compare = true }
             } else if op >= 16L && op <= 20L {
                 if !is_numeric_type(left.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "bitwise operators require int or long values") }
                 if left.ty != right.ty { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, left.ty, right.ty) }
                 require_type(env, files, compiler, file_index, frame.child1, left.ty, right.ty, tables)
                 ty = left.ty
             } else {
-                if left.ty == TY_DOUBLE && op > 3L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "double supports + - * / and comparisons only") }
-                if !is_numeric_type(left.ty) && left.ty != TY_DOUBLE { fail_at_message(env, files, compiler, file_index, syntax.anchor, "arithmetic operators require int or long values") }
-                if (is_numeric_type(right.ty) || right.ty == TY_DOUBLE) && left.ty != right.ty { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, left.ty, right.ty) }
+                if is_float_type(left.ty) && op > 3L { fail_at_message(env, files, compiler, file_index, syntax.anchor, "float and double support + - * / and comparisons only") }
+                if !is_numeric_type(left.ty) && !is_float_type(left.ty) { fail_at_message(env, files, compiler, file_index, syntax.anchor, "arithmetic operators require int or long values") }
+                if (is_numeric_type(right.ty) || is_float_type(right.ty)) && left.ty != right.ty { fail_mixed_types(env, files, compiler, file_index, syntax.anchor, left.ty, right.ty) }
                 require_type(env, files, compiler, file_index, frame.child1, left.ty, right.ty, tables)
                 ty = left.ty
             }
             if frame.expected >= 0L && ty != TY_NEVER && ty != frame.expected { require_type(env, files, compiler, file_index, node, frame.expected, ty, tables) }
-            compiler.facts[node] = NodeFact { ty, flags: FACT_FALLS_THROUGH, binding: -1L, function: -1L, literal: 0L }
+            compiler.facts[node] = NodeFact { ty, flags: if byte_compare { FACT_FALLS_THROUGH | FACT_ASCII_BYTE } else { FACT_FALLS_THROUGH }, binding: -1L, function: -1L, literal: 0L }
         } else if kind == NodeKind.If {
             let condition = compiler.facts[frame.child0]
             require_type(env, files, compiler, file_index, frame.child0, TY_BOOL, condition.ty, tables)

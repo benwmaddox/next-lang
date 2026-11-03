@@ -1,0 +1,3 @@
+main.nl:9:12: error: expect cannot show windows: compare into a bool first (let same = a == b, then expect same)
+    9 |     expect x == y
+      |            ^

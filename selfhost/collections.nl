@@ -14,6 +14,7 @@ const COLLECTION_METHOD_POP: long = 1007L
 const COLLECTION_METHOD_PEEK: long = 1008L
 const COLLECTION_METHOD_POOL_ADD: long = 1009L
 const COLLECTION_METHOD_POOL_GET: long = 1010L
+const COLLECTION_METHOD_POOL_SET: long = 1011L
 
 // A pool written with a capacity parameter (`pool<T, N, P>`) is the type of a parameter that accepts a pool
 // of any capacity. The capacity then comes from the pool's own header word at run time.
@@ -64,6 +65,7 @@ fn collection_method_kind(
     else if receiver_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, method_token, "count") { COLLECTION_METHOD_COUNT }
     else if receiver_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, method_token, "add") { COLLECTION_METHOD_POOL_ADD }
     else if receiver_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, method_token, "get") { COLLECTION_METHOD_POOL_GET }
+    else if receiver_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, method_token, "set") { COLLECTION_METHOD_POOL_SET }
     else { 0L }
 }
 
@@ -567,7 +569,7 @@ fn collection_type_syntax_kind(
         TYPE_KIND_QUEUE
     } else if syntax.token >= 0L && token_is_word_at(source, tokens, files, file_index, syntax.token, "map") {
         TYPE_KIND_MAP
-    } else if syntax.token >= 0L && token_is_word_at(source, tokens, files, file_index, syntax.token, "pool") {
+    } else if syntax.token >= 0L && (token_is_word_at(source, tokens, files, file_index, syntax.token, "pool") || token_is_word_at(source, tokens, files, file_index, syntax.token, "arena")) {
         TYPE_KIND_POOL
     } else { 0L }
 }
@@ -601,6 +603,20 @@ fn intern_collection_type_syntax(
 
     var type_id = -1L
     var child = compiler.child_first[node]
+    if written_kind == TYPE_KIND_POOL && token_is_word_at(source, tokens, files, file_index, syntax.token, "arena") {
+        // `arena<N>`: a pool of one-byte octets whose capacity is a number of bytes (unbounded text lives in it).
+        if child < 0L || argument_count != 0L || constant_count != 1L { return -1L }
+        var arena_capacity = POOL_ANY_CAPACITY
+        if tables.nodes[child].kind != NodeKind.Name {
+            let capacity_value = evaluate_collection_capacity(tables, compiler, child, 0L)
+            if !capacity_value.constant || !capacity_value.valid { return -1L }
+            // Windows carry a 32-bit start and length, so an arena holds at most 2 GiB.
+            if capacity_value.value > 2147483647L || capacity_value.value <= 0L { return -1L }
+            arena_capacity = capacity_value.value
+        }
+        let arena_name_id = compiler.token_name_ids[syntax.token]
+        return intern_collection_type(compiler, TYPE_KIND_POOL, TY_OCTET, arena_capacity, file_index, node, arena_name_id, syntax.token)
+    }
     if written_kind == TYPE_KIND_POOL {
         // `pool<T, N>`, or `pool<T, N, P>` with an owner; a capacity that is a name rather than a constant
         // (`pool<T, N, P>` in a generic parameter) stands for any capacity.
@@ -857,7 +873,7 @@ recursive fn type_group_size(compiler: CompilerTables, type_id: long, copies: lo
         let element_size = type_group_size(compiler, record.field_start, 1L)
         if element_size < 0L { element_size } else { checked_size_product(record.field_count, element_size) }
     } else if collection_kind_is_list(kind) {
-        let header_size = collection_header_size(kind)
+        let header_size = if kind == TYPE_KIND_POOL && record.field_start == TY_OCTET { ARENA_HEADER_SIZE } else { collection_header_size(kind) }
         let element_align = value_type_align(compiler, record.field_start)
         let element_size = type_group_size(compiler, record.field_start, 1L)
         let slot_count = if record.field_count < 0L { 0L } else { record.field_count }
@@ -891,7 +907,7 @@ fn collection_element_base_offset(compiler: CompilerTables, type_id: long) -> lo
     else if kind == TYPE_KIND_ARRAY { 0L }
     else if collection_kind_is_list(kind) {
         let element_type = collection_element_type(compiler, type_id)
-        size_align_saturated(collection_header_size(kind), value_type_align(compiler, element_type))
+        size_align_saturated(if kind == TYPE_KIND_POOL && element_type == TY_OCTET { ARENA_HEADER_SIZE } else { collection_header_size(kind) }, value_type_align(compiler, element_type))
     } else { -1L }
 }
 
@@ -1244,7 +1260,7 @@ fn emit_collection_print_helpers(compiler: write CompilerTables, ir: grow Bytes 
         if collection_kind_is_list(collection_kind) {
             ir_write_ascii(compiler, ir, "  %coll.print.count."); ir_write_number(compiler, ir, type_id); ir_write_ascii(compiler, ir, " = load i64, ptr %nl.value, align 1\n")
         }
-        if type_kind(compiler, element) == TYPE_KIND_STRUCT || is_sum_type(compiler, element) {
+        if type_kind(compiler, element) == TYPE_KIND_STRUCT || is_sum_type(compiler, element) || is_aggregate_type(compiler, element) {
             let element_size = value_type_size(compiler, element)
             let element_align = value_type_align(compiler, element)
             if element_size < 0L || element_align < 0L { compiler.ir_overflow = true; continue }
@@ -1304,7 +1320,9 @@ fn emit_collection_index_address(
     let base_offset = if is_text_bytes { text_data_offset(compiler, collection_ty) } else { collection_element_base_offset(compiler, collection_ty) }
     if capacity < 0L || stride < 0L || base_offset < 0L { compiler.ir_overflow = true; return }
     var location = collection_value_location(tables, compiler, receiver)
-    if tables.nodes[receiver].kind == NodeKind.Field || tables.nodes[receiver].kind == NodeKind.Index {
+    // A for-each variable over a collection of arrays or lists is a view into the collection, not a local of its own.
+    let receiver_is_view = tables.nodes[receiver].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[receiver].binding)
+    if tables.nodes[receiver].kind == NodeKind.Field || tables.nodes[receiver].kind == NodeKind.Index || receiver_is_view {
         let address_id = emit_late_place_address(tables, compiler, ir, receiver)
         location = compiler_location(compiler, 2L, address_id, 0L)
     }
@@ -1555,7 +1573,7 @@ fn emit_collection_gather_view_value(
     let element_type = collection_element_type(compiler, collection_type)
     let capacity = collection_capacity(compiler, collection_type)
     let base_offset = collection_element_base_offset(compiler, collection_type)
-    let source = if tables.nodes[collection].kind == NodeKind.Field {
+    let source = if tables.nodes[collection].kind == NodeKind.Field || (tables.nodes[collection].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[collection].binding)) {
         let address_id = emit_late_place_address(tables, compiler, ir, collection)
         compiler_location(compiler, 2L, address_id, 0L)
     } else { collection_value_location(tables, compiler, collection) }
@@ -1587,7 +1605,7 @@ fn emit_collection_gather_index_value(
         compiler.ir_overflow = true
         return
     }
-    let source = if tables.nodes[collection].kind == NodeKind.Field {
+    let source = if tables.nodes[collection].kind == NodeKind.Field || (tables.nodes[collection].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[collection].binding)) {
         let address_id = emit_late_place_address(tables, compiler, ir, collection)
         compiler_location(compiler, 2L, address_id, 0L)
     } else { collection_value_location(tables, compiler, collection) }
@@ -1612,11 +1630,7 @@ fn emit_collection_literal_element(
         let copies = collection_capacity(compiler, type_id)
         let destination = aggregate_destination_location(compiler, 0L, collection_node)
         let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
-        let source_kind = if tables.nodes[value_node].kind == NodeKind.Name && compiler.facts[value_node].binding >= 0L {
-            if compiler.bindings[compiler.facts[value_node].binding].parameter { 2L } else { 1L }
-        } else if tables.nodes[value_node].kind == NodeKind.Field { 3L } else { 0L }
-        let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[value_node].binding } else { value_node }
-        let source = aggregate_source_location(compiler, source_kind, source_id)
+        let source = aggregate_source_location_for_node(tables, compiler, value_node)
         let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
         let path_offset = collection_element_base_offset(compiler, type_id)
         if copies < 0L || path_offset < 0L { compiler.ir_overflow = true; return }
@@ -1784,6 +1798,11 @@ fn emit_collection_zero_storage(compiler: write CompilerTables, ir: grow Bytes m
         if type_kind(compiler, type_id) == TYPE_KIND_POOL {
             ir_write_ascii(compiler, ir, "  %coll.zero.capacity."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial); ir_write_ascii(compiler, ir, ", i64 8\n  store i64 "); ir_write_number(compiler, ir, collection_capacity(compiler, type_id)); ir_write_ascii(compiler, ir, ", ptr %coll.zero.capacity."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
         }
+        if type_is_arena(compiler, type_id) {
+            // the builder mark (0: no builder open)
+            ir_write_ascii(compiler, ir, "  %coll.zero.builder."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial)
+            ir_write_ascii(compiler, ir, ", i64 16\n  store i64 0, ptr %coll.zero.builder."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1\n")
+        }
         if type_kind(compiler, type_id) == TYPE_KIND_QUEUE {
             ir_write_ascii(compiler, ir, "  %coll.zero.head."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, serial); ir_write_ascii(compiler, ir, ", i64 8\n  store i64 0, ptr %coll.zero.head."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", align 1"); emit_program_storage_tbaa(compiler, ir); ir_push_byte(compiler, ir, 10)
         }
@@ -1848,7 +1867,7 @@ fn emit_collection_method(
 ) {
     let receiver = compiler.child_first[node]
     let argument = if receiver >= 0L { compiler.child_next[receiver] } else { -1L }
-    let value_argument = if method == COLLECTION_METHOD_INSERT && argument >= 0L { compiler.child_next[argument] } else { argument }
+    let value_argument = if (method == COLLECTION_METHOD_INSERT || method == COLLECTION_METHOD_POOL_SET) && argument >= 0L { compiler.child_next[argument] } else { argument }
     let type_id = compiler.facts[receiver].ty
     let kind = type_kind(compiler, type_id)
     if kind == TYPE_KIND_MAP {
@@ -1889,6 +1908,10 @@ fn emit_collection_method(
         emit_pool_get(tables, compiler, ir, node, location, pointer_serial, element, stride, base_offset)
         return
     }
+    if method == COLLECTION_METHOD_POOL_SET {
+        emit_pool_set(tables, compiler, ir, node, location, pointer_serial, element, stride, base_offset, argument, value_argument)
+        return
+    }
     if method == COLLECTION_METHOD_PUSH || method == COLLECTION_METHOD_POOL_ADD {
         let proven = (compiler.facts[node].flags & FACT_PROVEN_SUCCESS) != 0L
         let is_pool_add = method == COLLECTION_METHOD_POOL_ADD
@@ -1905,11 +1928,7 @@ fn emit_collection_method(
         }
         ir_write_ascii(compiler, ir, "coll.push.add."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.push.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %coll.push.count."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.push.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.push.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.push.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.push.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         if is_aggregate_type(compiler, element) {
-            let source_kind = if tables.nodes[value_argument].kind == NodeKind.Name && compiler.facts[value_argument].binding >= 0L {
-                if compiler.bindings[compiler.facts[value_argument].binding].parameter { 2L } else { 1L }
-            } else if tables.nodes[value_argument].kind == NodeKind.Field { 3L } else { 0L }
-            let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[value_argument].binding } else { value_argument }
-            let source_location = aggregate_source_location(compiler, source_kind, source_id)
+            let source_location = aggregate_source_location_for_node(tables, compiler, value_argument)
             let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
             emit_collection_store_dynamic_fields(compiler, ir, element, stride, base_offset, 0L,
                 location, pointer_serial, source_location, source_pointer, 1L, node)
@@ -1947,11 +1966,7 @@ fn emit_collection_method(
         }
         ir_write_ascii(compiler, ir, "  %coll.insert.prev."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sub i64 %coll.insert.cursor."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", 1\n  br label %coll.insert.shift.cond."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\ncoll.insert.store."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n  %coll.insert.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_write_ascii(compiler, ir, "\n  %coll.insert.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %coll.insert.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, base_offset); ir_write_ascii(compiler, ir, "\n  %coll.insert.ptr."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer_serial); ir_write_ascii(compiler, ir, ", i64 %coll.insert.offset."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 10)
         if is_aggregate_type(compiler, element) {
-            let source_kind = if tables.nodes[value_argument].kind == NodeKind.Name && compiler.facts[value_argument].binding >= 0L {
-                if compiler.bindings[compiler.facts[value_argument].binding].parameter { 2L } else { 1L }
-            } else if tables.nodes[value_argument].kind == NodeKind.Field { 3L } else { 0L }
-            let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[value_argument].binding } else { value_argument }
-            let source_location = aggregate_source_location(compiler, source_kind, source_id)
+            let source_location = aggregate_source_location_for_node(tables, compiler, value_argument)
             let source_pointer = emit_location_pointer_materialization(compiler, ir, source_location)
             emit_collection_store_dynamic_fields(compiler, ir, element, stride, base_offset, 0L,
                 location, pointer_serial, source_location, source_pointer, 2L, argument)

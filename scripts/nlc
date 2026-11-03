@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Driver for the self-hosted compiler: compile to LLVM IR with nlc-selfhost, then link with clang.
+#   nlc check [--json] <package>                      compile only (no link): report build errors fast, run nothing;
+#                                                      --json (or NLC_DIAGNOSTICS=json) prints one JSON object per error on stderr
+#   nlc fmt [--check] <package|file.nl>...             normalise whitespace (tabs, trailing spaces, blank runs, final newline)
 #   nlc build <package> [-o out] [--runtime=c|core]   compile and link a program
 #   nlc run   <package> [-- args...]                   build into a temporary directory and run
-#   nlc test  <package>                                build in test mode and run every test
+#   nlc test  [--filter text] <package>                build in test mode and run every test (or those whose name has `text`)
 #   nlc link  <file.ll> -o out                         link IR the compiler already wrote
 # NLC_SELFHOST names the compiler (default: nlc-selfhost next to this script, then in ../); NLC_RUNTIME_DIR
 # names the directory holding nl_runtime.c (default: ../runtime or ./runtime next to the script);
@@ -14,9 +17,14 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 find_compiler() {
     if [[ -n "${NLC_SELFHOST:-}" ]]; then echo "$NLC_SELFHOST"; return; fi
-    for candidate in "$here/nlc-selfhost" "$here/../nlc-selfhost" "$here/../.selfhost-stage-chain-aos/stage3"; do
+    for candidate in "$here/nlc-selfhost" "$here/../nlc-selfhost"; do
         if [[ -x "$candidate" ]]; then echo "$candidate"; return; fi
     done
+    # No compiler named: build it from the current selfhost/ and core/ sources with the seed (cached, keyed by the sources),
+    # so an edit to the compiler is what the next `nlc check` runs.
+    if [[ -f "$here/build-selfhost-cached.py" ]] && command -v python3 > /dev/null; then
+        python3 "$here/build-selfhost-cached.py" && return
+    fi
     echo "nlc: cannot find the self-hosted compiler; set NLC_SELFHOST" >&2
     exit 2
 }
@@ -153,7 +161,56 @@ compile() {
     if compgen -G "$package/*.tpl" > /dev/null; then
         generator tmpl "$package" || exit 1
     fi
-    "$(find_compiler)" build "$package" -o "$ir" "$runtime" "${flags[@]}"
+    local compiler diagnostics status=0
+    compiler="$(find_compiler)"
+    export NLC_SELFHOST="$compiler"   # found once; the generators below use the same one
+    diagnostics="$(mktemp "${TMPDIR:-/tmp}/nlc-diag.XXXXXX")"
+    "$compiler" build "$package" -o "$ir" "$runtime" "${flags[@]}" 2> "$diagnostics" || status=$?
+    show_diagnostics "$package" "$diagnostics"
+    rm -f "$diagnostics"
+    return $status
+}
+
+# show_diagnostics <package> <compiler stderr file>: print what the compiler said. For each "file:line:col: error: text" line,
+# add the source line with a caret under the column (or, with NLC_DIAGNOSTICS=json, print one JSON object per line on stderr
+# instead: {"file":..,"line":..,"col":..,"severity":"error","message":..,"source":..}). The compiler's own text is unchanged.
+show_diagnostics() {
+    local package="$1" diagnostics="$2" line file row col rest path source marker
+    [[ -s "$diagnostics" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" =~ ^([^:]+):([0-9]+):([0-9]+):\ (error|warning):\ (.*)$ ]]; then
+            file="${BASH_REMATCH[1]}" row="${BASH_REMATCH[2]}" col="${BASH_REMATCH[3]}" rest="${BASH_REMATCH[5]}"
+            path="$package/$file"
+            [[ -f "$path" ]] || path="$(find "$package" -name "$file" -type f 2> /dev/null | head -n 1)"
+            source=""
+            [[ -n "$path" && -f "$path" ]] && source="$(sed -n "${row}p" "$path" | tr -d '\r')"
+            if [[ "${NLC_DIAGNOSTICS:-}" == "json" ]]; then
+                json_diagnostic "$file" "$row" "$col" "${BASH_REMATCH[4]}" "$rest" "$source"
+                continue
+            fi
+            echo "$line" >&2
+            if [[ -n "$source" ]]; then
+                printf '%5s | %s\n' "$row" "$source" >&2
+                marker="$(printf '%*s' "$((col > 0 ? col - 1 : 0))" '')"
+                printf '      | %s^\n' "$marker" >&2
+            fi
+        elif [[ "${NLC_DIAGNOSTICS:-}" == "json" ]]; then
+            json_diagnostic "" 0 0 "error" "$line" ""
+        else
+            echo "$line" >&2
+        fi
+    done < "$diagnostics"
+}
+
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+json_diagnostic() {
+    printf '{"file":"%s","line":%s,"col":%s,"severity":"%s","message":"%s","source":"%s"}\n' \
+        "$(json_escape "$1")" "$2" "$3" "$4" "$(json_escape "$5")" "$(json_escape "$6")" >&2
 }
 
 # run_test_ir <ll> <workdir>: link a test-mode IR file and run each test in its own process, printing
@@ -177,6 +234,7 @@ run_test_ir() {
     passed=0 failed=0
     for index in "${!names[@]}"; do
         name="${names[$index]}"
+        [[ -n "${NLC_TEST_FILTER:-}" && "$name" != *"$NLC_TEST_FILTER"* ]] && continue
         set +e
         { NLC_TEST_INDEX="$index" "$work/tests" > "$work/out" 2> "$work/err"; code=$?; } 2>/dev/null
         set -e
@@ -225,8 +283,35 @@ case "$command" in
         link "$work/program.ll" "$work/program"
         "$work/program" "$@"
         ;;
+    fmt)
+        # Whitespace only (tabs, trailing spaces, blank-line runs, final newline); --check lists files that would change.
+        check_only=0
+        if [[ "${1:-}" == "--check" ]]; then check_only=1; shift; fi
+        [[ $# -gt 0 ]] || { echo "usage: nlc fmt [--check] <package or file.nl>..." >&2; exit 2; }
+        changed=0
+        while IFS= read -r file; do
+            formatted="$(mktemp "${TMPDIR:-/tmp}/nlc-fmt.XXXXXX")"
+            awk -f "$here/nlc-fmt.awk" "$file" > "$formatted"
+            if ! cmp -s "$file" "$formatted"; then
+                changed=$((changed + 1))
+                if [[ $check_only -eq 1 ]]; then echo "would reformat $file"; else cat "$formatted" > "$file"; echo "reformatted $file"; fi
+            fi
+            rm -f "$formatted"
+        done < <(for target in "$@"; do if [[ -d "$target" ]]; then find "$target" -name '*.nl' -type f ! -name '*.gen.nl'; else echo "$target"; fi; done | sort)
+        [[ $check_only -eq 0 || $changed -eq 0 ]]
+        ;;
+    check)
+        if [[ "${1:-}" == "--json" ]]; then export NLC_DIAGNOSTICS=json; shift; fi
+        package="${1:?usage: nlc check [--json] <package>}"
+        work="$(mktemp -d ./.nlc-check.XXXXXX)"
+        trap 'rm -rf "$work"' EXIT
+        compile "$package" "$work/program.ll"
+        check_queries "$work/program.ll" "$package"
+        echo "nlc: $package: ok"
+        ;;
     test)
-        package="${1:?usage: nlc test <package>}"
+        if [[ "${1:-}" == "--filter" ]]; then export NLC_TEST_FILTER="${2:?usage: nlc test [--filter text] <package>}"; shift 2; fi
+        package="${1:?usage: nlc test [--filter text] <package>}"
         work="$(mktemp -d ./.nlc-test.XXXXXX)"
         trap 'rm -rf "$work"' EXIT
         compile "$package" "$work/tests.ll" --test
@@ -243,8 +328,11 @@ case "$command" in
         [[ "${2:-}" == "-o" ]] || { echo "usage: nlc link <file.ll> -o out" >&2; exit 2; }
         link "$ir" "${3:?missing output}"
         ;;
+    help|-h|--help)
+        sed -n '2,/^set -/p' "${BASH_SOURCE[0]}" | sed -e '/^set -/d' -e 's/^# \{0,1\}//'
+        ;;
     *)
-        echo "usage: nlc build|run|test|test-ir|link ... (see the header of this script)" >&2
+        echo "usage: nlc check|build|run|test|test-ir|link ... (nlc --help lists them)" >&2
         exit 2
         ;;
 esac

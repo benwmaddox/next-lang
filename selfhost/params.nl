@@ -230,6 +230,8 @@ fn direct_call_argument_needs_snapshot(tables: ParseTables, compiler: CompilerTa
         direct_call_argument_is_write(tables, compiler, call, wanted) {
         return false
     }
+    // A value holding a pool is never copied (its copy helper keeps only the header), so it is passed in place.
+    if type_contains_pool(compiler, compiler.facts[wanted].ty, 0L) { return false }
     if call < compiler.facts.count() && (compiler.facts[call].flags & FACT_FORMAT_TEXT) != 0L {
         return true
     }

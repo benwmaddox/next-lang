@@ -126,6 +126,8 @@ fn main(env: Env) {
         register_array_constants(env, source, tokens, files, tables, compiler)
         mark_range_aliases(tables, compiler)
         size_package_types(source, files, tokens, tables, compiler)
+        register_image_constants(env, source, tokens, files, tables, compiler)
+        check_map_keys(env, source, files, tokens, tables, compiler)
         check_package_name_shadows(env, source, files, tokens, tables, compiler)
         check_package_eligibility(env, source, files, tokens, tables, compiler)
         var ir: Bytes max IR_BUFFER_CAPACITY = Bytes.empty() // E3a1 begin

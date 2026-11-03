@@ -263,6 +263,9 @@ fn llvm_type_name(ty: long) -> Ascii max 8 {
     else if ty == TY_BOOL { "i1" }
     else if ty == TY_BYTE { "i32" }
     else if ty == TY_DOUBLE { "double" }
+    else if ty == TY_FLOAT { "float" }
+    else if ty == TY_WINDOW { "i64" }
+    else if ty == TY_OCTET { "i8" }
     else if ty == TY_UNIT { "void" }
     else if ty == TY_NEVER { "void" }
     else if ty == TY_ADDR || (ty >= TY_ENV && ty <= TY_ARG) || ty == TY_HOST { "ptr" }
@@ -389,6 +392,7 @@ recursive fn place_storage_location(tables: ParseTables, compiler: CompilerTable
             let location = compiler_location(compiler, 3L, binding, 0L)
             sum_parameter_location(compiler, binding, StorageLocation { origin: location.origin, anchor_kind: location.anchor_kind, anchor_node: location.anchor_node, byte_offset: location.byte_offset, copies: -1L, index: -1L, index_node: -1L, index_stride: 0L })
         } else if binding >= 0L && compiler.bindings[binding].parameter { compiler_location(compiler, 3L, binding, 0L) }
+        else if binding < 0L && (compiler.facts[node].flags & (FACT_CONSTANT_TEXT | FACT_CONSTANT_ARRAY)) != 0L { compiler_location(compiler, 0L, node, 0L) }
         else { compiler_location(compiler, 1L, binding, 0L) }
     } else if kind == NodeKind.Field {
         var root = node
@@ -760,7 +764,7 @@ fn emit_dynamic_field_lane_offset_for_descriptor(
     -1L
 }
 
-fn emit_parameter_field_path_address(
+recursive fn emit_parameter_field_path_address(
     tables: ParseTables,
     compiler: write CompilerTables,
     ir: grow Bytes max IR_BUFFER_CAPACITY,
@@ -816,7 +820,10 @@ fn emit_parameter_field_path_address(
     var base = compiler_location(compiler, 3L, binding, 0L)
     if is_view {
         let collection = compiler.child_first[compiler.bindings[binding].node]
-        let collection_base = collection_value_location(tables, compiler, collection)
+        var collection_base = collection_value_location(tables, compiler, collection)
+        if tables.nodes[collection].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[collection].binding) {
+            collection_base = compiler_location(compiler, 2L, emit_late_place_address(tables, compiler, ir, collection), 0L)
+        }
         base = compiler_location(compiler, collection_base.anchor_kind, collection_base.anchor_node, collection_base.byte_offset)
     }
     let pointer = emit_location_pointer_materialization(compiler, ir, base)
@@ -843,7 +850,10 @@ fn emit_collection_view_name_address(
         else { value_type_size(compiler, element_type) }
     let base_offset = collection_element_base_offset(compiler, collection_type)
     if stride < 0L || base_offset < 0L { compiler.ir_overflow = true; return true }
-    let base = collection_value_location(tables, compiler, collection)
+    var base = collection_value_location(tables, compiler, collection)
+    if tables.nodes[collection].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[collection].binding) {
+        base = compiler_location(compiler, 2L, emit_late_place_address(tables, compiler, ir, collection), 0L)
+    }
     let pointer_location = compiler_location(compiler, base.anchor_kind, base.anchor_node, base.byte_offset)
     let pointer = emit_location_pointer_materialization(compiler, ir, pointer_location)
     ir_write_ascii(compiler, ir, "  %coll.view.bytes."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %for.each.current."); ir_write_number(compiler, ir, loop_node); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, stride); ir_push_byte(compiler, ir, 10)

@@ -43,12 +43,15 @@ fn emit_float_literal(
 ) {
     let token = tables.nodes[node].token
     let start = files[file_index].base + tokens[token].start
-    ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fadd double 0.0, ")
+    let narrow = compiler.facts[node].ty == TY_FLOAT
+    if narrow { ir_write_ascii(compiler, ir, "  %flit."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fadd double 0.0, ") }
+    else {     ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fadd double 0.0, ") }
     for offset in 0L..tokens[token].length {
         let value = source[start + offset]
         if value != 95 { ir_push_byte(compiler, ir, value) }
     }
     ir_push_byte(compiler, ir, 10)
+    if narrow { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fptrunc double %flit."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " to float\n") }
 }
 
 // The failure when the double in %value_name is NaN. The flag is %ov.flag.<node> for emit_runtime_failure.
@@ -60,8 +63,9 @@ fn emit_double_nan_check(
     node: long,
     file_index: long,
     value_ref_node: long,
+    ty_name: Ascii max 8,
 ) {
-    ir_write_ascii(compiler, ir, "  %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fcmp uno double %v")
+    ir_write_ascii(compiler, ir, "  %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fcmp uno "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " %v")
     ir_write_number(compiler, ir, value_ref_node); ir_write_ascii(compiler, ir, ", %v"); ir_write_number(compiler, ir, value_ref_node); ir_push_byte(compiler, ir, 10)
     emit_runtime_failure(files, tables, compiler, ir, node, file_index, FAILURE_NAN)
 }
@@ -78,26 +82,27 @@ fn emit_double_binary(
     left: long,
     right: long,
 ) {
+    let ty_name = llvm_type_name(compiler.facts[left].ty)
     ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = ")
     if op <= 3L {
-        if op == 0L { ir_write_ascii(compiler, ir, "fadd double ") }
-        else if op == 1L { ir_write_ascii(compiler, ir, "fsub double ") }
-        else if op == 2L { ir_write_ascii(compiler, ir, "fmul double ") }
-        else { ir_write_ascii(compiler, ir, "fdiv double ") }
+        if op == 0L { ir_write_ascii(compiler, ir, "fadd "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " ") }
+        else if op == 1L { ir_write_ascii(compiler, ir, "fsub "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " ") }
+        else if op == 2L { ir_write_ascii(compiler, ir, "fmul "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " ") }
+        else { ir_write_ascii(compiler, ir, "fdiv "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " ") }
     } else {
-        if op == 8L { ir_write_ascii(compiler, ir, "fcmp oeq double ") }
-        else if op == 9L { ir_write_ascii(compiler, ir, "fcmp une double ") }
-        else if op == 10L { ir_write_ascii(compiler, ir, "fcmp olt double ") }
-        else if op == 11L { ir_write_ascii(compiler, ir, "fcmp ole double ") }
-        else if op == 12L { ir_write_ascii(compiler, ir, "fcmp ogt double ") }
-        else { ir_write_ascii(compiler, ir, "fcmp oge double ") }
+        if op == 8L { ir_write_ascii(compiler, ir, "fcmp oeq "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " ") }
+        else if op == 9L { ir_write_ascii(compiler, ir, "fcmp une "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " ") }
+        else if op == 10L { ir_write_ascii(compiler, ir, "fcmp olt "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " ") }
+        else if op == 11L { ir_write_ascii(compiler, ir, "fcmp ole "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " ") }
+        else if op == 12L { ir_write_ascii(compiler, ir, "fcmp ogt "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " ") }
+        else { ir_write_ascii(compiler, ir, "fcmp oge "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " ") }
     }
     ir_write_value_ref(compiler, ir, left); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, right); ir_push_byte(compiler, ir, 10)
-    if op <= 3L { emit_double_nan_check(files, tables, compiler, ir, node, file_index, node) }
+    if op <= 3L { emit_double_nan_check(files, tables, compiler, ir, node, file_index, node, ty_name) }
 }
 
 fn emit_double_negate(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, node: long, operand: long) {
-    ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fneg double "); ir_write_value_ref(compiler, ir, operand); ir_push_byte(compiler, ir, 10)
+    ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fneg "); ir_write_ascii(compiler, ir, llvm_type_name(compiler.facts[node].ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, operand); ir_push_byte(compiler, ir, 10)
 }
 
 // Casts between doubles and the integer types.
@@ -113,13 +118,18 @@ fn emit_double_cast(
     target_ty: long,
 ) {
     if source_ty == target_ty {
-        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fadd double 0.0, "); ir_write_value_ref(compiler, ir, operand); ir_push_byte(compiler, ir, 10)
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fadd "); ir_write_ascii(compiler, ir, llvm_type_name(source_ty)); ir_write_ascii(compiler, ir, " 0.0, "); ir_write_value_ref(compiler, ir, operand); ir_push_byte(compiler, ir, 10)
         return
     }
-    if target_ty == TY_DOUBLE {
-        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = sitofp "); ir_write_ascii(compiler, ir, llvm_type_name(source_ty))
-        ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, operand); ir_write_ascii(compiler, ir, " to double\n")
+    if is_float_type(target_ty) {
+        let conversion: Ascii max 8 = if is_float_type(source_ty) { if target_ty == TY_DOUBLE { "fpext " } else { "fptrunc " } } else { "sitofp " }
+        ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = "); ir_write_ascii(compiler, ir, conversion); ir_write_ascii(compiler, ir, llvm_type_name(source_ty))
+        ir_push_byte(compiler, ir, 32); ir_write_value_ref(compiler, ir, operand); ir_write_ascii(compiler, ir, " to "); ir_write_ascii(compiler, ir, llvm_type_name(target_ty)); ir_push_byte(compiler, ir, 10)
         return
+    }
+    // a float source is widened to double first, so the range limits below are exact
+    if source_ty == TY_FLOAT {
+        ir_write_ascii(compiler, ir, "  %cast.ext."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fpext float "); ir_write_value_ref(compiler, ir, operand); ir_write_ascii(compiler, ir, " to double\n")
     }
     // double to an integer: truncate toward zero, then fail unless the result fits
     // fptosi truncates toward zero; the value fits when it lies strictly between the neighbours of the type range.
@@ -127,18 +137,24 @@ fn emit_double_cast(
     let low: Ascii max 32 = if target_ty == TY_LONG { "-9.223372036854775808e18" } else if target_ty == TY_INT { "-2147483649.0" } else { "-1.0" }
     let high: Ascii max 32 = if target_ty == TY_LONG { "9.223372036854775808e18" } else if target_ty == TY_INT { "2147483648.0" } else { "256.0" }
     ir_write_ascii(compiler, ir, "  %cast.low."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fcmp "); ir_write_ascii(compiler, ir, low_predicate)
-    ir_write_ascii(compiler, ir, " double "); ir_write_value_ref(compiler, ir, operand); ir_write_ascii(compiler, ir, ", ")
+    ir_write_ascii(compiler, ir, " double "); write_cast_operand(compiler, ir, operand, node, source_ty); ir_write_ascii(compiler, ir, ", ")
     ir_write_ascii(compiler, ir, low)
-    ir_write_ascii(compiler, ir, "\n  %cast.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fcmp olt double "); ir_write_value_ref(compiler, ir, operand); ir_write_ascii(compiler, ir, ", ")
+    ir_write_ascii(compiler, ir, "\n  %cast.high."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fcmp olt double "); write_cast_operand(compiler, ir, operand, node, source_ty); ir_write_ascii(compiler, ir, ", ")
     ir_write_ascii(compiler, ir, high)
     ir_write_ascii(compiler, ir, "\n  %cast.fits."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = and i1 %cast.low."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", %cast.high."); ir_write_number(compiler, ir, node)
     ir_write_ascii(compiler, ir, "\n  %ov.flag."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = xor i1 %cast.fits."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", true\n")
     emit_runtime_failure(files, tables, compiler, ir, node, file_index, 10L)
-    ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fptosi double "); ir_write_value_ref(compiler, ir, operand); ir_write_ascii(compiler, ir, " to ")
+    ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = fptosi double "); write_cast_operand(compiler, ir, operand, node, source_ty); ir_write_ascii(compiler, ir, " to ")
     ir_write_ascii(compiler, ir, llvm_type_name(target_ty)); ir_push_byte(compiler, ir, 10)
 }
 
-// x += y, -=, *=, /= on a double local, field or element.
+// The operand of a float to integer cast: a float source was widened into %cast.ext.<node>.
+fn write_cast_operand(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, operand: long, node: long, source_ty: long) {
+    if source_ty == TY_FLOAT { ir_write_ascii(compiler, ir, "%cast.ext."); ir_write_number(compiler, ir, node) }
+    else { ir_write_value_ref(compiler, ir, operand) }
+}
+
+// x += y, -=, *=, /= on a float or double local, field or element.
 fn emit_double_compound(
     files: list<SourceFile, MAX_SOURCE_FILES>,
     tables: ParseTables,
@@ -152,15 +168,16 @@ fn emit_double_compound(
     place_target: bool,
     op: long,
 ) {
+    let ty_name = llvm_type_name(compiler.facts[target].ty)
     ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = ")
-    if op == 1L { ir_write_ascii(compiler, ir, "fadd double %v") }
-    else if op == 2L { ir_write_ascii(compiler, ir, "fsub double %v") }
-    else if op == 3L { ir_write_ascii(compiler, ir, "fmul double %v") }
-    else { ir_write_ascii(compiler, ir, "fdiv double %v") }
+    if op == 1L { ir_write_ascii(compiler, ir, "fadd "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " %v") }
+    else if op == 2L { ir_write_ascii(compiler, ir, "fsub "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " %v") }
+    else if op == 3L { ir_write_ascii(compiler, ir, "fmul "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " %v") }
+    else { ir_write_ascii(compiler, ir, "fdiv "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " %v") }
     ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, ", "); ir_write_value_ref(compiler, ir, value); ir_push_byte(compiler, ir, 10)
-    emit_double_nan_check(files, tables, compiler, ir, node, file_index, node)
+    emit_double_nan_check(files, tables, compiler, ir, node, file_index, node, ty_name)
     let address_id = if place_target { emit_late_place_address(tables, compiler, ir, target) } else { -1L }
-    ir_write_ascii(compiler, ir, "  store double %v"); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, "  store "); ir_write_ascii(compiler, ir, ty_name); ir_write_ascii(compiler, ir, " %v"); ir_write_number(compiler, ir, node)
     if place_target { ir_write_ascii(compiler, ir, ", ptr %addr."); ir_write_number(compiler, ir, address_id); ir_write_ascii(compiler, ir, ", align 1") }
     else { ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1") }
     emit_program_storage_tbaa(compiler, ir)

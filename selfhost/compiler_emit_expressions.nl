@@ -134,14 +134,14 @@ fn emit_compound_assignment(
     ty: long,
     op: long,
 ) {
-    if op == 1L && type_kind(compiler, ty) == TYPE_KIND_ASCII {
+    if is_ascii_append_assignment(op, ty, compiler) {
         emit_ascii_append_assignment(tables, compiler, ir, node, target, binding, value)
         return
     }
     let field_target = tables.nodes[target].kind == NodeKind.Field
     let place_target = field_target || tables.nodes[target].kind == NodeKind.Index || binding_is_write_parameter(compiler, binding) || binding_is_view(compiler, binding)
     if !place_target { ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, target); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, binding); ir_write_ascii(compiler, ir, ", align 1\n") }
-    if ty == TY_DOUBLE {
+    if is_float_type(ty) {
         emit_double_compound(files, tables, compiler, ir, node, file_index, target, binding, value, place_target, op)
         return
     }
@@ -1006,7 +1006,11 @@ recursive fn emit_expr_linear(
         // `x.m(args)` on a user struct is a call of Type_m with x first (struct_methods.nl)
         let kind = if syntax.kind == NodeKind.MethodCall && (compiler.facts[current].flags & FACT_STRUCT_METHOD) != 0L { NodeKind.Call } else { syntax.kind }
         if frame.phase == 0L {
-            if kind == NodeKind.Integer && compiler.facts[current].ty == TY_DOUBLE {
+            if (compiler.facts[current].flags & FACT_WINDOW_OP) != 0L {
+                frame.cursor = compiler.child_first[current]
+                frame.phase = 400L
+                compiler.expr_work[frame_index] = frame
+            } else if kind == NodeKind.Integer && is_float_type(compiler.facts[current].ty) {
                 emit_float_literal(source, files, tokens, tables, compiler, ir, current, file_index)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             } else if kind == NodeKind.Integer || kind == NodeKind.Bool {
@@ -1101,6 +1105,9 @@ recursive fn emit_expr_linear(
                 if frame.child0 >= 0L {
                     compiler.expr_work.push(EmitExprFrame { node: frame.child0, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
                 }
+            } else if (kind == NodeKind.ByteString || kind == NodeKind.BytesLiteral) && (compiler.facts[current].flags & FACT_ASCII_BYTE) != 0L {
+                // a one-character literal compared as a byte: its value is the constant
+                match compiler.expr_work.pop() { some(_) => (), none => () }
             } else if kind == NodeKind.ByteString || kind == NodeKind.BytesLiteral {
                 emit_text_literal_value(source, files, tokens, tables, compiler, ir, current, current, file_index, is_test || compiler.test_build)
                 match compiler.expr_work.pop() { some(_) => (), none => () }
@@ -1222,6 +1229,17 @@ recursive fn emit_expr_linear(
             } else {
                 match compiler.expr_work.pop() { some(_) => (), none => () }
             }
+        } else if frame.phase == 400L && (compiler.facts[current].flags & FACT_WINDOW_OP) != 0L {
+            // an operation on a window or an arena (windows.nl): evaluate the children in order, then emit the operation
+            if frame.cursor >= 0L {
+                let window_child = frame.cursor
+                frame.cursor = compiler.child_next[window_child]
+                compiler.expr_work[frame_index] = frame
+                compiler.expr_work.push(EmitExprFrame { node: window_child, phase: 0L, cursor: -1L, child0: -1L, child1: -1L, child2: -1L, auxiliary: -1L, reachable: true }).unwrap()
+            } else {
+                emit_window_op(files, tables, compiler, ir, current, file_index)
+                match compiler.expr_work.pop() { some(_) => (), none => () }
+            }
         } else if kind == NodeKind.Field && frame.phase == 1L {
             if compiler.c_runtime && compiler.facts[frame.child0].ty == TY_ENV {
                 emit_c_runtime_environment_field(compiler, ir, current)
@@ -1253,7 +1271,9 @@ recursive fn emit_expr_linear(
             } else {
                 emit_collection_index_address(files, tables, compiler, ir, current, file_index)
                 let ty = compiler.facts[current].ty
-                if is_aggregate_type(compiler, ty) {
+                if is_ascii_char_index(tables, compiler, current) {
+                    emit_ascii_char_value(tables, compiler, ir, current)
+                } else if is_aggregate_type(compiler, ty) {
                     if !collection_index_has_field_projection(tables, compiler, current) && !region_node_is_collection_method_receiver(tables, compiler, current) {
                         emit_collection_gather_index_value(tables, compiler, ir, current)
                     }
@@ -1356,7 +1376,7 @@ recursive fn emit_expr_linear(
             let ty = compiler.facts[current].ty
             if syntax.flags == 1L {
                 ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = xor i1 "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", true\n")
-            } else if ty == TY_DOUBLE {
+            } else if is_float_type(ty) {
                 emit_double_negate(compiler, ir, current, frame.child0)
             } else if syntax.flags == 2L {
                 ir_write_ascii(compiler, ir, "  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = xor "); ir_write_ascii(compiler, ir, llvm_type_name(ty)); ir_write_ascii(compiler, ir, " "); ir_write_value_ref(compiler, ir, frame.child0); ir_write_ascii(compiler, ir, ", -1\n")
@@ -1375,7 +1395,7 @@ recursive fn emit_expr_linear(
         } else if kind == NodeKind.Cast && frame.phase == 1L {
             let source_ty = compiler.facts[frame.child0].ty
             let target_ty = frame.auxiliary
-            if source_ty == TY_DOUBLE || target_ty == TY_DOUBLE {
+            if is_float_type(source_ty) || is_float_type(target_ty) {
                 emit_double_cast(files, tables, compiler, ir, current, file_index, frame.child0, source_ty, target_ty)
             } else if type_kind(compiler, target_ty) == TYPE_KIND_ASCII {
                 emit_ascii_cast(files, tables, compiler, ir, current, file_index, frame.child0, target_ty)
@@ -1531,13 +1551,13 @@ recursive fn emit_expr_linear(
             let left = frame.child0
             let right = frame.child1
             let op = syntax.flags
-            if compiler.facts[left].ty == TY_DOUBLE && op != 14L && op != 15L && op != 21L {
+            if is_float_type(compiler.facts[left].ty) && op != 14L && op != 15L && op != 21L {
                 emit_double_binary(files, tables, compiler, ir, current, file_index, op, left, right)
             } else if op == 14L || op == 15L {
                 ir_write_ascii(compiler, ir, "  store i1 "); ir_write_value_ref(compiler, ir, right); ir_write_ascii(compiler, ir, ", ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n  br label %logic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, "\nlogic.end."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ":\n  %v"); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, " = load i1, ptr %logic.slot."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", align 1\n")
-            } else if op >= 8L && op <= 13L && is_text_comparable(compiler, compiler.facts[left].ty, compiler.facts[right].ty) {
+            } else if op >= 8L && op <= 13L && (compiler.facts[current].flags & FACT_ASCII_BYTE) == 0L && is_text_comparable(compiler, compiler.facts[left].ty, compiler.facts[right].ty) {
                 emit_text_compare(tables, compiler, ir, current, op)
-            } else if (op == 8L || op == 9L) && is_aggregate_type(compiler, compiler.facts[left].ty) {
+            } else if (op == 8L || op == 9L) && (compiler.facts[current].flags & FACT_ASCII_BYTE) == 0L && is_aggregate_type(compiler, compiler.facts[left].ty) {
                 let ty = compiler.facts[left].ty
                 let left_location = if tables.nodes[left].kind == NodeKind.Name || tables.nodes[left].kind == NodeKind.Field { compiler_location(compiler, 0L, left, 0L) }
                     else { aggregate_source_location_for_node(tables, compiler, left) }
@@ -2739,9 +2759,21 @@ recursive fn emit_function_body(
             let collection_type = compiler.facts[collection].ty
             let collection_kind = type_kind(compiler, collection_type)
             let capacity = collection_capacity(compiler, collection_type)
-            let location = collection_value_location(tables, compiler, collection)
+            var location = collection_value_location(tables, compiler, collection)
+            // A collection that is itself a for-each view (nested loops) is addressed through its own collection.
+            if tables.nodes[collection].kind == NodeKind.Name && binding_is_view(compiler, compiler.facts[collection].binding) {
+                let view_address = emit_late_place_address(tables, compiler, ir, collection)
+                location = compiler_location(compiler, 2L, view_address, 0L)
+            }
+            if collection_kind == TYPE_KIND_MAP && tables.nodes[collection].kind == NodeKind.Field {
+                let map_address = emit_late_place_address(tables, compiler, ir, collection)
+                location = compiler_location(compiler, 2L, map_address, 0L)
+            }
             let pointer = emit_location_pointer_materialization(compiler, ir, location)
-            if collection_kind_is_list(collection_kind) {
+            if collection_kind == TYPE_KIND_MAP {
+                // the entries in use (live and removed) are visited in order; removed ones are skipped in the body
+                ir_write_ascii(compiler, ir, "  %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 8\n  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 1\n")
+            } else if collection_kind_is_list(collection_kind) {
                 ir_write_ascii(compiler, ir, "  %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 0\n  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 1\n")
             } else if collection_kind == TYPE_KIND_ASCII || collection_kind == TYPE_KIND_BYTES {
                 ir_write_ascii(compiler, ir, "  %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr "); emit_location_pointer_reference(compiler, ir, location, pointer); ir_write_ascii(compiler, ir, ", i64 0\n  %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.count.ptr."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 1\n")
@@ -2751,7 +2783,9 @@ recursive fn emit_function_body(
             ir_write_ascii(compiler, ir, "  store i64 0, ptr %for.each.index."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 8\n  br label %for.cond."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, "\nfor.cond."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ":\n  %for.each.current."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = load i64, ptr %for.each.index."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", align 8\n  %for.each.more."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, " = icmp ult i64 %for.each.current."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", %for.each.count."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, "\n  br i1 %for.each.more."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", label %for.body."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", label %for.end."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, "\nfor.body."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ":\n")
             let view_binding = compiler.facts[child].binding
             let view_scope = compiler.bindings[view_binding].scope
-            if tables.nodes[child].aux > 0L {
+            if collection_kind == TYPE_KIND_MAP {
+                emit_map_loop_entry(tables, compiler, ir, child, location, pointer, collection_type, view_binding, view_scope)
+            } else if tables.nodes[child].aux > 0L {
                 let index_token = tables.extra[tables.nodes[child].extra]
                 let index_binding = find_binding_in_scope(compiler, view_scope, compiler.token_name_ids[index_token])
                 if index_binding >= 0L { ir_write_ascii(compiler, ir, "  store i64 %for.each.current."); ir_write_number(compiler, ir, child); ir_write_ascii(compiler, ir, ", ptr %local."); ir_write_number(compiler, ir, index_binding); ir_write_ascii(compiler, ir, ", align 8\n") }

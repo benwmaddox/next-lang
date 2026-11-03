@@ -66,8 +66,38 @@ fn map_operand_is_scalar(compiler: CompilerTables, type_id: long) -> bool {
         (size == 1L || size == 4L || size == 8L)
 }
 
+// An enum none of whose cases carries a payload: its value is a 4-byte tag.
+fn map_enum_plain(compiler: CompilerTables, type_id: long) -> bool {
+    if type_kind(compiler, type_id) != TYPE_KIND_ENUM { return false }
+    for tag in 0L..sum_case_count(compiler, type_id) {
+        if sum_case_payload_count(compiler, type_id, tag) != 0L { return false }
+    }
+    true
+}
+
+// A struct, array, list or map stored in a map entry as plain bytes and passed by pointer. A type holding a pool is
+// refused (a pool value must stay unique).
+fn map_operand_is_aggregate(compiler: CompilerTables, type_id: long) -> bool {
+    let kind = type_kind(compiler, type_id)
+    (kind == TYPE_KIND_STRUCT || kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind) || kind == TYPE_KIND_MAP || map_enum_plain(compiler, type_id)) &&
+        !type_contains_pool(compiler, type_id, 0L)
+}
+
+// Text and aggregates travel by pointer; numbers travel widened to i64.
+fn map_operand_by_pointer(compiler: CompilerTables, type_id: long) -> bool {
+    map_operand_is_text(compiler, type_id) || map_operand_is_aggregate(compiler, type_id)
+}
+
+// A key is a number, bool, enum, text or a struct (hashed and compared field by field).
+fn map_key_supported(compiler: CompilerTables, type_id: long) -> bool {
+    // a window would be hashed and compared by position; by-content keys need the arena (not done), so windows are refused
+    if type_contains_window(compiler, type_id, 0L) { return false }
+    map_operand_is_text(compiler, type_id) || map_operand_is_scalar(compiler, type_id) ||
+        ((type_kind(compiler, type_id) == TYPE_KIND_STRUCT || map_enum_plain(compiler, type_id)) && map_operand_is_aggregate(compiler, type_id))
+}
+
 fn map_operand_supported(compiler: CompilerTables, type_id: long) -> bool {
-    map_operand_is_text(compiler, type_id) || map_operand_is_scalar(compiler, type_id)
+    map_operand_is_text(compiler, type_id) || map_operand_is_scalar(compiler, type_id) || map_operand_is_aggregate(compiler, type_id)
 }
 
 fn map_key_offset(compiler: CompilerTables, type_id: long) -> long {
@@ -131,7 +161,17 @@ fn intern_map_type(
         align: 8L,
         helper_mask: 0L,
     })
-    if value_type_size(compiler, key) >= 0L && value_type_size(compiler, value) >= 0L {
+    layout_map_type(compiler, type_id)
+    type_id
+}
+
+// Size a map type once its key and value types are sized (struct and collection layouts are known only after
+// size_package_types, so a map of those is sized there).
+fn layout_map_type(compiler: write CompilerTables, type_id: long) {
+    let key = map_key_type(compiler, type_id)
+    let value = map_value_type(compiler, type_id)
+    let capacity = map_capacity(compiler, type_id)
+    if type_state(compiler, type_id) == 0L && value_type_size(compiler, key) >= 0L && value_type_size(compiler, value) >= 0L {
         let slot_size = map_slot_size(compiler, type_id)
         let entries = checked_size_product(capacity, slot_size)
         let index = checked_size_product(map_slot_count(capacity), 4L)
@@ -143,12 +183,19 @@ fn intern_map_type(
             set_type_layout(compiler, type_id, MAX_VALUE_SIZE, map_slot_align(compiler, type_id), 2L)
         } else { set_type_layout(compiler, type_id, size, map_slot_align(compiler, type_id), 2L) }
     }
-    type_id
+}
+
+// After size_package_types: size the maps whose key or value type was not sized when the map was written.
+fn size_pending_maps(compiler: write CompilerTables) {
+    for type_id in 0L..type_count(compiler) {
+        if type_kind(compiler, type_id) == TYPE_KIND_MAP { layout_map_type(compiler, type_id) }
+    }
 }
 
 // ---- generated per-type functions -------------------------------------------------------------
 
 fn map_param_type(compiler: CompilerTables, type_id: long) -> Ascii max 4 {
+    if map_operand_by_pointer(compiler, type_id) { return "ptr" }
     if map_operand_is_text(compiler, type_id) { "ptr" } else { "i64" }
 }
 
@@ -196,6 +243,66 @@ fn emit_map_text_copy(compiler: write CompilerTables, ir: grow Bytes max IR_BUFF
     ir_write_ascii(compiler, ir, ", ptr %"); ir_write_ascii(compiler, ir, source_name); ir_write_ascii(compiler, ir, ", i64 %tc.n"); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, ")\n")
 }
 
+// Copy a whole aggregate (struct, array, list or map) of `size` bytes from %source_name to %destination_name.
+fn emit_map_aggregate_copy(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, size: long, destination_name: Ascii max 24, source_name: Ascii max 24, tag: long) {
+    ir_write_ascii(compiler, ir, "  %ac"); ir_write_number(compiler, ir, tag); ir_write_ascii(compiler, ir, " = call ptr @nl.mem.copy(ptr %"); ir_write_ascii(compiler, ir, destination_name)
+    ir_write_ascii(compiler, ir, ", ptr %"); ir_write_ascii(compiler, ir, source_name); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
+}
+
+// hashtext(ptr text, i64 data_offset, i64 h): FNV-1a over the live bytes of a text value, for text fields of a struct key.
+fn emit_map_text_hash_function(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
+    ir_write_ascii(compiler, ir, "define internal i64 @nl.map.hashtext(ptr %t, i64 %off, i64 %h0) {\nentry:\n  %len = load i64, ptr %t\n  %data = getelementptr i8, ptr %t, i64 %off\n  br label %loop\nloop:\n")
+    ir_write_ascii(compiler, ir, "  %i = phi i64 [ 0, %entry ], [ %in, %body ]\n  %h = phi i64 [ %h0, %entry ], [ %hn, %body ]\n  %more = icmp ult i64 %i, %len\n  br i1 %more, label %body, label %done\nbody:\n")
+    ir_write_ascii(compiler, ir, "  %p = getelementptr i8, ptr %data, i64 %i\n  %b = load i8, ptr %p\n  %bz = zext i8 %b to i64\n  %x = xor i64 %h, %bz\n  %hn = mul i64 %x, ")
+    ir_write_number(compiler, ir, MAP_FNV_PRIME)
+    ir_write_ascii(compiler, ir, "\n  %in = add i64 %i, 1\n  br label %loop\ndone:\n  ret i64 %h\n}\n\n")
+}
+
+// The hash of a struct key, field by field: numbers, bools, enums and text (nested structs are walked). Other fields do
+// not take part, which keeps equal keys on equal hashes. The running hash is %hs.<serial>; the result is the serial of
+// the final one.
+recursive fn emit_map_hash_fields(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, type_id: long, base: long, serial: long) -> long {
+    let record = type_record(compiler, type_id)
+    var current = serial
+    for offset in 0L..record.field_count {
+        let field = compiler.struct_fields[record.field_start + offset]
+        let at = base + field.offset
+        if map_operand_is_text(compiler, field.ty) {
+            let next = current + 1L
+            ir_write_ascii(compiler, ir, "  %hp."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %k, i64 "); ir_write_number(compiler, ir, at)
+            ir_write_ascii(compiler, ir, "\n  %hs."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = call i64 @nl.map.hashtext(ptr %hp."); ir_write_number(compiler, ir, next)
+            ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, text_data_offset(compiler, field.ty)); ir_write_ascii(compiler, ir, ", i64 %hs."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ")\n")
+            current = next
+        } else if map_operand_is_scalar(compiler, field.ty) && llvm_type_name(field.ty) != "double" && llvm_type_name(field.ty) != "float" {
+            let next = current + 1L
+            let size = value_type_size(compiler, field.ty)
+            let storage = if size == 8L { "i64" } else if size == 4L { "i32" } else { "i8" }
+            let widen: Ascii max 24 = if size == 4L { " = sext i32 %hr." } else { " = zext i8 %hr." }
+            ir_write_ascii(compiler, ir, "  %hp."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %k, i64 "); ir_write_number(compiler, ir, at)
+            ir_write_ascii(compiler, ir, "\n  %hr."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = load "); ir_write_ascii(compiler, ir, storage); ir_write_ascii(compiler, ir, ", ptr %hp."); ir_write_number(compiler, ir, next)
+            if size == 8L {
+                ir_write_ascii(compiler, ir, "\n  %hx."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = xor i64 %hs."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %hr."); ir_write_number(compiler, ir, next)
+            } else {
+                ir_write_ascii(compiler, ir, "\n  %hv."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, widen); ir_write_number(compiler, ir, next)
+                ir_write_ascii(compiler, ir, " to i64\n  %hx."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = xor i64 %hs."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %hv."); ir_write_number(compiler, ir, next)
+            }
+            ir_write_ascii(compiler, ir, "\n  %hs."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = mul i64 %hx."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, MAP_FNV_PRIME); ir_push_byte(compiler, ir, 10)
+            current = next
+        } else if map_enum_plain(compiler, field.ty) {
+            let next = current + 1L
+            ir_write_ascii(compiler, ir, "  %hp."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %k, i64 "); ir_write_number(compiler, ir, at)
+            ir_write_ascii(compiler, ir, "\n  %hr."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = load i32, ptr %hp."); ir_write_number(compiler, ir, next)
+            ir_write_ascii(compiler, ir, "\n  %hv."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = zext i32 %hr."); ir_write_number(compiler, ir, next)
+            ir_write_ascii(compiler, ir, " to i64\n  %hx."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = xor i64 %hs."); ir_write_number(compiler, ir, current); ir_write_ascii(compiler, ir, ", %hv."); ir_write_number(compiler, ir, next)
+            ir_write_ascii(compiler, ir, "\n  %hs."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, " = mul i64 %hx."); ir_write_number(compiler, ir, next); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, MAP_FNV_PRIME); ir_push_byte(compiler, ir, 10)
+            current = next
+        } else if type_kind(compiler, field.ty) == TYPE_KIND_STRUCT {
+            current = emit_map_hash_fields(compiler, ir, field.ty, at, current)
+        } else { () }
+    }
+    current
+}
+
 fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY, type_id: long) {
     let key = map_key_type(compiler, type_id)
     let value = map_value_type(compiler, type_id)
@@ -206,7 +313,11 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
     let key_offset = map_key_offset(compiler, type_id)
     let value_offset = map_value_offset(compiler, type_id)
     let key_is_text = map_operand_is_text(compiler, key)
+    let key_is_struct = type_kind(compiler, key) == TYPE_KIND_STRUCT
+    let key_is_enum = map_enum_plain(compiler, key)
+    let key_by_pointer = key_is_text || key_is_struct || key_is_enum
     let value_is_text = map_operand_is_text(compiler, value)
+    let value_by_pointer = map_operand_by_pointer(compiler, value)
     let key_size = value_type_size(compiler, key)
     let value_size = value_type_size(compiler, value)
     let key_data = if key_is_text { text_data_offset(compiler, key) } else { 0L }
@@ -224,6 +335,12 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
         ir_write_ascii(compiler, ir, "  %p = getelementptr i8, ptr %data, i64 %i\n  %b = load i8, ptr %p\n  %bz = zext i8 %b to i64\n  %x = xor i64 %h, %bz\n  %hn = mul i64 %x, ")
         ir_write_number(compiler, ir, MAP_FNV_PRIME)
         ir_write_ascii(compiler, ir, "\n  %in = add i64 %i, 1\n  br label %loop\ndone:\n  %m = mul i64 %h, "); ir_write_number(compiler, ir, MAP_HASH_MULTIPLIER)
+    } else if key_is_struct {
+        ir_write_ascii(compiler, ir, "  %hs.0 = add i64 0, "); ir_write_number(compiler, ir, MAP_FNV_OFFSET); ir_push_byte(compiler, ir, 10)
+        let last = emit_map_hash_fields(compiler, ir, key, 0L, 0L)
+        ir_write_ascii(compiler, ir, "  %m = mul i64 %hs."); ir_write_number(compiler, ir, last); ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, MAP_HASH_MULTIPLIER)
+    } else if key_is_enum {
+        ir_write_ascii(compiler, ir, "  %t = load i32, ptr %k\n  %tz = zext i32 %t to i64\n  %m = mul i64 %tz, "); ir_write_number(compiler, ir, MAP_HASH_MULTIPLIER)
     } else {
         ir_write_ascii(compiler, ir, "  %m = mul i64 %k, "); ir_write_number(compiler, ir, MAP_HASH_MULTIPLIER)
     }
@@ -231,7 +348,7 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
 
     // hashslot(ptr slotkey): hash of a key already stored in a slot
     ir_write_ascii(compiler, ir, "define internal i64 "); ir_map_sym(compiler, ir, "hashslot", type_id); ir_write_ascii(compiler, ir, "(ptr %p) {\nentry:\n")
-    if key_is_text {
+    if key_by_pointer {
         ir_write_ascii(compiler, ir, "  %h = call i64 "); ir_map_sym(compiler, ir, "hash", type_id); ir_write_ascii(compiler, ir, "(ptr %p)\n")
     } else {
         emit_map_scalar_load(compiler, ir, key_size, "p", "k")
@@ -247,6 +364,11 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
         ir_write_ascii(compiler, ir, "  %da = getelementptr i8, ptr %k, i64 "); ir_write_number(compiler, ir, key_data)
         ir_write_ascii(compiler, ir, "\n  %db = getelementptr i8, ptr %p, i64 "); ir_write_number(compiler, ir, key_data)
         ir_write_ascii(compiler, ir, "\n  br label %cmp.loop\ncmp.loop:\n  %ci = phi i64 [ 0, %cmp ], [ %ci1, %cmp.step ]\n  %cdone = icmp uge i64 %ci, %la\n  br i1 %cdone, label %yes, label %cmp.byte\ncmp.byte:\n  %pa = getelementptr i8, ptr %da, i64 %ci\n  %pb = getelementptr i8, ptr %db, i64 %ci\n  %ba = load i8, ptr %pa\n  %bb = load i8, ptr %pb\n  %bsame = icmp eq i8 %ba, %bb\n  br i1 %bsame, label %cmp.step, label %no\ncmp.step:\n  %ci1 = add i64 %ci, 1\n  br label %cmp.loop\nyes:\n  ret i1 true\nno:\n  ret i1 false\n}\n\n")
+    } else if key_is_struct {
+        ir_write_ascii(compiler, ir, "  %z = call i1 "); emit_type_helper_symbol(compiler, ir, key, HELPER_EQUAL)
+        ir_write_ascii(compiler, ir, "(ptr null, ptr %k, ptr %p)\n  ret i1 %z\n}\n\n")
+    } else if key_is_enum {
+        ir_write_ascii(compiler, ir, "  %la = load i32, ptr %k\n  %lb = load i32, ptr %p\n  %z = icmp eq i32 %la, %lb\n  ret i1 %z\n}\n\n")
     } else {
         emit_map_scalar_load(compiler, ir, key_size, "p", "v")
         ir_write_ascii(compiler, ir, "  %z = icmp eq i64 %k, %v\n  ret i1 %z\n}\n\n")
@@ -311,15 +433,21 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
     ir_write_number(compiler, ir, slot_size)
     ir_write_ascii(compiler, ir, "\n  %uo = add i64 %uoff, "); ir_write_number(compiler, ir, 16L + value_offset)
     ir_write_ascii(compiler, ir, "\n  %up = getelementptr i8, ptr %map, i64 %uo\n")
-    if value_is_text { emit_map_text_copy(compiler, ir, value_data, "up", "v", 1L) } else { emit_map_scalar_store(compiler, ir, value_size, "up", "v", 1L) }
+    if value_is_text { emit_map_text_copy(compiler, ir, value_data, "up", "v", 1L) }
+    else if value_by_pointer { emit_map_aggregate_copy(compiler, ir, value_size, "up", "v", 1L) }
+    else { emit_map_scalar_store(compiler, ir, value_size, "up", "v", 1L) }
     ir_write_ascii(compiler, ir, "  ret i1 true\ninsert:\n  %usedp = getelementptr i8, ptr %map, i64 8\n  %used = load i64, ptr %usedp\n  %roomy = icmp ult i64 %used, "); ir_write_number(compiler, ir, capacity)
     ir_write_ascii(compiler, ir, "\n  br i1 %roomy, label %place, label %packed\npacked:\n  %cnt = load i64, ptr %map\n  %slack = icmp ult i64 %cnt, "); ir_write_number(compiler, ir, capacity)
     ir_write_ascii(compiler, ir, "\n  br i1 %slack, label %squeeze, label %full\nfull:\n  ret i1 false\nsqueeze:\n  call void "); ir_map_sym(compiler, ir, "compact", type_id)
     ir_write_ascii(compiler, ir, "(ptr %map)\n  br label %place\nplace:\n  %e = load i64, ptr %usedp\n  %eoff = mul i64 %e, "); ir_write_number(compiler, ir, slot_size)
     ir_write_ascii(compiler, ir, "\n  %eo = add i64 %eoff, 16\n  %ep = getelementptr i8, ptr %map, i64 %eo\n  store i64 1, ptr %ep\n  %kp = getelementptr i8, ptr %ep, i64 "); ir_write_number(compiler, ir, key_offset); ir_push_byte(compiler, ir, 10)
-    if key_is_text { emit_map_text_copy(compiler, ir, key_data, "kp", "k", 2L) } else { emit_map_scalar_store(compiler, ir, key_size, "kp", "k", 2L) }
+    if key_is_text { emit_map_text_copy(compiler, ir, key_data, "kp", "k", 2L) }
+    else if key_is_struct || key_is_enum { emit_map_aggregate_copy(compiler, ir, key_size, "kp", "k", 2L) }
+    else { emit_map_scalar_store(compiler, ir, key_size, "kp", "k", 2L) }
     ir_write_ascii(compiler, ir, "  %vp = getelementptr i8, ptr %ep, i64 "); ir_write_number(compiler, ir, value_offset); ir_push_byte(compiler, ir, 10)
-    if value_is_text { emit_map_text_copy(compiler, ir, value_data, "vp", "v", 3L) } else { emit_map_scalar_store(compiler, ir, value_size, "vp", "v", 3L) }
+    if value_is_text { emit_map_text_copy(compiler, ir, value_data, "vp", "v", 3L) }
+    else if value_by_pointer { emit_map_aggregate_copy(compiler, ir, value_size, "vp", "v", 3L) }
+    else { emit_map_scalar_store(compiler, ir, value_size, "vp", "v", 3L) }
     ir_write_ascii(compiler, ir, "  %e2 = add i64 %e, 1\n  store i64 %e2, ptr %usedp\n  %cnt2o = load i64, ptr %map\n  %cnt2 = add i64 %cnt2o, 1\n  store i64 %cnt2, ptr %map\n  %h = call i64 "); ir_map_sym(compiler, ir, "hash", type_id)
     ir_write_ascii(compiler, ir, "("); ir_write_ascii(compiler, ir, key_param); ir_write_ascii(compiler, ir, " %k)\n  call void "); ir_map_sym(compiler, ir, "link", type_id)
     ir_write_ascii(compiler, ir, "(ptr %map, i64 %h, i64 %e)\n  ret i1 true\n}\n\n")
@@ -340,11 +468,16 @@ fn emit_map_functions_for_type(compiler: write CompilerTables, ir: grow Bytes ma
 
 fn emit_map_type_functions(compiler: write CompilerTables, ir: grow Bytes max IR_BUFFER_CAPACITY) {
     emit_map_memory_wrappers(compiler, ir)
+    var struct_keys = false
+    for type_id in 0L..type_count(compiler) {
+        if type_kind(compiler, type_id) == TYPE_KIND_MAP && type_state(compiler, type_id) == 2L && type_kind(compiler, map_key_type(compiler, type_id)) == TYPE_KIND_STRUCT { struct_keys = true }
+    }
+    if struct_keys { emit_map_text_hash_function(compiler, ir) }
     for type_id in 0L..type_count(compiler) {
         if type_kind(compiler, type_id) == TYPE_KIND_MAP && type_state(compiler, type_id) == 2L {
             let key = map_key_type(compiler, type_id)
             let value = map_value_type(compiler, type_id)
-            if map_operand_supported(compiler, key) && map_operand_supported(compiler, value) {
+            if map_key_supported(compiler, key) && map_operand_supported(compiler, value) {
                 emit_map_functions_for_type(compiler, ir, type_id)
             }
         }
@@ -371,10 +504,10 @@ fn emit_map_operand_prepare(
     node: long,
     slot: long,
 ) -> MapOperand {
-    if map_operand_is_text(compiler, type_id) {
+    if map_operand_by_pointer(compiler, type_id) {
         let source_kind = if tables.nodes[argument].kind == NodeKind.Name && compiler.facts[argument].binding >= 0L {
             if compiler.bindings[compiler.facts[argument].binding].parameter { 2L } else { 1L }
-        } else if tables.nodes[argument].kind == NodeKind.Field { 3L } else { 0L }
+        } else if tables.nodes[argument].kind == NodeKind.Field && !is_enum_case_field(tables, compiler, argument) { 3L } else { 0L }
         let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[argument].binding } else { argument }
         let location = aggregate_source_location(compiler, source_kind, source_id)
         let pointer = emit_location_pointer_materialization(compiler, ir, location)
@@ -521,7 +654,7 @@ fn intern_map_type_syntax(
     if capacity_value.value < 0L { collection_capacity_error(env, files, compiler, file_index, tables.nodes[capacity_node].start, true, true) }
     let key = compiler.facts[key_node].ty
     let value = compiler.facts[value_node].ty
-    if !map_operand_supported(compiler, key) {
+    if !map_key_supported(compiler, key) {
         report_unsupported(env, source, files, tokens, tables, compiler, UnsupportedHit { found: true, file: file_index, node: key_node, offset: tables.nodes[key_node].start, category: UNSUPPORTED_MAP_ELEMENT, token: syntax.token })
     }
     if !map_operand_supported(compiler, value) {
@@ -555,4 +688,192 @@ fn emit_map_memory_wrappers(compiler: write CompilerTables, ir: grow Bytes max I
     ir_write_ascii(compiler, ir, "define internal ptr @nl.mem.copy(ptr %d, ptr %s, i64 %n) {\nentry:\n  call void @llvm.memcpy.p0.p0.i64(ptr %d, ptr %s, i64 %n, i1 false)\n  ret ptr %d\n}\n")
     ir_write_ascii(compiler, ir, "define internal ptr @nl.mem.move(ptr %d, ptr %s, i64 %n) {\nentry:\n  call void @llvm.memmove.p0.p0.i64(ptr %d, ptr %s, i64 %n, i1 false)\n  ret ptr %d\n}\n")
     ir_write_ascii(compiler, ir, "define internal ptr @nl.mem.set(ptr %d, i32 %v, i64 %n) {\nentry:\n  %b = trunc i32 %v to i8\n  call void @llvm.memset.p0.i64(ptr %d, i8 %b, i64 %n, i1 false)\n  ret ptr %d\n}\n\n")
+}
+
+// An unsized struct, sum or collection type that keeps a map (state 0) from being sized: the walker lays it out first.
+// Maps nested in the key or value are sized on the way.
+recursive fn map_blocking_child(compiler: write CompilerTables, type_id: long) -> long {
+    for part in 0L..2L {
+        let child = if part == 0L { map_key_type(compiler, type_id) } else { map_value_type(compiler, type_id) }
+        let kind = type_kind(compiler, child)
+        if kind == TYPE_KIND_MAP && type_state(compiler, child) == 0L {
+            let inner = map_blocking_child(compiler, child)
+            if inner >= 0L { return inner }
+            layout_map_type(compiler, child)
+        } else if value_type_size(compiler, child) < 0L && type_state(compiler, child) == 0L &&
+            (kind == TYPE_KIND_STRUCT || is_sum_type(compiler, child) || kind == TYPE_KIND_ARRAY || collection_kind_is_list(kind)) {
+            return child
+        } else { () }
+    }
+    -1L
+}
+
+// Whether a struct can be a map key: every field is a number, bool, enum, text or a struct that can itself be a key.
+recursive fn map_struct_key_hashable(compiler: CompilerTables, type_id: long, depth: long) -> bool {
+    if depth > 8L { return false }
+    let record = type_record(compiler, type_id)
+    for offset in 0L..record.field_count {
+        let field_ty = compiler.struct_fields[record.field_start + offset].ty
+        let field_kind = type_kind(compiler, field_ty)
+        if type_contains_window(compiler, field_ty, 0L) { return false }
+        if map_operand_is_text(compiler, field_ty) || map_enum_plain(compiler, field_ty) { continue }
+        if map_operand_is_scalar(compiler, field_ty) && llvm_type_name(field_ty) != "double" && llvm_type_name(field_ty) != "float" { continue }
+        if field_kind == TYPE_KIND_STRUCT && map_struct_key_hashable(compiler, field_ty, depth + 1L) { continue }
+        return false
+    }
+    true
+}
+
+// After the struct fields are resolved: refuse a map whose struct key has a field that cannot be hashed.
+fn check_map_keys(
+    env: Env,
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+) {
+    for type_id in 0L..type_count(compiler) {
+        if type_kind(compiler, type_id) != TYPE_KIND_MAP { continue }
+        let key = map_key_type(compiler, type_id)
+        if type_kind(compiler, key) != TYPE_KIND_STRUCT || map_struct_key_hashable(compiler, key, 0L) { continue }
+        let record = type_record(compiler, type_id)
+        let key_node = compiler.child_first[record.node]
+        if key_node < 0L { continue }
+        fail_dynamic_checker_error(env, source, files, tokens, compiler, record.file, tables.nodes[key_node].start,
+            "map key type '", tables.nodes[key_node].token, "' is not hashable; use Ascii, integers, bool, enums, ids, or structs built from those types")
+    }
+}
+
+// ---- for-each over a map ------------------------------------------------------------------------
+// `for k, v in m { ... }` and `for k in m { ... }` visit the live entries in insertion order (the order of the
+// entries array: setting an existing key keeps its position, removing a key and setting it again puts it last).
+// k and v are read-only copies of the key and value. The loop may not change the map it walks.
+
+// The field path of a place, leaf first (-1 stands for an index, whose element is not known). False when too long.
+fn map_loop_place_chain(tables: ParseTables, compiler: CompilerTables, node: long, chain: write list<long, 16>) -> bool {
+    var current = node
+    for step in 0L..16L {
+        if current < 0L { return false }
+        let kind = tables.nodes[current].kind
+        if kind == NodeKind.Name { return true }
+        if kind == NodeKind.Field {
+            match chain.push(compiler.facts[current].literal) { ok(_) => (), err(_) => { return false } }
+        } else if kind == NodeKind.Index {
+            match chain.push(-1L) { ok(_) => (), err(_) => { return false } }
+        } else { return false }
+        current = compiler.child_first[current]
+    }
+    false
+}
+
+// Whether changing `written` could change `walked`: both rooted at the same binding and `written` is `walked` or a part
+// that contains it (the whole record holding the map).
+fn map_loop_place_conflict(tables: ParseTables, compiler: CompilerTables, written: long, walked: long) -> bool {
+    let binding = place_root_binding(tables, compiler, written)
+    if binding < 0L || binding != place_root_binding(tables, compiler, walked) { return false }
+    var written_chain: list<long, 16> = list {}
+    var walked_chain: list<long, 16> = list {}
+    if !map_loop_place_chain(tables, compiler, written, written_chain) || !map_loop_place_chain(tables, compiler, walked, walked_chain) { return true }
+    if written_chain.count() > walked_chain.count() { return false }
+    for step in 0L..written_chain.count() {
+        let a = written_chain[written_chain.count() - 1L - step]
+        let b = walked_chain[walked_chain.count() - 1L - step]
+        if a < 0L || b < 0L { return true }
+        if a != b { return false }
+    }
+    true
+}
+
+// The first node in the loop body that could change the walked map, else -1: set or remove on it, an assignment to it
+// or to something holding it, or passing it (or something holding it) to a `write` parameter.
+fn map_loop_mutation(
+    source: Bytes max SOURCE_BUFFER_CAPACITY,
+    tokens: list<Token, TOKEN_STORAGE_CAPACITY>,
+    files: list<SourceFile, MAX_SOURCE_FILES>,
+    tables: ParseTables,
+    compiler: CompilerTables,
+    body: long,
+    walked: long,
+) -> long {
+    let first = body - tables.nodes[body].subtree + 1L
+    for node in first..body + 1L {
+        let kind = tables.nodes[node].kind
+        if kind == NodeKind.Assign {
+            if map_loop_place_conflict(tables, compiler, compiler.child_first[node], walked) { return node }
+        } else if kind == NodeKind.MethodCall || kind == NodeKind.Call {
+            let function_id = compiler.facts[node].function
+            let receiver = compiler.child_first[node]
+            if kind == NodeKind.MethodCall && receiver >= 0L && type_kind(compiler, compiler.facts[receiver].ty) == TYPE_KIND_MAP {
+                let method = compiler.facts[node].literal
+                if (method == COLLECTION_METHOD_MAP_SET || method == COLLECTION_METHOD_MAP_REMOVE) && map_loop_place_conflict(tables, compiler, receiver, walked) { return node }
+            }
+            if function_id >= 0L && (kind == NodeKind.Call || (compiler.facts[node].flags & FACT_STRUCT_METHOD) != 0L) {
+                let function = compiler.functions[function_id]
+                var argument = compiler.child_first[node]
+                for offset in 0L..function.param_count {
+                    if argument < 0L { break }
+                    let mode = parameter_mode(compiler.parameters[function.param_start + offset])
+                    if (mode & (FLAG_MODE_WRITE | FLAG_MODE_GROW)) != 0L && map_loop_place_conflict(tables, compiler, argument, walked) { return node }
+                    argument = compiler.child_next[argument]
+                }
+            }
+        } else { () }
+    }
+    -1L
+}
+
+// The start of one loop iteration over entry number %for.each.current.N: skip a removed entry, else copy its key (and
+// value, when the loop names one) into the loop's own variables.
+fn emit_map_loop_entry(
+    tables: ParseTables,
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    map_location: StorageLocation,
+    map_pointer: long,
+    map_type: long,
+    key_binding: long,
+    scope: long,
+) {
+    let key = map_key_type(compiler, map_type)
+    let value = map_value_type(compiler, map_type)
+    ir_write_ascii(compiler, ir, "  %for.map.offset."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = mul i64 %for.each.current."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", "); ir_write_number(compiler, ir, map_slot_size(compiler, map_type))
+    ir_write_ascii(compiler, ir, "\n  %for.map.shifted."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = add i64 %for.map.offset."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", 16\n  %for.map.entry."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = getelementptr i8, ptr ")
+    emit_location_pointer_reference(compiler, ir, map_location, map_pointer)
+    ir_write_ascii(compiler, ir, ", i64 %for.map.shifted."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, "\n  %for.map.state."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = load i64, ptr %for.map.entry."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, "\n  %for.map.live."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, " = icmp eq i64 %for.map.state."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", 1\n  br i1 %for.map.live."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", label %for.map.take."); ir_write_number(compiler, ir, node)
+    ir_write_ascii(compiler, ir, ", label %for.increment."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, "\nfor.map.take."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ":\n")
+    emit_map_loop_copy(compiler, ir, node, 0L, map_key_offset(compiler, map_type), value_type_size(compiler, key), key_binding)
+    if tables.nodes[node].aux > 0L {
+        let value_token = tables.extra[tables.nodes[node].extra]
+        let value_binding = find_binding_in_scope(compiler, scope, compiler.token_name_ids[value_token])
+        if value_binding >= 0L {
+            emit_map_loop_copy(compiler, ir, node, 1L, map_value_offset(compiler, map_type), value_type_size(compiler, value), value_binding)
+        }
+    }
+}
+
+// Copy `size` bytes at `offset` in %for.map.entry.N into the local of `binding`.
+fn emit_map_loop_copy(
+    compiler: write CompilerTables,
+    ir: grow Bytes max IR_BUFFER_CAPACITY,
+    node: long,
+    part: long,
+    offset: long,
+    size: long,
+    binding: long,
+) {
+    let destination = compiler_location(compiler, 1L, binding, 0L)
+    let serial = emit_location_pointer_materialization(compiler, ir, destination)
+    ir_write_ascii(compiler, ir, "  %for.map.source."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, part)
+    ir_write_ascii(compiler, ir, " = getelementptr i8, ptr %for.map.entry."); ir_write_number(compiler, ir, node); ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, offset)
+    ir_write_ascii(compiler, ir, "\n  %for.map.copy."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, part)
+    ir_write_ascii(compiler, ir, " = call ptr @nl.mem.copy(ptr "); emit_location_pointer_reference(compiler, ir, destination, serial)
+    ir_write_ascii(compiler, ir, ", ptr %for.map.source."); ir_write_number(compiler, ir, node); ir_push_byte(compiler, ir, 46); ir_write_number(compiler, ir, part)
+    ir_write_ascii(compiler, ir, ", i64 "); ir_write_number(compiler, ir, size); ir_write_ascii(compiler, ir, ")\n")
 }

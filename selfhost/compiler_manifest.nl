@@ -271,6 +271,9 @@ fn scalar_type_name(ty: long) -> Ascii max 16 {
     else if ty == TY_LONG { "long" }
     else if ty == TY_BOOL { "bool" }
     else if ty == TY_BYTE { "byte" }
+    else if ty == TY_DOUBLE { "double" }
+    else if ty == TY_FLOAT { "float" }
+    else if ty == TY_WINDOW { "Window" }
     else if ty == TY_UNIT { "()" }
     else if ty == TY_ADDR { "sys.Addr" }
     else { "never" }

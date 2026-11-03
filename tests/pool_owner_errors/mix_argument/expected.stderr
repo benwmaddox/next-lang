@@ -1,0 +1,3 @@
+main.nl:18:40: error: expected labels.Id, got nodes.Id
+   18 |         ok(id) => print(text_of(world, id)),
+      |                                        ^

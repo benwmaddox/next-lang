@@ -128,7 +128,7 @@ what unblocks the most:
 
 ## 6. Compiler and tooling quality
 
-- **Open compiler bugs (docs/campfire-friction.md 24, 25):** `for x in list` with the element's field passed on gives a stale value;
+- **Open compiler bugs (docs/campfire-friction.md 24 (the push form is fixed), 25):** `for x in list` with the element's field passed on gives a stale value;
   pushing a loop element into another list of the same type generates IR that clang rejects; a `Bytes` inside a struct reached through a
   `write` parameter cannot grow (`grow` is for builders only).
 - **Tests take 10 to 15 minutes before a commit:** split into a fast set that runs on every commit and the full set on the server.
@@ -140,3 +140,7 @@ what unblocks the most:
 
 1 (CLI basics) and 2 (outgoing connections) first: each opens a whole kind of program. Then 3 (JSON, forms, library), then 4 and 5 in
 parallel with them as measurements and ports allow; 6 as it hurts.
+
+## Developer and agent experience
+
+Done 2026-11-02 (AGENTS.md, docs/LANGUAGE.md, docs/campfire-friction.md round 8): agent entry point, a tested language tour, `nlc check`, caret diagnostics and `--json`, `nlc test --filter`, `scripts/test-related.sh`, whitespace `nlc fmt`. Still open, in the order that hurts: report more than one error per run, name structs in mismatch errors, a layout-aware formatter, an LSP (diagnostics first, built on `check --json`), shortening the full suite.

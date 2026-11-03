@@ -1223,8 +1223,14 @@ recursive fn parse_named_type(
     var constants = 0L
     var arrays = 0L
     if cursor_take(tables, tokens, TokenKind.Lt) {
-        parse_type(source, tokens, tables, NodeKind.TypeArgument)?
-        argument_count += 1L
+        if type_name_is(source, tokens, tables, name.token, "arena") {
+            // `arena<N>`: the capacity in bytes is the only argument (a constant expression, no type argument)
+            parse_expression(source, tokens, tables, 8L)?
+            constants += 1L
+        } else {
+            parse_type(source, tokens, tables, NodeKind.TypeArgument)?
+            argument_count += 1L
+        }
         if (type_name_is(source, tokens, tables, name.token, "list") || type_name_is(source, tokens, tables, name.token, "mailbox") || type_name_is(source, tokens, tables, name.token, "pool") || type_name_is(source, tokens, tables, name.token, "queue") || type_name_is(source, tokens, tables, name.token, "ring")) && cursor_take(tables, tokens, TokenKind.Comma) {
             cursor_skip_newlines(tables, tokens)
             parse_expression(source, tokens, tables, 8L)?
@@ -2559,7 +2565,7 @@ fn can_start_struct(
     } else {
         ()
     }
-    token_is_word(source, tokens, name_token, tables.state.file_base, "mailbox") || token_is_word(source, tokens, name_token, tables.state.file_base, "list") || token_is_word(source, tokens, name_token, tables.state.file_base, "pool") || token_is_word(source, tokens, name_token, tables.state.file_base, "map") || token_is_word(source, tokens, name_token, tables.state.file_base, "set") || token_is_word(source, tokens, name_token, tables.state.file_base, "queue") || token_is_word(source, tokens, name_token, tables.state.file_base, "ring") || is_upper_ascii(source[tables.state.file_base + tokens[name_token].start])
+    token_is_word(source, tokens, name_token, tables.state.file_base, "mailbox") || token_is_word(source, tokens, name_token, tables.state.file_base, "list") || token_is_word(source, tokens, name_token, tables.state.file_base, "pool") || token_is_word(source, tokens, name_token, tables.state.file_base, "arena") || token_is_word(source, tokens, name_token, tables.state.file_base, "map") || token_is_word(source, tokens, name_token, tables.state.file_base, "set") || token_is_word(source, tokens, name_token, tables.state.file_base, "queue") || token_is_word(source, tokens, name_token, tables.state.file_base, "ring") || is_upper_ascii(source[tables.state.file_base + tokens[name_token].start])
 }
 
 fn is_upper_ascii(value: byte) -> bool { value >= 65 && value <= 90 }
@@ -2578,7 +2584,7 @@ recursive fn postfix_struct_literal(
         let _ = tables.nodes.pop()
     }
     let is_list = token_is_word(source, tokens, name_token, tables.state.file_base, "list")
-    let is_pool = token_is_word(source, tokens, name_token, tables.state.file_base, "pool") || token_is_word(source, tokens, name_token, tables.state.file_base, "mailbox")
+    let is_pool = token_is_word(source, tokens, name_token, tables.state.file_base, "pool") || token_is_word(source, tokens, name_token, tables.state.file_base, "arena") || token_is_word(source, tokens, name_token, tables.state.file_base, "mailbox")
     let is_map = token_is_word(source, tokens, name_token, tables.state.file_base, "map")
     let is_set = token_is_word(source, tokens, name_token, tables.state.file_base, "set")
     let is_queue = token_is_word(source, tokens, name_token, tables.state.file_base, "queue")
@@ -2829,7 +2835,7 @@ recursive fn parse_parenthesized(
 fn is_cast_start(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
     let first = cursor_peek(tables, tokens, 0L)
     let second = cursor_peek(tables, tokens, 1L)
-    let simple = token_is_word(source, tokens, first.token, tables.state.file_base, "int") || token_is_word(source, tokens, first.token, tables.state.file_base, "long") || token_is_word(source, tokens, first.token, tables.state.file_base, "bool") || token_is_word(source, tokens, first.token, tables.state.file_base, "byte") || token_is_word(source, tokens, first.token, tables.state.file_base, "double")
+    let simple = token_is_word(source, tokens, first.token, tables.state.file_base, "int") || token_is_word(source, tokens, first.token, tables.state.file_base, "long") || token_is_word(source, tokens, first.token, tables.state.file_base, "bool") || token_is_word(source, tokens, first.token, tables.state.file_base, "byte") || token_is_word(source, tokens, first.token, tables.state.file_base, "double") || token_is_word(source, tokens, first.token, tables.state.file_base, "float")
     let ascii_max = token_is_word(source, tokens, first.token, tables.state.file_base, "Ascii") && token_is_word(source, tokens, second.token, tables.state.file_base, "max")
     let uppercase = first.kind == TokenKind.Ident && is_upper_ascii(source[tables.state.file_base + first.start])
     (simple && second.kind == TokenKind.RParen) || (uppercase && (second.kind == TokenKind.RParen || ascii_max))

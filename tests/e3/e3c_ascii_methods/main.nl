@@ -4,7 +4,7 @@ fn first_byte(value: Bytes max 8) -> byte {
 
 fn main() {
     let word: Ascii max 8 = "hello"
-    print(word[1L])
+    print(word[1L].to_byte())
     for value in word {
         print(value)
     }

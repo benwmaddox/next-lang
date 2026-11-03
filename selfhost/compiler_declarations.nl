@@ -615,6 +615,31 @@ fn type_name_or_fallback(ty: long) -> Ascii max 16 {
     scalar_type_name(ty)
 }
 
+// The name a type mismatch error shows. A scalar has its own name; any other type is described by its kind, because this
+// error does not have the source text to print the declared name.
+fn is_plain_scalar_type(compiler: CompilerTables, ty: long) -> bool {
+    let kind = type_kind(compiler, ty)
+    kind == TYPE_KIND_SCALAR || kind == TYPE_KIND_UNIT || kind == TYPE_KIND_NEVER
+}
+
+fn mismatch_type_name(compiler: CompilerTables, ty: long) -> Ascii max 24 {
+    if is_plain_scalar_type(compiler, ty) { return scalar_type_name(ty) }
+    let kind = type_kind(compiler, ty)
+    if kind == TYPE_KIND_ASCII { "Ascii" }
+    else if kind == TYPE_KIND_TEXT { "Text" }
+    else if kind == TYPE_KIND_BYTES { "Bytes" }
+    else if kind == TYPE_KIND_STRUCT { "a struct" }
+    else if kind == TYPE_KIND_ENUM { "an enum" }
+    else if kind == TYPE_KIND_OPTION { "an Option" }
+    else if kind == TYPE_KIND_RESULT { "a Result" }
+    else if kind == TYPE_KIND_ARRAY { "an array" }
+    else if kind == TYPE_KIND_LIST { "a list" }
+    else if kind == TYPE_KIND_MAP { "a map" }
+    else if kind == TYPE_KIND_POOL { "a pool" }
+    else if kind == TYPE_KIND_QUEUE { "a queue" }
+    else { "another type" }
+}
+
 fn fail_type_mismatch(
     env: Env,
     files: list<SourceFile, MAX_SOURCE_FILES>,
@@ -632,12 +657,20 @@ fn fail_type_mismatch(
     match env.err.write(b":") { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(str(position.col).bytes()) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b": error: expected ") { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(type_name_or_fallback(expected).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    // two Ascii (or Text, or Bytes) types that differ only in their maxima print the maxima
+    let same_kind_text = type_kind(compiler, expected) == type_kind(compiler, actual) &&
+        (type_kind(compiler, expected) == TYPE_KIND_ASCII || type_kind(compiler, expected) == TYPE_KIND_TEXT || type_kind(compiler, expected) == TYPE_KIND_BYTES)
+    let expected_name: Ascii max 80 = if same_kind_text { text_type_with_maxima(compiler, expected) } else { mismatch_type_name(compiler, expected) }
+    let actual_name: Ascii max 80 = if same_kind_text { text_type_with_maxima(compiler, actual) } else { mismatch_type_name(compiler, actual) }
+    match env.err.write(expected_name.bytes()) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b", found ") { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(type_name_or_fallback(actual).bytes()) { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(b"; cast explicitly with (") { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(type_name_or_fallback(expected).bytes()) { ok(_) => (), err(_) => env.exit(3) }
-    match env.err.write(b")value") { ok(_) => (), err(_) => env.exit(3) }
+    match env.err.write(actual_name.bytes()) { ok(_) => (), err(_) => env.exit(3) }
+    // A cast only makes sense between scalars.
+    if is_plain_scalar_type(compiler, expected) && is_plain_scalar_type(compiler, actual) {
+        match env.err.write(b"; cast explicitly with (") { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(mismatch_type_name(compiler, expected).bytes()) { ok(_) => (), err(_) => env.exit(3) }
+        match env.err.write(b")value") { ok(_) => (), err(_) => env.exit(3) }
+    }
     match env.err.write(compiler.default_context) { ok(_) => (), err(_) => env.exit(3) }
     match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
 }
@@ -680,6 +713,10 @@ fn require_text_read_argument(
 
 fn is_unsuffixed_integer(tables: ParseTables, node: long) -> bool {
     node >= 0L && tables.nodes[node].kind == NodeKind.Integer && (tables.nodes[node].flags & (FLAG_LONG_SUFFIX | FLAG_FLOAT)) == 0L
+}
+
+fn is_float_literal(tables: ParseTables, node: long) -> bool {
+    node >= 0L && tables.nodes[node].kind == NodeKind.Integer && (tables.nodes[node].flags & FLAG_FLOAT) != 0L
 }
 
 recursive fn natural_node_type(
@@ -733,13 +770,22 @@ recursive fn natural_node_type(
                     let case_index = enum_case_matches(compiler, type_id, compiler.token_name_ids[value.token])
                     if case_index >= 0L { type_id } else { -1L }
                 } else { -1L }
+            } else if receiver >= 0L {
+                // only float fields are typed here, so a literal beside them takes the field's type
+                let receiver_ty = natural_node_type(source, tokens, files, tables, compiler, receiver, scope, file_index)
+                if receiver_ty >= 0L && type_kind(compiler, receiver_ty) == TYPE_KIND_STRUCT {
+                    let field_index = struct_field_matches(compiler, struct_type_index(compiler, receiver_ty), compiler.token_name_ids[value.token])
+                    if field_index >= 0L && is_float_type(compiler.struct_fields[field_index].ty) { compiler.struct_fields[field_index].ty } else { -1L }
+                } else { -1L }
             } else { -1L }
         },
         NodeKind.Index => {
             let receiver = compiler.child_first[node]
             if receiver >= 0L {
                 let receiver_ty = natural_node_type(source, tokens, files, tables, compiler, receiver, scope, file_index)
-                collection_element_type(compiler, receiver_ty)
+                // Ascii[i] is an Ascii max 1 (once that type exists), not a byte
+                if type_kind(compiler, receiver_ty) == TYPE_KIND_ASCII { text_type_matches(compiler, TYPE_KIND_ASCII, 1L, 0L) }
+                else { collection_element_type(compiler, receiver_ty) }
             } else { -1L }
         },
         NodeKind.StructInit => {
@@ -756,6 +802,8 @@ recursive fn natural_node_type(
             if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "int") { TY_INT }
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "long") { TY_LONG }
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "byte") { TY_BYTE }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "double") { TY_DOUBLE }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "float") { TY_FLOAT }
             else { -1L }
         },
         NodeKind.Fit => {
@@ -767,8 +815,26 @@ recursive fn natural_node_type(
             } else { -1L }
         },
         NodeKind.ToLong => TY_LONG,
-        NodeKind.Unary => -1L,
-        NodeKind.Binary => if value.flags >= 8L && value.flags <= 15L { TY_BOOL } else { -1L },
+        NodeKind.Unary => {
+            // only a float operand gives a known type: a literal beside `-x` takes x's type
+            let operand = compiler.child_first[node]
+            let operand_ty = if value.flags != 1L && value.flags != 2L && !is_float_literal(tables, operand) { natural_node_type(source, tokens, files, tables, compiler, operand, scope, file_index) } else { -1L }
+            if is_float_type(operand_ty) { operand_ty } else { -1L }
+        },
+        NodeKind.Binary => {
+            if value.flags >= 8L && value.flags <= 15L { TY_BOOL }
+            else if value.flags < 8L {
+                // a bare float literal is not a known type: it takes the type of what it meets
+                let left_node = compiler.child_first[node]
+                let right_node = compiler.child_next[left_node]
+                let left_ty = if is_float_literal(tables, left_node) { -1L } else { natural_node_type(source, tokens, files, tables, compiler, left_node, scope, file_index) }
+                if is_float_type(left_ty) { left_ty }
+                else {
+                    let right_ty = if is_float_literal(tables, right_node) { -1L } else { natural_node_type(source, tokens, files, tables, compiler, right_node, scope, file_index) }
+                    if is_float_type(right_ty) { right_ty } else { -1L }
+                }
+            } else { -1L }
+        },
         _ => -1L,
     }
 }
@@ -951,3 +1017,16 @@ fn fail_call_arity(
     match env.err.write(b"\n") { ok(_) => env.exit(2), err(_) => env.exit(3) }
 }
 
+
+// `Ascii max 100`, `Bytes max 8`, `Text max 4` (or `Text max 4 bytes max 10` when the byte budget is not 4 per code point)
+fn text_type_with_maxima(compiler: CompilerTables, ty: long) -> Ascii max 80 {
+    let kind = type_kind(compiler, ty)
+    let bytes = text_max_bytes(compiler, ty)
+    if kind == TYPE_KIND_ASCII { "Ascii max " + str(bytes) }
+    else if kind == TYPE_KIND_BYTES { "Bytes max " + str(bytes) }
+    else {
+        let points = text_max_codepoints(compiler, ty)
+        if bytes == points * 4L { "Text max " + str(points) }
+        else { "Text max " + str(points) + " bytes max " + str(bytes) }
+    }
+}
