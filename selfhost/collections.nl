@@ -1616,11 +1616,7 @@ fn emit_collection_literal_element(
         let copies = collection_capacity(compiler, type_id)
         let destination = aggregate_destination_location(compiler, 0L, collection_node)
         let destination_pointer = emit_location_pointer_materialization(compiler, ir, destination)
-        let source_kind = if tables.nodes[value_node].kind == NodeKind.Name && compiler.facts[value_node].binding >= 0L {
-            if compiler.bindings[compiler.facts[value_node].binding].parameter { 2L } else { 1L }
-        } else if tables.nodes[value_node].kind == NodeKind.Field { 3L } else { 0L }
-        let source_id = if source_kind == 1L || source_kind == 2L { compiler.facts[value_node].binding } else { value_node }
-        let source = aggregate_source_location(compiler, source_kind, source_id)
+        let source = aggregate_source_location_for_node(tables, compiler, value_node)
         let source_pointer = emit_location_pointer_materialization(compiler, ir, source)
         let path_offset = collection_element_base_offset(compiler, type_id)
         if copies < 0L || path_offset < 0L { compiler.ir_overflow = true; return }
