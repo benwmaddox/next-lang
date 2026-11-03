@@ -1,0 +1,3 @@
+main.nl:3:19: error: expected uint, found int; cast explicitly with (uint)value
+    3 |     let u: uint = n
+      |                   ^

@@ -1,0 +1,3 @@
+main.nl:4:13: error: cannot combine uint and int; cast the left value to int or the right value to uint
+    4 |     print(a + b)
+      |             ^

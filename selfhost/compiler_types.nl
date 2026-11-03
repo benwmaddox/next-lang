@@ -421,6 +421,11 @@ fn resolve_value_type(
     if token_is_word_at(source, tokens, files, file_index, syntax.token, "byte") { return TY_BYTE }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "double") { return TY_DOUBLE }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "float") { return TY_FLOAT }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "uint") { return TY_UINT }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "ulong") { return TY_ULONG }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "ushort") { return TY_USHORT }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "short") { return TY_SHORT }
+    if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "sbyte") { return TY_SBYTE }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Env") { return TY_ENV }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Fs") { return TY_FS }
     if compiler.c_runtime && token_is_word_at(source, tokens, files, file_index, syntax.token, "Out") { return TY_OUT }

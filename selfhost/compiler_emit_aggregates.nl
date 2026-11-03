@@ -439,6 +439,8 @@ fn core_external_symbol(
     token_is_word_at(source, tokens, files, file_index, token, "nl_print_bool") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_print_int_raw") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_print_long_raw") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_print_uint_raw") ||
+    token_is_word_at(source, tokens, files, file_index, token, "nl_print_ulong_raw") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_print_bool_raw") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_print_ascii") ||
     token_is_word_at(source, tokens, files, file_index, token, "nl_print_newline") ||

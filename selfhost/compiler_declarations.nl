@@ -712,7 +712,7 @@ fn require_text_read_argument(
 }
 
 fn is_unsuffixed_integer(tables: ParseTables, node: long) -> bool {
-    node >= 0L && tables.nodes[node].kind == NodeKind.Integer && (tables.nodes[node].flags & (FLAG_LONG_SUFFIX | FLAG_FLOAT)) == 0L
+    node >= 0L && tables.nodes[node].kind == NodeKind.Integer && (tables.nodes[node].flags & (FLAG_LONG_SUFFIX | FLAG_FLOAT | FLAG_UNSIGNED_SUFFIX)) == 0L
 }
 
 fn is_float_literal(tables: ParseTables, node: long) -> bool {
@@ -732,7 +732,7 @@ recursive fn natural_node_type(
     if node < 0L { return -1L }
     let value = tables.nodes[node]
     match value.kind {
-        NodeKind.Integer => if (value.flags & FLAG_FLOAT) != 0L { TY_DOUBLE } else if (value.flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else { TY_INT },
+        NodeKind.Integer => if (value.flags & FLAG_FLOAT) != 0L { TY_DOUBLE } else if (value.flags & FLAG_UNSIGNED_SUFFIX) != 0L { if (value.flags & FLAG_LONG_SUFFIX) != 0L { TY_ULONG } else { TY_UINT } } else if (value.flags & FLAG_LONG_SUFFIX) != 0L { TY_LONG } else { TY_INT },
         NodeKind.Bool => TY_BOOL,
         NodeKind.Unit => TY_UNIT,
         NodeKind.Name => {
@@ -804,6 +804,11 @@ recursive fn natural_node_type(
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "byte") { TY_BYTE }
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "double") { TY_DOUBLE }
             else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "float") { TY_FLOAT }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "uint") { TY_UINT }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "ulong") { TY_ULONG }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "ushort") { TY_USHORT }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "short") { TY_SHORT }
+            else if target >= 0L && token_is_word_at(source, tokens, files, file_index, tables.nodes[target].token, "sbyte") { TY_SBYTE }
             else { -1L }
         },
         NodeKind.Fit => {

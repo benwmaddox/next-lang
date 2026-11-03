@@ -149,9 +149,9 @@ fn emit_interp_pieces(
                 ir_write_ascii(compiler, ir, "  "); interp_name(compiler, ir, "num", root, tag, index); ir_write_ascii(compiler, ir, " = ")
                 if argument_type == TY_LONG {
                     ir_write_ascii(compiler, ir, "add i64 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, ", 0\n")
-                } else if argument_type == TY_BYTE {
+                } else if argument_type == TY_BYTE || argument_type == TY_UINT || argument_type == TY_USHORT {
                     ir_write_ascii(compiler, ir, "zext i32 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n")
-                } else if argument_type == TY_INT {
+                } else if argument_type == TY_INT || argument_type == TY_SHORT || argument_type == TY_SBYTE {
                     ir_write_ascii(compiler, ir, "sext i32 "); ir_write_value_ref(compiler, ir, argument); ir_write_ascii(compiler, ir, " to i64\n")
                 } else { compiler.ir_overflow = true }
                 if spec == FORMAT_TEXT_PAD || spec == FORMAT_TEXT_PAD_ZERO {

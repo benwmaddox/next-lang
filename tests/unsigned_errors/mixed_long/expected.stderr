@@ -1,0 +1,3 @@
+main.nl:4:11: error: expected uint, found ulong; cast explicitly with (uint)value
+    4 |     print(a == b)
+      |           ^

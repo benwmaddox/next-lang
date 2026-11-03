@@ -1,0 +1,3 @@
+main.nl:3:11: error: unary '-' is not defined on an unsigned type; subtract from zero with a checked or wrapping operator
+    3 |     print(-u)
+      |           ^

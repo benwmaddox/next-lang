@@ -751,6 +751,10 @@ _Noreturn void nl_fail(int32_t kind, int32_t file_id, int32_t line, int32_t col)
         case 25: message = "arena capacity exhausted"; break;
         case 26: message = "arena builder misuse (begin while a builder is open, or push/append/finish without one, or add while a builder is open)"; break;
         case 27: message = "unbounded text does not fit the bounded type (too long, or not ASCII)"; break;
+        case 28: message = "overflow in unsigned addition"; break;
+        case 29: message = "underflow in unsigned subtraction"; break;
+        case 30: message = "overflow in unsigned multiplication"; break;
+        case 31: message = "result out of range for a narrow integer type"; break;
         case 18: message = "data stack exhausted"; break;
         case 19: message = "recursion budget exhausted"; break;
         case 20: message = "standard output write failed"; break;
@@ -1080,6 +1084,20 @@ void nl_print_int_raw(int32_t value) {
 
 void nl_print_long_raw(int64_t value) {
     nl_print_decimal(value, 0);
+}
+
+void nl_print_ulong_raw(uint64_t value) {
+    unsigned char buffer[21];
+    uint64_t length = 0;
+    unsigned char digits[20];
+    uint64_t count = 0;
+    do { digits[count++] = (unsigned char)('0' + value % 10u); value /= 10u; } while (value != 0u);
+    while (count > 0) buffer[length++] = digits[--count];
+    nl_print_bytes(buffer, length);
+}
+
+void nl_print_uint_raw(uint32_t value) {
+    nl_print_ulong_raw(value);
 }
 
 void nl_print_bool_raw(_Bool value) {

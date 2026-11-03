@@ -1,0 +1,3 @@
+main.nl:2:21: error: integer literal does not fit ushort
+    2 |     let u: ushort = 65536
+      |                     ^

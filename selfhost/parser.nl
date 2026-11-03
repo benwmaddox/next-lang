@@ -254,6 +254,7 @@ struct RangeBound {
 struct ParsedLiteral {
     index: long
     long_suffix: bool
+    unsigned_suffix: bool
 }
 
 struct ScaledLiteral {
@@ -395,6 +396,7 @@ const FLAG_EFFECT_WRITES: long = 2097152L
 const FLAG_BYTESTRING_NONASCII_HEX: long = 4194304L
 const FLAG_CAST_UNCHECKED: long = 8388608L
 const FLAG_FLOAT: long = 16777216L
+const FLAG_UNSIGNED_SUFFIX: long = 33554432L
 
 const PENDING_NAME: long = 1L
 const PENDING_QUALIFIED: long = 2L
@@ -1506,9 +1508,13 @@ recursive fn parse_literal(
     var payload_start = token_start
     var payload_end = token_end
     var long_suffix = false
-    if payload_end > payload_start && (source[payload_end - 1L] == 76 || source[payload_end - 1L] == 108) {
-        long_suffix = true
-        payload_end -= 1L
+    var unsigned_suffix = false
+    for suffix_step in 0L..2L {
+        if payload_end <= payload_start { break }
+        let suffix_byte = source[payload_end - 1L]
+        if (suffix_byte == 76 || suffix_byte == 108) && !long_suffix { long_suffix = true; payload_end -= 1L }
+        else if (suffix_byte == 85 || suffix_byte == 117) && !unsigned_suffix { unsigned_suffix = true; payload_end -= 1L }
+        else { break }
     }
     if payload_end - payload_start >= 2L && source[payload_start] == 48 {
         if source[payload_start + 1L] == 120 || source[payload_start + 1L] == 88 {
@@ -1559,7 +1565,7 @@ recursive fn parse_literal(
     }
     if !any_digit { return err(ParseError { kind: ParseProblemKind.IntegerTooLarge, offset: diagnostic_start, token }) }
     let index = append_literal(tables, value)?
-    ok(ParsedLiteral { index, long_suffix })
+    ok(ParsedLiteral { index, long_suffix, unsigned_suffix })
 }
 
 fn multiply_literal(value: Literal128, multiplier: long) -> ScaledLiteral {
@@ -1787,7 +1793,7 @@ recursive fn parse_stack_peak_comparison(
     let call = append_node(tables, NodeKind.Call, call_first, start.token, start.start, call_end, start.start, 0L, -1L, 1L)?
     tables.nodes[call].meta0 = call_end
     let integer_first = tables.nodes.count()
-    let integer = append_node(tables, NodeKind.Integer, integer_first, number.token, number.start, end, number.start, if long_suffix { FLAG_LONG_SUFFIX } else { 0L }, literal, 0L)?
+    let integer = append_node(tables, NodeKind.Integer, integer_first, number.token, number.start, end, number.start, literal_suffix_flags(parsed), literal, 0L)?
     let binary_first = call_first
     append_node(tables, NodeKind.Binary, binary_first, operator.token, start.start, end, operator.start, 10L, -1L, 0L)
 }
@@ -2122,7 +2128,7 @@ recursive fn parse_prefix(
             cursor_next(tables, tokens)
             let parsed = parse_literal(source, tables, next.token, next.start, next.length, token.start)?
             let first = tables.nodes.count()
-            let flags = FLAG_NEGATIVE | if parsed.long_suffix { FLAG_LONG_SUFFIX } else { 0L }
+            let flags = FLAG_NEGATIVE | literal_suffix_flags(parsed)
             let node = append_node(tables, NodeKind.Integer, first, next.token, token.start, next.start + next.length, token.start, flags, parsed.index, 0L)?
             return postfix_expression(source, tokens, tables, ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start: token.start, end: next.start + next.length })
         }
@@ -2281,7 +2287,7 @@ recursive fn parse_prefix_leaf(
     if token.kind == TokenKind.Number {
         let parsed = parse_literal(source, tables, token.token, token.start, token.length, token.start)?
         let first = tables.nodes.count()
-        let flags = if parsed.long_suffix { FLAG_LONG_SUFFIX } else { 0L }
+        let flags = literal_suffix_flags(parsed)
         let node = append_node(tables, NodeKind.Integer, first, token.token, token.start, token.start + token.length, token.start, flags, parsed.index, 0L)?
         return ok(ExprRef { node, pending_kind: 0L, token: -1L, extra_token: -1L, start: token.start, end: token.start + token.length })
     }
@@ -2835,7 +2841,7 @@ recursive fn parse_parenthesized(
 fn is_cast_start(source: Bytes max SOURCE_BUFFER_CAPACITY, tokens: list<Token, TOKEN_STORAGE_CAPACITY>, tables: ParseTables) -> bool {
     let first = cursor_peek(tables, tokens, 0L)
     let second = cursor_peek(tables, tokens, 1L)
-    let simple = token_is_word(source, tokens, first.token, tables.state.file_base, "int") || token_is_word(source, tokens, first.token, tables.state.file_base, "long") || token_is_word(source, tokens, first.token, tables.state.file_base, "bool") || token_is_word(source, tokens, first.token, tables.state.file_base, "byte") || token_is_word(source, tokens, first.token, tables.state.file_base, "double") || token_is_word(source, tokens, first.token, tables.state.file_base, "float")
+    let simple = token_is_word(source, tokens, first.token, tables.state.file_base, "int") || token_is_word(source, tokens, first.token, tables.state.file_base, "long") || token_is_word(source, tokens, first.token, tables.state.file_base, "bool") || token_is_word(source, tokens, first.token, tables.state.file_base, "byte") || token_is_word(source, tokens, first.token, tables.state.file_base, "double") || token_is_word(source, tokens, first.token, tables.state.file_base, "float") || token_is_word(source, tokens, first.token, tables.state.file_base, "uint") || token_is_word(source, tokens, first.token, tables.state.file_base, "ulong") || token_is_word(source, tokens, first.token, tables.state.file_base, "ushort") || token_is_word(source, tokens, first.token, tables.state.file_base, "short") || token_is_word(source, tokens, first.token, tables.state.file_base, "sbyte")
     let ascii_max = token_is_word(source, tokens, first.token, tables.state.file_base, "Ascii") && token_is_word(source, tokens, second.token, tables.state.file_base, "max")
     let uppercase = first.kind == TokenKind.Ident && is_upper_ascii(source[tables.state.file_base + first.start])
     (simple && second.kind == TokenKind.RParen) || (uppercase && (second.kind == TokenKind.RParen || ascii_max))
@@ -3011,7 +3017,7 @@ recursive fn parse_pattern(
     if token.kind == TokenKind.Number {
         let parsed = parse_literal(source, tables, token.token, token.start, token.length, token.start)?
         let first = tables.nodes.count()
-        let flags = if parsed.long_suffix { FLAG_LONG_SUFFIX } else { 0L }
+        let flags = literal_suffix_flags(parsed)
         return append_node(tables, NodeKind.Integer, first, token.token, token.start, token.start + token.length, token.start, flags, parsed.index, 0L)
     }
     if token.kind == TokenKind.Minus {
@@ -3020,7 +3026,7 @@ recursive fn parse_pattern(
         cursor_next(tables, tokens)
         let parsed = parse_literal(source, tables, number.token, number.start, number.length, token.start)?
         let first = tables.nodes.count()
-        let flags = FLAG_NEGATIVE | if parsed.long_suffix { FLAG_LONG_SUFFIX } else { 0L }
+        let flags = FLAG_NEGATIVE | literal_suffix_flags(parsed)
         return append_node(tables, NodeKind.Integer, first, number.token, token.start, number.start + number.length, token.start, flags, parsed.index, 0L)
     }
     if token.kind != TokenKind.Ident { return err(ParseError { kind: ParseProblemKind.ExpectedPattern, offset: token.start, token: token.token }) }
@@ -3400,4 +3406,9 @@ fn push_type_walk_children(tables: write ParseTables, node: long, child_depth: l
 
 fn is_type_node(kind: NodeKind) -> bool {
     kind == NodeKind.ParameterType || kind == NodeKind.ResultType || kind == NodeKind.Annotation || kind == NodeKind.FieldType || kind == NodeKind.PayloadType || kind == NodeKind.AliasedType || kind == NodeKind.DeclaredType || kind == NodeKind.TypeArgument || kind == NodeKind.FitType || kind == NodeKind.CastType
+}
+
+// The node flags a literal's `L` and `u` suffixes give: `5L` long, `5u` uint, `5UL` ulong.
+fn literal_suffix_flags(parsed: ParsedLiteral) -> long {
+    (if parsed.long_suffix { FLAG_LONG_SUFFIX } else { 0L }) | (if parsed.unsigned_suffix { FLAG_UNSIGNED_SUFFIX } else { 0L })
 }
